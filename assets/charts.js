@@ -547,6 +547,12 @@
 
     /* 斜纹填充：给「与相邻柱不可比」的柱用（如 53 周财年多出一周的月份）。
        pattern 里塞的是该图自己的柱色，所以 id 必须一图一个，不能共用。 */
+    /* 右轴刻度文字与「优先标签」（次轴 y/y 的末点读数）。
+       末点读数按构造落在它自己那个值的轴高度上，而右轴刻度也在同一列 ——
+       两者数值一接近就必然叠字（实测 6 页 18 处：'+5.0pp × +5.1pp'、'50% × 52%'…）。
+       末点读数是真实数据、刻度只是标尺，冲突时让刻度让位（见 draw 末尾的 dropClashingTicks）。 */
+    var rtickEls = [], priorityLabs = [];
+
     var markSet = null, hatchId = null;
     if (ex.bar_marks && ex.bar_marks.length) {
       markSet = {};
@@ -735,8 +741,8 @@
       var rtc = (kind === 'gs_bar') ? col(rc.color || 'GOLD') : C.INK;
       for (i = 0; i < rtk.length; i++) {
         if (rtk[i] < r0 - 1e-9 || rtk[i] > r1 + 1e-9) continue;   // 对齐后量程会窄于刻度序列
-        txt(svg, M.l + pw + 6, Y2(rtk[i]) + 3.2, rf(rtk[i]),
-          { size: 9, anchor: 'start', fill: rtc });
+        rtickEls.push(txt(svg, M.l + pw + 6, Y2(rtk[i]) + 3.2, rf(rtk[i]),
+          { size: 9, anchor: 'start', fill: rtc }));
       }
       /* 右轴标题：否则「哪条系列读右轴」全靠 legend 里「(RHS)」三个字 */
       if (ex.ylab2) {
@@ -998,8 +1004,8 @@
         /* 末点读数标在点的**右下方**（同 deck 的 xytext=(5,-7)）：柱顶那一排数值标签
            在点的上方，标上面必压。 */
         if (jy >= 0)
-          txt(g, Xc(jy) + 5, Y2(vy[jy]) + 9.5, fmtOf(yoyS.yfmt || 'pct0')(vy[jy]),
-            { size: 8, anchor: 'start', weight: 700, fill: lcy });
+          priorityLabs.push(txt(g, Xc(jy) + 5, Y2(vy[jy]) + 9.5, fmtOf(yoyS.yfmt || 'pct0')(vy[jy]),
+            { size: 8, anchor: 'start', weight: 700, fill: lcy }));
       }
       /* y/y 折线在场时不再画 y/y 气泡：同一件事说两遍，气泡还占着左上角 */
       if (ex.yoy_txt && !yoyS) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt, null, M.l);
@@ -1143,9 +1149,9 @@
       if (Y2) {
         var lvq2 = lineVals(ex), jq = lastFinite(lvq2);
         if (jq >= 0)
-          txt(g, Xc(jq) + 5, Y2(lvq2[jq]) + 3.2,
+          priorityLabs.push(txt(g, Xc(jq) + 5, Y2(lvq2[jq]) + 3.2,
             fmtOf(ex.line.yfmt || 'pct0')(lvq2[jq]),
-            { size: 8, anchor: 'start', weight: 700, fill: col((ex.line.color) || 'GREEN') });
+            { size: 8, anchor: 'start', weight: 700, fill: col((ex.line.color) || 'GREEN') }));
       }
 
     /* seasonality ← gsx.seasonality：灰柱 = 过去 N 年同月均值、蓝柱 = 本期实际。
@@ -1227,9 +1233,9 @@
         polyline(ex.line.values, lce, 1.4, false, true, Y2);
         var je = lastFinite(ex.line.values);
         if (je >= 0)
-          txt(g, Xc(je) + 5, Y2(ex.line.values[je]) + 3.2,
+          priorityLabs.push(txt(g, Xc(je) + 5, Y2(ex.line.values[je]) + 3.2,
             fmtOf(ex.line.yfmt || 'pct1')(ex.line.values[je]),
-            { size: 8, anchor: 'start', weight: 700, fill: lce });
+            { size: 8, anchor: 'start', weight: 700, fill: lce }));
       }
 
     /* range_band ← gsx.range_vs_actual：指引区间画成带、实际值打菱形。
@@ -1332,6 +1338,46 @@
         txt(svg, M.l + 3, M.t + 13, ex.annot, { size: 9.5, anchor: 'start', weight: 600, fill: C.NAVY });
       else
         txt(svg, M.l + pw - 3, M.t + ph - 7, ex.annot, { size: 8.5, anchor: 'end' });
+    }
+
+    /* 次轴末点读数 vs 右轴刻度：冲突时让刻度让位。
+       末点读数按构造落在它自己那个值的轴高度上，右轴刻度也在同一列，两者数值一接近
+       就必然叠字 —— 实测 6 页 18 处（'+5.0pp × +5.1pp'、'50% × 52%'、'20% × 22%'…）。
+       让读数让位是错的：它是真实数据，而刻度只是标尺，少一格刻度读者照样能读出量级。 */
+    if (priorityLabs.length) {
+      var hit = function (a, b) {
+        return a.x < b.x + b.width + 1 && b.x < a.x + a.width + 1 &&
+               a.y < b.y + b.height + 1 && b.y < a.y + a.height + 1;
+      };
+      priorityLabs.forEach(function (p) {
+        if (!p.getBBox) return;
+        rtickEls.forEach(function (t) {                 // 刻度让位
+          if (t.parentNode && hit(p.getBBox(), t.getBBox())) t.parentNode.removeChild(t);
+        });
+        /* 还撞上的一定是别的**真实数据标签**（柱顶数值），那种不能删。
+           柱顶标签锚死在自己的柱子上，末点读数是浮动的 —— 让读数让开。
+           实测 6 处：schw Ex6「490 × 52%」、cboe Ex4「$7.3 × 44%」、axp Ex2「$113.8 × 7.6%」… */
+        var others = [];
+        g.querySelectorAll('text').forEach(function (t) {
+          if (t !== p && !(t.getAttribute('transform') || '').indexOf) return;
+          if (t !== p && (t.getAttribute('transform') || '').indexOf('rotate') < 0) others.push(t);
+        });
+        for (var k = 0; k < 6; k++) {
+          var pb = p.getBBox(), clash = null;
+          for (var q = 0; q < others.length; q++) {
+            if (others[q].parentNode && hit(pb, others[q].getBBox())) { clash = others[q]; break; }
+          }
+          if (!clash) break;
+          // 优先往下让（末点读数原本就在点的右下方）；顶到画布底就改往上
+          var dy = (pb.y + pb.height + 10 < M.t + ph) ? 9 : -9;
+          p.setAttribute('y', parseFloat(p.getAttribute('y')) + dy);
+        }
+        /* 推完要**再清一次刻度**：让开柱顶标签之后，读数可能正好落到另一条刻度上
+           （实测 cboe Ex4 就是这样 —— 躲开 $7.3 之后压上了 40%）。 */
+        rtickEls.forEach(function (t) {
+          if (t.parentNode && hit(p.getBBox(), t.getBBox())) t.parentNode.removeChild(t);
+        });
+      });
     }
 
     /* hover：整段 band 命中，tooltip 列出该期全部系列 */

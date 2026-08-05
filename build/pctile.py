@@ -58,12 +58,22 @@ def is_dead(series, window=WINDOW, replay=REPLAY, dead_frac=DEAD_FRAC):
     """
     n = len(series)
     start = max(0, n - replay)
-    vals = [pctile(series, i, window) for i in range(start, n)]
-    vals = [v for v in vals if v is not None]
+    vals = []
+    for i in range(start, n):
+        if pctile(series, i, window) is None:
+            continue
+        lo = max(0, i - window)
+        hist = [v for v in series[lo:i + 1] if v is not None]
+        cur = series[i]
+        # **「钉在极值」按 >= max / <= min 判，不按算出来的分位数判。**
+        # _rank() 用「严格小于」计数，所以只要窗口里有持平月，分位就够不到 100 ——
+        # 门店数、网点数、账户数这类有大量持平月的计数序列，分位会稳定停在 97 左右，
+        # 正好从 `>= 99.5` 底下钻过去，判成「活列」然后印一个绿色的 97。
+        # COST 的两行仓库数性质完全相同却被判出相反结果，就是踩的这里。
+        vals.append(cur >= max(hist) or cur <= min(hist))
     if len(vals) < 6:
         return False
-    pinned = sum(1 for v in vals if v >= 99.5 or v <= 0.5)
-    return pinned / len(vals) >= dead_frac
+    return sum(vals) / len(vals) >= dead_frac
 
 
 def cell(series, i=-1, inverse=False, window=WINDOW):

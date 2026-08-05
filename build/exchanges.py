@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 import payload_guard
+import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -66,6 +67,16 @@ HEAD = [
 
 WIN_LINE = 25    # 曲线类近期图：照搬原 deck 的 win=25
 HEAT_YEARS = 8   # 热力矩阵：照搬原 deck 的 n_years=8
+# 开了 end_label 的长历史线图必须给到这个高度，**不能改小**。
+# charts.js 的末点标签避让（spreadY）有一条兜底：整列标签的最上面一个若落在绘图区
+# 顶缘 7px 以内，就认为「上下都顶满」，改成从顶缘顺排 —— 那会把三个末点标签
+# 收成一摞贴在右上角，其中最低那条（本页 Exhibit 2 的 CME 172）被摆到 350 的高度上，
+# 比它自己的线高出一大截，读者会当成另一条线的读数（比不标还糟）。
+# 触发条件与数据无关，是纯几何：末点恰好是全图最大值时，标签落在 M.t + ph×0.0455 − 7，
+# 而门限是 M.t + 7 —— 即 ph > 308 才安全。lines 图的 ph = height + XB − M.t − XB
+# = height − 14（x 标签 90° 时 XB=48、无截轴时 M.t=14），故 height 需 ≥ 325。
+# 取 360 留出余量；本页 Exhibit 2 与 8 的末点正好都是各自的全图最大值，是最坏情况。
+LINE_H_ENDLABEL = 360
 TBL_MONTHS = 13  # 末尾核对表：契约 §5.4 的 13 个月
 MIN_COMMON = 24  # 共同历史短于这么多个月就不发（y/y + 25 个月曲线都画不出来）
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -102,9 +113,17 @@ def pct(v, dec=1):
 
 
 def pp(v, dec=1):
-    """百分点差 —— 比率类指标（占比、同比读数）的差异一律用 pp，不用百分比的百分比。"""
+    """百分点差 —— 比率类指标（占比、同比读数）的差异一律用 pp/bp，不用百分比的百分比。
+
+    契约 §2 的全站硬规矩：`abs(v) < 1` 时改用 bp（1pp = 100bp），否则用 pp。
+    本页原来一律写 pp，于是 HKEX 现货 ADT 同比行的 m/m 印成「-0.6pp」，
+    而同一轮渲染下 lpla 的 +34bp、axp 的 -10bp、schw 的 +98bp 都按规矩切了 bp ——
+    数值本身没错（-0.6pp ≡ -60bp），错的是同一站里同类量出现两套单位写法。
+    """
     if v is None or not np.isfinite(v):
         return '—'
+    if abs(_z(v, dec)) < 1:
+        return f'{_z(v * 100, 0):+,.0f}bp'
     return f'{_z(v, dec):+.{dec}f}pp'
 
 
@@ -229,6 +248,30 @@ def win(col, n=WIN_LINE):
     return df[col].iloc[-n:].values
 
 
+# ── 同比图「拆图还是截轴」的量化依据 ──
+# 图注里的每一个数字都从这里算，不写死：写死的话下个月序列一变，图注就成了假话
+# （本仓已经有过「图注说画了断点线、图上其实没有」的先例，同一类错不重犯）。
+def _rng(*arrs):
+    v = [float(x) for a in arrs for x in a if x is not None and np.isfinite(float(x))]
+    return (min(v), max(v)) if v else (0.0, 0.0)
+
+
+def _over(arr, hi):
+    return sum(1 for x in arr if x is not None and np.isfinite(float(x)) and float(x) > hi)
+
+
+CC25_LO, CC25_HI = _rng(win('cme_adv_yoy'), win('cboe_adv_yoy'))
+HK25_LO, HK25_HI = _rng(win('hkex_adt_yoy'))
+CCF_LO, CCF_HI = _rng(df['cme_adv_yoy'].values, df['cboe_adv_yoy'].values)
+HKF_LO, HKF_HI = _rng(df['hkex_adt_yoy'].values)
+# 「若强行同轴、把轴截到 CME/Cboe 的量程」会有多少个 HKEX 点越界 —— 截轴方案的代价
+CLIP25 = _over(win('hkex_adt_yoy'), CC25_HI)
+CLIPF = _over(df['hkex_adt_yoy'].values, CCF_HI)
+HKF_N = int(np.isfinite(df['hkex_adt_yoy'].values.astype(float)).sum())
+SPAN25 = (HK25_HI - HK25_LO) / max(1e-9, CC25_HI - CC25_LO)
+SPANF = (HKF_HI - HKF_LO) / max(1e-9, CCF_HI - CCF_LO)
+
+
 # ────────────────────────────── 2. Exhibit 1：汇总表 ──────────────────────────────
 # (kind, 标签, 列, 小数位, 模式)
 #   num    水平值，m/m 与 y/y 用百分比变化
@@ -251,15 +294,13 @@ SUM_ROWS = [
 ]
 
 
-def pctile36(s):
-    """近 36 个月分位。近乎单调的序列（逐月不降占比 ≥ 90%）留空 —— 分位恒为 100 是噪音。"""
-    h = s.dropna().iloc[-36:].values
-    if len(h) < 8 or not np.isfinite(h[-1]):
-        return None
-    d = np.diff(h)
-    if len(d) and float((d >= 0).sum()) / len(d) >= 0.90:
-        return None
-    return float((h < h[-1]).sum()) / max(1, len(h) - 1) * 100
+def ser_of(s):
+    """pandas Series → pctile.py 吃的「按月升序、缺失为 None」的 float 列表。
+
+    NaN 不能直接喂进去：pctile 里 `v is not None` 会把 NaN 当有效样本收进 hist，
+    而 NaN 的比较恒为 False，分位会被悄悄压低。
+    """
+    return [None if v is None or not np.isfinite(float(v)) else float(v) for v in s.values]
 
 
 def lvl(v, dec, mode):
@@ -279,7 +320,10 @@ def cls_of(v):
 
 
 def summary():
-    rows = []
+    # 3Y %ile 一律走 build/pctile.py：判据（回放近 24 个月，≥70% 的月份钉在极值就留空）
+    # 是**口径**，口径只能有一处定义。本页原来那份「逐月差 ≥0 占比 ≥90% 就留空」的本地
+    # 实现与其余 13 个生成器各写各的，正是同一条序列在两页判定相反的根因。
+    rows, blank_why = [], []
     for kind, label, col, dec, mode in SUM_ROWS:
         if kind == 'group':
             rows.append({'kind': 'group', 'label': label})
@@ -290,16 +334,20 @@ def summary():
             mm = (c / p1 - 1) * 100 if np.isfinite(p1) and p1 else np.nan
             yy = (c / p12 - 1) * 100 if np.isfinite(p12) and p12 else np.nan
             dm, dy = pct(mm), pct(yy)
-        else:                                   # 比率类：差异一律 pp（契约 §2）
+        else:                                   # 比率类：差异一律 pp/bp（契约 §2）
             mm = c - p1 if np.isfinite(c) and np.isfinite(p1) else np.nan
             yy = c - p12 if np.isfinite(c) and np.isfinite(p12) else np.nan
             dm, dy = pp(mm), pp(yy)
         cells = [{'v': lvl(c, dec, mode)}, {'v': lvl(p1, dec, mode)}, {'v': lvl(p12, dec, mode)},
                  {'v': dm, 'cls': cls_of(mm)}, {'v': dy, 'cls': cls_of(yy)}]
-        q = pctile36(s)
-        cells.append({'v': ''} if q is None else
-                     {'v': f'{q:.0f}', 'cls': 'hi' if q >= 66 else ('lo' if q <= 33 else '')})
+        ser = ser_of(s)                          # 按月升序的整条共同窗口序列，CUR 是最后一格
+        txt_, cls_ = pctile.cell(ser)
+        cells.append({'v': txt_, 'cls': cls_} if txt_ else {'v': ''})
+        if not txt_:
+            blank_why.append((label, pctile.why_blank(ser)))
         rows.append({'label': label, 'cells': cells})
+    blank_txt = ('本轮留空：' + '；'.join(f'{lab}（{why}）' for lab, why in blank_why) + '。'
+                 ) if blank_why else '本轮各行均未触发留空，分位照算。'
     return {
         'title': f'Exchange group — {mlab(CUR)}（共同最新月）',
         'heads': [f'本月 {mlab(CUR)}', f'上月 {mlab(PRV)}', f'去年同月 {mlab(YAG)}',
@@ -309,17 +357,37 @@ def summary():
         'note': ('三家的成交量单位互不相同（CME / Cboe 是合约张数、HKEX 是成交金额），'
                  '<b>水平值之间既不能相加也不能排名</b>；本表把它们分行列出只为逐条核对，'
                  '横向比较一律看下面各图的同比与指数化曲线。'
-                 '占比与同比读数本身已是百分比，其变化用 pp；水平值的变化用百分比。'
-                 '3Y %ile = 该读数在最近 36 个月里高于多少百分比的观测，近乎单调的序列留空。'),
+                 '占比与同比读数本身已是百分比，其变化用 pp/bp（绝对值不足 1pp 时写 bp）；'
+                 '水平值的变化用百分比。'
+                 '3Y %ile = 该读数在最近 36 个月里高于多少百分比的观测，'
+                 '判据与留空规则由全站唯一实现 <code>build/pctile.py</code> 给出：'
+                 '回放最近 24 个月，若 ≥70% 的月份分位都钉在 100 或 0，'
+                 '说明这一列对该行没有区分度，留空。' + blank_txt),
     }
 
 
-# ────────────────────────────── 3. Exhibit 2..9 ──────────────────────────────
+# ────────────────────────────── 3. Exhibit 2..11 ──────────────────────────────
+# 同比图为什么是**四张而不是两张**（原 deck 与本页此前都是两张、三条线同轴）：
+#   HKEX 的现货 ADT 同比与 CME / Cboe 的张数同比虽然都是「%」，量程却差一个数量级
+#   （SPANF 实测约 2.7 倍，港股成交自 2024-09 起是一整段行情，不是一两个离群月）。
+#   三条线同轴的结果是 CME 与 Cboe 被压进 0 附近一条窄带里互相纠缠，而汇总表告诉你
+#   「CME vs Cboe 的同比差」正是本月的关键差距 —— 在图上读不出来，这张图就白画了。
+#   两条路都算过（数字见 CLIP25 / CLIPF，图注里也印出来）：①截轴（ycap + 红色空心圈）
+#   —— 把轴截到 CME/Cboe 的量程，25 个月窗口里要截掉 CLIP25 个点、全窗口 CLIPF 个，
+#   红圈比线还多，那不叫「离群值处理」，那是把一条真实序列画成异常；
+#   ②拆图 —— 各用各的轴，谁也不压谁。选②，并在两张图的图注里互相写出对方的当期读数，
+#   保证「谁在跑赢」仍然是一眼可得的（横向比较的正本仍是 Exhibit 1 与 Exhibit 2）。
+# 版面：拆出来的两张按**半栏成对**排（Exhibit 3|4 一行、5|6 各自通栏），
+#   页面网格是两列，半栏卡片必须成对出现，否则右半边留一大块空白（读者会以为图没加载）。
 ex = []
 
 ex.append({
-    'n': 2, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
+    'n': 2, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
+    # end_label ← 原 deck 的 gsx.indexed_lines 对每条线的末点都 annotate 了数值
+    # （gsx.py:951-956，粗体、同色）。网页版此前一个都没画，于是抬头里那句
+    # 「累计指数领先者 HKEX（361）」在图上找不到落点，只能靠轴刻度目测。
+    'end_label': True, 'label_fmt': 'f0',
     'title': f'Volume growth since {mlab(START)}, rebased',
     'ylab': f'index, {mlab(START)} = 100',
     'series': [
@@ -331,42 +399,90 @@ ex.append({
                   'Compares growth only — the three units are not comparable in levels'),
     'note': ('指数化是本页唯一能把三家画进一张图的办法：张数与金额没有公约单位，'
              '归一之后比较的是<b>各自相对自己基期的增长</b>，线的高低差就是累计增速差，'
-             '与谁的绝对体量大无关。'),
+             '与谁的绝对体量大无关。'
+             f'末点已标数值（{mlab(START)} = 100）。'),
 })
 
+_cur_yoy = (f'CME {pct(df["cme_adv_yoy"][CUR])}、Cboe {pct(df["cboe_adv_yoy"][CUR])}、'
+            f'HKEX {pct(df["hkex_adt_yoy"][CUR])}')
+
 ex.append({
-    'n': 3, 'kind': 'lines_endlabels', 'fmt': 'f0', 'zero_line': True,
-    'title': f'Volume growth, y/y — last {WIN_LINE} months',
+    'n': 3, 'kind': 'lines_endlabels', 'fmt': 'f1', 'zero_line': True,
+    'title': f'Volume growth, y/y — CME vs Cboe, last {WIN_LINE} months',
     'ylab': '% y/y',
     'series': [
-        {'name': 'CME', 'color': CME_C, 'values': L(win('cme_adv_yoy'))},
-        {'name': 'Cboe', 'color': CBOE_C, 'values': L(win('cboe_adv_yoy'))},
-        {'name': 'HKEX', 'color': HKEX_C, 'values': L(win('hkex_adt_yoy'))},
+        {'name': 'CME total ADV', 'color': CME_C, 'values': L(win('cme_adv_yoy'))},
+        {'name': 'Cboe U.S. options ADV', 'color': CBOE_C, 'values': L(win('cboe_adv_yoy'))},
     ],
-    'src_extra': 'Same-month-prior-year basis for each company, on its own unit',
-    'note': ('同比把单位问题消掉了 —— 张数的同比与金额的同比都是纯数，可以直接比。'
-             f'{mlab(CUR)}：CME {pct(df["cme_adv_yoy"][CUR])}、'
-             f'Cboe {pct(df["cboe_adv_yoy"][CUR])}、HKEX {pct(df["hkex_adt_yoy"][CUR])}。'),
+    'src_extra': ('Same-month-prior-year basis for each company, on its own unit. '
+                  f'HKEX is on its own axis in the next exhibit — its range over these '
+                  f'{WIN_LINE} months is about {SPAN25:.0f}x wider'),
+    'note': ('同比把单位问题消掉了 —— 张数的同比与金额的同比都是纯数，可以直接比；'
+             '这张图只放量级相近的 CME 与 Cboe，好让两者的差距占满纵轴。'
+             f'{mlab(CUR)}：{_cur_yoy}（HKEX 见 Exhibit 4，<b>纵轴不同</b>，'
+             '两张图的线高不可直接对望）。'
+             '端点标签保留一位小数 —— 取整会把相差不到 1pp 的两个读数印成同一个数字，'
+             '而这几张图的题眼恰恰是谁跑赢。'),
 })
 
 ex.append({
-    'n': 4, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
-    'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'zero_line': True,
-    'title': 'Volume growth, y/y — full common window',
+    'n': 4, 'kind': 'lines_endlabels', 'fmt': 'f1', 'zero_line': True,
+    'title': f'HKEX cash ADT, y/y — last {WIN_LINE} months (own axis)',
     'ylab': '% y/y',
     'series': [
-        {'name': 'CME', 'color': CME_C, 'values': L(df['cme_adv_yoy'].values)},
-        {'name': 'Cboe', 'color': CBOE_C, 'values': L(df['cboe_adv_yoy'].values)},
-        {'name': 'HKEX', 'color': HKEX_C, 'values': L(df['hkex_adt_yoy'].values)},
+        {'name': 'HKEX cash ADT', 'color': HKEX_C, 'values': L(win('hkex_adt_yoy'))},
     ],
-    'src_extra': ('Same three series over the whole common history; shows whether the current '
-                  'ranking is a new development or the standing order'),
-    'note': (f'HKEX 的现货 ADT 自 {mlab(START)} 起才有披露，其同比要到 '
-             f'{mlab(START + 12)} 才成立，前 12 个月为空 —— 线在此处断开而不是连成直线。'),
+    'src_extra': (f'Split out from the previous exhibit because its range over these '
+                  f'{WIN_LINE} months is about {SPAN25:.0f}x wider; the axis is NOT shared '
+                  f'with CME / Cboe'),
+    'note': (f'<b>纵轴与 Exhibit 3 不同</b>（本图 {HK25_LO:+.0f}% ~ {HK25_HI:+.0f}%，'
+             f'Exhibit 3 {CC25_LO:+.0f}% ~ {CC25_HI:+.0f}%），'
+             '所以两张图之间只能比走向、不能比线的高低；要比读数请看数字：'
+             f'{mlab(CUR)} {_cur_yoy}。'
+             '港股成交额的同比是整段抬升而不是一两个离群月 —— 若强行与 Exhibit 3 同轴并'
+             f'把轴截到 CME/Cboe 的量程，这 {WIN_LINE} 个月里会有 {CLIP25} 个点变成红色'
+             '越界圈，那是把一条真实序列画成异常，所以本页选择拆图而不是截轴。'),
 })
 
 ex.append({
-    'n': 5, 'kind': 'lines_endlabels', 'fmt': 'f1',
+    'n': 5, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'zero_line': True,
+    'end_label': True, 'label_fmt': 'f1',
+    'title': 'Volume growth, y/y — CME vs Cboe, full common window',
+    'ylab': '% y/y',
+    'series': [
+        {'name': 'CME total ADV', 'color': CME_C, 'values': L(df['cme_adv_yoy'].values)},
+        {'name': 'Cboe U.S. options ADV', 'color': CBOE_C, 'values': L(df['cboe_adv_yoy'].values)},
+    ],
+    'src_extra': ('Both series over the whole common history; shows whether the current ranking '
+                  'is a new development or the standing order'),
+    'note': (f'两家的同比在同一量级上（共同窗口内 {CCF_LO:+.0f}% ~ {CCF_HI:+.0f}%），'
+             '同轴可直读。HKEX 的同一口径见 Exhibit 6 —— 它的量程是这张图的 '
+             f'{SPANF:.1f} 倍，同轴会把这两条线压成一条带。'),
+})
+
+ex.append({
+    'n': 6, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'zero_line': True,
+    'end_label': True, 'label_fmt': 'f1',
+    'title': 'HKEX cash ADT, y/y — full common window (own axis)',
+    'ylab': '% y/y',
+    'series': [
+        {'name': 'HKEX cash ADT', 'color': HKEX_C, 'values': L(df['hkex_adt_yoy'].values)},
+    ],
+    'src_extra': (f'Own axis: this series ranges {HKF_LO:+.0f}% to {HKF_HI:+.0f}% over the '
+                  f'common window, about {SPANF:.1f}x the CME / Cboe range in the previous '
+                  f'exhibit'),
+    'note': (f'HKEX 的现货 ADT 自 {mlab(START)} 起才有披露，其第一个同比落在 '
+             f'{mlab(START + 12)}，在那之前本图<b>没有线</b>（不是零增长，是没有数据；'
+             '缺口一律留空、不连直线）。'
+             '<b>纵轴与 Exhibit 5 不同</b>，两图之间只比走向不比高低。'),
+})
+
+ex.append({
+    # 通栏：本页的半栏卡片必须成对出现（Exhibit 3|4 已配成一对），
+    # 这张再走半栏就会单独占一行、右半边空一大块。
+    'n': 7, 'kind': 'lines_endlabels', 'fmt': 'f1', 'full': True, 'height': 300,
     'title': 'Mix quality: high-fee share of volume',
     'ylab': '% of own volume',
     'series': [
@@ -383,8 +499,9 @@ ex.append({
 })
 
 ex.append({
-    'n': 6, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
+    'n': 8, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90,
+    'end_label': True, 'label_fmt': 'f0',
     'title': f'Derivatives franchises, rebased to {mlab(START)}',
     'ylab': f'index, {mlab(START)} = 100',
     'series': [
@@ -403,47 +520,60 @@ ex.append({
 
 
 def heat(n, col, title, src_extra, legend):
-    """行=年、列=月的同比热力矩阵。年份从该序列自己的有效值取，全空的年不占一行。"""
+    """行=年、列=月的同比热力矩阵。年份从该序列自己的有效值取，全空的年不占一行。
+
+    fmt 用 `pct0z` 而不是 `pct0`：格内是 0 位小数，−0.5% ~ 0 之间的格子在 pct0 下会印成
+    「-0%」（Cboe 2024-03 实测 −0.35% → 「-0%」）。负零是纯格式化产物，夹在一片两位整数
+    里特别扎眼，读者会停下来判断它是不是缺失值。pct0z 把 |v|<0.5 的格子归零印成「0%」；
+    表格视图与 tooltip 走 PRECISE 映射自动升到 pct1，真值（−0.3%）一个也没丢。
+    """
     s = df[col].dropna()
     yrs = sorted({p.year for p in s.index})[-HEAT_YEARS:]
     M = [[None] * 12 for _ in yrs]
     for p, v in s.items():
         if p.year in yrs:
             M[yrs.index(p.year)][p.month - 1] = round(float(v), 6)
-    return {'n': n, 'kind': 'heat_matrix', 'full': True, 'title': title, 'fmt': 'pct0',
+    return {'n': n, 'kind': 'heat_matrix', 'full': True, 'title': title, 'fmt': 'pct0z',
             'rows': [str(y) for y in yrs], 'cols': MONTHS, 'matrix': M,
             'legend': legend, 'cell_h': 20, 'row_lab_w': 38, 'row_head': '年',
             'src_extra': src_extra}
 
 
-ex.append(heat(7, 'cme_adv_yoy', 'CME total ADV y/y (%)',
+ex.append(heat(9, 'cme_adv_yoy', 'CME total ADV y/y (%)',
                'Green = faster growth. Colour scale is per-matrix (5th–95th percentile of its own '
                'cells), so the three matrices below are not colour-comparable with each other',
                'CME total ADV y/y'))
-ex.append(heat(8, 'cboe_adv_yoy', 'Cboe U.S. options ADV y/y (%)',
+ex.append(heat(10, 'cboe_adv_yoy', 'Cboe U.S. options ADV y/y (%)',
                'Green = faster growth', 'Cboe U.S. options ADV y/y'))
-ex.append(heat(9, 'hkex_adt_yoy', 'HKEX cash ADT y/y (%)',
+ex.append(heat(11, 'hkex_adt_yoy', 'HKEX cash ADT y/y (%)',
                f'Green = faster growth. HKEX cash ADT starts {mlab(START)}, so its first y/y is '
-               f'{mlab(START + 12)}', 'HKEX cash ADT y/y'))
+               f'{mlab(START + 12)} — {START.year} has no row at all rather than an empty one',
+               'HKEX cash ADT y/y'))
 
-# ────────────────────────── 4. Exhibit 10：核对表（官方原始单位）──────────────────────────
+# ────────────────────────── 4. Exhibit 12：核对表（官方原始单位）──────────────────────────
+# 计数列一律显示成**张/日的整数**，不再显示成「千张 + 3 位小数」。
+# 原来 CME 写「25,683.347」、Cboe 写「4,639.229」，而同一张表里 HKEX 衍生品写
+# 「1,392,646」—— 三列都是合约张数却并排两套精度风格，且「25,683.347」第一眼极易被读成
+# 「两千五百万点三四七」。series CSV 以千张存，这里乘 1000 还原回**各家新闻稿本身用的
+# 张数口径**，属于回到官方原始单位，不是新增换算（契约 §4 要的正是官方原始单位）。
+# HKEX 现货 ADT 保持 HK$bn + 3 位小数：它是金额不是计数，3 位小数就是百万港元精度。
 TBL_COLS = [
-    ('CME total ADV (k contracts)', 'cme_adv', 'cme', 'adv_total_kcontracts', 3),
-    ('CME month-end OI (contracts)', 'cme_oi', 'cme', 'oi_total_contracts', 0),
-    ('Cboe U.S. options ADV (k contracts)', 'cb_adv', 'cboe', 'adv_us_options_kcontracts', 3),
-    ('Cboe index options ADV (k contracts)', 'cb_idx', 'cboe', 'adv_index_options_kcontracts', 3),
-    ('HKEX cash ADT (HK$bn)', 'hk_adt', 'hkex', 'adt_hkdbn', 3),
-    ('HKEX derivatives ADV (contracts)', 'hk_der', 'hkex', 'derivatives_adv_contracts', 0),
+    ('CME total ADV (contracts)', 'cme_adv', 'cme', 'adv_total_kcontracts', 1000.0, 0),
+    ('CME month-end OI (contracts)', 'cme_oi', 'cme', 'oi_total_contracts', 1.0, 0),
+    ('Cboe U.S. options ADV (contracts)', 'cb_adv', 'cboe', 'adv_us_options_kcontracts', 1000.0, 0),
+    ('Cboe index options ADV (contracts)', 'cb_idx', 'cboe', 'adv_index_options_kcontracts', 1000.0, 0),
+    ('HKEX cash ADT (HK$bn)', 'hk_adt', 'hkex', 'adt_hkdbn', 1.0, 3),
+    ('HKEX derivatives ADV (contracts)', 'hk_der', 'hkex', 'derivatives_adv_contracts', 1.0, 0),
 ]
 W13 = IDX[-TBL_MONTHS:]
 table = {
-    'n': 10,
-    'title': f'近 {TBL_MONTHS} 个月三家原始指标核对表（各家官方原始单位，未换算、未指数化）',
+    'n': 12,
+    'title': f'近 {TBL_MONTHS} 个月三家原始指标核对表（各家官方原始单位，未指数化）',
     'idx': '月份',
-    'cols': [[h, k] for h, k, _, _, _ in TBL_COLS],
+    'cols': [[h, k] for h, k, _, _, _, _ in TBL_COLS],
     'rows': [dict({'xl': mlab(p)},
-                  **{k: num(float(RAW[key][c].get(p, np.nan)), d)
-                     for _, k, key, c, d in TBL_COLS})
+                  **{k: num(float(RAW[key][c].get(p, np.nan)) * sc, d)
+                     for _, k, key, c, sc, d in TBL_COLS})
              for p in W13],
 }
 
@@ -467,7 +597,7 @@ NOTES = [
     '<b>指数化</b>（各自基期归 100，比的是相对自己的增长）。'
     '汇总表与核对表里保留各家的水平值，只为逐条与官方披露核对。',
 
-    f'<b>指数化的基期。</b>Exhibit 2 与 Exhibit 6 一律以 <b>{mlab(START)}</b> 为 100 —— '
+    f'<b>指数化的基期。</b>Exhibit 2 与 Exhibit 8 一律以 <b>{mlab(START)}</b> 为 100 —— '
     f'那是三家都开始披露的第一个月（HKEX 现货序列自 {mlab(START)} 起）。'
     '基期选择会改变线的相对高度：换一个基期，「谁跑赢」的结论就变成「自那个月以来谁跑赢」。'
     '本页只用这一个基期，且写在轴标题里，读的时候请把它当成结论的一部分。',
@@ -475,32 +605,54 @@ NOTES = [
     f'<b>同比的算法。</b>各家的 y/y 在<b>该家自己的完整历史</b>上算（当月 ÷ 去年同月 − 1），'
     f'再截到共同窗口，所以 CME / Cboe 的同比从 {mlab(START)} 起就有值。'
     f'HKEX 现货 ADT 自 {mlab(START)} 才有披露，其第一个同比落在 {mlab(START + 12)}，'
-    '在此之前 Exhibit 4 与 Exhibit 9 里是空的 —— 那是<b>没有数据</b>，不是零增长，'
-    '所以线在那里断开而不是连成直线。',
+    f'在此之前 Exhibit 6 里没有线 —— 那是<b>没有数据</b>，不是零增长，缺口一律留空、'
+    f'不连直线；Exhibit 11 的热力矩阵同理，干脆不给 {START.year} 排一行 —— '
+    '排了就是一整行灰格摆在矩阵顶上，第一眼像数据没加载出来。',
 
-    '<b>Mix quality（Exhibit 5）两条线的分母不同。</b>CME 那条是利率品种占其总 ADV 的比重，'
+    '<b>同比图为什么拆成四张（Exhibit 3–6）。</b>三家的同比虽然都是纯数，量级却不在一个'
+    f'数量级上：共同窗口内 CME 与 Cboe 合起来只在 {CCF_LO:+.0f}% ~ {CCF_HI:+.0f}% 之间，'
+    f'而 HKEX 现货 ADT 在 {HKF_LO:+.0f}% ~ <b>{HKF_HI:+.0f}%</b>，量程是前者的 '
+    f'{SPANF:.1f} 倍。三条线同轴时，CME 与 Cboe 被压进零线附近一条窄带里互相纠缠，'
+    f'<b>而本月汇总表里「CME {pct(df["cme_adv_yoy"][CUR])} vs '
+    f'Cboe {pct(df["cboe_adv_yoy"][CUR])}」正是最该看的差距</b> —— 读不出来这张图就白画了。'
+    '截轴（ycap + 红色空心圈）在这里不成立：港股成交额是整段抬升而不是一两个离群月，'
+    f'把轴截到 CME/Cboe 的量程会让近 {WIN_LINE} 个月里的 {CLIP25} 个点、'
+    f'全窗口 {HKF_N} 个有效月里的 {CLIPF} 个点变成越界圈，那是把真实序列画成异常。'
+    '所以改为按量级拆图：Exhibit 3 / 5 放 CME 与 Cboe（同轴可直读），'
+    'Exhibit 4 / 6 给 HKEX 自己的纵轴。'
+    '<b>代价是 Exhibit 3 与 4（5 与 6）的纵轴不同，两张图之间只能比走向、不能比线高。</b>'
+    '要一眼比三家读数，看 Exhibit 1 的汇总表与 Exhibit 2 的指数化曲线，'
+    '两张图的图注里也各写了三家的当期同比。',
+
+    '<b>Mix quality（Exhibit 7）两条线的分母不同。</b>CME 那条是利率品种占其总 ADV 的比重，'
     'Cboe 那条是指数期权占其美股期权成交的比重 —— 各自是本家单位价值最高的品种，'
     '占比上升会抬高本家的混合费率。因为分母不同，'
     '<b>只能各读各的走向，两条线的高低本身没有意义</b>。'
     'HKEX 无对应列：其现货成交额本身就是金额口径，官方未按品种拆出可比的占比。',
 
-    '<b>存量与流量不可混读（Exhibit 6）。</b>CME 的月末未平仓合约是期末快照（存量），'
+    '<b>存量与流量不可混读（Exhibit 8）。</b>CME 的月末未平仓合约是期末快照（存量），'
     'Cboe 的美股期权 ADV 与 HKEX 的衍生品 ADV 是当月日均（流量）。'
     '三条线放在一张指数图里只为对比<b>爬升速度</b>；线的交叉不对应任何事件，别当成「超越」。',
 
     '<b>热力矩阵的色标是每张图各自算的。</b>每张矩阵取自己全部有效格的 5/95 分位作为端点色，'
-    '所以 Exhibit 7/8/9 三张图的<b>颜色不能横向比</b>（同一个绿在三张图里代表的增速不同）。'
-    '要跨家比同比，请回 Exhibit 3 与 Exhibit 4 的曲线。',
+    '所以 Exhibit 9/10/11 三张图的<b>颜色不能横向比</b>（同一个绿在三张图里代表的增速不同）。'
+    '要跨家比同比，请回 Exhibit 3–6 的曲线。'
+    '格内数值取 0 位小数，−0.5% ~ 0 之间的格子印成「0%」而不是「-0%」'
+    '（负零是格式化产物，不是缺失值）；真值保留到一位小数，切「表格」视图或悬停即可看到。',
 
-    '<b>没有口径断点。</b>本页三条头条序列在共同窗口内均无并购并表或口径重分类，'
-    '故全页没有红色竖虚线断点，相邻期可直读。'
+    '<b>没有口径断点，全页也确实一条断点线都没画。</b>本页三条头条序列在共同窗口内均无'
+    '并购并表或口径重分类，故 payload 里没有任何 <code>break_at</code>，相邻期可直读 —— '
+    '这一条与图上是对得上的，不存在「图注说画了断点、图上找不到」的情况。'
     '需要留意的是 Cboe 2017 年的数字是 Bats pro-forma combined —— 但那段早于本页共同起点 '
     f'{mlab(START)}，不进本页。日后若任一家出现口径变更，必须在这里登记并在对应图上画出 '
-    'break，不能只靠图注文字提一句。',
+    'break，不能只靠图注文字提一句；断点随窗口滚出去时应当让它自然消失（连同这段文案），'
+    '而不是让生成器报错停更。',
 
-    f'<b>核对表（Exhibit 10）用各家官方原始单位，不做任何换算</b>：'
-    'CME ADV 为千张/日、未平仓为张；Cboe ADV 为千张/日；HKEX 现货 ADT 为 HK$bn/日、'
-    f'衍生品 ADV 为张/日。表同样只到 {mlab(LATEST)}，与全页门槛一致 —— '
+    f'<b>核对表（Exhibit 12）用各家官方披露的原始计量单位，不做口径换算</b>：'
+    'CME 总 ADV 与 Cboe ADV 按<b>张/日</b>显示（series CSV 以千张存，表中乘 1000 还原成'
+    '各家新闻稿本身的张数口径），CME 月末未平仓为张，HKEX 衍生品 ADV 为张/日；'
+    'HKEX 现货 ADT 是金额不是计数，保持 HK$bn/日、3 位小数（即百万港元精度）。'
+    f'表同样只到 {mlab(LATEST)}，与全页门槛一致 —— '
     '跑在前面那家已披露但未纳入的月份，不在这张表里。',
 
     '<b>与原 PDF 版（build/build_group_exchanges.py）的差异。</b>'
@@ -509,7 +661,12 @@ NOTES = [
     '因为横截面页上的一段「只有一条线」不承载任何横截面信息。'
     '(b) 网页引擎的数据色里 RED 是断点与截轴离群值的专用色，'
     '故 HKEX 由原 deck 的 MBLUE 序位改用 GOLD，三家全页同色不换。'
-    '(c) 其余图序、编号、标题文案、窗口长度（曲线 25 个月、热力 8 年）与原 deck 一致。',
+    '(c) <b>同比图由 deck 的 2 张（三条线同轴）拆成 4 张</b>（Exhibit 3–6，理由见上一条），'
+    '因此本页编号自 Exhibit 5 起比 deck 各多 2：deck 的「Mix quality」= 本页 Exhibit 7、'
+    '「Derivatives rebased」= Exhibit 8、三张热力矩阵 = Exhibit 9–11。'
+    '(d) 指数化图（Exhibit 2 / 8）补上了 deck 有、网页版此前漏掉的<b>末点数值标注</b>'
+    '（gsx.indexed_lines 对每条线的末点都标了数值）。'
+    '(e) 其余图序、标题文案、窗口长度（曲线 25 个月、热力 8 年）与原 deck 一致。',
 ]
 
 # ────────────────────────────── 6. 抬头与 payload ──────────────────────────────
@@ -518,6 +675,14 @@ _yoy_now = {'CME': float(df['cme_adv_yoy'][CUR]),
             'Cboe': float(df['cboe_adv_yoy'][CUR]),
             'HKEX': float(df['hkex_adt_yoy'][CUR])}
 _rank = sorted(_yoy_now.items(), key=lambda kv: -kv[1])
+# 抬头必须把 m/m 也写出来：只写 y/y 的抬头会给出一个纯正面的印象，而 m/m 常常反向
+# （本月 CME 总 ADV 的 m/m 就是两位数下跌，只写 y/y 的话要翻到汇总表才看得到）。
+# 三家的 m/m 一律列出，不做「挑一个最难看的」这种选择性叙事。
+_mom_now = {'CME': (float(df['cme_adv'][CUR]) / float(df['cme_adv'][PRV]) - 1) * 100,
+            'Cboe': (float(df['cboe_adv'][CUR]) / float(df['cboe_adv'][PRV]) - 1) * 100,
+            'HKEX': (float(df['hkex_adt'][CUR]) / float(df['hkex_adt'][PRV]) - 1) * 100}
+_mom_txt = '、'.join(f'{k} {pct(v)}' for k, v in _mom_now.items())
+_neg = [k for k, v in _mom_now.items() if v < 0]
 _lead_idx = max(zip(['CME', 'Cboe', 'HKEX'],
                     [_idx_now['cme_adv'], _idx_now['cboe_adv'], _idx_now['hkex_adt']]),
                 key=lambda kv: kv[1])
@@ -537,9 +702,13 @@ payload = {
                  '版式仿 Goldman Sachs GIR · 仅图，无评论'),
     'headline': (f'y/y 排序：'
                  + '、'.join(f'{k} {pct(v)}' for k, v in _rank)
+                 + f' · m/m：{_mom_txt}'
+                 + ('（三家 m/m 均为正）' if not _neg else
+                    f'（{"、".join(_neg)} 环比下滑）')
                  + f' · 自 {mlab(START)} 累计指数领先者 {_lead_idx[0]}（{_lead_idx[1]:,.0f}，'
-                   f'基期 = 100）· CME 利率品种占 ADV {df["cme_rates_share"][CUR]:.0f}%、'
-                   f'Cboe 指数期权占美股期权 {df["cboe_index_share"][CUR]:.0f}%'),
+                   f'基期 = 100）· CME 利率品种占 ADV {df["cme_rates_share"][CUR]:.0f}%'
+                   f'（{pp(float(df["cme_rates_share"][CUR]) - float(df["cme_rates_share"][PRV]))}'
+                   f' m/m）、Cboe 指数期权占美股期权 {df["cboe_index_share"][CUR]:.0f}%'),
     'hub_line': (f'共同最新月 {mlab(LATEST)}（短板 {"、".join(LAG)}）；'
                  f'y/y 领先 {_rank[0][0]} {pct(_rank[0][1])}'),
     'source': SRC,

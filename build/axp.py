@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import payload_guard
+import pctile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -44,8 +45,14 @@ SRC_N = 'AXP 8-K Item 7.01, combined Card balances basis; format after J.P. Morg
 SRC_O = 'AXP 8-K Item 7.01, Card Member loans basis; format after J.P. Morgan'
 BASIS_N = 'Combined Card balances basis (loans + receivables), effective May-2026'
 BASIS_O = 'Card Member loans only (pre-2026 basis) — not comparable to the new-basis exhibits above'
-JUN_NOTE = ('Jun-26 write-off rate cut ~0.3pp (Consumer) / ~0.1pp (SBS) by a sale of '
-            'written-off balances')
+# ── 出售已核销余额的一次性影响 ──
+# 月份与量级都写成常量而不是散在文案里：窗口一滚动，「末点」「最新月」这类说法就会
+# 指到别的月份上去（下个月 LATEST 变成 Jul-26，而这件事仍然只发生在 Jun-26）。
+# 所有引用一律用 mlab(ONEOFF_M)，headline 的 underlying 调整也只在 CUR == ONEOFF_M 时才做。
+ONEOFF_M = pd.Period('2026-06', 'M')
+ONEOFF_C, ONEOFF_S = 0.3, 0.1          # 公司披露的量级（pp）：Consumer / Small Business
+JUN_NOTE = (f'{ONEOFF_M.strftime("%b-%y")} write-off rate cut ~{ONEOFF_C:.1f}pp (Consumer) / '
+            f'~{ONEOFF_S:.1f}pp (SBS) by a sale of written-off balances')
 TRUST_SRC = ('American Express Credit Account Master Trust monthly Form 10-D '
              '(SEC CIK 0001003509)')
 TRUST_NOTE = 'Trust pool = revolve-eligible balances only, so its rates sit below the 8-K rates'
@@ -183,10 +190,88 @@ def tail_contiguous(s):
     return s.iloc[start:]
 
 
+def gs_bar_ex(n, ttl, s_full, *, win, yfmt, fmt, ylab, pct_series=False,
+              legend='Monthly', ylab2=None, yoy_yfmt=None, no_yoy=False,
+              note=None, src_extra=None):
+    """gsx.lvl_bar → 网页 gs_bar + 次轴 y/y（engine_kinds.md §8 的 `yoy` 开关）。
+
+    deck 的 lvl_bar 画的是「浅蓝柱 + **每根柱的数值标签** + 次轴金色 y/y 折线」，
+    docstring 明写次轴那条是同比不是滚动均线（「均线只是把柱子再平滑一遍、不带新信息」）。
+    给了 `yoy` 字段，引擎就画同比折线并**不画 12 个月均线**，与 deck 一致；
+    hkex / cboe / cme 三页的 lvl_bar 图已是这个写法，本页照同一规矩。
+
+    换掉原来的 bar_line_dual 是因为它丢了「每柱数值标签」这一层 —— 而本页有两张图
+    （Ex7 费率 7.8–8.4%、Ex8 超额利差 24.1–26.1%）的全部信息就在那一层：
+    柱从 0 起是比率的正确基线，可 0 基线上这点差异肉眼分不出来，只有柱顶数字读得出。
+    标签密度由引擎的 thinLabels() 按实测 bbox 抽稀，25 根柱不会叠字。
+
+    `no_yoy=True` 是**唯一**的例外口子，只给「同比在整个窗口内是常数」的序列用：
+    常数同比等于零信息，而且任何画法都会退化 —— 次轴量程塌成一个点，刻度四舍五入成
+    一列重复读数，末点读数又必然落在轴的最大刻度上（末点值 = 轴最大值），
+    于是右上角出现两个一模一样的数字。这种图改回 12 个月均线（对费率而言
+    「当前 vs 过去一年均值」是真参考），同比的那个常数写进图注。
+    """
+    s = tail_contiguous(s_full)
+    y = lvl_yoy(s, pct_series).iloc[-win:]
+    d = s.iloc[-win:]
+    ex = {
+        'n': n, 'kind': 'gs_bar', 'title': ttl,
+        'xlabels': xl(d.index), 'xrot': 90,
+        'ylab': ylab, 'legend': legend, 'fmt': fmt, 'yfmt': yfmt,
+        'values': L(d.values),
+    }
+    if no_yoy:
+        # Prior 12mo Avg. = 最新月之前的 12 个月均值（与 cboe.prior12 同口径）
+        ex['avg12'] = round(float(np.nanmean(np.asarray(d.values, float)[-13:-1])), 6)
+    else:
+        ex['ylab2'] = ylab2 or ('y/y (pp)' if pct_series else '% y/y')
+        ex['yoy'] = {'name': ('y/y (pp, RHS)' if pct_series else 'y/y (RHS)'), 'color': 'GOLD',
+                     'yfmt': yoy_yfmt or ('pp1' if pct_series else 'pct0'),
+                     'values': L(y.values)}
+    if note:
+        ex['note'] = note
+    if src_extra:
+        ex['src_extra'] = src_extra
+    return ex
+
+
+def yoy_step_note(s_full, *, win, min_pp=4.0):
+    """同比线在窗口内有没有一处「断崖」；有就给一句解释，没有返回 None。
+
+    图上一条近乎垂直的同比线在旁边那张平滑的同类图对照下，第一眼就像算错了。
+    这里不写死月份 —— 窗口每月滚动，写死的说明迟早指到别的月上去。
+    """
+    s = tail_contiguous(s_full)
+    y = lvl_yoy(s).iloc[-win:]
+    d = s.iloc[-win:]
+    v, idx = y.values, list(y.index)
+    best, j = 0.0, None
+    for i in range(1, len(v)):
+        if np.isfinite(v[i]) and np.isfinite(v[i - 1]) and abs(v[i] - v[i - 1]) > best:
+            best, j = abs(v[i] - v[i - 1]), i
+    if j is None or best < min_pp:
+        return None
+    cur, prv = idx[j], idx[j - 1]
+    lvl_now, lvl_prv = float(d.get(cur, np.nan)), float(d.get(prv, np.nan))
+    base_now, base_prv = float(s.get(cur - 12, np.nan)), float(s.get(prv - 12, np.nan))
+    return (f'同比线在 {mlab(cur)} 有一处断崖（{mlab(prv)} {v[j - 1]:+.1f}% → '
+            f'{mlab(cur)} {v[j]:+.1f}%，一个月里掉了 {best:.1f}pp），是真数据不是算错：'
+            f'当月水平从 {lvl_prv:,.1f} 走到 {lvl_now:,.1f}（{(lvl_now / lvl_prv - 1) * 100:+.1f}% m/m），'
+            f'而去年同期的基数从 {base_prv:,.1f} 抬到 {base_now:,.1f}'
+            f'（{(base_now / base_prv - 1) * 100:+.1f}%），两头反向叠加。'
+            f'断崖两侧的柱本身是连续可比的，只有那条同比线跨过了这个基数台阶。')
+
+
 def bar_yoy_ex(n, ttl, s_full, *, win, yfmt, ylab, pct_series=False,
                bar_color='BLUE', bar_name='Monthly', note=None, src_extra=None,
                xstep=None):
-    """gsx.lvl_bar / gsx.rev_bar_yoy → 网页 bar_line_dual（柱 + 右轴 y/y 线）。"""
+    """gsx.rev_bar_yoy → 网页 bar_line_dual（深色柱 + 右轴 y/y 线）。
+
+    只剩 Exhibit 12 在用。rev_bar_yoy 的柱是深色 NAVY（图例写 "Reported"），
+    而 gs_bar 的柱色写死在引擎里的浅蓝 C.BLUE，换过去会把「已公布 vs 预测」的
+    深浅语义弄丢；42 根柱上逐柱标数值在 deck 里也是竖排的，gs_bar 只有横排。
+    lvl_bar 那五张已改走 gs_bar_ex。
+    """
     s = tail_contiguous(s_full)
     y = (lvl_yoy(s, pct_series) if bar_color == 'BLUE' else plain_yoy(s)).iloc[-win:]
     d = s.iloc[-win:]
@@ -290,18 +375,29 @@ def fmt_val(v, dec, pct, money):
     return f'{money}{v:,.{dec}f}' + ('%' if pct else '')
 
 
+def _signed(v, dec, unit, money=''):
+    """带符号的变化量。四舍五入到零时写「0」不带正负号。
+
+    f-string 的 `+` 标志按**未舍入**的值定符号，所以 -0.4bp 会印成「-0bp」、
+    +0.0004pp 会印成「+0.00pp」—— 读者看到的是一个不存在的方向。零就是零，不给方向。
+    """
+    if round(v, dec) == 0:
+        return f'{money}{0:.{dec}f}{unit}'
+    return f'{money}{v:+,.{dec}f}{unit}'
+
+
 def fmt_chg(a, b, mode, dec, money):
     """gsx.summary_table 的变化率口径：比率类一律 pp/bp，|差| < 1 用 bp。"""
     if not (np.isfinite(a) and np.isfinite(b)):
         return None
     if mode == 'pp':
         v = a - b
-        return f'{v * 100:+.0f}bp' if abs(v) < 1 else f'{v:+.2f}pp'
+        return _signed(v * 100, 0, 'bp') if abs(v) < 1 else _signed(v, 2, 'pp')
     if mode == 'abs':
-        return money + f'{a - b:+,.{max(0, dec)}f}'
+        return _signed(a - b, max(0, dec), '', money)
     if b == 0 or a * b < 0:
         return None
-    return f'{(a / b - 1) * 100:+.1f}%'
+    return _signed((a / b - 1) * 100, 1, '%')
 
 
 def chg_good(a, b, mode, inv):
@@ -316,17 +412,9 @@ def chg_good(a, b, mode, inv):
     return (v < 0) if inv else (v > 0)
 
 
-def pctile36(s, c):
-    """近 36 个月分位。CONTRACT §2：几乎只增不减的序列分位恒为 100，是噪音不是信息，
-    diff >= 0 的比例 >= 90% 就留空。"""
-    hist = s.iloc[-36:]
-    if not np.isfinite(c) or len(hist) < 8:
-        return None
-    d = np.diff(np.asarray(hist.values, dtype=float))
-    d = d[np.isfinite(d)]
-    if len(d) and float((d >= 0).sum()) / len(d) >= 0.90:
-        return None
-    return float((hist < c).sum()) / max(1, len(hist) - 1) * 100.0
+# 分位一列不再在本文件里自己算：判据是口径，口径只能有一处定义（见 build/pctile.py 的
+# 模块 docstring —— 同一条序列在两页被判成相反结果，根因就是各写各的）。
+# 本文件只负责把序列递进去、把 (显示串, 颜色类) 放进 cell，以及把 why_blank() 写进表注。
 
 
 SUM_ROWS = [
@@ -350,7 +438,7 @@ SUM_ROWS = [
     (trust, 'Principal receivables ($bn)', 'principal_receivables_usdbn', 2, False, '$', False),
 ]
 
-srows = []
+srows, blanked = [], []
 for src_df, lab, col, dec, pct, money, inv in SUM_ROWS:
     if lab is None:
         srows.append({'kind': 'group', 'label': src_df})
@@ -366,14 +454,20 @@ for src_df, lab, col, dec, pct, money, inv in SUM_ROWS:
         t = fmt_chg(c, b, mode, dec, money)
         good = chg_good(c, b, mode, inv)
         cells.append({'v': t or '', 'cls': ('' if good is None else ('pos' if good else 'neg'))})
-    pv = pctile36(s, c)
-    if pv is None:
-        cells.append({'v': ''})
-    else:
-        shown = (100 - pv) if inv else pv
-        cells.append({'v': f'{pv:.0f}',
-                      'cls': 'hi' if shown >= 66 else ('lo' if shown <= 33 else '')})
+    # 分位：唯一实现在 build/pctile.py，直接吃 (显示串, 颜色类)
+    ser = [float(v) for v in s.values]
+    pv, pcls = pctile.cell(ser, -1, inverse=inv)
+    cells.append({'v': pv, 'cls': pcls} if pv else {'v': ''})
+    if not pv:
+        blanked.append((lab, pctile.why_blank(ser) or '当期读数缺失'))
     srows.append({'label': lab, 'cells': cells})
+
+PCT_NOTE = ('3Y %ile 由 <code>build/pctile.py</code> 统一计算（全站唯一实现，各页不再各写各的）：'
+            '取近 36 个月百分位；留空的判据是「把这一列在近 24 个月里逐月回放，'
+            '若 ≥70% 的月份钉在 100 或 0，这一列对这一行就没有区分度」——'
+            '旧判据「月环比不降的比例 ≥90%」拦不住上下波动、分位却常年钉在极值的行。')
+PCT_NOTE += ('　本期留空：' + '；'.join(f'{l}（{w}）' for l, w in blanked) + '。'
+             if blanked else '　本期没有任何一行触发该规则。')
 
 summary = {
     'title': f'AXP monthly credit metrics — {mlab(LATEST)}'
@@ -384,9 +478,9 @@ summary = {
     'note': (BASIS_N + '.  ' + JUN_NOTE + '.  Green = improving (lower delinquency / write-off).  '
              'Trust 各行来自与 8-K 同日报送的 Form 10-D（近 31 期 31/31 同日）；'
              + TRUST_NOTE + '.  比率类指标的差异一律用 pp / bp（|差| &lt; 1pp 时写 bp）；'
-             '零变化不着色。3Y %ile = 当月读数在最近 36 个月里高于多少百分比的观测，'
-             '逾期率／核销率等反向指标按「越低越好」着色（分位低=绿）。'
-             f'注意新口径序列只有 {len(new)} 个月历史（{new.index[0]} 起），'
+             '四舍五入到零的变化写「0bp」不带正负号，零变化不着色。'
+             '逾期率／核销率等反向指标按「越低越好」着色（分位低=绿）。' + PCT_NOTE +
+             f'　注意新口径序列只有 {len(new)} 个月历史（{new.index[0]} 起），'
              f'其分位实际是在 {len(new)} 个月内取的；Trust 行才是满 36 个月。'),
 }
 
@@ -395,9 +489,11 @@ summary = {
 ex = []
 
 # ══ 板块 A：新合并口径（PDF 第 1 页，Exhibit 2-7）══
-ex.append(bar_yoy_ex(
+ex.append(gs_bar_ex(
     2, SEC_A + 'U.S. Consumer Card balances', new['consumer_balance_usdbn'],
-    win=25, yfmt='usd1', ylab='$bn', src_extra=SRC_N + '.  ' + BASIS_N))
+    win=25, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
+    note=yoy_step_note(new['consumer_balance_usdbn'], win=25),
+    src_extra=SRC_N + '.  ' + BASIS_N))
 
 ex.append(multi_line_ex(
     3, SEC_A + 'U.S. Consumer delinquency and write-off', new,
@@ -405,9 +501,11 @@ ex.append(multi_line_ex(
     ['30+ days past due', 'Net write-off (principal)'],
     win=26, src_extra=SRC_N + '.  ' + JUN_NOTE))
 
-ex.append(bar_yoy_ex(
+ex.append(gs_bar_ex(
     4, SEC_A + 'U.S. Small Business Card balances', new['sbs_balance_usdbn'],
-    win=25, yfmt='usd1', ylab='$bn', src_extra=SRC_N + '.  ' + BASIS_N))
+    win=25, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
+    note=yoy_step_note(new['sbs_balance_usdbn'], win=25),
+    src_extra=SRC_N + '.  ' + BASIS_N))
 
 ex.append(multi_line_ex(
     5, SEC_A + 'U.S. Small Business delinquency and write-off', new,
@@ -415,25 +513,53 @@ ex.append(multi_line_ex(
     ['30+ days past due', 'Net write-off (principal)'],
     win=26, src_extra=SRC_N + '.  ' + JUN_NOTE))
 
-ex.append(bar_yoy_ex(
+ex.append(gs_bar_ex(
     6, SEC_A + 'Implied U.S. card net interest income', avgbal['implied_nii_usdmn'],
-    win=25, yfmt='f0c', ylab='$mn / month', note=NII_NOTE, src_extra=SRC_N))
+    win=25, yfmt='f0c', fmt='f0c', ylab='$mn / month', yoy_yfmt='pct1',
+    note=NII_NOTE, src_extra=SRC_N))
 
-_niy_yy_set = sorted({round(float(v), 1) for v in
-                      lvl_yoy(tail_contiguous(avgbal['niy']), True).iloc[-25:].dropna().values})
-ex.append(bar_yoy_ex(
+# Exhibit 7：本页唯一一张**不画次轴同比**的 lvl_bar 图。费率是季度阶梯，窗口内同比
+# 恒为 +0.20pp（常数），画出来的次轴必然退化：量程 0–0.2pp、刻度四舍五入成一列重复
+# 读数，而末点读数又必然等于轴的最大刻度 → 右上角两个一模一样的数字。零信息 + 必然
+# 退化，所以这一张退回 12 个月均线（费率的「当前 vs 过去一年均值」是真参考），
+# 那个常数写进图注。理由见 gs_bar_ex 的 no_yoy 说明。
+_niy_y = lvl_yoy(tail_contiguous(avgbal['niy']), True).iloc[-25:].dropna()
+_niy_yy_set = sorted({round(float(v), 2) for v in _niy_y.values})
+_niy_w = avgbal['niy'].dropna().iloc[-25:]
+_niy_avg = float(np.nanmean(np.asarray(_niy_w.values, float)[-13:-1]))
+if len(_niy_yy_set) != 1:
+    # 常数假设一旦不成立（公司改了披露频率、或补了缺季），这张图就该恢复次轴同比。
+    raise SystemExit(f'Exhibit 7 的同比不再是常数（窗口内取值 {_niy_yy_set}）——'
+                     f'去掉 no_yoy=True，改回次轴同比')
+ex.append(gs_bar_ex(
     7, SEC_A + 'Net interest yield on card balances', avgbal['niy'],
-    win=25, yfmt='pct1', ylab='% annualised', pct_series=True,
-    note=f'费率是季度阶梯（同一季度三个月同值），所以右轴同比（百分点差）在整个窗口内'
-         f'恒为 {"／".join(f"{v:+.1f}pp" for v in _niy_yy_set)} —— 那条绿线是平的不是画错，'
-         f'右轴刻度因量程只有 0.2pp 而出现重复读数，以线的位置为准。',
+    win=25, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True, no_yoy=True,
+    note=f'费率是<b>季度阶梯</b>（同一季度三个月同值），窗口内每一季都恰好比去年同季高 '
+         f'{_niy_yy_set[0]:+.2f}pp —— 同比是个<b>常数</b>，不带任何信息。'
+         f'其余同类图（Exhibit 2/4/6/8）都按原 deck 画次轴同比线，只有这一张不画：'
+         f'常数同比会让次轴量程塌成一个点，刻度被四舍五入成一列重复读数，'
+         f'末点读数又必然压在轴的最高刻度上。这里改画 12 个月均线'
+         f'（{_niy_avg:.2f}%，费率看「当前 vs 过去一年均值」才有参考意义）。'
+         f'柱从 0 起是费率的正确基线，但 {_niy_w.min():.1f}%–{_niy_w.max():.1f}% 的差异'
+         f'在 0 基线上肉眼分不出来，<b>水平请读柱顶数值</b>。',
     src_extra=SRC_N + '.  The disclosed company-wide yield, stepped quarterly. This is the '
               'rate the bridge above multiplies by, so it is where the bridge can go wrong.'))
 
 # ══ 板块 B：Lending Trust 月度 10-D（PDF Exhibit 9-12；Exhibit 8 的汇总表已并入上表）══
-ex.append(bar_yoy_ex(
+_es_w = trust['excess_spread_pct'].dropna().iloc[-25:]
+_es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-25:].dropna()
+ex.append(gs_bar_ex(
     8, SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
-    win=25, yfmt='pct1', ylab='%', pct_series=True,
+    win=25, yfmt='pct1', fmt='pct1', ylab='%', pct_series=True,
+    note=f'窗口内超额利差始终在 {_es_w.min():.2f}%–{_es_w.max():.2f}% 之间（极差只有 '
+         f'{_es_w.max() - _es_w.min():.2f}pp）。柱从 0 起是利差的正确基线，'
+         f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 '
+         f'{(_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22) * 100:.0f}%，看上去一样高 ——'
+         f'<b>水平请读柱顶数值，变化请读次轴那条金色同比线</b>'
+         f'（窗口内 {_es_y.min():+.2f}pp ~ {_es_y.max():+.2f}pp，'
+         f'当期 {_es_y.iloc[-1]:+.2f}pp）。'
+         f'本图左右轴零点不同高（引擎已在绘图区左上角标出）：柱全为正而同比跨零，'
+         f'强行把两个零点拉到同一高度会把左轴一路扩到 −25% 左右，四成画布是空的。',
     src_extra=TRUST_SRC + '.  Portfolio yield less charge-offs, servicing and note coupon — '
               'the cushion that absorbs losses before noteholders are hit. The single '
               'most-watched number in the trust report'))
@@ -552,18 +678,43 @@ s_bal, s_bal_y = new.loc[CUR, 'sbs_balance_usdbn'], new.loc[YAG, 'sbs_balance_us
 c_dq, c_dq_y = new.loc[CUR, 'consumer_dq30_pct'], new.loc[YAG, 'consumer_dq30_pct']
 c_nco, c_nco_y = new.loc[CUR, 'consumer_nco_pct'], new.loc[YAG, 'consumer_nco_pct']
 t_es, t_es_y = trust.loc[CUR, 'excess_spread_pct'], trust.loc[YAG, 'excess_spread_pct']
-hfi = new.loc[CUR, 'total_balance']
+t_pr, t_pr_y = (trust.loc[CUR, 'principal_receivables_usdbn'],
+                trust.loc[YAG, 'principal_receivables_usdbn'])
+hfi, hfi_p = new.loc[CUR, 'total_balance'], new.loc[PRV, 'total_balance']
+s_bal_p = new.loc[PRV, 'sbs_balance_usdbn']
+
+# ── headline 的「underlying」调整 ──
+# 报出来的净核销 y/y 里有一档是出售已核销余额买来的，只在 ONEOFF_M 那个月成立。
+# headline 只印公司报出来的数、把一次性影响藏在括号里的一句定语中，就是「只报喜不报忧」：
+# 读者拿走的是 -50bp，而剔除一次性后只有 -20bp。两个数都印出来，方向由读者自己判断。
+if CUR == ONEOFF_M:
+    _c_ul = c_nco + ONEOFF_C
+    NCO_TXT = (f'净核销 {c_nco:.1f}%（{_signed((c_nco - c_nco_y) * 100, 0, "bp")} y/y；'
+               f'剔除出售已核销余额约 {ONEOFF_C:.1f}pp 的一次性影响后约 {_c_ul:.1f}%，'
+               f'即 {_signed((_c_ul - c_nco_y) * 100, 0, "bp")} y/y）')
+else:
+    NCO_TXT = f'净核销 {c_nco:.1f}%（{_signed((c_nco - c_nco_y) * 100, 0, "bp")} y/y）'
 
 HEADLINE = (
-    f'{mlab(CUR)}：U.S. Consumer Card 余额 ${c_bal:,.1f}bn（{(c_bal / c_bal_y - 1) * 100:+.1f}% y/y）'
-    f' · 30+ 逾期 {c_dq:.1f}%（{(c_dq - c_dq_y) * 100:+.0f}bp y/y）'
-    f' · 净核销 {c_nco:.1f}%（{(c_nco - c_nco_y) * 100:+.0f}bp y/y，含出售已核销余额的一次性影响）'
-    f' · SBS 余额 ${s_bal:,.1f}bn（{(s_bal / s_bal_y - 1) * 100:+.1f}% y/y）'
-    f' · Card balances HFI ${hfi:,.1f}bn'
-    f' · Trust 超额利差 {t_es:.2f}%（{(t_es - t_es_y) * 100:+.0f}bp y/y）')
+    f'{mlab(CUR)}：U.S. Consumer Card 余额 ${c_bal:,.1f}bn（{_signed((c_bal / c_bal_y - 1) * 100, 1, "%")} y/y）'
+    f' · 30+ 逾期 {c_dq:.1f}%（{_signed((c_dq - c_dq_y) * 100, 0, "bp")} y/y）'
+    f' · {NCO_TXT}'
+    f' · SBS 余额 ${s_bal:,.1f}bn（{_signed((s_bal / s_bal_y - 1) * 100, 1, "%")} y/y，'
+    f'但 {_signed((s_bal / s_bal_p - 1) * 100, 1, "%")} m/m）'
+    f' · Card balances HFI ${hfi:,.1f}bn（{_signed((hfi / hfi_p - 1) * 100, 1, "%")} m/m）'
+    f' · Trust 超额利差 {t_es:.2f}%（{_signed((t_es - t_es_y) * 100, 0, "bp")} y/y）'
+    f' · Trust 本金应收 ${t_pr:,.2f}bn（{_signed((t_pr / t_pr_y - 1) * 100, 1, "%")} y/y，池子仍在缩）')
 
-HUB = (f'Consumer Card 余额 ${c_bal:,.1f}bn（{(c_bal / c_bal_y - 1) * 100:+.1f}% y/y）；'
-       f'净核销 {c_nco:.1f}%；Trust 超额利差 {t_es:.2f}%')
+# hub_line 是首页卡片上的一行，CONTRACT §1 限 60 字 —— 超了会把卡片撑变形。
+# 取舍：余额（本页主指标）+ 净核销的 underlying（唯一被一次性因素粉饰过的数）+ Trust 利差。
+# 按重要性排好，超长就从尾巴丢，而不是硬截字符串（截出来的「Trust 利…」比少一段更糟）。
+_hub = [f'Consumer 余额 ${c_bal:,.1f}bn（{_signed((c_bal / c_bal_y - 1) * 100, 1, "%")} y/y）',
+        (f'净核销 {c_nco:.1f}%、剔一次性 ~{c_nco + ONEOFF_C:.1f}%' if CUR == ONEOFF_M
+         else f'净核销 {c_nco:.1f}%'),
+        f'Trust 利差 {t_es:.1f}%']
+while len(_hub) > 1 and len('；'.join(_hub)) > 60:
+    _hub.pop()
+HUB = '；'.join(_hub)
 
 NOTES = [
     f'<b>两套口径不可连比。</b>AXP 自 2026 年 5 月起把 Card Member loans 与 receivables 合并披露为'
@@ -577,9 +728,21 @@ NOTES = [
     f'<b>旧口径序列刻意截到 {old.index[-1]}</b>（改口径前最后一个月），只用于长历史与季节性；'
     f'{new.index[0]} 之后的新口径数字不会被接到旧序列尾巴上，避免画出一条假的连续曲线。',
 
-    f'<b>⚠️ {JUN_NOTE}。</b>受影响的是 Exhibit 3 / 5 的核销率末点、Exhibit 10 的 8-K 线末点，'
-    f'以及汇总表里 Consumer / SBS 两行的净核销 m/m 与 y/y —— 这一档下降不是资产质量改善，'
-    f'不要外推。',
+    f'<b>⚠️ {JUN_NOTE}。</b>受影响的是 Exhibit 3 / 5 的 {mlab(ONEOFF_M)} 那一点、'
+    f'Exhibit 10 的 8-K 线在 {mlab(ONEOFF_M)} 的读数'
+    + (f'，以及汇总表与 headline 里 Consumer / SBS 两行的净核销 m/m 与 y/y'
+       if CUR == ONEOFF_M else '（当期已不是该月，汇总表的 m/m 不再受它影响，'
+                               f'y/y 要到 {mlab(ONEOFF_M + 12)} 才滚出比较基数）')
+    + f' —— 这一档下降不是资产质量改善，不要外推。'
+    + (f'headline 已同时给出剔除该影响后的 Consumer 净核销约 {c_nco + ONEOFF_C:.1f}%。'
+       if CUR == ONEOFF_M else ''),
+
+    f'<b>本页没有一条红色竖虚线，这是刻意的，不是漏画。</b>2026-05 的口径切换发生在'
+    f'<b>两组 exhibit 之间</b>，而不是某一张图的横轴内部：新口径各图只画 {new.index[0]} 起的'
+    f'重述序列，旧口径各图刻意截到 {old.index[-1]}，没有任何一张图的 x 轴跨过 2026-05，'
+    f'所以 <code>break_at</code> 没有落点可画 —— 口径变化由标题里的板块小标题与本节第一条承担。'
+    f'（首页「怎么读这个看板」把「AXP 2026-05 合并 Card balances」列成了红色竖虚线的例子，'
+    f'那句话与本页实际渲染不符，以本页为准。）',
 
     f'<b>Exhibit 6 是推导值，标了 Implied。</b>{NII_NOTE} 净利息收益率是公司整体口径（含非美卡与其他贷款），'
     f'而余额只取美国 Consumer + Small Business 卡，两者总体不一致；季度费率按「当季各月同值、'
@@ -598,24 +761,31 @@ NOTES = [
     f'列口径也完全一致，故合并并用板块分隔条区分；其后各图顺延一位编号（PDF 的 Fig 9-19 = 本页的 '
     f'Exhibit 8-18）。',
 
-    f'比率类指标的变化一律用百分点：|差| &lt; 1pp 写 bp，否则写 pp，不用「百分比的百分比变化」。'
-    f'逾期率、核销率、信托违约率按「越低越好」着色（下降为绿）。3Y %ile 是当月读数在最近 36 个月内的'
-    f'百分位；对几乎只增不减的序列（diff ≥ 0 的比例 ≥ 90%）留空 —— 那种分位恒为 100，是噪音不是信息。'
-    f'本期没有任何一行触发该规则。',
+    f'比率类指标的变化一律用百分点：|差| &lt; 1pp 写 bp，否则写 pp，不用「百分比的百分比变化」；'
+    f'四舍五入到零的变化写「0bp」而不是「+0bp」／「-0bp」—— 舍入后的零没有方向。'
+    f'逾期率、核销率、信托违约率按「越低越好」着色（下降为绿）。' + PCT_NOTE,
 
     f'Exhibit 13 / 15 的灰柱是<b>过去 {y13} 年同一日历月的均值</b>（不是滚动均值），'
     f'用来把季节性从水平值里剥掉；Exhibit 14 / 16 每条线是一个日历年，红线为当前年（{old.index[-1].year} 年'
     f'只到 {MONTHS[old.index[-1].month - 1]}）。Exhibit 17 / 18 的热力矩阵配色已反转：'
     f'<b>绿 = 核销率低（好）</b>，色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。',
 
-    f'<b>与原 PDF 的三处有意差异。</b>(1) 原 deck 的 lvl_bar / rev_bar_yoy 是「柱 + 右轴同比线」，'
-    f'这里用 <code>bar_line_dual</code> 还原同一形态（而不是 CONTRACT §3 建议的 <code>gs_bar</code>）——'
-    f'<code>gs_bar</code> 的 MoM 气泡与箭头位置写死在 13 个月窗口上，而本页这几张图是 24 / 25 / 42 个月'
-    f'窗口，箭头会指到画面中间的错误柱子上，柱顶数值标签也会在 24 根柱上叠成一团，'
-    f'且会丢掉整条同比线。'
-    f'(2) 两张热力矩阵没有走通栏：通栏卡片会被渲染器排到汇总表正下方、跑到 Exhibit 2 前面，'
+    f'<b>与原 PDF 的四处有意差异。</b>(1) 原 deck 的 <code>lvl_bar</code>（Exhibit 2/4/6/7/8）'
+    f'是「浅蓝柱 + 每柱数值 + 次轴金色同比线」，网页版现在用 <code>gs_bar</code> + '
+    f'<code>yoy</code> 逐条还原，<b>不画 12 个月均线</b>（deck 的 docstring：均线只是把柱子'
+    f'再平滑一遍、不带新信息）。此前用的 <code>bar_line_dual</code> 形态对、但丢了'
+    f'「每柱数值」那一层，而 Exhibit 7 / 8 的全部信息恰好就在那一层。'
+    f'Exhibit 12 来自 <code>rev_bar_yoy</code> 而非 <code>lvl_bar</code>，柱是深色 NAVY'
+    f'（图例 "Reported"），<code>gs_bar</code> 的柱色写死在引擎里的浅蓝，故仍留 '
+    f'<code>bar_line_dual</code>。'
+    f'(2) <b>Exhibit 7 是本页唯一不画次轴同比的一张</b>：费率是季度阶梯，同比在整个窗口内'
+    f'恒为 {_niy_yy_set[0]:+.2f}pp，是个常数、不带信息，而常数同比的次轴必然退化'
+    f'（量程塌成一个点、刻度舍成一列重复读数、末点读数压在最高刻度上）。'
+    f'那一张改画 12 个月均线（费率看「当前 vs 过去一年均值」才有意义），常数写进图注；'
+    f'生成器里有断言，同比一旦不再是常数就会报错要求改回次轴同比。'
+    f'(3) 两张热力矩阵没有走通栏：通栏卡片会被渲染器排到汇总表正下方、跑到 Exhibit 2 前面，'
     f'为保住原 deck 的图序改用半栏（引擎会按格宽自动收字号）。'
-    f'(3) 汇总表里「零变化」不着色（原 deck 把 0 着成红色，等于说「没变 = 变坏」）。'
+    f'(4) 汇总表里「零变化」不着色（原 deck 把 0 着成红色，等于说「没变 = 变坏」）。'
     f'除此之外顺序、窗口、标题与图注均照搬。',
 ]
 

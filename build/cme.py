@@ -6,7 +6,7 @@
 只负责画，不做任何计算。
 
 模版来源（照抄原 deck 的 docstring）：
-  · Goldman Sachs「IBKR Monthly」成对图法（水平柱 + 12mo 均线 + YoY 气泡 ⇄ 变化率曲线）
+  · Goldman Sachs「IBKR Monthly」成对图法（水平柱 + 次轴 y/y 折线 ⇄ 变化率曲线）
     与 Exhibit 7「堆叠柱 + 次轴占比线」的量能/结构同框做法
   · Barclays「IBKR July Monthly Metrics」的 day-count 调整 —— 该报告因交易日数差异，
     把「股票成交总量 +7%」修正为「按日 -5%」，方向被口径反转。CME 官方 xlsx 里
@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 import payload_guard
+import pctile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -47,6 +48,28 @@ CLS = [('adv_rates_kcontracts', 'Interest rates', 'NAVY'),
        ('adv_ag_kcontracts', 'Agricultural', 'GRAY'),
        ('adv_fx_kcontracts', 'FX', 'GREEN'),
        ('adv_metals_kcontracts', 'Metals', 'GOLD')]
+
+# 原 Exhibit 5「ADV by asset class」把六个品种画在同一根轴上。利率品种的峰值 21,327
+# 独自定死了 0–25,000 的量程，能源 / 农产品 / 外汇 / 金属四条线全被压进 0–3,000 那条
+# 窄带里互相叠着，浅蓝 / 灰 / 绿 / 金四色在那个厚度下分不出走势 —— 整张图实际只读得出
+# 利率和股指两条。
+# 这里按量级拆成两张：不同量级本来就不该共用一根轴。不用 ycap 的原因是截轴是给「少数
+# 几个离群点」用的 —— 这里要截掉的是整整两条序列的 25 个点，那不是标注离群值，
+# 是把两条主力序列全画成红圈。
+CLS_MAJOR = CLS[:2]     # 利率 + 股指：5,500 – 21,300
+CLS_MINOR = CLS[2:]     # 能源 / 农产品 / 外汇 / 金属：540 – 5,100
+
+# 品种曲线图（原 Exhibit 5）拆成两张后，后面所有 exhibit 号整体后移一位。号码写死在
+# 十几处图注与说明里，靠人肉数是要出错的（原 PDF 的汇总表脚注就把 Exhibit 3 写成了
+# Exhibit 4），所以统一在这里定名，正文一律引用常量。
+EX_ADV, EX_DAYCOUNT, EX_MIX = 2, 3, 4
+EX_MAJORS, EX_MINORS = 5, 6          # 品种曲线：两大品种 / 四小品种，见下方拆图说明
+EX_HIST, EX_QTR, EX_OI = 7, 8, 9
+EX_RATES, EX_EQUITY, EX_ENERGY = 10, 11, 12
+EX_REV, EX_RPC = 13, 14
+EX_FX, EX_METALS, EX_AG = 15, 16, 17
+EX_HEAT_YOY, EX_HEAT_SHARE = 18, 19
+EX_TABLE = 20
 
 WIN_BAR = 13     # gs_bar 类近期图：契约 §5.4「近期图固定 13 个月」
 WIN_LINE = 25    # 曲线类图：照搬原 deck 的 win=25
@@ -162,7 +185,7 @@ BR_NOTE = ('Assumption: monthly transaction revenue = contracts traded x average
            f'({RPC_Q} = ${RPC_V:.3f}, held flat after). CME derives RPC from reported revenue, so '
            'closed quarters reconstruct a known total — the value is the current quarter. '
            '费率是季度值，当季各月共用该季 RPC，最新季之后沿用；品种结构变化会让混合 RPC 偏离，'
-           '见 Exhibit 13。')
+           f'见 Exhibit {EX_RPC}。')
 
 W13 = df.index[-WIN_BAR:]
 W25 = df.index[-WIN_LINE:]
@@ -175,51 +198,42 @@ def win(col, n):
     return df[col].iloc[-n:].values
 
 
-def prior12_avg(col):
-    """12 个月均线：本月之前的 12 个月（= 13 个月窗口的前 12 个点）。"""
-    v = df[col].iloc[-WIN_BAR:-1].values
-    return round(float(np.mean(v)), 6)
-
-
-def yoy_txt(col, dec=1):
-    v = df[col].values
-    return pct(v[-1] / v[-13] * 100 - 100, dec)
-
-
 # ══════════════════════════ 3. Exhibit 1：汇总表 ══════════════════════════
 CUR, PRV, YAG = LATEST, LATEST - 1, LATEST - 12
 
+# 第 5 个字段 cal=True → 纯日历行：m/m 与 y/y 不着色、分位整格留空。
+# 交易日数是月历的产物（22 天 vs 21 天纯粹因为 7 月比 6 月多一个工作日），不是经营结果：
+# 「+4.8% 涂绿、分位 69 涂绿」等于说多一个交易日是好消息，与本表注
+# 「ADV is already day-count neutral」的立场自相矛盾。数值仍然要给 —— 读者要拿它复核
+# Exhibit 3 的 day-count 口径差 —— 只是不做好坏判断。
 SUM_ROWS = [
-    ('group', 'Average daily volume (k contracts)', None, None),
-    ('row', 'Total ADV', 'adv_total_kcontracts', 0),
-    ('row', 'Interest rates', 'adv_rates_kcontracts', 0),
-    ('row', 'Equity index', 'adv_equity_kcontracts', 0),
-    ('row', 'Energy', 'adv_energy_kcontracts', 0),
-    ('row', 'Agricultural', 'adv_ag_kcontracts', 0),
-    ('row', 'FX', 'adv_fx_kcontracts', 0),
-    ('row', 'Metals', 'adv_metals_kcontracts', 0),
-    ('group', 'Volume and open interest', None, None),
-    ('row', 'Total contracts traded (mn)', 'total_vol_mn', 1),
-    ('row', 'Month-end open interest (mn)', 'oi_total_mn', 1),
-    ('row', 'Trading days', 'trading_days', 0),
+    ('group', 'Average daily volume (k contracts)', None, None, False),
+    ('row', 'Total ADV', 'adv_total_kcontracts', 0, False),
+    ('row', 'Interest rates', 'adv_rates_kcontracts', 0, False),
+    ('row', 'Equity index', 'adv_equity_kcontracts', 0, False),
+    ('row', 'Energy', 'adv_energy_kcontracts', 0, False),
+    ('row', 'Agricultural', 'adv_ag_kcontracts', 0, False),
+    ('row', 'FX', 'adv_fx_kcontracts', 0, False),
+    ('row', 'Metals', 'adv_metals_kcontracts', 0, False),
+    ('group', 'Volume and open interest', None, None, False),
+    ('row', 'Total contracts traded (mn)', 'total_vol_mn', 1, False),
+    ('row', 'Month-end open interest (mn)', 'oi_total_mn', 1, False),
+    ('row', 'Trading days', 'trading_days', 0, True),
 ]
 
-
-def pctile36(s):
-    """近 36 个月分位。近乎单调的序列（逐月上升占比 ≥ 90%）留空 —— 分位恒为 100 是噪音。"""
-    h = s.iloc[-36:].values
-    c = h[-1]
-    if len(h) < 8 or not np.isfinite(c):
-        return None
-    d = np.diff(h)
-    if len(d) and float((d >= 0).sum()) / len(d) >= 0.90:
-        return None
-    return float((h < c).sum()) / max(1, len(h) - 1) * 100
+BLANK_PCTILE = []      # summary() 里逐行记下留空原因，供表注引用
 
 
 def summary():
+    """3Y %ile 一律走 build/pctile.py（全站唯一实现）。
+
+    本文件原先自带一份 `pctile36()`，判据是「逐月不降的月份占比 ≥ 90% 就留空」。
+    那个代理量测的是序列形状，不是分位列本身有没有区分度，所以既拦不住「上下波动但
+    分位常年钉 100」的行，各页各写一份还会让同一条序列在两页判定相反。分位是口径，
+    口径只能有一处定义 —— 这里只负责「本页自己的口径原因」（交易日数是日历产物）。
+    """
     rows = []
-    for kind, label, col, dec in SUM_ROWS:
+    for kind, label, col, dec, cal in SUM_ROWS:
         if kind == 'group':
             rows.append({'kind': 'group', 'label': label})
             continue
@@ -227,16 +241,26 @@ def summary():
         c, p1, p12 = float(s[CUR]), float(s[PRV]), float(s[YAG])
         mm = (c / p1 - 1) * 100 if p1 else np.nan
         yy = (c / p12 - 1) * 100 if p12 else np.nan
-        q = pctile36(s)
+
+        def sign(v):
+            if cal:                       # 日历行不做好坏判断
+                return ''
+            return 'pos' if v > 0 else ('neg' if v < 0 else '')
+
         cells = [{'v': num(c, dec)}, {'v': num(p1, dec)}, {'v': num(p12, dec)},
-                 {'v': pct(mm), 'cls': 'pos' if mm > 0 else ('neg' if mm < 0 else '')},
-                 {'v': pct(yy), 'cls': 'pos' if yy > 0 else ('neg' if yy < 0 else '')}]
-        if q is None:
+                 {'v': pct(mm), 'cls': sign(mm)}, {'v': pct(yy), 'cls': sign(yy)}]
+        if cal:
             cells.append({'v': ''})
+            BLANK_PCTILE.append((label, '交易日数由月历决定，与 CME 的经营无关，'
+                                        '其分位只是在 0 与 91 之间随月长震荡'))
         else:
-            cells.append({'v': f'{q:.0f}',
-                          'cls': 'hi' if q >= 66 else ('lo' if q <= 33 else '')})
+            q, cls = pctile.cell(L(s.values), -1)
+            cells.append({'v': q, 'cls': cls})
+            if not q:
+                BLANK_PCTILE.append((label, pctile.why_blank(L(s.values)) or '样本不足'))
         rows.append({'label': label, 'cells': cells})
+
+    blank = '；'.join(f'{lab} —— {why}' for lab, why in BLANK_PCTILE)
     return {
         'title': f'CME Group monthly volume summary — {mlab(CUR)}',
         'heads': [f'本月 {mlab(CUR)}', f'上月 {mlab(PRV)}', f'去年同月 {mlab(YAG)}',
@@ -244,20 +268,48 @@ def summary():
         'sep': 3,
         'rows': rows,
         'note': ('ADV is already day-count neutral; total contracts traded is not. '
-                 'Exhibit 3 isolates the difference.（原 PDF 此处误写作 Exhibit 4 —— '
-                 '汇总表本身占 Exhibit 1，day-count 图是 Exhibit 3。）'
-                 '3Y %ile = 当月读数在最近 36 个月里高于多少百分比的观测；'
-                 '近乎单调的序列留空（见「口径与方法说明」第 7 条）。'
+                 f'Exhibit {EX_DAYCOUNT} isolates the difference.（原 PDF 此处误写作 '
+                 f'Exhibit 4 —— 汇总表本身占 Exhibit 1，day-count 图是 Exhibit '
+                 f'{EX_DAYCOUNT}。）'
+                 '3Y %ile = 当月读数在最近 36 个月里高于多少百分比的观测，判据见'
+                 '「口径与方法说明」第 7 条。'
+                 + (f'本表留空的行：{blank}。' if blank else '本表没有留空的分位。')
+                 + '「Trading days」行的 m/m 与 y/y 只给数字、不着色，理由同上。'
                  '全部为 CME 官方披露值，无推导。'),
     }
 
 
-# ══════════════════════════ 4. Exhibit 2..18 ══════════════════════════
+# ══════════════════════════ 4. Exhibit 2..19 ══════════════════════════
+def yoy_line(col, win_n=WIN_BAR):
+    """次轴同比序列，口径逐条照抄 gsx.lvl_bar（基数过小或异号就放弃该点）。
+
+    引擎不替我们算同比 —— 「这一点的同比有没有意义」是口径判断，只能在 Python 侧做。
+    """
+    v = df[col].values
+    scale = float(np.nanmedian(np.abs(v))) or 1.0
+    out = np.full(len(v), np.nan)
+    for i in range(12, len(v)):
+        a, b = v[i], v[i - 12]
+        if not (np.isfinite(a) and np.isfinite(b)):
+            continue
+        if abs(b) < 0.15 * scale or a * b < 0:
+            continue                      # 基数过小 / 异号 → 同比无意义，宁可断线
+        out[i] = (a / b - 1) * 100
+    return L(out[-win_n:])
+
+
 def gs_bar(n, col, title, ylab, fmt, legend, note=None, src_extra=None):
-    """← gsx.lvl_bar：浅蓝柱 + 12 个月均线 + y/y 气泡。窗口 13 个月（契约 §5.4）。"""
+    """← gsx.lvl_bar：浅蓝柱 + **次轴金色 y/y 折线**。窗口 13 个月（契约 §5.4）。
+
+    次轴画的是同比而不是 12 个月滚动均线 —— gsx.lvl_bar 的 docstring 写死了这条理由：
+    「均线只是把柱子再平滑一遍、不带新信息，同比才回答『相对去年这个月是好是坏』」。
+    本页九张 gs_bar 全部由 build_cme.py 的 gsx.lvl_bar 移植而来，所以与 deck 对齐：
+    给 yoy 就不画均线（引擎侧自动），同时不再需要左上角那个 y/y 气泡。
+    """
     ex = {'n': n, 'kind': 'gs_bar', 'title': title, 'fmt': fmt, 'ylab': ylab,
-          'legend': legend, 'values': L(win(col, WIN_BAR)), 'avg12': prior12_avg(col),
-          'yoy_txt': yoy_txt(col)}
+          'ylab2': '% y/y', 'legend': legend, 'values': L(win(col, WIN_BAR)),
+          'yoy': {'name': 'y/y (RHS)', 'color': 'GOLD', 'yfmt': 'pct0',
+                  'values': yoy_line(col)}}
     if note:
         ex['note'] = note
     if src_extra:
@@ -267,11 +319,11 @@ def gs_bar(n, col, title, ylab, fmt, legend, note=None, src_extra=None):
 
 ex = []
 
-ex.append(gs_bar(2, 'adv_mn', 'Total average daily volume', 'mn contracts / day', 'f1',
+ex.append(gs_bar(EX_ADV, 'adv_mn', 'Total average daily volume', 'mn contracts / day', 'f1',
                  'Total ADV'))
 
 ex.append({
-    'n': 3, 'kind': 'lines_endlabels', 'fmt': 'f1', 'xlabels': XL25,
+    'n': EX_DAYCOUNT, 'kind': 'lines_endlabels', 'fmt': 'f1', 'xlabels': XL25,
     'title': 'Total volume vs. ADV growth: the day-count gap',
     'ylab': '% y/y', 'zero_line': True,
     'series': [
@@ -294,7 +346,7 @@ _ymax = float(np.ceil(np.nanmax(_share13) / 10.0) * 10)
 if np.nanmax(_share13) / _ymax > 0.995:
     _ymax += 10
 ex.append({
-    'n': 4, 'kind': 'stacked_dual', 'fmt': 'f0c', 'xlabels': XL13,
+    'n': EX_MIX, 'kind': 'stacked_dual', 'fmt': 'f0c', 'xlabels': XL13,
     'title': 'ADV mix by asset class',
     'ylab': 'k contracts / day', 'ylab2': '% rates + equity',
     'stacks': [{'name': nm, 'color': cl, 'values': L(_stack13[c])} for c, nm, cl in CLS],
@@ -302,23 +354,45 @@ ex.append({
              'values': L(_share13), 'ymax': _ymax, 'yfmt': 'pct0'},
     'note': ('六个品种加总即披露的 Total ADV（CME 的品种划分是穷尽且互斥的）。'
              '右轴是利率 + 股指两大品种占总 ADV 的比重 —— 体量与结构同框，'
-             '总量持平但结构位移一样会改变混合费率（见 Exhibit 13）。'),
+             f'总量持平但结构位移一样会改变混合费率（见 Exhibit {EX_RPC}）。'),
+})
+
+_SPLIT_NOTE = (f'原 PDF 把六个品种画在同一根轴上，利率品种的峰值 '
+               f'{df["adv_rates_kcontracts"].iloc[-WIN_LINE:].max():,.0f} 独自定死了量程，'
+               f'能源 / 农产品 / 外汇 / 金属四条线被压成底部一条带、彼此分不开。'
+               f'这里按量级拆成 Exhibit {EX_MAJORS}（两大品种）与 Exhibit {EX_MINORS}'
+               f'（四个小品种）两张，窗口、口径、配色一律不变，一个点也没有删；'
+               f'两张图的纵轴刻度不同，跨图比高度是没有意义的，要比绝对量请回 '
+               f'Exhibit {EX_MIX} 的堆叠柱或末尾核对表。')
+
+ex.append({
+    'n': EX_MAJORS, 'kind': 'lines_endlabels', 'fmt': 'f0c', 'xlabels': XL25,
+    'title': 'ADV by asset class: rates and equity index',
+    'ylab': 'k contracts / day',
+    'series': [{'name': nm, 'color': cl, 'values': L(win(c, WIN_LINE))}
+               for c, nm, cl in CLS_MAJOR],
+    'note': _SPLIT_NOTE,
 })
 
 ex.append({
-    'n': 5, 'kind': 'lines_endlabels', 'fmt': 'f0c', 'xlabels': XL25,
-    'title': 'ADV by asset class', 'ylab': 'k contracts / day',
-    'series': [{'name': nm, 'color': cl, 'values': L(win(c, WIN_LINE))} for c, nm, cl in CLS],
+    'n': EX_MINORS, 'kind': 'lines_endlabels', 'fmt': 'f0c', 'xlabels': XL25,
+    'title': 'ADV by asset class: energy, ag, FX and metals',
+    'ylab': 'k contracts / day',
+    'series': [{'name': nm, 'color': cl, 'values': L(win(c, WIN_LINE))}
+               for c, nm, cl in CLS_MINOR],
+    'note': (f'与 Exhibit {EX_MAJORS} 同一份数据、同一个 {WIN_LINE} 个月窗口，'
+             f'只是把量级差一个数量级的四个小品种单独放到自己的轴上。'
+             f'注意纵轴上界只有 Exhibit {EX_MAJORS} 的约五分之一。'),
 })
 
 ex.append({
-    'n': 6, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
+    'n': EX_HIST, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90, 'zero_line': True,
     'title': 'Full ADV history since 2008', 'ylab': 'mn contracts / day',
     'series': [{'name': 'Total ADV', 'color': 'NAVY', 'values': L(df['adv_mn'].values)}],
     'src_extra': f'Full disclosed history: {mlab(df.index[0])} – {mlab(LATEST)}（{len(df)} 个月）',
     'note': ('原 PDF 在末端画了一个红色虚线椭圆圈出最近 3 个月，网页引擎没有对应的注解图元，'
-             '故未移植；最近 13 个月的读数见 Exhibit 2 与末尾核对表。'),
+             f'故未移植；最近 {WIN_BAR} 个月的读数见 Exhibit {EX_ADV} 与末尾核对表。'),
 })
 
 _qs = df['total_vol_mn'].groupby(df.index.asfreq('Q')).agg(['sum', 'count'])
@@ -327,7 +401,7 @@ _qyoy = np.array([(_qv[i] / _qv[i - 4] - 1) * 100 if i >= 4 and _qv[i - 4] else 
                   for i in range(len(_qv))])
 _npart = int(_qs['count'].iloc[-1])
 ex.append({
-    'n': 7, 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c',
+    'n': EX_QTR, 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c',
     'xlabels': [str(p) for p in _qs.index[-WIN_QTR:]],
     'title': 'Contracts traded aggregated to quarters', 'ylab': 'mn contracts',
     'ylab2': '% y/y',
@@ -338,24 +412,28 @@ ex.append({
     'src_extra': 'Latest bar is quarter-to-date and not comparable to full quarters',
     'note': (f'季度合计 = 该季各月「ADV x 当月交易日」之和，在 Python 侧算好。'
              f'末柱 {_qs.index[-1]} 只含 {_npart} 个月（浅蓝），其右轴 y/y 已被作废 —— '
-             '拿未满季去比上年完整季必然砸出一个假坑。'),
+             '拿未满季去比上年完整季必然砸出一个假坑。'
+             # 绿线末端那个读数的标签由引擎固定右移 5px，窄屏下会飘到 QTD 柱上方，
+             # 容易被读成 QTD 那一期的同比。把它归属的季度写死在图注里，读者不必靠像素判断。
+             f'因此绿线的最后一个读数 {pct(_qyoy[-2], 0)} 属于 {_qs.index[-2]}'
+             f'（最后一个完整季），不是 {_qs.index[-1]}。'),
 })
 
-ex.append(gs_bar(8, 'oi_total_mn', 'Month-end total open interest', 'mn contracts', 'f1',
+ex.append(gs_bar(EX_OI, 'oi_total_mn', 'Month-end total open interest', 'mn contracts', 'f1',
                  'Month-end OI',
                  note='月末未平仓合约是存量口径（期末快照），与 ADV 这类流量口径不可直接相加。'))
-ex.append(gs_bar(9, 'adv_rates_kcontracts', 'Interest-rate complex ADV',
+ex.append(gs_bar(EX_RATES, 'adv_rates_kcontracts', 'Interest-rate complex ADV',
                  'k contracts / day', 'f0c', 'Interest rates ADV'))
-ex.append(gs_bar(10, 'adv_equity_kcontracts', 'Equity-index complex ADV',
+ex.append(gs_bar(EX_EQUITY, 'adv_equity_kcontracts', 'Equity-index complex ADV',
                  'k contracts / day', 'f0c', 'Equity index ADV'))
-ex.append(gs_bar(11, 'adv_energy_kcontracts', 'Energy complex ADV',
+ex.append(gs_bar(EX_ENERGY, 'adv_energy_kcontracts', 'Energy complex ADV',
                  'k contracts / day', 'f0c', 'Energy ADV'))
-ex.append(gs_bar(12, 'implied_txn_rev_usdmn', 'Implied transaction revenue', '$mn / month',
+ex.append(gs_bar(EX_REV, 'implied_txn_rev_usdmn', 'Implied transaction revenue', '$mn / month',
                  'usd0', 'Implied transaction revenue', note=BR_NOTE))
 
 _rq = RPC['total'].index[-WIN_QTR:]
 ex.append({
-    'n': 13, 'kind': 'lines_endlabels', 'fmt': 'usd2',
+    'n': EX_RPC, 'kind': 'lines_endlabels', 'fmt': 'usd2',
     'xlabels': [mlab(q.asfreq('M', 'end')) for q in _rq],
     'title': 'Rate per contract by asset class', 'ylab': '$ per contract',
     'series': [
@@ -375,10 +453,10 @@ ex.append({
              '第三位小数以此注为准。'),
 })
 
-ex.append(gs_bar(14, 'adv_fx_kcontracts', 'FX complex ADV', 'k contracts / day', 'f0c', 'FX ADV'))
-ex.append(gs_bar(15, 'adv_metals_kcontracts', 'Metals complex ADV', 'k contracts / day', 'f0c',
+ex.append(gs_bar(EX_FX, 'adv_fx_kcontracts', 'FX complex ADV', 'k contracts / day', 'f0c', 'FX ADV'))
+ex.append(gs_bar(EX_METALS, 'adv_metals_kcontracts', 'Metals complex ADV', 'k contracts / day', 'f0c',
                  'Metals ADV'))
-ex.append(gs_bar(16, 'adv_ag_kcontracts', 'Agricultural complex ADV', 'k contracts / day', 'f0c',
+ex.append(gs_bar(EX_AG, 'adv_ag_kcontracts', 'Agricultural complex ADV', 'k contracts / day', 'f0c',
                  'Agricultural ADV'))
 
 
@@ -395,13 +473,17 @@ def heat(n, col, title, src_extra, fmt='pct0', legend=None):
             'src_extra': src_extra}
 
 
-ex.append(heat(17, 'adv_yoy', 'Total ADV y/y growth (%)',
-               'Green = faster y/y growth, red = slower', legend='Total ADV y/y'))
-ex.append(heat(18, 'rates_share', 'Interest-rate share of total ADV (%)',
+# fmt 用 pct0z 而不是 pct0：pct0 会把 −0.4% 印成「-0%」（一个不存在的数）。
+# 当前 10 年窗口里恰好没有落在 ±0.5% 内的月份，但 y/y 序列每月都在动，这是迟早会命中的
+# 格式坑，先按 pct0z 钉住（|v| < 0.5 → 0）。
+ex.append(heat(EX_HEAT_YOY, 'adv_yoy', 'Total ADV y/y growth (%)',
+               'Green = faster y/y growth, red = slower', fmt='pct0z',
+               legend='Total ADV y/y'))
+ex.append(heat(EX_HEAT_SHARE, 'rates_share', 'Interest-rate share of total ADV (%)',
                'Rates is the largest and most rate-cycle-sensitive complex',
                legend='Rates share of ADV'))
 
-# ══════════════════════════ 5. Exhibit 19：核对表（官方原始单位）══════════════════════════
+# ══════════════════════════ 5. Exhibit 20：核对表（官方原始单位）══════════════════════════
 TBL_COLS = [('Total ADV (k)', 'adv', 'adv_total_kcontracts', 3),
             ('Rates (k)', 'rates', 'adv_rates_kcontracts', 3),
             ('Equity (k)', 'eq', 'adv_equity_kcontracts', 3),
@@ -412,7 +494,7 @@ TBL_COLS = [('Total ADV (k)', 'adv', 'adv_total_kcontracts', 3),
             ('Open interest (contracts)', 'oi', 'oi_total_contracts', 0),
             ('Trading days', 'days', 'trading_days', 0)]
 table = {
-    'n': 19, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
+    'n': EX_TABLE, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
     'cols': [[h, k] for h, k, _, _ in TBL_COLS],
     'rows': [dict({'xl': mlab(p)},
                   **{k: num(float(df[c][p]), d) for _, k, c, d in TBL_COLS})
@@ -425,52 +507,74 @@ NOTES = [
     f'次月第 1-2 个工作日发布。本页覆盖 {mlab(df.index[0])} – {mlab(LATEST)} 共 {len(df)} 个连续月，'
     f'无缺月；ADV、未平仓合约、交易日数三项均为公司直接披露，未经加工。',
 
-    '<b>版式出处。</b>Goldman Sachs「IBKR Monthly」的成对图法（水平柱 + 12 个月均线 + YoY 气泡）'
+    '<b>版式出处。</b>Goldman Sachs「IBKR Monthly」的成对图法（水平柱 + 次轴 y/y 折线）'
     '与其 Exhibit 7「堆叠柱 + 次轴占比线」的量能/结构同框做法；day-count 那张图取自 Barclays'
     '「IBKR July Monthly Metrics」。',
 
     '<b>ADV 与总量的口径差（Barclays 调整）。</b>ADV 本身已按交易日中性化，总成交合约数没有。'
     'Barclays 那份报告因交易日数差异，把「股票成交总量 +7%」修正为「按日 -5%」，方向被口径整个反转。'
-    'Exhibit 3 把两条同比并排画出来，两线之差纯粹是交易日数的变化；'
-    '月度总成交量 = ADV × 当月交易日数，这一步换算是本页做的，不是公司披露的单独口径。',
+    f'Exhibit {EX_DAYCOUNT} 把两条同比并排画出来，两线之差纯粹是交易日数的变化；'
+    '月度总成交量 = ADV × 当月交易日数，这一步换算是本页做的，不是公司披露的单独口径。'
+    '汇总表末行的「Trading days」同理只是月历读数，所以它的 m/m、y/y 不着色、3Y %ile 留空 —— '
+    '多一个交易日既不是好消息也不是坏消息。',
 
-    f'<b>唯一的推导值：Exhibit 12。</b>Implied transaction revenue = 当月成交合约数 × 每张平均费率'
-    f'（RPC）。RPC 是季度值（CME 季报），当季各月共用该季费率，最新季（{RPC_Q} = ${RPC_V:.3f}）'
+    f'<b>唯一的推导值：Exhibit {EX_REV}。</b>Implied transaction revenue = 当月成交合约数 × '
+    f'每张平均费率（RPC）。RPC 是季度值（CME 季报），当季各月共用该季费率，'
+    f'最新季（{RPC_Q} = ${RPC_V:.3f}）'
     '之后沿用。CME 的 RPC 本身是用已披露收入倒推的，所以已收官季度只是把一个已知总额重建一遍 —— '
     '这张图的价值全在<b>当前未收官的季度</b>。标题带 Implied 即表示非公司披露值。',
 
-    '<b>RPC 的口径风险。</b>各品种 RPC 相差数倍（Exhibit 13），因此总 ADV 不变、只要品种结构位移，'
-    '混合费率与隐含收入照样会动。这是上面那座桥最大的不确定性，也是 Exhibit 4 把结构与体量画在'
-    '同一张图里的原因。',
+    f'<b>RPC 的口径风险。</b>各品种 RPC 相差数倍（Exhibit {EX_RPC}），因此总 ADV 不变、'
+    f'只要品种结构位移，混合费率与隐含收入照样会动。这是上面那座桥最大的不确定性，'
+    f'也是 Exhibit {EX_MIX} 把结构与体量画在同一张图里的原因。',
 
-    f'<b>未满季不可直读。</b>Exhibit 7 的末柱是季度至今（{_qs.index[-1]} 目前只含 {_npart} 个月），'
+    f'<b>未满季不可直读。</b>Exhibit {EX_QTR} 的末柱是季度至今（{_qs.index[-1]} 目前只含 '
+    f'{_npart} 个月），'
     '用浅蓝标出，其右轴 y/y 的最后一点被引擎强制作废 —— 拿未满季的累计去比上年完整季，'
     '必然砸出一个纯口径造成的假坑。',
 
-    '<b>汇总表的 3Y %ile。</b>= 当月读数在最近 36 个月里高于多少百分比的观测。'
-    '近乎单调的序列（逐月不降的月份占比 ≥ 90%）留空 —— 那种序列的分位恒为 100，是噪音不是信息。'
+    '<b>汇总表的 3Y %ile。</b>= 当月读数在最近 36 个月里高于多少百分比的观测，'
+    '由全站唯一的一份实现（<code>build/pctile.py</code>）算出，本页不再自带判据 —— '
+    '各页各写一份，正是同一条序列在两页判定相反的原因。'
+    '留空的判据是「把这一列在过去 24 个月里逐月回放一遍，若 ≥70% 的月份都钉在 100 或 0，'
+    '这一列对这一行没有区分度」；旧判据「≥90% 的月环比不降」测的是序列形状而不是分位列本身，'
+    '拦不住「上下波动但分位常年钉 100」的行。'
+    '本页另有一处按自己的口径留空：Trading days 是日历产物（见第 3 条）。'
     '比率类指标的差异一律用 pp/bp；本页汇总表里没有比率行，故全部是百分比变化。',
 
-    '<b>口径断点：本页没有。</b>CME 的 ADV / 未平仓合约 / 交易日口径自 2008-01 至今保持一致，'
-    '品种六分类穷尽且互斥，所以全页没有红色竖虚线断点，相邻期可以直读。'
-    '若日后出现并购并表或品种重分类，必须在这里登记并在对应图上画出 break，'
-    '不能只靠图注文字提一句。',
+    '<b>口径断点：本页没有，图上也确实一条都没画。</b>CME 的 ADV / 未平仓合约 / 交易日口径'
+    f'自 {mlab(df.index[0])} 至今保持一致，品种六分类穷尽且互斥，所以全页没有红色竖虚线断点，'
+    '相邻期可以直读 —— 本页任何一处图注都没有声称过存在断点线，说的和画的一致。'
+    '若日后出现并购并表或品种重分类，必须在这里登记、给对应 exhibit 传 break_at 画出竖线，'
+    '并在断点滚出窗口后让图注文案一起消失，不能只靠图注文字提一句、也不能因为断点滚出窗口就报错停更。',
 
-    '<b>与原 PDF 版的有意差异（三处）。</b>(a) gs_bar 类近期图的窗口由 25 个月收到 13 个月 —— '
-    '契约 §5.4 的规定，且「12 个月均线 + y/y 气泡」这套标注本就按 13 个月窗口定义；'
-    '曲线类（Exhibit 3/5）与长历史图（Exhibit 6）的窗口一字未改。'
-    '(b) 网页引擎的调色板不含 PDF 的金色，金属品种改用红色（Exhibit 4/5/13）。'
-    '(c) Exhibit 6 的「最近 3 个月红色虚线圈」与 Exhibit 13 的第三位小数无对应实现，'
-    '前者说明写进图注，后者的精确值写进图注。',
+    '<b>与原 PDF 版的有意差异（四处）。</b>'
+    '(a) gs_bar 类近期图的窗口由 25 个月收到 13 个月 —— 契约 §5.4 的规定；次轴那条金色 y/y '
+    '折线与 deck 的 gsx.lvl_bar 一致（deck 的 docstring：「均线只是把柱子再平滑一遍、'
+    '不带新信息」），网页版一度改画 12 个月均线，现已改回同比。'
+    f'曲线类（Exhibit {EX_DAYCOUNT}/{EX_MAJORS}/{EX_MINORS}）与长历史图（Exhibit {EX_HIST}）'
+    '的窗口一字未改。'
+    f'(b) deck 的品种曲线图把六个品种画在一根轴上，利率品种的峰值把其余四条压成底部一条带；'
+    f'网页版按量级拆成 Exhibit {EX_MAJORS} 与 Exhibit {EX_MINORS} 两张，数据、窗口、配色全同，'
+    f'没有删点、没有截轴（详见两图图注）。'
+    '(c) 金属品种在 deck 里用金色 #BF9000，网页引擎的调色板后来补齐了同一个金色，'
+    '所以两边同色；红色在本站是断点与离群值的专用色，不拿来当数据色。'
+    f'(d) Exhibit {EX_HIST} 的「最近 3 个月红色虚线圈」与 Exhibit {EX_RPC} 的第三位小数'
+    '无对应实现，前者说明写进图注，后者的精确值写进图注。',
 
-    '<b>核对表（Exhibit 19）用官方原始单位，不做任何换算</b>：ADV 为千张/日、未平仓合约为张、'
-    '交易日为天，可直接与 CME 月度 xlsx 逐格对。图上的「百万张」「百万美元」都是本页换算后的口径，'
-    '核对时请以核对表为准。',
+    f'<b>核对表（Exhibit {EX_TABLE}）用官方原始单位，不做任何换算</b>：ADV 为千张/日、'
+    '未平仓合约为张、交易日为天，可直接与 CME 月度 xlsx 逐格对。'
+    '图上的「百万张」「百万美元」都是本页换算后的口径，核对时请以核对表为准。',
 ]
 
 # ══════════════════════════ 7. 抬头与 payload ══════════════════════════
 _adv_yy = float(df['adv_yoy'][CUR])
+# 抬头原先只写 y/y。7 月 ADV 是 +23.0% y/y 但 −11.9% m/m（一年里第二大的环比跌幅），
+# 只报同比等于把「本月比上月掉了一成多」藏到表格里，读者不往下翻就得到一个纯正面的印象。
+# 同比与环比同时给，哪一个难看都照写。
+_adv_mm = (float(df['adv_mn'][CUR]) / float(df['adv_mn'][PRV]) - 1) * 100
 _vol_yy = float(df['vol_yoy'][CUR])
+_vol_mm = (float(df['total_vol_mn'][CUR]) / float(df['total_vol_mn'][PRV]) - 1) * 100
 _dc = float(df['daycount_effect'][CUR])
 _oi_yy = (float(df['oi_total_mn'][CUR]) / float(df['oi_total_mn'][YAG]) - 1) * 100
 _share = float(df['rates_share'][CUR])
@@ -484,13 +588,15 @@ payload = {
     'subtitle': (f'数据源：CME Group IR 月度成交量报告（次月第 1-2 个工作日发布）· '
                  f'覆盖 {mlab(df.index[0])} – {mlab(LATEST)}（{len(df)} 个月）· '
                  f'版式仿 Goldman Sachs GIR「IBKR Monthly」与 Barclays day-count 调整 · 仅图，无评论'),
-    'headline': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日（{pct(_adv_yy)} y/y）· '
+    'headline': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日（{pct(_adv_yy)} y/y，'
+                 f'{pct(_adv_mm)} m/m）· '
                  f'总成交 {df["total_vol_mn"][CUR]:,.0f}mn 张（{pct(_vol_yy)} y/y，'
-                 f'交易日贡献 {pp(_dc)}）· 月末未平仓 {df["oi_total_mn"][CUR]:,.1f}mn 张'
+                 f'{pct(_vol_mm)} m/m，交易日贡献 {pp(_dc)}）· '
+                 f'月末未平仓 {df["oi_total_mn"][CUR]:,.1f}mn 张'
                  f'（{pct(_oi_yy)} y/y）· 利率品种占 ADV {_share:.0f}% · '
                  f'隐含交易收入 ${df["implied_txn_rev_usdmn"][CUR]:,.0f}mn'),
-    'hub_line': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日，{pct(_adv_yy)} y/y；'
-                 f'利率品种占 {_share:.0f}%'),
+    'hub_line': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日，{pct(_adv_yy)} y/y、'
+                 f'{pct(_adv_mm)} m/m；利率品种占 {_share:.0f}%'),
     'source': SRC,
     'xlabels': XL13,
     'xlabels_long': XL_LONG,

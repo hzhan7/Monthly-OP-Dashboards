@@ -50,6 +50,7 @@ import numpy as np
 import pandas as pd
 
 import payload_guard
+import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -73,33 +74,128 @@ ACQ = {'2023-01': 3.2, '2023-03': 0.5, '2024-04': 5.0, '2024-08': 0.3, '2024-09'
        '2024-10': 88.3, '2024-11': 0.8, '2024-12': 0.3, '2025-01': 0.1, '2025-02': 0.7,
        '2025-03': 7.1, '2025-08': 275.0, '2025-12': 2.0}
 
-# 结构性断点：ACQ 里两笔整体并表 —— Atria（2024-10，+$88.3bn，约当月资产的 6%）与
-# Commonwealth（2025-08，+$275.0bn，约 14%）。凡是画「as-reported LPL 客户资产」的图
-# 都要把它画出来（CONTRACT.md §5.2：口径断点必须画出来，不能靠图注文字提一句就算数）。
-# 与 ACQ 挨着放，是因为它们是同一件事的两种用法 —— 改一处必须改另一处。
-# 标签点名 LPL：单票页上整幅红线天然只指 LPL，横截面页上四条线并排，不点名会被读成
-# 「四家在这里都换了口径」。
-ACQ_BREAKS = [(pd.Period('2024-10', 'M'), 'LPL Atria'),
-              (pd.Period('2025-08', 'M'), 'LPL Commonwealth')]
+# ────────────────────────── 结构性断点登记表 ──────────────────────────
+# 一条序列在哪个月换了口径 / 并了表，在这里登记一次；每张图按它画的是哪几条序列
+# 引用对应的清单。CONTRACT.md §5.2：口径断点必须画出来，不能靠图注文字提一句就算数；
+# 反过来也成立 —— **图注声称画了线，图上就必须真有线**，所以下面的图注文案也由同一个
+# 登记表生成（brk_note），断点滚出窗口时线和文案一起消失，不会剩下一句假话。
+#
+# 标签点名公司：单票页上整幅红线天然只指那一家，横截面页上四条线并排，不点名会被读成
+# 「四家在这里都换了口径」。竖排标签越短越好（引擎从画布顶往下排，字多会压住相邻标注）。
+LPL_ACQ_BRK = [(pd.Period('2024-10', 'M'), 'LPL Atria'),          # +$88.3bn，约当月资产 6%
+               (pd.Period('2025-08', 'M'), 'LPL Commonwealth')]   # +$275.0bn，约 14%
+# Schwab core NNA：单一客户异常流入的剔除门槛 2025-01 起从 $10bn 提到 $25bn，月报不重述
+# 历史（口径与月份同 build/schw.py 的 BRK，改一处要改两处）。
+SCHW_NNA_BRK = [(pd.Period('2025-01', 'M'), 'SCHW $10→$25bn')]
+# Robinhood：口径与月份同 build/hood.py 的 BK_ND / BK_CUST / BK_TPA。
+HOOD_ND_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
+               (pd.Period('2026-03', 'M'), 'HOOD TradePMR'),
+               (pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
+HOOD_CUST_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
+                 (pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
+HOOD_TPA_BRK = [(pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
+
+# 「客户资产」这一族图（重定基与 y/y）同时受 LPL 的两次并表与 Robinhood 的 WonderFi 影响，
+# 所以三张图引用同一个合集，不各拼各的。
+ASSET_BRK = LPL_ACQ_BRK + HOOD_TPA_BRK
+
+# 每个断点在图注里的说法。键就是上面的 Period，保证「画了哪条线」与「图注说了哪条」
+# 出自同一个来源。
+BRK_TXT = {
+    pd.Period('2024-10', 'M'): 'LPL 2024-10 并入 Atria（Acquired NNA +$88.3bn）',
+    pd.Period('2025-08', 'M'): 'LPL 2025-08 并入 Commonwealth（Acquired NNA +$275.0bn）',
+    pd.Period('2025-01', 'M'): 'Schwab 2025-01 起把单一客户流入的剔除门槛从 $10bn 提到 $25bn'
+                               '（月报不重述历史）',
+    pd.Period('2025-06', 'M'): 'Robinhood 2025-06 起把 Bitstamp 并入净流入与客户数',
+    pd.Period('2026-03', 'M'): 'Robinhood 2026-03 起把 TradePMR 顾问资产的流量并入净流入',
+    pd.Period('2026-06', 'M'): 'Robinhood 2026-06 并入 WonderFi（带进约 30 万 funded customers）',
+}
 
 
-def brks(idx, drawn=None, n=None):
+def _hit(idx, events):
+    """窗口内真正盖得到的断点：[(x 索引, 竖排标签, Period), …]，按 x 升序。"""
+    lst = list(idx)
+    return sorted(((lst.index(p), lab, p) for p, lab in events if p in lst),
+                  key=lambda h: h[0])
+
+
+def brks(idx, events):
     """把结构性断点映射到给定窗口的 x 索引，返回可直接展开进 exhibit dict 的片段。
 
     窗口盖不到的断点自动省略（各图窗口起点不同、dense_win 还会随披露变动，
-    硬编码索引下个月就错位）；一个都盖不到就返回空 dict，图上不画、图注也不会
-    声称画了 —— drawn 收集真正画上的 exhibit 编号，图注文案由它生成。"""
-    lst = list(idx)
-    at = [lst.index(p) for p, _ in ACQ_BREAKS if p in lst]
-    lb = [label for p, label in ACQ_BREAKS if p in lst]
-    if not at:
+    硬编码索引下个月就错位）；一个都盖不到就返回空 dict，图上不画、图注也不会声称画了。
+    这是「优雅降级」而不是硬失败：断点终会滚出 25 个月窗口，那天页面要照常出
+    （build/lpla.py 在同一处 raise SystemExit，2025-08 滚出窗口那天 LPLA 页会永久停更）。
+
+    「哪几张图真的画了线」不在这里累计，由 drawn_for() 从建好的 payload 现读 ——
+    累计器和图注各写一份，早晚会出现「图注说画了、图上没有」。"""
+    h = _hit(idx, events)
+    if not h:
         return {}
-    if drawn is not None and n is not None:
-        drawn.append(n)
-    return {'break_at': at, 'break_label': lb}
+    return {'break_at': [i for i, _l, _p in h],
+            'break_label': [lab for _i, lab, _p in h]}
 
 
-BRK_DRAWN = []          # 真正画上断点线的 exhibit 编号，供口径说明引用
+def jump_txt(idx, events, cname, lead='并表当月的环比：', d=1):
+    """断点当月这条序列跳了多少 —— 现算，不写死。
+
+    「不可比」是个定性说法，读者真正需要的是量级；而写死的数字在补历史或修数之后
+    就变成第二处口径谎言（本项目在 schw「过去 32 个季度单边降」上已经付过一次代价）。"""
+    s = df[cname] if cname in df.columns else None
+    if s is None:
+        return ''
+    out = []
+    for _i, _l, p in _hit(idx, events):
+        if p not in s.index or (p - 1) not in s.index:
+            continue
+        a, b = float(s.loc[p]), float(s.loc[p - 1])
+        if not (np.isfinite(a) and np.isfinite(b)) or b == 0:
+            continue
+        out.append(f'{mlab(p)} {signed((a / b - 1) * 100, d, "%")}')
+    return (lead + '、'.join(out) + '。') if out else ''
+
+
+def dilution_txt(idx, events, cname):
+    """比率图专用：断点当月这条比率掉了多少 bp，占全窗口总变动的多少。
+
+    「不可比」对比率图还不够 —— 分子分母跳的幅度不同时，比率会**机械地**掉一截，
+    读者会把它读成基本面。给出 bp 与占比，他才知道该把多少归给并购。"""
+    s = df[cname] if cname in df.columns else None
+    if s is None:
+        return ''
+    parts, jump = [], 0.0
+    for _i, _l, p in _hit(idx, events):
+        if p not in s.index or (p - 1) not in s.index:
+            continue
+        a, b = float(s.loc[p]), float(s.loc[p - 1])
+        if not (np.isfinite(a) and np.isfinite(b)):
+            continue
+        parts.append(f'{mlab(p)} 单月 {signed((a - b) * 100, 0, "bp")}')
+        jump += a - b
+    if not parts:
+        return ''
+    lo, hi = float(s.reindex(idx).iloc[0]), float(s.reindex(idx).iloc[-1])
+    txt = '、'.join(parts)
+    if np.isfinite(lo) and np.isfinite(hi) and abs(hi - lo) > 1e-9:
+        txt += (f'，{len(parts)} 个并表月合计 {signed(jump * 100, 0, "bp")}；'
+                f'而全窗口 {mlab(idx[0])}→{mlab(idx[-1])} 一共才动了 '
+                f'{signed((hi - lo) * 100, 0, "bp")} —— '
+                f'并表这一块占了约 {abs(jump / (hi - lo)) * 100:.0f}%')
+    return txt + '。'
+
+
+def brk_note(idx, events, lead='<b>红色竖虚线 = 口径断点</b>：', tail=''):
+    """图注里那句「红色竖虚线 = …」只在**真画出线**时才写，且逐条只列画出来的那几个。"""
+    h = _hit(idx, events)
+    if not h:
+        return ''
+    return lead + '；'.join(BRK_TXT[p] for _i, _l, p in h) + '。' + tail
+
+
+def drawn_for(exhibits, events):
+    """哪几张图上真的画了这一组断点 —— 从建好的 exhibit 列表现读，不另设累计器。"""
+    labs = {lab for _p, lab in events}
+    return sorted({e['n'] for e in exhibits if set(e.get('break_label') or []) & labs})
 
 
 # ────────────────────────────── 读数据 + 发布门槛 ──────────────────────────────
@@ -207,13 +303,56 @@ for t in ('lpla', 'ibkr'):
     df[f'{t}_cash_pct'] = df[f'{t}_cash'] / df[f'{t}_assets'] * 100
 
 
+# ────────────────────── Exhibit 编号：先排好，再让图注引用变量 ──────────────────────
+# 写死编号的代价这一页已经付过：图注里的「见 Exhibit 5」「Exhibit 14 热力矩阵」
+# 在中间插一张图之后会全部指错，而那种错没有任何自动检查拦得住。编号只在这里生成一次，
+# 正文一律引用常量；成员或某条序列缺席时它那张图不出，编号往前接，不留空号。
+def _live(cname):
+    return cname in df.columns and bool(np.isfinite(df[cname].values.astype(float)).any())
+
+
+_seq = iter(range(2, 99))
+N_REB18 = next(_seq)                                  # 2018 基期重定基
+N_REB23 = next(_seq)                                  # 2023-04 基期重定基（四家同基期）
+N_YOY = next(_seq)                                    # 客户资产 y/y
+N_ORG = next(_seq)                                    # 年化有机增速：Schwab vs LPL
+N_ORG_HOOD = next(_seq) if _live('hood_org') else None   # 年化有机增速：Robinhood（另一量级）
+N_ACCT = next(_seq)                                   # 账户增速
+N_MGN = next(_seq)                                    # 融资余额
+N_CASH = next(_seq)                                   # 客户现金
+N_DATS = next(_seq)                                   # 日均交易
+N_REB19 = next(_seq)                                  # 2019 基期资产负债表重定基
+N_MGNPCT = next(_seq)                                 # 融资余额 / 客户资产
+N_CASHPCT = next(_seq)                                # 客户现金 / 客户资产
+# 热力矩阵：某家的 y/y 全空时那张图根本建不出来（heat() 返回 None），编号也不该占。
+N_HEAT = {t: next(_seq) for t in ('schw', 'lpla', 'ibkr', 'hood')
+          if t in HAS and _live(f'{t}_yoy')}
+N_TABLE = next(_seq)                                  # 页尾核对表
+
+
 # ────────────────────────────── 格式化零件 ──────────────────────────────
 def mlab(p):
     return p.strftime('%b-%y')
 
 
 def comma(v, d=0):
-    return f'{v:,.{d}f}'
+    return f'{_nz(v, d):,.{d}f}'
+
+
+def _nz(v, d):
+    """四舍五入到 d 位之后正好是 0 的负数回正 —— 否则印出「-0」「-0.0%」「-0bp」。
+
+    Python 的 f-string 是先取符号再四舍五入的：f'{-0.004:+.1f}%' → '-0.0%'。
+    读者看到的是一个带负号的零，会当成「跌了一点点」，而它其实是「没动」。"""
+    v = float(v)
+    return 0.0 if round(v, d) == 0 else v
+
+
+def signed(v, d, suffix):
+    """带正负号的数。四舍五入后正好是零时连符号一起去掉 —— 「+0bp」同样是假消息，
+    它宣称的是一个方向，而这个数只是「没动」。"""
+    v = _nz(v, d)
+    return f'{v:+,.{d}f}{suffix}' if v else f'{0:,.{d}f}{suffix}'
 
 
 def money(v, d=0):
@@ -328,12 +467,21 @@ def _lp_rank_txt():
 
 
 LP_RANK_TXT, LP_YOY_EX = _lp_rank_txt()
+_LP_YOY_S = df['lpla_yoy'].dropna() if 'lpla_yoy' in df.columns else pd.Series(dtype=float)
+_LP_YOY_NOW = float(_LP_YOY_S.iloc[-1]) if len(_LP_YOY_S) else None
 
 
 def cell(v, d, kind):
+    """水平值单元格。三种 kind 都走 comma()，负零才不会从某一条支路漏出去。"""
     if v is None or not np.isfinite(v):
         return '—'
-    return money(v, d) if kind == '$' else (f'{v:,.{d}f}%' if kind == '%' else comma(v, d))
+    return money(v, d) if kind == '$' else (comma(v, d) + ('%' if kind == '%' else ''))
+
+
+def _v0(cname, d=1, kind=''):
+    """某一列的当期读数（已格式化）。图注里引用别的图的数字时用它，别再手抄一遍。"""
+    s = df[cname].dropna() if cname in df.columns else pd.Series(dtype=float)
+    return '—' if not len(s) else cell(float(s.iloc[-1]), d, kind)
 
 
 def chg(a, b, mode, d, kind):
@@ -342,29 +490,33 @@ def chg(a, b, mode, d, kind):
         return {'v': ''}
     if mode == 'pp':
         v = a - b
-        txt = f'{v * 100:+.0f}bp' if abs(v) < 1 else f'{v:+.2f}pp'
+        # CONTRACT §2：abs(v) < 1 用 bp，否则用 pp。分档看的是四舍五入前的真值。
+        txt = signed(v * 100, 0, 'bp') if abs(v) < 1 else signed(v, 2, 'pp')
+        shown = round(v * 100, 0) if abs(v) < 1 else round(v, 2)
     else:
         if b == 0 or a * b < 0:
             return {'v': ''}
         v = a / b - 1
-        txt = f'{v * 100:+.1f}%'
-    return {'v': txt, 'cls': 'pos' if v > 0 else ('neg' if v < 0 else '')}
+        txt = signed(v * 100, 1, '%')
+        shown = round(v * 100, 1)
+    # 颜色跟着**印出来的那个数**走：印成 +0.0% 就不涂色，否则读者会看到一个
+    # 绿色的零，以为是四舍五入吃掉了一个正数。
+    return {'v': txt, 'cls': 'pos' if shown > 0 else ('neg' if shown < 0 else '')}
 
 
-def pctile36(s):
-    """近 36 个月分位。单调序列（几乎只增不减）留空 —— 分位恒为 100，是噪音不是信息。"""
-    c = s.dropna()
-    if not len(c):
-        return {'v': ''}
-    h = c.iloc[-36:]
-    if len(h) < 8:
-        return {'v': ''}
-    cur = float(c.iloc[-1])
-    dd = np.diff(h.values)
-    if len(dd) and float((dd >= 0).sum()) / len(dd) >= 0.90:
-        return {'v': ''}
-    p = float((h.values < cur).sum()) / max(1, len(h) - 1) * 100
-    return {'v': f'{p:.0f}', 'cls': 'hi' if p >= 66 else ('lo' if p <= 33 else '')}
+def pctile_cell(s):
+    """3Y %ile 单元格。判据与全部 14 个生成器共用 build/pctile.py，本页不自己写。
+
+    旧实现是「36 个月里 ≥90% 月环比不降就留空」的代理判据，拦不住「上下波动但分位
+    常年钉 100」的行（Schwab margin balances、IBKR client credits、Robinhood margin
+    book），也与 /lpla/ 对同一条 LPL total client assets 的判定相反。"""
+    v, cls = pctile.cell(_ser(s))
+    return {'v': v, 'cls': cls} if v else {'v': ''}
+
+
+def _ser(s):
+    """pandas Series → pctile.py 吃的 [float | None] 列表（按月升序，缺月写 None）。"""
+    return [None if not np.isfinite(v) else float(v) for v in s.values]
 
 
 SUM_ROWS = [
@@ -390,7 +542,7 @@ SUM_ROWS = [
     ('row', 'hood', 'Robinhood DATs（股票+期权+加密）', 'hood_dats', 0, '', 'ratio'),
 ]
 
-srows = []
+srows, PCT_BLANK = [], []       # PCT_BLANK：分位留空的行，表注里点名，免得被当成漏算
 for r in SUM_ROWS:
     if r[0] == 'group':
         srows.append({'kind': 'group', 'label': r[1]})
@@ -401,9 +553,12 @@ for r in SUM_ROWS:
     s = df[cname]
     get = lambda p: (float(s.loc[p]) if p in s.index and np.isfinite(s.loc[p]) else None)
     c, p1, p12 = get(CUR), get(PRV), get(YAG)
+    pc = pctile_cell(s)
+    if not pc['v']:
+        PCT_BLANK.append(lab)
     srows.append({'label': lab, 'cells': [
         {'v': cell(c, d, kind)}, {'v': cell(p1, d, kind)}, {'v': cell(p12, d, kind)},
-        chg(c, p1, mode, d, kind), chg(c, p12, mode, d, kind), pctile36(s)]})
+        chg(c, p1, mode, d, kind), chg(c, p12, mode, d, kind), pc]})
 
 LAG = ' / '.join(NAME[t] for t in LAGGARDS)      # 短板：共同最新月就等于它自己的最新月
 summary = {
@@ -423,10 +578,13 @@ summary = {
              '与 Schwab / Robinhood 的客户总成交笔数同口径；公司另披露的 Cleared Avg. DART per Account '
              '推导出的 cleared DARTs 约为此值的 85%，见 IBKR 单页 Exhibit 4/18，两者不要混读。'
              '3Y %ile = 当月读数在最近 36 个月里高于多少个百分比的观测。'
-             '判据同全站：36 个月里 ≥90% 的月环比不降就把该行分位留空 —— '
-             '几乎只增不减的序列分位恒为 100，是噪音不是信息。'
-             '存量类各行本轮未触发该判据（区间内有下跌月），分位照算，'
-             '但读到 100 时要知道它只是说「当月是近三年最高」，不代表动能。'),
+             '判据同全站（<code>build/pctile.py</code>，14 个生成器共用一份）：'
+             '把该行的分位在<b>近 24 个月里逐月回放</b>，若 ≥70% 的月份都钉在端点（100 或 0），'
+             '这一列对这一行就没有区分度，留空。'
+             + (f'本轮留空的是：{"、".join(PCT_BLANK)} —— 这几行的分位近两年几乎恒为 100，'
+                '印出来只会让人误以为「刚刚创下新高」。' if PCT_BLANK else '本轮没有行触发留空。')
+             + '仍显示 100 的行是回放里真的下过来过的，读到 100 时也只是说'
+             '「当月是近三年最高」，不代表动能。'),
 }
 
 
@@ -434,6 +592,14 @@ summary = {
 ex = []
 GATE = (f'本页所有图统一截到共同最新月 {mlab(LATEST)}；'
         f'{LAG} 是短板，其余各家更新更早的月份本页不画。')
+
+
+# 重定基图的画布高度。不是审美选择：kind:'lines' 的末点标签画在点上方 7px，而引擎的
+# 竖向避让在「最高的那个标签顶到画布上沿」时会把**整列**标签压到顶端顺排 —— 于是
+# 三条线的指数值全叠在右上角、与各自的线脱钩（382 看着像在标 660 那条线）。
+# 该分支的上留白恒为量程的 1/22（y1 = max + 5%×极差），与数据无关，所以只要绘图区
+# 高度 ≥ 约 308px，最高的标签就够不到上沿。取 340 留出余量。
+REB_H = 340
 
 
 def rebase(cname, base):
@@ -456,20 +622,20 @@ for t in ('schw', 'lpla', 'ibkr', 'hood'):
     s2.append({'name': NAME[t], 'color': COLOR[t], 'values': L(r.reindex(I18).values)})
     inc2.append(NAME[t])
 ex.append({
-    'n': 2, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I18),
-    'xstep': max(1, len(I18) // 14),
+    'n': N_REB18, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I18),
+    'xstep': max(1, len(I18) // 14), 'end_label': True, 'height': REB_H,
     'title': f'Client assets since {mlab(B18)}, rebased to 100',
     'ylab': f'index, {mlab(B18)} = 100',
     'series': s2,
-    **brks(I18, BRK_DRAWN, 2),
+    **brks(I18, ASSET_BRK),
     'note': (firms_note(inc2, exc2,
                         'Robinhood 的月度经营指标自 2023-04 才有，进不了 2018 基期的图 —— '
                         '把它从自己的首月当 100 起画，会与另外三家比出一个纯属基期不同的假斜率；'
                         '四家同基期的版本见下一张。')
-             + '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
-             '2025-08 Commonwealth +$275.0bn）：从那一期起 LPL 这条线与左侧不可比，'
-             '另外三家不含并购、不受影响。重定基图上并购是<b>永久抬升</b>的 —— '
-             '断点右侧的全部水平差里有一块不是自己长出来的。' + GATE),
+             + brk_note(I18, ASSET_BRK, tail='断点右侧那条线与左侧不可比，其余各家不受影响。'
+                                          '重定基图上并购是<b>永久抬升</b>的 —— '
+                                          '断点右侧的全部水平差里有一块不是自己长出来的。')
+             + f'各条线右端的粗体数字是当期指数值（{mlab(B18)} = 100）。' + GATE),
 })
 
 # ── Exhibit 3：客户资产 2023-04 基期重定基（四家同基期）──
@@ -484,21 +650,20 @@ for t in ('schw', 'lpla', 'ibkr', 'hood'):
     s3.append({'name': NAME[t], 'color': COLOR[t], 'values': L(r.reindex(I23).values)})
     inc3.append(NAME[t])
 ex.append({
-    'n': 3, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I23),
-    'xstep': max(1, len(I23) // 14),
+    'n': N_REB23, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I23),
+    'xstep': max(1, len(I23) // 14), 'end_label': True, 'height': REB_H,
     'title': f'Client assets since {mlab(B23)}, rebased to 100 —— 四家同基期',
     'ylab': f'index, {mlab(B23)} = 100',
     'series': s3,
-    **brks(I23, BRK_DRAWN, 3),
+    **brks(I23, ASSET_BRK),
     'note': (firms_note(inc3, exc3)
              + f'基期取 {mlab(B23)}（Robinhood 月度经营指标的首月），四家从同一天起跑，'
              '斜率之差才是真的增长之差。口径：Schwab / LPL 为 total client assets，'
              'IBKR 为 client equity，Robinhood 为 total platform assets —— '
              '都是「客户放在这家平台上的资产总额」，可直接并排。'
-             '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
-             '2025-08 Commonwealth +$275.0bn），只影响 LPL 这一条线：'
-             '断点右侧 LPL 与另外三家的斜率差里有一块是买来的，不是长出来的。'
-             '有机口径见 Exhibit 5。' + GATE),
+             + brk_note(I23, ASSET_BRK, tail='断点右侧那条线与另外三家的斜率差里有一块是买来的，'
+                                          '不是长出来的。')
+             + f'右端粗体数字为当期指数值。有机口径见 Exhibit {N_ORG}。' + GATE),
 })
 
 # ── Exhibit 4：客户资产 y/y ──
@@ -506,55 +671,123 @@ _i4 = dense_win([(t, f'{t}_yoy', '') for t in ('schw', 'lpla', 'ibkr', 'hood')])
 s4, inc4, exc4 = sr([(t, f'{t}_yoy', NAME.get(t, t.upper()))
                      for t in ('schw', 'lpla', 'ibkr', 'hood')], _i4)
 ex.append({
-    'n': 4, 'kind': 'lines_endlabels', 'fmt': 'pct0', 'xlabels': xls(_i4), 'xstep': 2,
+    'n': N_YOY, 'kind': 'lines_endlabels', 'fmt': 'pct0', 'xlabels': xls(_i4), 'xstep': 2,
     'title': 'Client asset growth, y/y', 'ylab': '% y/y', 'zero_line': True,
+    # 四条线的两端各要标一个数，其中两对（左端 23%/20%、右端 49%/48%）本来就只差 1pp。
+    # 引擎的竖向避让有 9.6px 的最小行距，画布越矮就越多标签被推到「刚好不叠字」的距离上，
+    # 读者只能靠颜色反推是哪家。加高画布是唯一在 payload 侧能给的解药：同样的 1pp 在
+    # 更高的画布上本来就占更多像素，避让根本不必启动。
+    'height': 330,
     'series': s4,
-    **brks(_i4, BRK_DRAWN, 4),
+    **brks(_i4, ASSET_BRK),
     'note': (firms_note(inc4, exc4)
-             + '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
-             '2025-08 Commonwealth +$275.0bn），只影响 LPL 这一条线，另外三家不受影响。'
-             '并购转入不是有机增长，跳升起的 12 个月里 LPL 的 y/y 与另外三家不可比。'
-             + LP_RANK_TXT + '有机口径见 Exhibit 5。' + win_note(_i4) + GATE),
+             + brk_note(_i4, ASSET_BRK,
+                        tail='并进来的资产不是有机增长，跳升起的 12 个月里那条线的 y/y '
+                             '与同图其余各家不可比。')
+             + LP_RANK_TXT + f'有机口径见 Exhibit {N_ORG}。' + win_note(_i4) + GATE),
 })
 
-# ── Exhibit 5：年化有机增速（净流入口径三家）──
+# ── Exhibit 5：年化有机增速（Schwab vs LPL）──
+# 原来这张图把 Robinhood 也放进来，纵轴被它的 20–49% 定死，Schwab（0.3–8%）与 LPL
+# 近一年的读数全压在最底下那条带里，headline 写的「Schwab 4.8% / LPL 4.3%」在图上根本
+# 读不出来。同一单位但差一个量级的序列不该共用一根轴，所以拆成两张（Robinhood 见下一张）。
+# 拆完之后 LPL 2024-11–2025-02 那四个月的尖峰（15.8–24.5%）还是会把轴撑到 25%，
+# 这一段用截轴处理 —— **截轴不删点**：超界的点画成空心红圈、真值竖排标在图上。
 _IT5 = [('schw', 'schw_org', 'Schwab core NNA'),
-        ('lpla', 'lpla_org', 'LPL organic NNA'),
-        ('hood', 'hood_org', 'Robinhood net deposits')]
+        ('lpla', 'lpla_org', 'LPL organic NNA')]
 _i5 = dense_win(_IT5)
 s5, inc5, exc5 = sr(_IT5, _i5)
+EX5_CAP = 12.0
+_over5 = [(nm['name'], _i5[k], v) for nm in s5
+          for k, v in enumerate(nm['values']) if v is not None and v > EX5_CAP]
 ex.append({
-    'n': 5, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
+    'n': N_ORG, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
+    # label_fmt 要显式给：截轴真值标注的格式器优先取 yfmt（pct0），会把 24.5% 印成
+    # 25%，与本图注里逐个列出的真值差一位小数 —— 同一张图上两个数对不上。
+    'label_fmt': 'pct1',
     'xlabels': xls(_i5), 'xstep': 2,
-    'title': 'Annualised organic growth: Schwab vs. LPL vs. Robinhood',
+    'title': 'Annualised organic growth: Schwab vs. LPL',
     'ylab': '% annualised', 'zero_line': True,
     'series': s5,
+    # yfloor 必须与 ycap 一起给：lines_endlabels 的默认下界是 mn − 0.20×极差，
+    # 极差是按**未截轴的**数据算的，只给 ycap 会在零线下面留一大片空白。
+    **({'ycap': EX5_CAP, 'yfloor': 0.0,
+        'cap_note': f'axis capped at {EX5_CAP:.0f}% — true values shown in red'}
+       if _over5 else {}),
+    **brks(_i5, SCHW_NNA_BRK),
     'note': (firms_note(inc5, exc5,
-                        'IBKR 不披露净新增资产，只披露净新增账户，所以它的增速看下一张图。')
-             + '三家都是<b>当月净流入 x 12 ÷ 上月末客户资产</b>（GS LPLA 版式的流量口径规矩：'
+                        'IBKR 不披露净新增资产，只披露净新增账户，所以它的增速看 '
+                        f'Exhibit {N_ACCT}；Robinhood 的量级差一档（当前 '
+                        f'{_v0("hood_org", 1)}% vs Schwab {_v0("schw_org", 1)}% / '
+                        f'LPL {_v0("lpla_org", 1)}%），与这两家同轴会把它们压成一条带，'
+                        f'单独画在 Exhibit {N_ORG_HOOD}。' if N_ORG_HOOD else
+                        'IBKR 不披露净新增资产，只披露净新增账户，所以它的增速看 '
+                        f'Exhibit {N_ACCT}。')
+             + '两家都是<b>当月净流入 x 12 ÷ 上月末客户资产</b>（GS LPLA 版式的流量口径规矩：'
              '流量类不算环比百分比，分母是上个月的流量、一个月的噪音会被放大成趋势）。'
-             'LPL 已按官方同页披露的 Acquired NNA 剔除并购转入；'
-             'Robinhood 的 net deposits 是客户净转入（含现金与证券转入），'
-             '与 Schwab 的 core NNA、LPL 的 organic NNA 是同一个经济含义，但三家的剔除规则各自不同'
-             '（Schwab 2025 年把单一客户的剔除门槛从 $10bn 提到 $25bn）。' + win_note(_i5) + GATE),
+             'LPL 已按官方同页披露的 Acquired NNA 剔除并购转入。'
+             + (f'纵轴截在 0–{EX5_CAP:.0f}%：'
+                + '；'.join(
+                    nm + ' ' + '、'.join(f'{mlab(p)} {v:.1f}%'
+                                         for n2, p, v in _over5 if n2 == nm)
+                    for nm in dict.fromkeys(n2 for n2, _p, _v in _over5))
+                + '（LPL 大型机构渠道集中上线的几个月，官方未列入 Acquired NNA，'
+                '所以留在有机口径里）会把其余月份压成贴零的平线。'
+                '<b>截轴不删点</b> —— 超界的点画成空心红圈、真值竖排标在图上，'
+                '表格视图里也是真值。' if _over5 else '')
+             + brk_note(_i5, SCHW_NNA_BRK,
+                        tail='两家的剔除规则本来就各自不同，断点标的是 Schwab 这一条线'
+                             '自己前后不可比的那个位置。')
+             + win_note(_i5) + GATE),
 })
 
-# ── Exhibit 6：账户数增速（只有 IBKR 与 HOOD 披露存量账户数）──
+# ── Exhibit 6：年化有机增速（Robinhood，另一个量级）──
+if N_ORG_HOOD:
+    _IT6H = [('hood', 'hood_org', 'Robinhood net deposits')]
+    _i6h = dense_win(_IT6H)
+    s6h, inc6h, exc6h = sr(_IT6H, _i6h)
+    ex.append({
+        'n': N_ORG_HOOD, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
+        'xlabels': xls(_i6h), 'xstep': 2,
+        'title': 'Annualised organic growth: Robinhood',
+        'ylab': '% annualised', 'zero_line': True,
+        'series': s6h,
+        **brks(_i6h, HOOD_ND_BRK),
+        'note': ('口径与 Exhibit ' + str(N_ORG) + ' 完全相同（当月净流入 x 12 ÷ 上月末客户资产），'
+                 '<b>只是纵轴不同</b>：Robinhood 这条线常年在 '
+                 f'{min(v for v in s6h[0]["values"] if v is not None):.0f}–'
+                 f'{max(v for v in s6h[0]["values"] if v is not None):.0f}% 之间，'
+                 f'与 Schwab / LPL 的 {_v0("schw_org", 1)}% / {_v0("lpla_org", 1)}% 差一个量级，'
+                 '同轴画会把那两条压成一条贴零的带（这正是拆图的原因）。'
+                 '两张图的百分比可以直接比大小，但<b>不要把两张图的线形叠着看</b>。'
+                 'net deposits 是客户净转入（含现金与证券转入），与 Schwab 的 core NNA、'
+                 'LPL 的 organic NNA 是同一个经济含义，但三家的剔除规则各自不同。'
+                 + brk_note(_i6h, HOOD_ND_BRK,
+                            tail='并入的流量不是有机获客，断点右侧与左侧不可直读。')
+                 + win_note(_i6h) + GATE),
+    })
+
+# ── Exhibit 7：账户数增速（只有 IBKR 与 HOOD 披露存量账户数）──
 _IT6 = [('ibkr', 'ibkr_acct_yoy', 'IBKR accounts'),
         ('hood', 'hood_acct_yoy', 'Robinhood funded customers')]
 _i6 = dense_win(_IT6)
 s6, inc6, exc6 = sr(_IT6, _i6)
 ex.append({
-    'n': 6, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
+    'n': N_ACCT, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
     'xlabels': xls(_i6), 'xstep': 2,
     'title': 'Account growth, y/y: IBKR vs. Robinhood', 'ylab': '% y/y',
     'series': s6,
+    **brks(_i6, HOOD_CUST_BRK),
     'note': (firms_note(inc6, exc6,
                         'Schwab 只披露当月<b>新开</b>经纪账户（流量），不披露账户存量；'
                         'LPL 披露的是投顾人数（advisor count）而不是账户数 —— '
                         '两者都不能与「账户存量的 y/y」并排，所以不入图。')
              + 'IBKR 的口径是 total accounts，Robinhood 是 funded customers（有入金的客户数），'
-             '一个数账户、一个数人，绝对水平不可比，但增速的方向与幅度可比。' + win_note(_i6) + GATE),
+             '一个数账户、一个数人，绝对水平不可比，但增速的方向与幅度可比。'
+             + brk_note(_i6, HOOD_CUST_BRK,
+                        tail='并进来的客户不是自然获客，断点之后的 12 个月里 Robinhood 的 y/y '
+                             '含这块一次性增量，与 IBKR 不 like-for-like。')
+             + win_note(_i6) + GATE),
 })
 
 # ── Exhibit 7：融资余额 ──
@@ -565,7 +798,7 @@ _i7 = dense_win(_IT7)
 s7, inc7, exc7 = sr(_IT7, _i7)
 _schw_mgn0 = df['schw_margin'].dropna()
 ex.append({
-    'n': 7, 'kind': 'lines_endlabels', 'fmt': 'usd0', 'xlabels': xls(_i7), 'xstep': 2,
+    'n': N_MGN, 'kind': 'lines_endlabels', 'fmt': 'usd0', 'xlabels': xls(_i7), 'xstep': 2,
     'title': 'Margin balances: Schwab vs. IBKR vs. Robinhood', 'ylab': '$bn',
     'series': s7,
     'note': (firms_note(inc7, exc7, 'LPL 不披露融资余额。')
@@ -581,15 +814,23 @@ _IT8 = [('lpla', 'lpla_cash', 'LPL client cash'),
 _i8 = dense_win(_IT8)
 s8, inc8, exc8 = sr(_IT8, _i8)
 ex.append({
-    'n': 8, 'kind': 'lines_endlabels', 'fmt': 'usd0', 'xlabels': xls(_i8), 'xstep': 2,
+    'n': N_CASH, 'kind': 'lines_endlabels', 'fmt': 'usd0', 'xlabels': xls(_i8), 'xstep': 2,
     'title': 'Client cash: LPL vs. IBKR', 'ylab': '$bn',
     'series': s8,
+    # LPL 的 client cash 同样是并表转入的（2024-10 45.8→48.3、2025-08 49.5→52.7，
+    # 后者是 2018 年以来最大的一个 8 月）—— 画 as-reported LPL 的图都要带断点线。
+    **brks(_i8, LPL_ACQ_BRK),
     'note': (firms_note(inc8, exc8)
              + '<b>为什么少两家：</b>Schwab 的月报根本不单列客户现金；'
              'Robinhood 把客户现金拆成 cash sweep（扫到合作银行、表外）与 cash and deposits'
              '（留在券商）两条线，不发布同一口径的合计 —— 取任一条与 LPL 的 client cash'
              '（ICA + 货基 + DCA 合计）、IBKR 的 client credits 并排，不是漏计就是重复计，'
-             '所以宁可这张图只有两家。这两条线都是净利息收入的核心驱动。' + win_note(_i8) + GATE),
+             '所以宁可这张图只有两家。这两条线都是净利息收入的核心驱动。'
+             + brk_note(_i8, LPL_ACQ_BRK,
+                        tail='并表把被并方的客户现金一次性转入，那一跳不是客户在加现金 —— '
+                             + jump_txt(_i8, LPL_ACQ_BRK, 'lpla_cash',
+                                        lead='LPL client cash 在断点当月的环比为 '))
+             + win_note(_i8) + GATE),
 })
 
 # ── Exhibit 9：日均交易笔数 ──
@@ -599,7 +840,7 @@ _IT9 = [('schw', 'schw_dats', 'Schwab DATs'),
 _i9 = dense_win(_IT9)
 s9, inc9, exc9 = sr(_IT9, _i9)
 ex.append({
-    'n': 9, 'kind': 'lines_endlabels', 'fmt': 'f0c', 'xlabels': xls(_i9), 'xstep': 2,
+    'n': N_DATS, 'kind': 'lines_endlabels', 'fmt': 'f0c', 'xlabels': xls(_i9), 'xstep': 2,
     'title': 'Daily average trades: Schwab vs. IBKR vs. Robinhood',
     'ylab': 'k trades / day',
     'series': s9,
@@ -615,7 +856,16 @@ ex.append({
              '「cleared」修饰的是账户（IBKR 自清算的账户），不是订单。'
              'Schwab 的 DATs 自 2026-01 的月报才有，滚动表回溯至 '
              f'{mlab(df["schw_dats"].dropna().index[0]) if has("schw_dats") else "—"}，'
-             '所以本图窗口从那里起。' + win_note(_i9) + GATE),
+             '所以本图窗口从那里起。'
+             # 首页把「IBKR 2025-01 DARTs 口径变更」列为断点示例，本图却不画 —— 不解释
+             # 就是又一处「两页说法不一致」。理由要写在图上，不是留给读者猜。
+             '<b>关于 IBKR 单页那条 2025-01 断点：</b>它标在 IBKR 单页 Exhibit 18 上，'
+             '指的是 cleared / non-cleared 这个<b>拆分比例</b>在 2025 年跳了一档'
+             '（该页原文：疑似口径 / 分类变更，未经公司确认），而不是本图画的这条'
+             '<b>披露总量</b>；何况本图窗口正好从 Jan-25 起（受 Schwab 的披露起点约束），'
+             '断点落在第一期、左边没有可比的部分，画出来只是一条贴在纵轴上的红线，'
+             '不带任何信息。所以本图不画这条线，改在这里写明。'
+             + win_note(_i9) + GATE),
 })
 
 # ── Exhibit 10：资产负债表项目 2019 基期重定基 ──
@@ -632,17 +882,29 @@ for t, cname, legend, c in BS10:
         continue
     s10.append({'name': legend, 'color': c, 'values': L(r.reindex(I19).values)})
     inc10.append(legend)
+_LPL_IN_10 = any(s['name'] == 'LPL client cash' for s in s10)
 ex.append({
-    'n': 10, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I19),
-    'xstep': max(1, len(I19) // 14),
+    'n': N_REB19, 'kind': 'lines', 'fmt': 'f0', 'xlabels': xls(I19),
+    'xstep': max(1, len(I19) // 14), 'end_label': True, 'height': REB_H,
     'title': f'Balance-sheet items since {mlab(B19)}, rebased to 100',
     'ylab': f'index, {mlab(B19)} = 100',
     'series': s10,
+    # 这张图里有一条 as-reported 的 LPL client cash，重定基图上并购是永久抬升的
+    # （本页 Exhibit 2 的图注自己就是这么论证的），断点必须画。
+    **(brks(I19, LPL_ACQ_BRK) if _LPL_IN_10 else {}),
     'note': (firms_note(inc10, exc10)
              + '融资余额是周期项、客户现金是利率敏感项，重定基之后能看出两者的相位差。'
              'Schwab 的月末融资余额只有 2025-01 起的历史、Robinhood 只有 2023-04 起的历史，'
              f'都盖不到 {mlab(B19)} 的基期，硬画等于拿一个空值当分母，所以不入这张长历史图；'
-             '它们的近期水平见 Exhibit 7。' + GATE),
+             f'它们的近期水平见 Exhibit {N_MGN}。'
+             + (brk_note(I19, LPL_ACQ_BRK,
+                         tail='只影响 LPL client cash 这一条线：重定基图上并购是'
+                              '<b>永久抬升</b>的，断点右侧它与另外两条的水平差里有一块'
+                              '是并进来的。'
+                              + jump_txt(I19, LPL_ACQ_BRK, 'lpla_cash',
+                                         lead='断点当月环比 '))
+                if _LPL_IN_10 else '')
+             + '右端粗体数字为当期指数值。' + GATE),
 })
 
 # ── Exhibit 11：融资余额 / 客户资产（杠杆强度，横截面归一化）──
@@ -652,13 +914,15 @@ _IT11 = [('schw', 'schw_mgn_pct', 'Schwab'),
 _i11 = dense_win(_IT11)
 s11, inc11, exc11 = sr(_IT11, _i11)
 ex.append({
-    'n': 11, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'xlabels': xls(_i11), 'xstep': 2,
+    'n': N_MGNPCT, 'kind': 'lines_endlabels', 'fmt': 'pct1',
+    'xlabels': xls(_i11), 'xstep': 2,
     'title': 'Margin balances as % of client assets', 'ylab': '% of client assets',
     'series': s11,
     'note': (firms_note(inc11, exc11, 'LPL 不披露融资余额。')
              + '把融资余额按各自的客户资产归一化 —— 这是横截面页真正独有的读法：'
              '绝对额只说明谁大，占比说明<b>同样一块客户资产上，谁的客户加了更多杠杆</b>。'
-             '注意分母口径三家略有差异（见 Exhibit 3 的说明），且 Schwab 的分子含 short credits，'
+             f'注意分母口径三家略有差异（见 Exhibit {N_REB23} 的说明），'
+             '且 Schwab 的分子含 short credits，'
              '所以水平值有系统性偏差，趋势与相对位次才是要看的。' + win_note(_i11) + GATE),
 })
 
@@ -668,13 +932,23 @@ _IT12 = [('lpla', 'lpla_cash_pct', 'LPL'),
 _i12 = dense_win(_IT12)
 s12, inc12, exc12 = sr(_IT12, _i12)
 ex.append({
-    'n': 12, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'xlabels': xls(_i12), 'xstep': 2,
+    'n': N_CASHPCT, 'kind': 'lines_endlabels', 'fmt': 'pct1',
+    'xlabels': xls(_i12), 'xstep': 2,
     'title': 'Client cash as % of client assets', 'ylab': '% of client assets',
     'series': s12,
+    # 这张图的断点最不能省：分子（现金）与分母（客户资产）在并表月跳的幅度不同，
+    # 占比会**机械地**掉一截，看上去像「客户把现金投出去了」，其实是并购摊薄。
+    **brks(_i12, LPL_ACQ_BRK),
     'note': (firms_note(inc12, exc12)
              + '现金占比是净利息收入的敏感度指标：占比下行意味着客户把现金投出去了，'
-             '同样的利率环境下 NII 的基数在缩。少的两家与 Exhibit 8 同因 —— '
-             'Schwab 月报不单列客户现金，Robinhood 的客户现金拆成两条不可合计的线。' + win_note(_i12) + GATE),
+             f'同样的利率环境下 NII 的基数在缩。少的两家与 Exhibit {N_CASH} 同因 —— '
+             'Schwab 月报不单列客户现金，Robinhood 的客户现金拆成两条不可合计的线。'
+             + brk_note(_i12, LPL_ACQ_BRK,
+                        tail='<b>并表月的占比下滑有一部分是机械的</b>：分子（客户现金）'
+                             '与分母（客户资产）跳的幅度不同，占比自己就会掉一截 —— '
+                             + dilution_txt(_i12, LPL_ACQ_BRK, 'lpla_cash_pct')
+                             + '把这一段整个读成「客户把现金投出去了」是错的。')
+             + win_note(_i12) + GATE),
 })
 
 # ── Exhibit 13..N：各家客户资产 y/y 的 月 x 年 热力矩阵 ──
@@ -700,36 +974,43 @@ def heat(n, t, title, extra=''):
     }
 
 
-_hn = 13
 for _t, _title, _extra in [
     ('schw', 'Schwab client assets y/y (%)', ''),
     ('lpla', 'LPL client assets y/y (%)', '2024-10（Atria +$88.3bn）与 '
                                           '2025-08（Commonwealth +$275.0bn）起的 12 个格子带着并购转入，'
                                           '不是有机增长；热力矩阵这个图型画不了断点竖线，'
-                                          '带断点线的同口径图见 Exhibit 4，剔并购后的有机口径见 Exhibit 5。'),
+                                          f'带断点线的同口径图见 Exhibit {N_YOY}，'
+                                          f'剔并购后的有机口径见 Exhibit {N_ORG}。'),
     ('ibkr', 'IBKR client equity y/y (%)', ''),
     ('hood', 'Robinhood platform assets y/y (%)', 'Robinhood 的月度披露自 2023-04 起，'
                                                   '所以 y/y 自 2024-04 才有，矩阵行数少于另外三家。'),
 ]:
-    if _t not in HAS:
+    if _t not in N_HEAT:
         continue
-    _h = heat(_hn, _t, _title, _extra)
+    _h = heat(N_HEAT[_t], _t, _title, _extra)
     if _h:
         ex.append(_h)
-        _hn += 1
+
+# 编号是图注的骨架：断一个号，「见 Exhibit N」就集体指错，而这种错人眼扫不出来。
+# 这一条是**结构**不变量（只随成员与序列有无变化，不随窗口滚动），所以在这里硬拦。
+_NS = [1] + [e['n'] for e in ex] + [N_TABLE]
+if _NS != list(range(1, len(_NS) + 1)):
+    raise SystemExit(f'Exhibit 编号不连续：{_NS} —— 有图被跳过而编号没跟着回收')
 
 
 # 汇总表画不了断点线（表格没有 x 轴），所以 LPL 那一行的并购口径只能写进表注。
-# 放在这里而不是 summary 的字面量里，是因为 BRK_DRAWN 要等 exhibit 全部建完才有值 ——
+# 放在这里而不是 summary 的字面量里，是因为 drawn_for 要等 exhibit 全部建完才读得到 ——
 # 图注不能声称画了一条其实没画的线。
+_LPL_DRAWN = drawn_for(ex, LPL_ACQ_BRK)
 if LP_RANK_TXT:
     summary['note'] += (
         'LPL 那行是 as-reported 口径，含 Atria（2024-10 +$88.3bn）与 '
         'Commonwealth（2025-08 +$275.0bn）两次整体并表，表格画不出断点线：'
         + LP_RANK_TXT
-        + (f'带断点线的同口径图见 Exhibit {"、".join(str(n) for n in BRK_DRAWN)}，'
-           if BRK_DRAWN else '')
-        + '剔并购后的有机口径见 Exhibit 5。')
+        + (f'这两次并表在 Exhibit {"、".join(str(n) for n in _LPL_DRAWN)} 上都画了'
+           '红色竖虚线（客户资产与客户现金两族图都受影响）；'
+           if _LPL_DRAWN else '')
+        + f'剔并购后的有机口径见 Exhibit {N_ORG}。')
 
 
 # ────────────────────────────── 核对表 ──────────────────────────────
@@ -756,7 +1037,7 @@ TCOLS = [
 TCOLS = [c for c in TCOLS if c[0] in HAS and c[3] in df.columns and has(c[3])]
 
 table = {
-    'n': _hn,
+    'n': N_TABLE,
     'title': f'近 13 个月跨公司核对表（各家官方原始单位，未换算，统一截至 {mlab(LATEST)}）',
     'idx': '月份',
     'cols': [[c[1], c[2]] for c in TCOLS],
@@ -767,13 +1048,22 @@ table = {
 
 
 # ────────────────────────────── 口径与方法说明 ──────────────────────────────
-def _v(cname, d=1, kind=''):
-    s = df[cname].dropna()
-    if not len(s):
-        return '—'
-    return cell(float(s.iloc[-1]), d, kind)
+_v = _v0                         # 同一件事只留一份实现
 
 
+def _exl(ns):
+    return '、'.join(str(n) for n in ns)
+
+
+# 「本页哪些图上真的有红色竖虚线」一律从建好的 payload 现读，不手写编号 ——
+# 断点会随窗口滚动进出，写死的那句话正是本轮复查抓到的第一类错（图注说画了、图上没有）。
+_DRAWN = sorted({e['n'] for e in ex if e.get('break_at')})
+_NO_BRK = sorted({e['n'] for e in ex
+                  if e['kind'] in ('lines', 'lines_endlabels') and not e.get('break_at')})
+_SCHW_DRAWN = drawn_for(ex, SCHW_NNA_BRK)
+_HOOD_DRAWN = sorted(set(drawn_for(ex, HOOD_ND_BRK)) | set(drawn_for(ex, HOOD_CUST_BRK))
+                     | set(drawn_for(ex, HOOD_TPA_BRK)))
+_HEAT_NS = sorted(N_HEAT.values())
 _others = [t for t in RAW if LATEST_EACH[t] != LATEST]
 notes = [
     f'<b>发布门槛：共同最新月，不是各家自己的最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，'
@@ -798,7 +1088,12 @@ notes = [
     '<b>不入图的：客户现金</b> —— Robinhood 把它拆成 cash sweep（扫到合作银行、表外）与 '
     'cash and deposits（留在券商）两条，不发布同一口径的合计，取任一条与 LPL 的 client cash、'
     'IBKR 的 client credits 并排都会错；<b>2018 起的长历史</b> —— 它的月度披露自 2023-04 才有，'
-    '另出一张四家同基期（2023-04）的图（Exhibit 3）。',
+    f'另出一张四家同基期（2023-04）的图（Exhibit {N_REB23}）。'
+    + (f'<b>有机增速也单独占一张（Exhibit {N_ORG_HOOD}）</b>：它的年化净流入常年是另外两家的'
+       '四到十倍，与它们同轴会把 Schwab 与 LPL 压成贴零的一条带（原来就是这样，'
+       'headline 写的「Schwab / LPL 各几个点」在图上根本读不出来）。'
+       '同一单位不等于同一量纲，拆图不是回避比较 —— 两张图的纵轴单位相同，'
+       '数值可以直接比大小，只是不要把线形叠着看。' if N_ORG_HOOD else ''),
 
     '<b>「可比」不等于「相同」，各图注已逐条标出差异。</b>客户资产的三种叫法'
     '（client assets / client equity / platform assets）都是「客户放在这家平台上的资产」，'
@@ -810,34 +1105,56 @@ notes = [
 
     '<b>流量类不算环比百分比。</b>净新增资产是流量，环比百分比的分母是上个月的流量，'
     '一个月的噪音会被放大成趋势。按 GS「LPLA monthly metrics」的规矩改用<b>年化有机增长率</b>'
-    '（当月净流入 × 12 ÷ 上月末客户资产），见 Exhibit 5。'
-    '比率序列的差异一律用<b>百分点（pp/bp）</b>，不是「百分比的百分比变化」。',
+    f'（当月净流入 × 12 ÷ 上月末客户资产），见 Exhibit {N_ORG}'
+    + (f' 与 Exhibit {N_ORG_HOOD}' if N_ORG_HOOD else '') + '。'
+    '比率序列的差异一律用<b>百分点（pp/bp）</b>，不是「百分比的百分比变化」；'
+    '<code>abs(v) &lt; 1</code> 时用 bp，否则用 pp（CONTRACT §2）。'
+    '四舍五入之后正好是零的负数一律回正 —— 不印「-0bp」「-0.0%」这种带负号的零。',
 
-    '<b>LPL 的并购转入已从有机口径里剔除。</b>Atria（2024-10，$88.3bn）与 '
-    'Commonwealth（2025-08，$275.0bn）等 Acquired NNA 来自官方月报同页的披露，'
-    '逐条硬编码在本脚本与 <code>build/lpla.py</code> 里（不是 CSV 的一列，改一处要改两处）。'
-    'Exhibit 5 用的是剔除后的 organic NNA；Exhibit 2、3、4 与 Exhibit 14 画的是<b>含</b>并购的 '
-    'as-reported 口径，所以那两次跳升之后的 12 个月里，LPL 与另外三家不可比。'
-    + (f'<b>Exhibit {"、".join(str(n) for n in BRK_DRAWN)} 已在 2024-10 与 2025-08 的左缘'
-       f'画出红色竖虚线并标 LPL Atria / LPL Commonwealth</b>（语义：该期起 LPL 这条线与左侧'
-       '不可比，另外三家不受影响）。' if BRK_DRAWN else '')
-    + 'Exhibit 5 已是剔除后的口径，本身连续可比，故不画断点；'
-    'Exhibit 1 汇总表与 Exhibit 14 热力矩阵的图型都不支持断点线，改在各自的图注里写明。'
-    + (f'当期的量级：{LP_RANK_TXT}' if LP_RANK_TXT else ''),
+    '<b>口径断点：图注说画了，图上就必须真有。</b>本页登记在册的断点有四组 —— '
+    'LPL 的两次整体并表（Atria 2024-10 $88.3bn、Commonwealth 2025-08 $275.0bn，'
+    '来自官方月报同页披露的 Acquired NNA，逐条硬编码在本脚本与 <code>build/lpla.py</code>，'
+    '不是 CSV 的一列，改一处要改两处）、Schwab 2025-01 起把单一客户流入的剔除门槛从 $10bn '
+    '提到 $25bn、Robinhood 的 Bitstamp（2025-06 起并入净流入与客户数）与 TradePMR / WonderFi。'
+    + (f'<b>本轮真正画出红色竖虚线的是 Exhibit {_exl(_DRAWN)}</b>'
+       f'（其中 LPL 并表 {_exl(_LPL_DRAWN)}'
+       + (f'、Schwab 门槛 {_exl(_SCHW_DRAWN)}' if _SCHW_DRAWN else '')
+       + (f'、Robinhood {_exl(_HOOD_DRAWN)}' if _HOOD_DRAWN else '')
+       + '），语义一律是「从这一期起<b>这一条线</b>与左侧不可比，同图的其他公司不受影响」。'
+       if _DRAWN else '本轮没有任何断点落在各图窗口内，故一条竖虚线都不画。')
+    + (f'没有断点线的折线图是 Exhibit {_exl(_NO_BRK)}：它们画的序列在各自窗口内没有登记在册的'
+       '口径变化（或断点已滚出窗口）。' if _NO_BRK else '')
+    + f'Exhibit 1 汇总表与 Exhibit {_exl(_HEAT_NS)} 热力矩阵的图型不支持断点线'
+    '（表格与矩阵都没有连续 x 轴），改在各自的表注 / 图注里写明。'
+    '断点一旦滚出窗口，线与图注文案会<b>一起</b>消失，不会剩下一句「红色竖虚线 = …」的空话。'
+    + (f'LPL 当期的量级：{LP_RANK_TXT}' if LP_RANK_TXT else ''),
 
-    '<b>横截面页独有的两张归一化图。</b>Exhibit 11（融资余额 / 客户资产）与 '
-    'Exhibit 12（客户现金 / 客户资产）把余额按各自的客户资产归一化：'
+    f'<b>横截面页独有的两张归一化图。</b>Exhibit {N_MGNPCT}（融资余额 / 客户资产）与 '
+    f'Exhibit {N_CASHPCT}（客户现金 / 客户资产）把余额按各自的客户资产归一化：'
     '绝对额只说明谁大，占比说明「同样一块客户资产上，谁的客户加了更多杠杆 / 留了更多现金」。'
-    '分子分母的口径差异（见上）会造成系统性水平偏差，趋势与相对位次才是要看的。',
+    '分子分母的口径差异（见上）会造成系统性水平偏差，趋势与相对位次才是要看的。'
+    f'并表月要特别小心：Exhibit {N_CASHPCT} 的分子与分母跳的幅度不同，占比会机械地掉一截，'
+    '看着像「客户把现金投出去了」，其实是并购摊薄，图注里已给出 bp 与它占全窗口变动的比例。',
 
     '<b>缺的月份不补、不连。</b>Schwab 的月末融资余额与 DATs 都是 2026-01 的月报才开始披露'
-    '（滚动表回溯至 2025-01），所以它在 Exhibit 7、9 的线在窗口左段是断的 —— '
+    f'（滚动表回溯至 2025-01），所以它在 Exhibit {N_MGN}、{N_DATS} 的线在窗口左段是断的 —— '
     '那是没有披露，不是余额为零。所有非有限值一律写 <code>null</code>，图与表都断开，不画假点。',
+
+    f'<b>纵轴。</b>重定基图（Exhibit {N_REB18}、{N_REB23}、{N_REB19}）沿用 deck 的自适应量程，'
+    '各条线右端标出当期指数值 —— 长历史图上那是唯一的绝对水平锚点，没有它只能靠网格线目测；'
+    '各条线本来就都从基期的 100 起画（图的左缘就是基准），故不再另画一条 100 的水平参考线。'
+    f'Exhibit {N_ORG} 用了截轴（0–{EX5_CAP:.0f}%）：'
+    '<b>截轴不删点</b> —— 超界的点画成空心红圈、真值竖排标在图上，表格视图里给的也是真值。'
+    '本站没有对数轴，量级差太远的序列一律拆图而不是压缩坐标。',
 
     f'<b>窗口。</b>近期多线图 {WIN} 个月、核对表 13 个月、热力矩阵最多 7 年，'
     '全部从共同最新月倒推；重定基图从各自基期画到共同最新月。'
     '所有数值与格式化都在 Python 侧完成，页面不做任何计算 —— '
-    '同一个数字在两个语言里各算一遍，迟早会出现图上与表里对不上而没人发现。',
+    '同一个数字在两个语言里各算一遍，迟早会出现图上与表里对不上而没人发现。'
+    '汇总表的 3Y %ile 也一样：判据在 <code>build/pctile.py</code>，全站 14 个生成器共用一份 '
+    '（回放近 24 个月，≥70% 的月份钉在端点就留空）。'
+    '本页曾用「≥90% 的月环比不降」这个代理判据，结果同一条 LPL total client assets 在 '
+    '/lpla/ 被判成噪音留空、在本页却印成绿色 100 —— 判据是口径，口径只能有一处定义。',
 ]
 
 headline = (f'共同最新月 {mlab(LATEST)}（短板 {LAG}）'
@@ -845,7 +1162,12 @@ headline = (f'共同最新月 {mlab(LATEST)}（短板 {LAG}）'
             f' / IBKR {_v("ibkr_assets", 0, "$")}bn'
             + (f' / Robinhood {_v("hood_assets", 0, "$")}bn' if 'hood' in HAS else '')
             + f' · 年化有机增速 Schwab {_v("schw_org", 1)}% / LPL {_v("lpla_org", 1)}%'
-            + (f' / Robinhood {_v("hood_org", 1)}%' if 'hood' in HAS else ''))
+            + (f' / Robinhood {_v("hood_org", 1)}%' if 'hood' in HAS else '')
+            # 头条只报 as-reported 的 LPL y/y 就是只报喜：那 +38% 里有一大块是买来的。
+            # 有剔并购口径就把两个数一起给，没有（缺月）就一个都不给。
+            + (f' · LPL 客户资产 y/y {signed(_LP_YOY_NOW, 1, "%")}'
+               f'（剔并购 {signed(LP_YOY_EX, 1, "%")}）'
+               if _LP_YOY_NOW is not None and LP_YOY_EX is not None else ''))
 
 payload = {
     'ticker': 'wealth',
