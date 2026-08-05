@@ -426,7 +426,10 @@
               r: dual ? (ex.ylab2 ? 56 : 42)
                       : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ||
                          kind === 'year_lines' ? 42 : 14),
-              b: XB, l: ex.ylab ? 56 : 46 };
+              b: XB,
+              /* lines_endlabels 的左端标签要有自己的一列：不加这 30px 就只能挤在
+                 Xc(0)-7，正好压在 y 轴刻度栏上（右端早就有 42px 的专列了）。 */
+              l: (ex.ylab ? 56 : 46) + (kind === 'lines_endlabels' ? 30 : 0) };
     var pw = Math.max(60, W - M.l - M.r), ph = Math.max(80, H - M.t - M.b);
 
     var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
@@ -572,10 +575,12 @@
     var yfKey = ex.yfmt || (ex.bar && ex.bar.yfmt);          // 双轴图的左轴格式在 bar 上
     var yf = yfKey ? fmtOf(yfKey) : plainAxis(tstep, kind === 'stacked_dual');
 
+    var tickW = 0;
     for (i = 0; i < tk.length; i++) {
       if (tk[i] < y0 - 1e-9 || tk[i] > y1 + 1e-9) continue;
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(tk[i]), y2: Y(tk[i]), stroke: C.GRID, 'stroke-width': 1 }, svg);
-      txt(svg, M.l - 6, Y(tk[i]) + 3.2, yf(tk[i]), { size: 9, anchor: 'end' });
+      var tkn = txt(svg, M.l - 6, Y(tk[i]) + 3.2, yf(tk[i]), { size: 9, anchor: 'end' });
+      try { tickW = Math.max(tickW, tkn.getComputedTextLength()); } catch (e) { }
     }
     if (y0 < -1e-9 && y1 > 1e-9)
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(0), y2: Y(0), stroke: C.AXIS, 'stroke-width': 0.9 }, svg);
@@ -775,13 +780,40 @@
       }
     } else if (kind === 'lines_endlabels') {
       var fe = fmtOf(ex.fmt);
+      /* 端点标签必须做避让：原来左右两端都是无条件按 Y(值) 落笔，两条线端值接近
+         （CME Ex5 的 FX 788 / Metals 811）就互相盖住，端值相等时（CME Ex3 两条线
+         都是 23.0）后画的把先画的整条盖没 —— 读者看到的是一个假数字，不是一团糊。
+         左端还额外压在 y 轴刻度上（wealth Ex4 的「41%」压刻度「40」）。
+         这里：竖向按最小行距推开；横向左端退到刻度栏左侧的专列（M.l 已多留 30px）。 */
+      var LE = [], RE = [];
       for (s = 0; s < ex.series.length; s++) {
         var sr = ex.series[s], sc = col(sr.color);
         polyline(sr.values, sc, 1.8, true, false);
-        txt(g, Xc(0) - 7, Y(sr.values[0]) + 3.2, fe(sr.values[0]), { size: 8, anchor: 'end', fill: sc });
-        txt(g, Xc(n - 1) + 7, Y(sr.values[n - 1]) + 3.2, fe(sr.values[n - 1]),
-          { size: 8, anchor: 'start', fill: sc });
+        LE.push({ y: Y(sr.values[0]) + 3.2, t: fe(sr.values[0]), c: sc });
+        RE.push({ y: Y(sr.values[n - 1]) + 3.2, t: fe(sr.values[n - 1]), c: sc });
       }
+      var spread = function (arr) {
+        var gap = 9.6, lo = M.t + 7, hi = M.t + ph + 3, k, over;
+        arr.sort(function (a, b) { return a.y - b.y; });
+        for (k = 1; k < arr.length; k++)
+          if (arr[k].y - arr[k - 1].y < gap) arr[k].y = arr[k - 1].y + gap;
+        over = arr.length ? arr[arr.length - 1].y - hi : 0;
+        if (over > 0) for (k = 0; k < arr.length; k++) arr[k].y -= over;
+        if (arr.length && arr[0].y < lo) {
+          /* 上下都顶满了（系列太多）：从上边界往下顺排，宁可离线远一点也不能叠 */
+          for (k = 0; k < arr.length; k++) arr[k].y = lo + k * gap;
+        }
+        return arr;
+      };
+      /* 左端标签的右边界：刻度栏左侧再留 4px。tickW 量不到时（图被 display:none）
+         退回一个够宽的常数，宁可离轴远也不要压上去。 */
+      var lx = M.l - 10 - (tickW || 26);
+      spread(LE).forEach(function (d) {
+        txt(g, lx, d.y, d.t, { size: 8, anchor: 'end', fill: d.c });
+      });
+      spread(RE).forEach(function (d) {
+        txt(g, Xc(n - 1) + 7, d.y, d.t, { size: 8, anchor: 'start', fill: d.c });
+      });
     } else if (kind === 'stacked_dual') {
       var ws = BW(0.62), base = [];
       for (i = 0; i < n; i++) base.push(0);

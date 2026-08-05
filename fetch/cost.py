@@ -126,8 +126,12 @@ def update(series_dir, cache_dir=None):
         missing = [c for c in head[1:] if c not in rec]
         if missing:
             raise CostFetchError(f'{key} 解析缺列 {missing} ({url})')
+        # 照抄既有行尾：csv.writer 默认写 \r\n，而 cost_monthly.csv 是纯 LF，
+        # 用默认值会往全 LF 的文件里插一条孤立的 CRLF 行，再被 _mirror 逐字节搬进 series/。
+        with open(CSV, 'rb') as f:
+            term = '\r\n' if b'\r\n' in f.read(4096) else '\n'
         with open(CSV, 'a', newline='', encoding='utf-8') as f:
-            csv.writer(f).writerow([key] + [rec[c] for c in head[1:]])
+            csv.writer(f, lineterminator=term).writerow([key] + [rec[c] for c in head[1:]])
         added.append(key)
         have.add(key)
         last = key

@@ -28,7 +28,9 @@
 护栏保持不变，且仍然是「宁可不发也不发错」:
   · 提交范围只有 `data/`；`data/` 以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
   · 任何一家的 fetch 解析出缺列 / 月份对不上，由该家的 fetch 模块抛异常 → 记 FAIL，不写数据
-  · 沿用过期缓存的那家会在页面上打红标（payload 的 stale_source），不会假装是新数据
+  · 页面的新鲜度只绑 payload 的 data_through（构建日期只写 data/*.js 首行注释，不进 payload）。
+    抓取失败那家不写 series、不重生成，data_through 原地不动，首页按 roster 的 LAG + GRACE
+    给它打红点 —— 旧数据看得出是旧的，不会被当成新的
 """
 import argparse
 import datetime
@@ -67,15 +69,23 @@ def load(path, name):
     return mod
 
 
+# 本脚本自己会写、也自己会提交的路径。护栏与提交范围必须用同一份清单 ——
+# 两者一旦不一致，本脚本就会亲手把工作树弄脏，然后被自己的护栏拦死。
+# （曾经只写 data：fetch 往 series/*.csv 追加新月份，而 series 是 tracked 的，
+#  于是「第一次成功发布」这件事本身留下 ` M series/xxx.csv`，下一次跑必被拦，
+#  且不是拦某一家，是 12 家一起停 —— 无人值守管道只能成功发布一次。）
+PUBLISH = ['data', 'series']
+
+
 def guard_dirty_tree():
-    """返回 `data/` 以外的未提交改动（porcelain 文本），干净时为空串。
+    """返回**本脚本管辖范围之外**的未提交改动（porcelain 文本），干净时为空串。
 
     这个仓库是手写手改的：charts.js / page.js / index.html 经常处于改到一半的状态。
     没有这道检查时，cron 会把半成品连同数据一起 commit 成「更新 YYYY-MM 数据」推到
     公开 Pages —— 页面变半成品，而 commit message 完全看不出发生了什么。
-    所以提交范围收窄成显式的 `data`，并在此之外拒绝脏树，把决定权交回给用户。
+    所以提交范围收窄成 PUBLISH 里那几条显式路径，并在此之外拒绝脏树。
     """
-    return sh(['git', 'status', '--porcelain', '--', '.', ':!data'])
+    return sh(['git', 'status', '--porcelain', '--', '.'] + [f':!{p}' for p in PUBLISH])
 
 
 def _body(text):
@@ -168,18 +178,24 @@ def one(t, force):
 
 
 def build_cross(force):
-    """横截面页：成员齐了才生成。缺员时它自己会打印共同最新月并跳过。"""
-    done = []
+    """横截面页：成员齐了才生成。返回**失败**的页面清单，交给 main() 计入总状态。
+
+    返回失败而不是成功清单，是因为这两页没有自己的披露节奏 —— roster 给它们 lag=None，
+    首页永远不给它们判红点。末行总状态是它们唯一的故障信号，吞掉就等于没有信号。
+    （「成员没齐」不算失败：两个 builder 都会打印原因并以退出码 0 正常结束，
+      等成员齐了下次自然会生成。）
+    """
+    failed = []
     for t in CROSS:
         bp = os.path.join(HERE, 'build', f'{t}.py')
         if not os.path.exists(bp):
             continue
         try:
             sh([sys.executable, bp])
-            done.append(t)
         except Exception as e:
             print(f'{t:<10} FAIL     {type(e).__name__}: {e}')
-    return done
+            failed.append(t)
+    return failed
 
 
 def main():
@@ -217,20 +233,30 @@ def main():
             if st == 'NEW':
                 months[t] = msg
 
-    build_cross(a.force)
+    # 横截面页失败必须计入 fails。它们没有自己的披露节奏（roster 给 lag=None，
+    # 首页永远不给它们判红点），末行总状态是这两页唯一的故障信号 ——
+    # 在这里吞掉，两页会无声停在旧月份，而调度器读到的仍是 PUBLISHED。
+    fails += build_cross(a.force)
     roster(todo)
 
+    def nothing():
+        """「没有任何东西可发布」的统一出口 —— 有失败就必须让调度器看见。"""
+        print('NOTHING_TO_DO' if not fails
+              else f'FAILED 无更新且 {len(fails)} 家失败: {",".join(fails)}')
+
     if not data_changed() and not a.force:
-        print('NOTHING_TO_DO' if not fails else f'FAILED 无更新且 {len(fails)} 家失败: {",".join(fails)}')
+        nothing()
         return
     if a.dry_run:
-        print(sh(['git', 'diff', '--stat', '--', 'data']))
+        print(sh(['git', 'diff', '--stat', '--'] + PUBLISH))
         print(f'DRY_RUN {len(ok)} 家有更新')
         return
 
-    sh(['git', 'add', 'data'])            # 提交范围收窄为显式路径
+    sh(['git', 'add'] + PUBLISH)          # 提交范围收窄为显式路径（见 PUBLISH 的注释）
     if not sh(['git', 'diff', '--cached', '--name-only']):
-        print('NOTHING_TO_DO')
+        # --force 会跳过上面的 data_changed()，所以这个兜底分支是 --force 路径的唯一出口，
+        # 必须和上面那个用同一套口径 —— 否则 --force 跑时 12 家全挂，末行仍是 NOTHING_TO_DO。
+        nothing()
         return
     label = ', '.join(f'{t} {m}' for t, m in months.items()) or f'{len(ok)} 家重建'
     sh(['git', 'commit', '-m', f'更新数据: {label}'])

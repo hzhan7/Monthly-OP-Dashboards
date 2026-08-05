@@ -108,6 +108,11 @@ def update(series_dir, cache_dir=None):
         rows = list(csv.reader(f))
     head, body = rows[0], rows[1:]
     have = {r[0] for r in body}
+    # 照抄既有行尾。csv.writer 默认写 \r\n，而这份文件是纯 LF —— 直接用默认值会把
+    # 整份 128 行重写成 CRLF，于是「本月新增 1 行」的真实改动被 128 行行尾变更淹没，
+    # git diff 完全看不出发生了什么。fetch/tsm.py 早就踩过并防住了这条。
+    with open(csv_path, 'rb') as f:
+        term = '\r\n' if b'\r\n' in f.read(4096) else '\n'
 
     cols = head[1:]
     unknown = [c for c in cols if c not in {k for k, _ in br.LABELS}]
@@ -130,7 +135,7 @@ def update(series_dir, cache_dir=None):
     if added:
         body.sort(key=lambda r: r[0])
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            w = csv.writer(f)
+            w = csv.writer(f, lineterminator=term)
             w.writerow(head)
             w.writerows(body)
 

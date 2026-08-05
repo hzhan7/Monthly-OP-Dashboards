@@ -33,7 +33,7 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 | `hub_line` | | 首页卡片上的短摘要（≤60 字）。不给则截取 `headline` 前 110 字 |
 | `source` | ✓ | 所有 exhibit 共用的 `Source:` 行 |
 | `source_date` | | 官方发布日，显示在抬头右侧 |
-| `stale_source` | | `True` 时抬头打红标「官网下载失败，本次沿用本地缓存」 |
+| `stale_source` | | `True` 时抬头打红标「官网下载失败，本次沿用本地缓存」。**目前没有任何生成器会产生它** —— 现有的 fetch 模块下载失败一律抛异常，那家整个跳过、`data_through` 原地不动，由首页红点报警。渲染分支保留着，但在有 fetch 真走「降级到旧缓存」这条路之前，不要在生成器里设它 |
 | `xlabels` | ✓ | 短窗口 x 轴标签数组 |
 | `xlabels_long` | | 长历史 x 轴标签数组；exhibit 写 `x: 'long'` 时用它 |
 | `summary` | ✓ | Exhibit 1 汇总表，见 §2 |
