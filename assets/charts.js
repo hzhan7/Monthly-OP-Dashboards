@@ -981,12 +981,19 @@
       }
       thinLabels(labg);
       if (yoyS && Y2) {
-        var lcy = col(yoyS.color || 'GOLD'), vy = yoyS.values;
+        var lcy = col(yoyS.color || 'GOLD'), vy = yoyS.values, kk;
         /* 零线：y/y 的正负是这条线的全部意义，没有零线读者只能靠右轴刻度反推 */
         if (r0 < -1e-9 && r1 > 1e-9)
           el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0), stroke: lcy,
             'stroke-width': 0.7, 'stroke-dasharray': '2 2' }, g);
         polyline(vy, lcy, 1.6, false, true, Y2);
+        /* 柱顶数值标签重新置顶。y/y 线横穿柱顶一带，画在标签之上就会把数字拦腰划断
+           （同均线那条规矩，白色描边只压得住画在它下面的东西）。
+           这里用「把已有节点再 appendChild 一次」把它们移到 g 的末尾，而不是把整个柱子
+           循环拆成两趟 —— 拆循环会连带改掉**没开 y/y** 那条路径的 DOM 顺序，
+           而 IBKR 的 5 张 gs_bar 正走那条路径，要求逐字节不变。 */
+        for (kk = 0; kk < labg.length; kk++)
+          if (labg[kk].el.parentNode === g) g.appendChild(labg[kk].el);
         var jy = lastFinite(vy);
         /* 末点读数标在点的**右下方**（同 deck 的 xytext=(5,-7)）：柱顶那一排数值标签
            在点的上方，标上面必压。 */
@@ -1097,9 +1104,14 @@
        数值标签竖排在柱顶（gsx 是 rotation=90），所以纵轴上界给 1.32 倍。
        右轴的金色（gsx GOLD）不在本文件的 C.* 里，默认退到 GREEN，payload 可指定。 */
     } else if (kind === 'qtr_bar') {
-      var wq = BW(0.70), fq = fmtOf(ex.label_fmt || ex.fmt || 'f0c');
+      var wq = BW(0.70), fq = fmtOf(ex.label_fmt || ex.fmt || 'f0c'), qLab = [];
       var partialQ = isNum(ex.partial_months) && +ex.partial_months > 0 &&
                      +ex.partial_months < (ex.qtr_months || 3);
+      /* 柱 → 右轴线 → 数值标签，三层顺序不能反。
+         与 gs_bar 的均线同一条道理：右轴那条 y/y 线会横穿柱顶一带，画在数值标签之上
+         就会把标签拦腰划断，而 txt() 的白色描边只压得住画在它**下面**的东西。
+         零点对齐兜底（见 ALIGN_WASTE_MAX）生效后柱子变高、线相对下移，
+         schw Ex11 实测由此新增两处「绿线划穿 $52 / $120」—— 所以标签必须最后画。 */
       for (i = 0; i < n; i++) {
         var vq = ex.values[i];
         if (!isNum(vq)) continue;
@@ -1107,8 +1119,7 @@
         if (markSet && markSet[i]) cq = 'url(#' + hatchId + ')';
         var cutq = capBar(Xc(i) - wq / 2, wq, vq, cq);
         if (cutq || ex.bar_labels === false) continue;
-        if (vq >= 0) vLabel(Xc(i), Y(vq) - 4, fq(vq), { size: 7.4 });
-        else txt(g, Xc(i), Y(vq) + 9, fq(vq), { size: 7.4 });   // 负柱不竖排，会插进柱体里
+        qLab.push(i);
       }
       if (Y2) {
         var lcq = col((ex.line.color) || 'GREEN');
@@ -1122,11 +1133,19 @@
           el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0), stroke: lcq,
             'stroke-width': 0.7, 'stroke-dasharray': '2 2' }, g);
         polyline(lvq, lcq, 1.6, false, true, Y2);
-        var jq = lastFinite(lvq);
+      }
+      /* 数值标签最后画（见上）：正柱竖排在柱顶，负柱横排在柱底 —— 负柱竖排会插进柱体里 */
+      for (var q2 = 0; q2 < qLab.length; q2++) {
+        var iq = qLab[q2], vq2 = ex.values[iq];
+        if (vq2 >= 0) vLabel(Xc(iq), Y(vq2) - 4, fq(vq2), { size: 7.4 });
+        else txt(g, Xc(iq), Y(vq2) + 9, fq(vq2), { size: 7.4 });
+      }
+      if (Y2) {
+        var lvq2 = lineVals(ex), jq = lastFinite(lvq2);
         if (jq >= 0)
-          txt(g, Xc(jq) + 5, Y2(lvq[jq]) + 3.2,
-            fmtOf(ex.line.yfmt || 'pct0')(lvq[jq]),
-            { size: 8, anchor: 'start', weight: 700, fill: lcq });
+          txt(g, Xc(jq) + 5, Y2(lvq2[jq]) + 3.2,
+            fmtOf(ex.line.yfmt || 'pct0')(lvq2[jq]),
+            { size: 8, anchor: 'start', weight: 700, fill: col((ex.line.color) || 'GREEN') });
       }
 
     /* seasonality ← gsx.seasonality：灰柱 = 过去 N 年同月均值、蓝柱 = 本期实际。
@@ -1290,9 +1309,19 @@
        画在绘图区内的左上角而不是画布顶：那里是柱图天然的留白（y1 至少是 max 的 1.22 倍），
        而画布顶那一条要留给截轴的竖排真值。挂在 svg 上（在 g 之后）保证压在数据上面，
        文字本身有白色描边打底。 */
-    if (misalign)
+    if (misalign) {
       txt(svg, M.l + 3, M.t + 9, '左右轴零点不同高（两轴独立缩放）',
         { size: 7.4, anchor: 'start', style: 'italic', fill: BREAK });
+      /* 右轴的零线也得画出来。零点对齐时图上那条唯一的零线两边通用，不对齐之后
+         柱的基线只代表左轴 —— 读者若拿它当右轴的零，hood Ex4 那条在 −25pp..+25pp
+         之间来回的 y/y 线会被整条读成正值。qtr_bar / grouped_bars / gs_bar 自己就画了，
+         这里只补 bar_line_dual / stacked_dual 这两个原本没画的。 */
+      if (r0 < -1e-9 && r1 > 1e-9 &&
+          kind !== 'qtr_bar' && kind !== 'grouped_bars' && kind !== 'gs_bar')
+        el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0),
+          stroke: col((rc && rc.color) || 'GREEN'), 'stroke-width': 0.7,
+          'stroke-dasharray': '2 2' }, svg);
+    }
 
     if (ex.ylab) {
       var cy = M.t + ph / 2;
