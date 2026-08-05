@@ -189,3 +189,22 @@ table.sum td.lo  { color: var(--red); }     /* 分位低 */
 /* 「官网下载失败，沿用本地缓存」的红标 */
 .chip { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 3px;
         background: #fdecec; color: var(--red); border: 1px solid #e6b3b3; font-size: 11px; }
+
+/* ── 宽表的横滚提示 ─────────────────────────────────────────────────────────
+   核对表最多 16 列（HOOD / AXP），在 1280px 屏上装不下。.tblwrap 一直有
+   overflow-x:auto、本来就能滑，但**没有任何可滑动的信号** —— 截图上看就是被生生
+   切断，读者只会以为后面几列的数据丢了（视觉审查里 4 个页面都被当成「内容真丢了」报上来）。
+   右缘阴影用 background-attachment 的 local/scroll 组合做：滑到底时阴影自动消失，
+   纯 CSS、不需要监听滚动事件。 */
+.tblwrap {
+  background:
+    linear-gradient(to left, #ffffff 40%, rgba(255, 255, 255, 0)) right / 26px 100% no-repeat local,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, .14), rgba(0, 0, 0, 0))
+      right / 11px 100% no-repeat scroll;
+}
+/* 光有阴影还不够明确，真的溢出时（由 page.js 实测 scrollWidth 后挂 class）再加一行字 */
+.tblwrap.scrollable::after {
+  content: '← 表格可左右滑动，共 ' attr(data-cols) ' 列 →';
+  display: block; padding: 5px 2px 0;
+  font-size: 10px; color: var(--ink-3); text-align: right;
+}

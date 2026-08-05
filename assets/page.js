@@ -122,8 +122,21 @@
       h += '</tr>';
     });
     el('tbl').innerHTML = h + '</tbody></table></div><p class="src">' + D.source + '</p></section>';
+    /* 章节标题只写「附录」两个字。以前这里写的是完整的 "Exhibit N：<title>"，
+       而卡片自己的 header 也会渲染一遍同样的文字 —— 14 个页面全都把核对表标题
+       原样打印了两次，一大一小上下挨着。 */
     var sec = el('tblhead');
-    if (sec) sec.textContent = 'Exhibit ' + T.n + '：' + T.title;
+    if (sec) sec.textContent = '附录';
+
+    /* 宽表（HOOD 16 列、AXP 16 列、wealth 12 列）在 1280px 屏上装不下。
+       .tblwrap 本来就有 overflow-x:auto、能滑，但**没有任何可滑动的提示** ——
+       截图上看就是被生生切断，读者不会知道右边还有列，只会以为数据丢了。
+       所以这里实测一下宽度，真的溢出才挂 class，由 CSS 画右缘渐隐 + 一行提示。 */
+    var wrap = el('tbl').querySelector('.tblwrap');
+    if (wrap && wrap.scrollWidth > wrap.clientWidth + 1) {
+      wrap.classList.add('scrollable');
+      wrap.setAttribute('data-cols', String(T.cols.length + 1));
+    }
   }
 
   /* ── 口径与方法说明 ── */

@@ -117,12 +117,26 @@
     if (parent) parent.appendChild(n);
     return n;
   }
+  /* o.halo：给文字加白色描边打底（paint-order 让描边画在填充下面，字形不变粗）。
+
+     为什么需要它：这套图里的数值标签是画在绘图区**内部**的，而同一块画布上还有
+     均线虚线、折线、断点竖线。均线尤其致命 —— 它按构造就落在柱子中段附近，凡是当月值
+     接近 12 个月均值的月份，标签必然被一条横线拦腰划掉，数字糊成黑白相间的一团。
+     两轮独立的人眼审查都把这一条列为 blocker，且同一根因还制造了十几条
+     「折线划穿自己的端点标签」（IBKR Ex3/5/7、HKEX Ex3、MSCI Ex3、HOOD Ex9/16/25、TSM Ex5…）。
+
+     描边比「把线画在标签下面」更彻底：z 序只能解决同一图元的先后，解决不了
+     两个标签互相压、也解决不了标签压坐标轴刻度。 */
   function txt(parent, x, y, s, o) {
     o = o || {};
     var t = el('text', {
       x: x, y: y, fill: o.fill || C.INK, 'font-size': o.size || 9,
       'text-anchor': o.anchor || 'middle', 'font-weight': o.weight || null,
       'font-style': o.style || null, transform: o.transform || null,
+      stroke: o.halo === false ? null : C.WHITE,
+      'stroke-width': o.halo === false ? null : (o.halo_w || 2.4),
+      'stroke-linejoin': o.halo === false ? null : 'round',
+      'paint-order': o.halo === false ? null : 'stroke fill',
     }, parent);
     t.textContent = s;
     return t;
@@ -785,6 +799,12 @@
         polyline(ex.series[s].values, col(ex.series[s].color), 1.6, false, !!ex.markers);
     } else if (kind === 'gs_bar') {
       var wg = BW(0.62), fb = fmtOf(ex.fmt), labg = [];
+      /* 均线**必须画在数值标签之前**。它按构造就落在柱子中段附近，凡是当月值接近
+         12 个月均值的月份，标签必然被这条横线拦腰划掉 —— 两轮独立人眼审查都把这条
+         列为 blocker（SCHW Ex12 三个数连着被划、LPLA Ex16 连续 9 个百分比被划断）。
+         光靠 txt() 的白色描边挡不住：描边只压得住画在它**下面**的东西。 */
+      el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
+        'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
       for (i = 0; i < n; i++) {
         /* 原来这里是直接 barPath(Y(values[i]))，没走截轴：设了 ycap 的话柱和数值标签
            会一起画到画布外几百像素（IBKR 现有 payload 没设过 ycap，所以一直没暴露）。
@@ -796,8 +816,6 @@
           el: txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 }) });
       }
       thinLabels(labg);
-      el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
-        'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
       if (ex.yoy_txt) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt, null, M.l);
       if (ex.mom_txt) {
         var last = ex.values[n - 1];
