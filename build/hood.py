@@ -354,14 +354,16 @@ EX.append({
 EX.append({
     'n': 13, 'kind': 'lines', 'markers': True,
     'title': 'Effective take rate by asset class',
-    # fmt 用 f1 而不是 f2：charts.js 的 FMT 表里没有 f2，给了会静默回落到 f1
-    'xlabels': XQ, 'fmt': 'f1',
+    # 窗口必须显式切到 13 个季度（deck 的 win=13）。今天 hood_q.csv 恰好 13 个季度，
+    # 不切也看不出问题 —— 但 2026Q3 一入库网页就变 14 点而 PDF 仍是 13 点，此后越差越远。
+    # 全页 26 张图里这曾是唯一一处漏切的。
+    'xlabels': XQ[-13:], 'fmt': 'f2',
     'ylab': 'cents/contract (opt, event) · bp (eq, crypto)',
     'series': [
-        {'name': 'Options (c/contract)', 'color': 'NAVY', 'values': L(rate_options_c)},
-        {'name': 'Equities (bp)', 'color': 'RED', 'values': L(rate_equities_bp)},
-        {'name': 'Crypto (bp)', 'color': 'MBLUE', 'values': L(rate_crypto_bp)},
-        {'name': 'Event contracts (c/contract)', 'color': 'GREEN', 'values': L(rate_event_c)},
+        {'name': 'Options (c/contract)', 'color': 'NAVY', 'values': L(rate_options_c)[-13:]},
+        {'name': 'Equities (bp)', 'color': 'RED', 'values': L(rate_equities_bp)[-13:]},
+        {'name': 'Crypto (bp)', 'color': 'MBLUE', 'values': L(rate_crypto_bp)[-13:]},
+        {'name': 'Event contracts (c/contract)', 'color': 'GREEN', 'values': L(rate_event_c)[-13:]},
     ],
     'note': 'Quarterly reported revenue / quarterly volume — derived, not disclosed. '
             'Crypto is the volatile one and it is what makes the revenue bridge miss. '
