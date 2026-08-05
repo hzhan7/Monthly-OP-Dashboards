@@ -1,0 +1,165 @@
+/* ==========================================================================
+   版式对齐 skill 生成的 GS 样式 PDF：白底纸面、GS 取色、Arial 系字体。
+   刻意只做浅色（PDF 是白底文档；深色反转会改变 exhibit 的取色关系）。
+   ========================================================================== */
+:root {
+  color-scheme: light;
+  --paper: #ffffff;
+  --plane: #f4f4f2;
+  --navy: #1f3864;
+  --blue: #9dc3e6;
+  --mblue: #2e75b6;
+  --red: #b23a48;
+  /* 新鲜度绿点用，与 charts.js 的 C.GREEN 同色（那边已过色盲安全校验，别另起一个绿） */
+  --green: #548235;
+  --ink: #111111;
+  --ink-2: #333333;
+  --ink-3: #666666;
+  --rule: #d9d9d9;
+  --grid: #e3e3e3;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font: 15px/1.6 Arial, "Helvetica Neue", Helvetica, "Hiragino Sans GB",
+        "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap {
+  max-width: 1240px; margin: 0 auto; padding: 0 0 60px;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--rule);
+}
+.inner { padding: 26px 34px 40px; }
+a { color: var(--mblue); }
+
+/* ── 页眉：仿 PDF 抬头 ── */
+.masthead { border-bottom: 1.6px solid var(--ink); padding-bottom: 7px; margin-bottom: 22px;
+  display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.masthead .tracker { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.masthead .meta { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+
+h1 { margin: 0 0 6px; font-size: 25px; font-weight: 700; letter-spacing: -0.015em; }
+.subtitle { margin: 0 0 22px; font-size: 12.5px; color: var(--ink-2); }
+
+/* ── 摘要要点（仿 PDF 首页 bullets）── */
+.bullets { margin: 0 0 26px; padding: 0; list-style: none; }
+.bullets li { position: relative; padding-left: 16px; margin-bottom: 9px; font-size: 13.5px; line-height: 1.62; }
+.bullets li::before {
+  content: ''; position: absolute; left: 0; top: 8px;
+  width: 7px; height: 7px; background: var(--navy);
+}
+.headline { margin: 0 0 24px; padding: 11px 14px; background: #f7f9fc;
+  border-left: 3px solid var(--navy); font-size: 13px; color: var(--ink-2); }
+
+/* ── exhibit 网格 ── */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 30px; }
+.grid.full { grid-template-columns: 1fr; }
+.card { min-width: 0; }
+.card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 700; line-height: 1.4; letter-spacing: -0.005em; }
+.card .src { margin: 7px 0 0; font-size: 9.5px; line-height: 1.5; color: #555555; }
+.card .src b { color: var(--ink-2); }
+.card .note { margin: 4px 0 0; font-size: 11px; color: var(--ink-3); }
+
+.toggle {
+  font: inherit; font-size: 10.5px; padding: 2px 8px; min-height: 22px; white-space: nowrap;
+  border: 1px solid var(--rule); border-radius: 4px; background: #fff; color: var(--ink-2);
+  cursor: pointer; flex: none;
+}
+.toggle:hover { background: #f2f2f0; }
+.toggle:focus-visible { outline: 2px solid var(--mblue); outline-offset: 1px; }
+
+.plot { position: relative; width: 100%; }
+.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* ── 图例（位置与 PDF 一致：图上方左对齐）── */
+.legend { display: flex; flex-wrap: wrap; gap: 4px 13px; margin: 0 0 2px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--ink-2); }
+.legend i { width: 15px; height: 2.4px; flex: none; }
+.legend i.sq { width: 9px; height: 9px; }
+.legend i.dash { height: 0; border-top: 2.4px dashed var(--navy); background: none !important; }
+
+/* ── tooltip ── */
+.tip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity 0.1s;
+  background: #fff; border: 1px solid #c9c9c9; border-radius: 5px; padding: 7px 9px;
+  font-size: 11.5px; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14); z-index: 4; min-width: 130px;
+}
+.tip .th { font-weight: 700; margin-bottom: 3px; }
+.tip .row { display: flex; align-items: center; gap: 6px; white-space: nowrap; line-height: 1.6; }
+.tip .row i { width: 8px; height: 8px; flex: none; }
+.tip .row b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.tip .row span { color: var(--ink-2); }
+
+/* ── 表格 ── */
+.tblwrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+th, td { padding: 4px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: #fff; }
+thead th { background: var(--navy); color: #fff; font-weight: 700; font-size: 10.5px; border-bottom: none; }
+thead th:first-child { background: var(--navy); color: #fff; }
+td { font-variant-numeric: tabular-nums; }
+tbody tr:last-child { background: #eaf1f8; font-weight: 700; }
+tbody tr:last-child td:first-child { background: #eaf1f8; }
+caption { caption-side: top; text-align: left; font-size: 10.5px; color: var(--ink-3); padding-bottom: 5px; }
+
+/* ── 章节标题 / 说明 / 页脚 ── */
+h2.section {
+  margin: 34px 0 16px; padding-bottom: 6px; font-size: 15px; font-weight: 700;
+  border-bottom: 1px solid var(--rule);
+}
+.prose { margin-top: 32px; padding-top: 20px; border-top: 1.6px solid var(--ink); }
+.prose h2 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
+.prose ol { margin: 0; padding-left: 19px; }
+.prose li { font-size: 12.5px; color: var(--ink-2); margin-bottom: 7px; line-height: 1.6; }
+.prose li strong { color: var(--ink); }
+footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--rule);
+  font-size: 11px; color: var(--ink-3); }
+footer code { font-size: 10.5px; }
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+  .inner { padding: 20px 16px 32px; }
+  h1 { font-size: 21px; }
+  .masthead { flex-direction: column; gap: 4px; }
+}
+
+/* ══ 总仓新增：顶部导航 + 首页总览 ══════════════════════════════════════════
+   只加不改 —— 上面那段是 COST/IBKR 两个站已经在用的样式，改它等于同时改三个站。 */
+.nav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px;
+       margin: 0 0 16px; padding-bottom: 10px; border-bottom: 1px solid #e0e0dc;
+       font-size: 11.5px; }
+.nav .ng { color: var(--ink-3); font-size: 10.5px; margin-left: 6px; }
+.nav .ng:first-child { margin-left: 0; }
+.nav a { color: var(--ink-2); text-decoration: none; padding: 2px 6px; border-radius: 3px;
+         font-variant-numeric: tabular-nums; }
+.nav a:hover { background: #f2f2f0; color: var(--ink); }
+.nav a.on { background: var(--navy); color: #fff; font-weight: 700; }
+.nav a.home { margin-left: auto; border: 1px solid #d5d5d0; }
+
+.hubgrp { margin: 22px 0 10px; font-size: 12px; font-weight: 700; color: var(--ink-2);
+          letter-spacing: 0.02em; }
+.hubgrp:first-child { margin-top: 4px; }
+.hub { display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr)); gap: 12px; }
+.hcard { display: flex; flex-direction: column; gap: 5px; padding: 12px 13px;
+         border: 1px solid #dededa; border-radius: 4px; text-decoration: none; color: inherit;
+         background: #fff; transition: border-color .12s, box-shadow .12s; }
+.hcard:hover { border-color: var(--mblue); box-shadow: 0 1px 6px rgba(31,56,100,.10); }
+.hcard .ht { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.hcard .hn { font-size: 11px; font-weight: 400; color: var(--ink-3); margin-left: 7px; }
+.hcard .hm { font-size: 11.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.hcard .hh { font-size: 11px; color: var(--ink-2); line-height: 1.55; }
+.hcard .hc { font-size: 10px; color: var(--ink-3); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+       background: var(--green); margin-right: 6px; vertical-align: 1px; }
+.dot.stale { background: var(--red); }
+
+@media (max-width: 900px) {
+  .nav a.home { margin-left: 0; }
+  .hub { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月度经营指标看板</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="wrap"><div class="inner">
+
+<div class="masthead">
+  <span class="tracker">月度经营指标看板 · Monthly Operating Metrics</span>
+  <span class="meta" id="meta">—</span>
+</div>
+
+<h1>12 家公司的月度经营数据</h1>
+<p class="subtitle">
+  每家公司按月披露的经营指标（成交量、账户、资产、余额、营收…），全部来自公司官网 IR
+  或 SEC 申报的原始披露，版式仿 Goldman Sachs GIR exhibit。
+  每张图右上角可切到「表格」视图逐条核对原值。
+</p>
+
+<div id="hub"></div>
+
+<h2 class="section">横截面</h2>
+<p class="subtitle">单家报告答不了「谁在跑赢」，这两页把同组公司放在同一张图上比。</p>
+<div id="hub2"></div>
+
+<div class="prose">
+  <h2>怎么读这个看板</h2>
+  <ol>
+    <li><strong>数据截至</strong>各家不同 —— 披露节奏差别很大（TSMC 次月 10 日前、CME 次月第 1-2 个
+      工作日、SPGI 次月 15 日、AXP 8-K 约 15 日）。卡片上的月份就是该家目前的最新月，
+      <span class="dot stale"></span> 表示已超过它自己的正常节奏还没更新，值得点进去看一眼。</li>
+    <li><strong>不做跨家加总</strong>：CME/Cboe 是合约张数、HKEX 是成交金额、TSMC 是新台币营收，
+      量纲不可加。横截面页一律用同比与指数化比较。</li>
+    <li><strong>Implied / 推导序列</strong>：标题带 <em>Implied</em> 的图不是公司直接披露值，
+      是由披露量推导的，假设写在各图注里。凡是推导的都这么标。</li>
+    <li><strong>口径断点</strong>用红色竖虚线标出（如 AXP 2026-05 合并 Card balances、
+      LPLA 2025-08 Commonwealth 并购导入、IBKR 2025-01 DARTs 口径变更）。
+      断点左右不可直接连比。</li>
+    <li><strong>截轴不删点</strong>：COVID 低基数尖峰会把近年压成窄带，故部分图设 y 轴上界；
+      超界的点一个都不删，柱端加断口符号、点画红色空心圈，真值竖排标出。</li>
+    <li>仅供个人研究，不构成投资建议。数值以公司原始披露为准。</li>
+  </ol>
+</div>
+
+<footer id="foot">—</footer>
+
+</div></div>
+
+<script src="data/roster.js"></script>
+<script>
+(function () {
+  var R = window.ROSTER;
+  if (!R) { document.getElementById('hub').innerHTML = '<p>缺少 data/roster.js</p>'; return; }
+
+  /* 新鲜度按**打开页面这一刻**的日期算，不是按构建时算。
+     若在构建时算死，这套东西哪天停跑了，页面会永远显示一片绿 ——
+     恰恰在最该报警的时候不报警。due（各家上月数据通常次月第几天发）来自 roster。 */
+  var now = new Date(), Y = now.getFullYear(), M = now.getMonth() + 1, DAY = now.getDate();
+  function stale(it) {
+    if (!it.due || !it.through) return false;
+    var n = Y * 12 + M - 1 - 1;                       // 上个日历月
+    if (DAY < it.due + R.grace) n -= 1;               // 本月的「上月数据」还没到期
+    var ey = Math.floor(n / 12), em = n % 12 + 1;
+    return it.through < ey + '-' + (em < 10 ? '0' : '') + em;
+  }
+
+  var all = R.groups.reduce(function (a, g) { return a.concat(g.items); }, []);
+  var newest = all.map(function (i) { return i.through || ''; }).sort().pop();
+  var nStale = all.filter(stale).length;
+  document.getElementById('meta').textContent =
+    '个人研究用 · ' + all.length + ' 页 · 数据最新至 ' + newest +
+    (nStale ? ' · ' + nStale + ' 家超期未更新' : '');
+
+  function cards(groups) {
+    return groups.map(function (g) {
+      return '<h3 class="hubgrp">' + g.label + '</h3><div class="hub">' + g.items.map(function (it) {
+        return '<a class="hcard" href="' + it.ticker + '/">' +
+          '<span class="ht">' + it.label + '<span class="hn">' + it.name + '</span></span>' +
+          '<span class="hm"><span class="dot' + (stale(it) ? ' stale' : '') + '"></span>' +
+          (it.through_label || it.through || '—') + '</span>' +
+          '<span class="hh">' + (it.headline || '') + '</span>' +
+          '<span class="hc">' + (it.cadence || '') + '</span></a>';
+      }).join('') + '</div>';
+    }).join('');
+  }
+
+  var main = R.groups.filter(function (g) { return g.key !== 'cross'; });
+  var cross = R.groups.filter(function (g) { return g.key === 'cross'; });
+  document.getElementById('hub').innerHTML = cards(main);
+  document.getElementById('hub2').innerHTML = cross.length ? cards(cross) : '';
+  document.getElementById('foot').innerHTML = R.footer || '';
+})();
+</script>
+</body>
+</html>
