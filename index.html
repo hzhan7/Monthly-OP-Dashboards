@@ -58,14 +58,28 @@
 
   /* 新鲜度按**打开页面这一刻**的日期算，不是按构建时算。
      若在构建时算死，这套东西哪天停跑了，页面会永远显示一片绿 ——
-     恰恰在最该报警的时候不报警。due（各家上月数据通常次月第几天发）来自 roster。 */
-  var now = new Date(), Y = now.getFullYear(), M = now.getMonth() + 1, DAY = now.getDate();
+     恰恰在最该报警的时候不报警。
+
+     it.lag = [常规月, 季末月] 该月结束后第几天通常发布，来自 build/roster.py 的实测表。
+     季末月（3/6/9/12）分开算是因为 SCHW / LPLA / HOOD / SPGI 那几个月没有独立月报，
+     数值随当季财报走，晚 2-4 周；用同一个日子判断会每季度误报一次红点，
+     而每季度假一次的警报，人很快就学会无视了。 */
+  var now = new Date();
   function stale(it) {
-    if (!it.due || !it.through) return false;
-    var n = Y * 12 + M - 1 - 1;                       // 上个日历月
-    if (DAY < it.due + R.grace) n -= 1;               // 本月的「上月数据」还没到期
-    var ey = Math.floor(n / 12), em = n % 12 + 1;
-    return it.through < ey + '-' + (em < 10 ? '0' : '') + em;
+    if (!it.lag || !it.through) return false;
+    /* 从上个日历月往回找：第一个「已经过了它的发布期 + 宽限」的月，就是今天本该有的。 */
+    var d = new Date(now.getFullYear(), now.getMonth(), 1);   // 本月 1 号
+    for (var k = 0; k < 6; k++) {
+      var end = new Date(d.getFullYear(), d.getMonth() - k, 1);   // 候选月的下月 1 号 = 月末+1
+      var mo = end.getMonth() === 0 ? 12 : end.getMonth();        // 候选月的月份 1-12
+      var due = new Date(end.getTime() +
+        ((mo % 3 === 0 ? it.lag[1] : it.lag[0]) + R.grace) * 86400000);
+      if (now >= due) {
+        var y = end.getMonth() === 0 ? end.getFullYear() - 1 : end.getFullYear();
+        return it.through < y + '-' + (mo < 10 ? '0' : '') + mo;
+      }
+    }
+    return false;
   }
 
   var all = R.groups.reduce(function (a, g) { return a.concat(g.items); }, []);

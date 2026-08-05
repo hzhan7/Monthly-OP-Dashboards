@@ -23,13 +23,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DATA = os.path.join(ROOT, 'data')
 
-# 各家「上月数据通常在次月第几天发布」。宽限期见 GRACE。
-# 这些日子来自各家历史披露节奏，不是公司承诺；宁可给宽一点，红点要有意义。
-DUE = {
-    'cme': 3, 'ibkr': 3, 'cost': 8, 'cboe': 5, 'hood': 12, 'schw': 15,
-    'tsm': 10, 'hkex': 10, 'msci': 17, 'spgi': 16, 'axp': 17, 'lpla': 20,
+# 各家「某个月的数据，通常在该月结束后第几天发布」= (常规月, 季末月)。
+# 用「月末后第几天」而不是「次月第几号」，是因为四家公司的**季末月（3/6/9/12）没有独立
+# 月报**，数值随当季财报一起出，比常规月晚 2-4 周 —— 用同一个日子判断，每个季度都会
+# 误报一次红点。红点每季度假一次，人就学会无视它了，那还不如不做。
+# 数值取自各 fetch/<t>.py docstring 里的实测发布日，不是公司承诺；宁可给宽一点。
+LAG = {
+    'cme':  (2, 2),      # 次月第 1-2 个工作日
+    'ibkr': (2, 2),      # 次月首个美股交易日
+    'cboe': (4, 4),      # 次月第 3 个美股交易日
+    'cost': (7, 7),      # 零售月结束后首个周三
+    'tsm':  (10, 10),    # 台湾法定次月 10 日前
+    'hkex': (10, 10),    # 次月上旬
+    'hood': (13, 30),    # 常规月次月 9-13 日；季末月随财报（实测 3 月→4/28、6 月→7/29）
+    'schw': (14, 21),    # 非季末月次月 12-14 日；季末月取自当季季报
+    'spgi': (16, 46),    # 次月约 15 日；季末月随季报（2025-12 的数据 2026-02 才出）
+    'axp':  (16, 16),    # 8-K 每月 15 日前后，撞周末顺延
+    'msci': (17, 17),    # 次月中旬
+    'lpla': (21, 32),    # 常规月次月中下旬；季末月随季报
 }
-GRACE = 5          # 超过 DUE 再宽限几天才判定 stale
+GRACE = 5          # 到期后再宽限几天才判红
 
 META = {
     'cost': ('COST', 'Costco', '零售月结束后首个周三'),
@@ -79,10 +92,11 @@ def main():
                 missing.append(t)
                 continue
             code, name, cadence = META[t]
+            lag = LAG.get(t)
             items.append({
                 'ticker': t, 'label': code, 'name': name, 'cadence': cadence,
-                # due=None 的（横截面页）没有自己的披露节奏，页面一律不判超期
-                'due': DUE.get(t),
+                # lag=None 的（横截面页）没有自己的披露节奏，页面一律不判超期
+                'lag': list(lag) if lag else None,
                 'through': d.get('data_through'),
                 'through_label': d.get('through_label') or d.get('data_through'),
                 'headline': d.get('hub_line') or d.get('headline', '')[:110],
