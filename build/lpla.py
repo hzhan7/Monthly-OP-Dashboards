@@ -37,7 +37,11 @@ SERIES = os.path.join(ROOT, 'series')
 
 SRC = ('Source: LPL Financial monthly activity and quarterly reports; '
        'format after Goldman Sachs GIR')
-BNOTE = ('Red dashed line = Aug-2025 Commonwealth onboarding (~$285bn); '
+# $275bn 是公司披露值，不是估算：LPL 2025Q3 报告原文
+# "This included $275 billion of acquired net new assets resulting from the acquisition
+#  of Commonwealth" —— 曾经这里写过 ~$285bn（来自原 deck docstring 的约数），
+# 而同一事件在 wealth 页又写成 $277.0bn，同一个数在站内出现三种写法。
+BNOTE = ('Red dashed line = Aug-2025 Commonwealth onboarding ($275bn); '
          'that month is not organic flow')
 QNOTE = ('Quarter-end months have no standalone monthly report; those values come from '
          'the quarterly release')
@@ -317,7 +321,7 @@ def main():
         'legend': 'Complete quarter',
         'values': L(qw.values), 'qtr_months': 3,
         'line': {'name': 'y/y (RHS)', 'color': 'GREEN', 'values': L(qy.values), 'yfmt': 'pct0'},
-        'note': '3Q25 includes the ~$285bn Commonwealth onboarding and is not comparable。'
+        'note': '3Q25 includes the $275bn Commonwealth onboarding and is not comparable。'
                 '月度 NNA 按日历季汇总；未满季的 y/y 由引擎作废（图、表、tooltip 一致）。',
     }
     if partial < 3:
