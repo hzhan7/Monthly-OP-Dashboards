@@ -111,8 +111,8 @@ def not_due(t):
     --force 会绕过它（改了图表代码后要全量重建）。
     """
     r = load(os.path.join(HERE, 'build', 'roster.py'), 'roster_due')
-    due = r.DUE.get(t)
-    if due is None:
+    lag = r.LAG.get(t)
+    if lag is None:
         return False
     p = os.path.join(DATA, f'{t}.js')
     if not os.path.exists(p):
@@ -120,11 +120,20 @@ def not_due(t):
     with open(p, encoding='utf-8') as f:
         txt = f.read()
     through = json.loads(txt[txt.index('{'):txt.rindex('}') + 1]).get('data_through')
+    if not through:
+        return False
+    # 与首页红点同一套规则（LAG = 该月结束后第几天发布，季末月单独给值）：
+    # 从上个日历月往回找第一个「已过发布期 + 宽限」的月，那就是今天本该有的月份。
     today = datetime.date.today()
-    n = today.year * 12 + today.month - 1 - 1          # 上个日历月
-    if today.day < due + r.GRACE:                      # 本月的「上月数据」还没到期
-        n -= 1
-    return bool(through) and through >= f'{n // 12}-{n % 12 + 1:02d}'
+    for k in range(6):
+        n = today.year * 12 + today.month - 1 - k      # 候选月的下个月（k=0 即本月）
+        y, m = n // 12, n % 12 + 1
+        end = datetime.date(y, m, 1)                   # 候选月月末 + 1 天
+        cy, cm = (y, m - 1) if m > 1 else (y - 1, 12)  # 候选月本身
+        days = lag[1] if cm % 3 == 0 else lag[0]
+        if today >= end + datetime.timedelta(days=days + r.GRACE):
+            return through >= f'{cy}-{cm:02d}'
+    return False
 
 
 def one(t, force):
