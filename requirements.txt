@@ -1,0 +1,74 @@
+# 总仓月度看板 —— 依赖锁定
+#
+# 口径：这里写的是**本机实测跑通**的版本（Python 3.12.12，/Users/hainan/.local/bin/python3，
+# 2026-08-05 全量跑过 monthly_run.py）。不是「最低可用版本」，也不是「最新版本」。
+# monthly_run.py 启动时会拿本文件跟实际装的版本对一遍，不符只告警不拦（见 check_deps）。
+#
+# 为什么这个文件存在：2026-08-04 本机 pandas 被静默升到 3.0.5，COST 这条链当天 100% 挂掉
+# （详见下面 pandas 那段）。挂之前没有任何一处声明过「这套代码在哪个版本上验过」，
+# 于是故障表现成「Costco 官网是不是改版了」，排查方向整个错。锁定 + 启动自检就是为了
+# 下次同样的事发生时，第一屏就告诉你「版本变了」，而不是让你去翻新闻稿的 HTML。
+#
+# 装法：
+#     python3 -m pip install -r requirements.txt
+# 改版本前先跑一遍：
+#     python3 monthly_run.py --force --only cost,ibkr,lpla,cme      # 覆盖 pandas/fitz/pdfplumber/openpyxl 四条解析路径
+#
+# ── 谁在用 ────────────────────────────────────────────────────────────────────
+
+# pandas —— 28 个模块（fetch/* 的解析、build/* 的序列对齐与 Period 索引）；
+#   另外 ~/.claude/skills/COST月度销售/{monthly_update,build_report,parse_dump}.py 也用它，
+#   而 fetch/cost.py 是直接 exec 那份 skill 代码的（共用解析管道，见 fetch/cost.py 顶部注释），
+#   所以本仓库和那个 skill 必须跑在同一个 pandas 上。
+#
+#   ⚠️ 3.0 是**行为破坏性大版本**，别顺手升也别顺手降：
+#   1. `astype(str)` 产出 StringDtype(storage='python', na_value=nan)，**NaN 仍是 float**，
+#      不再像 2.x 那样被转成字符串 'nan'。凡是 `astype(str)` 之后直接 ' '.join / 假定元素都是 str
+#      的地方，在 3.0 下必抛 TypeError。COST 的 comp 表解析
+#      （monthly_update.py:95-96）就是这么死的 —— GlobeNewswire 的表必然带空单元格，
+#      所以是 100% 复现，不是偶发。现已在那里补 `.fillna('nan')` 修好。
+#   2. read_csv / read_html 读出的文本列默认是 StringDtype 而不是 object dtype。
+#      任何 `dtype == object` 的判断在 3.0 下都不再成立（本仓库目前没有这种写法，别新写）。
+#   3. Copy-on-Write 成为默认且不可关闭，链式赋值（df[a][b] = v）静默无效不再报警。
+#      本仓库目前没有链式赋值（已核查），新增代码请一律用 .loc 单步赋值。
+#   降到 2.x 同样要重跑一遍：上面那处 `.fillna('nan')` 在 2.x 下是无害 no-op（2.x 的
+#   astype(str) 已经把 NaN 变成 'nan' 了），所以 2.x/3.x 双向兼容 —— 但没在 2.x 上实测过。
+pandas==3.0.5
+
+# numpy —— 26 个模块。build/* 全部的数值窗口/百分位/趋势线计算走它。
+#   pandas 3.0.5 要求 numpy>=1.26；2.x 系列本身没在这套代码里踩过坑，
+#   跟 pandas 一起动就行，别单独升（numpy 2.x 的标量 repr 变化会影响 CSV 回写格式）。
+numpy==2.5.1
+
+# openpyxl —— 解析官方 xlsx：fetch/{cme,cboe,hood,schw,spgi,tsm}.py + build/extract_hood.py。
+#   六家都是延迟 import 并带明确报错（见 fetch/cme.py:334-337），所以没装时是「那几家 FAIL」
+#   而不是整个脚本崩 —— 但那等于半数看板停更，实际必装。
+openpyxl==3.1.5
+
+# lxml —— **没有任何一行代码直接 import 它，但它是硬依赖**，最容易在重装环境时漏掉。
+#   ~/.claude/skills/COST月度销售/monthly_update.py:87 的 `pd.read_html()` 需要一个 HTML parser 后端。
+#   pandas 的 flavor=None 顺序是 lxml → bs4+html5lib；本机 html5lib **没装**，
+#   实测 `read_html(flavor='bs4')` 直接 ImportError。也就是说 lxml 掉了就没有后备，
+#   COST 整条链立刻死，且报错信息是「Import html5lib failed」——跟 Costco 毫无关系，极难联想。
+lxml==6.1.1
+
+# pymupdf (import 名 fitz) —— IBKR 的历史指标 PDF：fetch/ibkr.py:68、build/ibkr.py:162，
+#   HKEX 的费率 PDF：fetch/rates_hkex.py:129（这个是模块顶层 import，没装直接 ImportError），
+#   以及 ~/.claude/skills/IBKR月度指标/build_report.py（本仓库 build/ibkr.py 复用它）。
+pymupdf==1.28.0
+
+# pdfplumber —— 只有 fetch/lpla.py:204 用（LPL 的月度 PDF 新闻稿），延迟 import 带明确报错。
+#   会连带装 pdfminer.six / cryptography / pillow，是本清单里最重的一条。
+pdfplumber==0.11.10
+
+# matplotlib —— 本仓库的**网页看板路径不用它**（data/*.js 是纯 JSON payload，图在浏览器里画）。
+#   仍然必须装，因为两处还在用：
+#     · build/gsx.py（GS exhibit 版式绘图库）+ build/build_*.py 这批出 PDF 的旧脚本，monthly_run.py 不调，但仍在仓库里且能跑
+#     · ~/.claude/skills/{COST月度销售,IBKR月度指标}/build_report.py —— 这两个 skill 的 PDF 流程完全靠它
+#   中文字体只有 Hiragino Sans GB 可用（本机无 YaHei/PingFang 可靠回落）。
+matplotlib==3.11.1
+
+# curl_cffi —— **可选**。fetch/hood.py:134 的首选下载通道（impersonate='chrome' 过 Robinhood 的
+#   TLS 指纹墙）；装不上会自动回落到通道 2 的 nscurl（fetch/hood.py:161 的 for 循环），
+#   所以缺它不会让 hood 挂。启动自检对这一条只提示、不当成异常。
+curl_cffi==0.16.0

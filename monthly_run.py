@@ -34,9 +34,11 @@
 """
 import argparse
 import datetime
+import importlib.metadata
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -45,6 +47,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, 'data')
 SERIES = os.path.join(HERE, 'series')
 CACHE = os.path.join(HERE, 'cache')
+REQUIREMENTS = os.path.join(HERE, 'requirements.txt')
+# 缺了不算故障的包：有代码级回落通道，理由写在 requirements.txt 对应那段。
+OPTIONAL_DEPS = {'curl_cffi'}
 
 # 顺序 = 首页与导航的展示顺序，也是这里的执行顺序（无依赖，纯为日志好读）
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
@@ -60,6 +65,67 @@ def sh(cmd, cwd=HERE, check=True):
     # 只去尾部空白：`git status --porcelain` 的首字符是索引状态位，`.strip()` 会把
     # 第一行的前导空格吃掉，脏树清单打出来对不齐、也看不出 staged/unstaged。
     return r.stdout.rstrip()
+
+
+def check_deps():
+    """核对已装依赖与 requirements.txt 的钉版，返回 (warn 清单, note 清单)。
+
+    ## 为什么告警而不是拦
+
+    这是无人值守的月度管道。因为一个版本号对不上就整月不发布，代价远大于「在一个没实测过
+    的版本上跑一次」—— 何况绝大多数版本漂移根本不影响结果。所以这里只喊，不退出。
+
+    反过来，也不能一声不吭：2026-08-04 本机 pandas 被静默升到 3.0.5，`astype(str)` 不再把
+    NaN 转成 'nan'，COST 的 comp 表解析 100% 抛 TypeError；因为没有任何东西提示「脚底下换了
+    地板」，故障第一时间被误诊成「Costco 官网改版了」，排查方向整个错。静默跑在未测过的版本
+    上正是那次事故的成因，所以醒目告警是必须的。
+
+    ## 为什么只读元数据
+
+    只用 importlib.metadata（= 读几个 dist-info 里的纯文本），**不 import 任何被检查的包**。
+    自检要是自己得先把 pandas / matplotlib / pymupdf 拉起来，那它比它要防的问题还贵，
+    而且没装的包会在自检里就炸掉 —— 那就成了变相的阻断。
+    """
+    try:
+        with open(REQUIREMENTS, encoding='utf-8') as f:
+            txt = f.read()
+    except OSError as e:
+        return [f'读不到 requirements.txt（{e}）—— 本次跑没有核对过依赖版本'], []
+    # 只认最朴素的 `包名==版本`；requirements.txt 里其余全是注释，没有 extras / marker / 范围。
+    pins = re.findall(r'^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s#]+)', txt, re.M)
+    if not pins:
+        return ['requirements.txt 里没有任何 `包名==版本` 行 —— 本次跑没有核对过依赖版本'], []
+    warn, note = [], []
+    for name, want in pins:
+        try:
+            got = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            (note if name in OPTIONAL_DEPS else warn).append(
+                f'{name} 未安装（requirements.txt 要求 {want}）'
+                + ('，可选依赖、有回落通道，忽略' if name in OPTIONAL_DEPS else ''))
+            continue
+        if got != want:
+            warn.append(f'{name} 实际 {got}，requirements.txt 实测版本是 {want}')
+    return warn, note
+
+
+def report_deps():
+    """把 check_deps 的结果打出来。永远不 exit —— 见 check_deps 的 docstring。"""
+    warn, note = check_deps()
+    for n in note:
+        print(f'依赖提示：{n}')
+    if not warn:
+        return
+    bar = '=' * 78
+    print(bar)
+    # 标题要能同时盖住三种情况（版本不符 / 必需包没装 / requirements.txt 读不到），
+    # 别写死成「版本不符」—— 后两种打出来会自相矛盾，读日志的人第一反应是自检自己坏了。
+    print('⚠️  依赖与 requirements.txt 不一致 —— 仍继续执行，但下面这些没有被实测过：')
+    for w in warn:
+        print(f'    · {w}')
+    print('    结果异常时先怀疑这里，别先怀疑数据源改版')
+    print('    （pandas 3.0 的 astype(str) 不再把 NaN 转成 "nan"，2026-08-04 就是这么打死 COST 的）')
+    print(bar)
 
 
 def load(path, name):
@@ -204,6 +270,10 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--force', action='store_true')
     a = ap.parse_args()
+
+    # 第一件事就是核对依赖版本：后面任何一步的怪异结果都可能是它引起的，
+    # 所以这行必须打在所有 fetch/build 输出之前，让人一眼看到「地板换过了」。
+    report_deps()
 
     # --dry-run 不 commit/push，脏树时反而正是要看「如果跑会发生什么」，故只警告不拦。
     dirty = guard_dirty_tree()

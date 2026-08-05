@@ -28,7 +28,7 @@ index.html          总览页
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
 assets/page.js      通用页面渲染器，12 家共用一份
 assets/style.css    版式
-series/*.csv        历史序列（唯一真值，入库）
+series/*.csv        历史序列（唯一真值，入库）[注]
 fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/CONTRACT.md   payload 数据契约（写生成器前先读它）
@@ -37,6 +37,14 @@ data/<t>.js         生成物，页面直接 <script src> 加载
 cache/              下载来的原始文件（gitignore）
 monthly_run.py      月度入口（cron 跑的就是它）
 ```
+
+**[注] 个别 `series/*.csv` 只被 `fetch/` 读回当台账，不进 build —— 「没有 build 读它」
+不等于它是断链孤儿。** 目前是 `series/spgi.csv`：它与 `spgi_clean.csv` 在
+`fetch/spgi.py` 的**同一次 `update()` 里一起写**（中间没有「清洗步骤」这一环），
+画图只读 `spgi_clean.csv`，但 `spgi.csv` 是该模块的去重台账 + **官方重述体检的唯一基线**。
+删了 = SPGI 抓取当场报错，且从此再也发现不了官方悄悄重述历史。理由写在
+`fetch/spgi.py` 的 `update()` docstring 里。做孤儿盘点时，判据要用「**fetch 或 build
+有没有人读它**」，只按 build 的读取面盘点必然误杀这一类文件。
 
 ## 每月更新
 

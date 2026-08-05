@@ -41,6 +41,16 @@
      bar_marks int[]   需要标成斜纹的柱（如 53 周财年多出一周的月份），与 break_at 配合用。
      mark_note string  bar_marks 命中的期在 tooltip 里追加的说明。
      ylab2   string    右轴标题（双轴图），与左侧 ylab 对称。
+
+   ex 上的可选「补 deck 缺口」字段（三条都**默认关闭**，给了才生效）：
+     zero_base bool    kind:'lines' 的纵轴从 0 起（同 gsx.long_line 的 set_ylim(0, max*1.16)）。
+                       不给就还是通用留白分支 —— 那实际是一次没有标注的隐性截轴，
+                       长历史图务必给上。序列含负值时下界仍留在数据之下，不会把负值压没。
+     end_label bool    kind:'lines' 每条序列的末点标出数值（同 gsx.long_line 的 n_label）。
+                       长历史图上那是唯一的绝对水平锚点。
+     yoy     {values,color,yfmt,name}
+                       kind:'gs_bar' 的次轴同比折线（同 gsx.lvl_bar）。给了就画次轴 y/y
+                       并**不画 12 个月均线**；没给维持现状。右轴刻度与折线同色。
    ========================================================================== */
 (function () {
   'use strict';
@@ -171,6 +181,22 @@
     var R = Math.max(Math.max(a1, 0) / (1 - f), Math.max(-a0, 0) / f);
     return [-f * R, (1 - f) * R];
   }
+  /* ---- 对齐的兜底：代价过大时改为不对齐并明确标注 ----------------------
+     对齐只扩不缩，所以「扩出来的那一段」按构造就是无数据区。
+     浪费率 = 扩出来的量程 ÷ 对齐后的量程，两轴取大者。
+
+     阈值 0.38 是实测定的，不是拍的。把当前 14 页 25 张双轴图的浪费率全量出来：
+       0%（15 张，f=0，两轴本来就同零点 —— 含 IBKR Ex8/Ex18 与 COST Ex4，
+           所以这条规矩碰不到那两个已上线的站）
+       13% hood Ex15 / 14% lpla Ex11 / 17% spgi Ex5·msci Ex5·hood Ex3·hood Ex22 /
+       20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex5 / 33% cme Ex7
+       ── 空档 ──
+       40% schw Ex11 / 44% axp Ex8 / 50% hood Ex4 / 50% hood Ex14
+     33% 与 40% 之间是空的，阈值放在这段空档里对数据抖动最不敏感；
+     取 0.38 而不是 0.40，是因为 schw Ex11（本规矩的起因，柱全为正却把左轴拉到 −144）
+     恰好压在 40.0% 上，写成 `> 0.40` 会把起因本身漏掉。
+     语义上就是任务说的「某一轴超过 40% 的量程落在无数据区」。 */
+  var ALIGN_WASTE_MAX = 0.38;
 
   /* Catmull-Rom 平滑，端点外推方式与 build_report.py 的 smooth() 相同 */
   function smooth(vals, n) {
@@ -251,8 +277,15 @@
      漏一次就是发布一张误导图。
      范围计算、绘图、表格视图、tooltip **四处都要用它** —— 漏掉任何一处就会出现
      「图上没有但表里有」的不一致，或者右轴被一个不画出来的点撑开。 */
+  /* 谁在右轴上：gs_bar 是可选的 ex.yoy（见下），其余双轴图型都是 ex.line。
+     dual 判定、量程、绘图、图例、表格、tooltip 全都要认同一个来源，
+     否则会出现「右轴被一个不画出来的序列撑开」这类分歧。 */
+  function rhsOf(ex) {
+    if (ex.kind === 'gs_bar') return (ex.yoy && ex.yoy.values) ? ex.yoy : null;
+    return (ex.line && ex.line.values) ? ex.line : null;
+  }
   function lineVals(ex) {
-    var v = ex.line && ex.line.values;
+    var r = rhsOf(ex), v = r && r.values;
     if (!v || ex.kind !== 'qtr_bar') return v;
     if (isNum(ex.partial_months) && +ex.partial_months > 0 &&
         +ex.partial_months < (ex.qtr_months || 3)) {
@@ -314,19 +347,71 @@
       } };
   }
 
-  /* year_lines 的配色：旧年份由浅到深，当年红色加粗（同 gsx 的 cmap 阶梯）。
+  /* sRGB 相对亮度与 CIE L*。只用来排明度阶和自查对比度，不参与配色本身。 */
+  function relLum(hex) {
+    var r = rgbOf(hex), o = [0, 0, 0], i, c;
+    for (i = 0; i < 3; i++) {
+      c = r[i] / 255;
+      o[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * o[0] + 0.7152 * o[1] + 0.0722 * o[2];
+  }
+  function lstar(hex) {
+    var y = relLum(hex);
+    return y > 0.008856 ? 116 * Math.pow(y, 1 / 3) - 16 : 903.3 * y;
+  }
+  /* 在 BLUE→NAVY 这条线上取 L* 恰为 target 的颜色（L* 沿这条线单调，二分即可）。
+     所有往年色都落在这条线上 ⇒ 同一色相（H≈209°→218°），只有明度在动。 */
+  function blueAtL(target) {
+    var lo = 0, hi = 1, mid, k;
+    for (k = 0; k < 20; k++) {
+      mid = (lo + hi) / 2;
+      if (lstar(mix(C.BLUE, C.NAVY, mid)) > target) lo = mid; else hi = mid;
+    }
+    return mix(C.BLUE, C.NAVY, (lo + hi) / 2);
+  }
+  /* ── year_lines 的年份配色 ──────────────────────────────────────────────
+     往年一律走同一色相的**等间距明度阶**，越早越淡；当年红色加粗高亮。
+
+     原来的阶梯是 [mix(GRAY,WHITE,.5)=#D3D3D3, mix(BLUE,WHITE,.45)=#C4DBEF,
+     BLUE, MBLUE, NAVY]，两个浅端对白底的对比度只有 1.31:1 与 1.55:1 —— 而网格线
+     #E3E3E3 本身就有 1.28:1，也就是说最早那一年**比网格线还淡**，
+     旁边两条又只差 0.24 个对比度档，2021/2022/2023 三条在图上完全分不开
+     （msci Ex9、schw Ex16/17、axp Ex14/16、lpla Ex18、hkex Ex16 都报了这一条）。
+     逐年对比是这类图唯一的用途，颜色分不开等于这张图没画。
+
+     现在的两条端点：最浅 = C.BLUE（对白底 1.85:1，是网格线 1.28:1 的 1.44 倍，
+     压得住网格），最深 = C.NAVY（15.6:1）。中间按 **CIE L\*** 等分而不是按 RGB 等分：
+     sRGB 是 gamma 编码的，同样的 RGB 步长在浅端的明度差要小得多，
+     原来那种「兑白 45%」式的浅端正是这么挤到一起的。
+     L\* 跨度 77.2 → 23.8：5 条往年线每档差 13.4、7 条差 8.9，都在细线也认得出的范围。
+
+     STEP_MAX：往年线只有两三条时把步长封顶，别一上来就跳到 NAVY ——
+     否则最近那条往年线比当年的红线（L\*≈42.7）还重，梯度反了（spgi Ex6 报过）。
+
      draw / seriesRows / legendHTML 三处必须拿到同一组颜色，所以抽出来。 */
+  var YR_L_LIGHT = lstar(C.BLUE);      // 77.2
+  var YR_L_DARK = lstar(C.NAVY);       // 23.8
+  var YR_STEP_MAX = 16;                // 单档最大明度间隔（L*）
+  function yearRamp(m) {
+    var out = [], step, j;
+    if (m <= 0) return out;
+    if (m === 1) return [blueAtL((YR_L_LIGHT + YR_L_DARK) / 2)];   // 只有一条往年线：取中档
+    step = Math.min(YR_STEP_MAX, (YR_L_LIGHT - YR_L_DARK) / (m - 1));
+    for (j = 0; j < m; j++) out.push(blueAtL(YR_L_LIGHT - step * j));
+    return out;
+  }
   function yearColors(ex) {
-    /* 阶梯对应 gsx 的 [LGRAY, #C9D6E4, BLUE, MBLUE, NAVY]：两个浅端由 C.* 兑白得到。
-       最浅一档不能直接用 C.GRID —— 那是网格线的颜色，数据线跟网格同色等于没画。 */
-    var ramp = [mix(C.GRAY, C.WHITE, 0.5), mix(C.BLUE, C.WHITE, 0.45),
-                C.BLUE, C.MBLUE, C.NAVY], ser = ex.series || [];
-    var nS = ser.length, hl = ex.highlight != null ? +ex.highlight : nS - 1, out = [], k, t;
+    var ser = ex.series || [], nS = ser.length;
+    var hl = ex.highlight != null ? +ex.highlight : nS - 1, k, m = 0;
+    /* 阶梯只按「真正要自动配色的往年线」条数分档：payload 指定了颜色的、
+       以及当年那条红线，都不占阶梯的位置，否则 6 年图与 8 年图的浅端会对不上。 */
+    for (k = 0; k < nS; k++) if (k !== hl && !ser[k].color) m++;
+    var ramp = yearRamp(m), out = [], j = 0;
     for (k = 0; k < nS; k++) {
       if (ser[k].color) { out.push(col(ser[k].color)); continue; }
       if (k === hl) { out.push(C.RED); continue; }
-      t = nS > 2 ? Math.round(k / (nS - 2) * (ramp.length - 1)) : ramp.length - 1;
-      out.push(ramp[Math.max(0, Math.min(ramp.length - 1, t))]);
+      out.push(ramp[j++]);
     }
     return out;
   }
@@ -432,9 +517,9 @@
     var rot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45));
     var XB = rot === 90 ? 48 : (rot === 0 ? 22 : 36);
     /* 新图型里 qtr_bar / grouped_bars 的右轴（y/y、误差）是可选的：payload 没给 ex.line
-       就退化成单轴柱图，不画空的右刻度。 */
+       就退化成单轴柱图，不画空的右刻度。gs_bar 的 ex.yoy 同理（默认不给 = 维持现状）。 */
     var dual = kind === 'bar_line_dual' || kind === 'stacked_dual' ||
-               ((kind === 'qtr_bar' || kind === 'grouped_bars') && !!(ex.line && ex.line.values));
+               ((kind === 'qtr_bar' || kind === 'grouped_bars' || kind === 'gs_bar') && !!rhsOf(ex));
     var perPointLabels = kind === 'gs_bar' || kind === 'gs_line' || kind === 'gs_line_avg' ||
                          kind === 'stacked_dual' || kind === 'lines_endlabels' ||
                          kind === 'qtr_bar' || kind === 'seasonality' || kind === 'bridge_bar' ||
@@ -553,11 +638,26 @@
       var dmn = incZero ? Math.min(mn, 0) : mn;
       var dmx = incZero ? Math.max(mx, 0) : mx;
       var rg = (dmx - dmn) || 1;
-      /* 有柱的图 y0 不能因为 5% 留白掉到 0 以下：那样柱的基线 Y(0) 会浮在画布底
-         上方几像素，而右轴的 0 在底边，图上唯一那条零线就骗人了（实测 Ex3 里
-         y/y < 1.59% 的三个正增长月被画到零线下方）。数据本身有负值时照常留白。 */
-      y0 = (hasBar && dmn >= 0) ? 0 : dmn - rg * 0.05;
-      y1 = dmx + rg * 0.05;
+      if (ex.zero_base) {
+        /* zero_base ← gsx.long_line 的 ax.set_ylim(0, max*1.16)。
+           kind:'lines' 落进本分支时用的是 y0 = dmn - rg*0.05，那是一次**没有任何标注的
+           隐性截轴** —— 与本仓「截轴必须标注」的规矩正相反，而且长历史图上没有零基线
+           就等于把增长幅度凭空放大（LPLA Ex17 实测被放大约 2.5 倍，Ex8 同样；
+           SCHW Ex7/10/14/15、HKEX Ex4/14/15、CBOE Ex6 都是同一个根因）。
+
+           但**不全局强制**：这里只在 payload 显式给了 zero_base 时才归零，且序列有负值时
+           下界照常留在数据之下 —— 把负值硬压到零线以上是删点，比隐性截轴更糟
+           （SCHW Ex14 的负增长月必须还能画到零线以下）。 */
+        var rz = (mx - mn) || Math.abs(mx) || 1;
+        y0 = mn < 0 ? mn - rz * 0.08 : 0;
+        y1 = mx > 0 ? mx * 1.16 : rz * 0.08;
+      } else {
+        /* 有柱的图 y0 不能因为 5% 留白掉到 0 以下：那样柱的基线 Y(0) 会浮在画布底
+           上方几像素，而右轴的 0 在底边，图上唯一那条零线就骗人了（实测 Ex3 里
+           y/y < 1.59% 的三个正增长月被画到零线下方）。数据本身有负值时照常留白。 */
+        y0 = (hasBar && dmn >= 0) ? 0 : dmn - rg * 0.05;
+        y1 = dmx + rg * 0.05;
+      }
     }
 
     /* 截轴（规矩 7）：离群值只截轴、不删点，超界的柱/点后面单独标真值。 */
@@ -567,9 +667,9 @@
     var Y = function (v) { return M.t + ph - ((v - y0) / (y1 - y0)) * ph; };
 
     /* 右轴范围先算出来，好在画任何东西之前跟左轴对齐零点 */
-    var r0 = null, r1 = null, rtk = null, rc = null;
+    var r0 = null, r1 = null, rtk = null, rc = null, misalign = false;
     if (dual) {
-      rc = ex.line;
+      rc = rhsOf(ex);
       /* 用 lineVals()：被作废的未满季 y/y 不能参与右轴量程，否则轴被一个根本不画出来的
          点撑开（实测会把 0~15% 的轴拉成 -10%~15%，整条线压扁在上半幅）。 */
       var rv = lineVals(ex).filter(function (v) { return v != null && isFinite(v); });
@@ -580,12 +680,23 @@
       }
       /* 两轴的 0 必须落在同一画布高度：取两者中较高的那个零点比例 f，
          再让两条轴各自向下扩量程去凑（只扩不缩，数据点一个都不会被挤出去）。
-         左右都不含负值时 f = 0，走的还是老路径，不影响既有图。 */
+         左右都不含负值时 f = 0，走的还是老路径，不影响既有图。
+
+         兜底见 ALIGN_WASTE_MAX：对齐的代价过大时宁可不对齐，但必须在图上说出来
+         —— 读者的默认假设就是两轴零点同高，不说的话「柱在零线之上、点在零线之下」
+         会被读成同号。 */
       var f = Math.max(zeroFrac(y0, y1), zeroFrac(r0, r1));
       if (f > 1e-9) {
-        var la = alignZero(y0, y1, f); y0 = la[0]; y1 = la[1];
-        var ra = alignZero(r0, r1, f); r0 = ra[0]; r1 = ra[1];
-        rtk = ticks(r0, r1, 9);       // 量程动过，右轴刻度要重算
+        var la = alignZero(y0, y1, f), ra = alignZero(r0, r1, f);
+        var waste = Math.max(1 - (y1 - y0) / (la[1] - la[0]),
+                             1 - (r1 - r0) / (ra[1] - ra[0]));
+        if (waste > ALIGN_WASTE_MAX) {
+          misalign = true;            // 两轴各自缩放，下面画一行说明
+        } else {
+          y0 = la[0]; y1 = la[1];
+          r0 = ra[0]; r1 = ra[1];
+          rtk = ticks(r0, r1, 9);     // 量程动过，右轴刻度要重算
+        }
       }
     }
 
@@ -619,9 +730,13 @@
     if (dual) {
       Y2 = function (v) { return M.t + ph - ((v - r0) / (r1 - r0)) * ph; };
       var rf = fmtOf(rc.yfmt || 'pct0');
+      /* 右轴刻度跟序列同色：gs_bar 的柱是浅蓝、y/y 线是金色，两套刻度都是黑字的话
+         「哪一列刻度归谁」只能靠位置猜。既有图型的刻度保持黑字，不动已上线的两个站。 */
+      var rtc = (kind === 'gs_bar') ? col(rc.color || 'GOLD') : C.INK;
       for (i = 0; i < rtk.length; i++) {
         if (rtk[i] < r0 - 1e-9 || rtk[i] > r1 + 1e-9) continue;   // 对齐后量程会窄于刻度序列
-        txt(svg, M.l + pw + 6, Y2(rtk[i]) + 3.2, rf(rtk[i]), { size: 9, anchor: 'start' });
+        txt(svg, M.l + pw + 6, Y2(rtk[i]) + 3.2, rf(rtk[i]),
+          { size: 9, anchor: 'start', fill: rtc });
       }
       /* 右轴标题：否则「哪条系列读右轴」全靠 legend 里「(RHS)」三个字 */
       if (ex.ylab2) {
@@ -757,6 +872,21 @@
         if ((last - bx[i].i) % k) bx[i].el.parentNode.removeChild(bx[i].el);
     }
 
+    /* 一列标签的竖向避让：按最小行距推开，整列超出下界就整体上移，
+       上下都顶满时从上边界顺排。lines_endlabels 与 lines 的末点标注共用。 */
+    function spreadY(arr, gap) {
+      gap = gap || 9.6;
+      var lo = M.t + 7, hi = M.t + ph + 3, k, over;
+      arr.sort(function (a, b) { return a.y - b.y; });
+      for (k = 1; k < arr.length; k++)
+        if (arr[k].y - arr[k - 1].y < gap) arr[k].y = arr[k - 1].y + gap;
+      over = arr.length ? arr[arr.length - 1].y - hi : 0;
+      if (over > 0) for (k = 0; k < arr.length; k++) arr[k].y -= over;
+      if (arr.length && arr[0].y < lo)
+        for (k = 0; k < arr.length; k++) arr[k].y = lo + k * gap;
+      return arr;
+    }
+
     /* 竖排数值标签（qtr_bar 用）：柱很高时把标签压回画布内，不许越过 viewBox 顶 */
     function vLabel(x, yTop, s, o) {
       var need = s.length * (o.size || 8) * 0.62;
@@ -795,16 +925,50 @@
         }
       }
     } else if (kind === 'lines') {
-      for (s = 0; s < ex.series.length; s++)
+      /* end_label ← gsx.long_line 的 n_label：长历史图上标出最新一点。
+         那是这类图上**唯一的绝对水平锚点** —— 不标的话读者只能从轴刻度目测，
+         而长历史图的轴刻度间隔往往就是几百个单位（SCHW Ex7/10/14/15、LPLA Ex8/17、
+         MSCI Ex4/11、TSM Ex3/10/12、CBOE Ex6 全丢了这个标注）。
+         默认关闭：既有的 kind:'lines' 图（含 COST/IBKR 两个已上线站）不给就一个都不画。 */
+      var fle = fmtOf(ex.label_fmt || ex.fmt || ex.yfmt || 'f1'), LB = [];
+      for (s = 0; s < ex.series.length; s++) {
         polyline(ex.series[s].values, col(ex.series[s].color), 1.6, false, !!ex.markers);
+        if (!ex.end_label) continue;
+        var je2 = lastFinite(ex.series[s].values);
+        /* 末点被截时真值已由 capLabel 竖排标出，不重复标 */
+        if (je2 < 0 || clampY(ex.series[s].values[je2]) !== ex.series[s].values[je2]) continue;
+        LB.push({ i: je2, y: Y(ex.series[s].values[je2]) - 7,
+          t: fle(ex.series[s].values[je2]), c: col(ex.series[s].color) });
+      }
+      if (LB.length) {
+        /* 标签落在末点的**左上方**（同 deck 的 xytext=(-6,12) + ha='right'）：
+           往上避开 x 轴刻度，往左避开右边界，末点自己的圆点仍然露着。 */
+        spreadY(LB, 10);
+        for (i = 0; i < LB.length; i++)
+          txt(g, Xc(LB[i].i) - 4, LB[i].y, LB[i].t,
+            { size: 8.5, anchor: 'end', weight: 700, fill: LB[i].c });
+      }
     } else if (kind === 'gs_bar') {
       var wg = BW(0.62), fb = fmtOf(ex.fmt), labg = [];
-      /* 均线**必须画在数值标签之前**。它按构造就落在柱子中段附近，凡是当月值接近
-         12 个月均值的月份，标签必然被这条横线拦腰划掉 —— 两轮独立人眼审查都把这条
-         列为 blocker（SCHW Ex12 三个数连着被划、LPLA Ex16 连续 9 个百分比被划断）。
-         光靠 txt() 的白色描边挡不住：描边只压得住画在它**下面**的东西。 */
-      el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
-        'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
+      var yoyS = rhsOf(ex);
+      /* ── 可选的次轴 y/y 折线（ex.yoy）──
+         deck 的 gsx.lvl_bar 画的是「浅蓝柱 + 次轴金色 y/y 折线」，docstring 明写
+         「次轴画的是同比而不是滚动均线 —— 均线只是把柱子再平滑一遍、不带新信息，
+         同比才回答『相对去年这个月是好是坏』」；build_hood.py 记的用户既定规范第 1 条
+         也是「全部换成 y/y」。网页版一律画成了 12 个月均线，把这条规矩丢了
+         （MSCI Ex2/7/8、SPGI Ex2/3、TSM Ex7/9 等 8 页 29 张图都受影响）。
+
+         给了 ex.yoy 就画 y/y 折线并**不画均线** —— 两条一起画太挤，而且它们回答的是
+         同一个问题的两种说法，读者要在同一张图上分辨两条横向线的含义。
+         没给就完全维持现状（默认关闭，不动任何已上线的页面）。 */
+      if (!yoyS) {
+        /* 均线**必须画在数值标签之前**。它按构造就落在柱子中段附近，凡是当月值接近
+           12 个月均值的月份，标签必然被这条横线拦腰划掉 —— 两轮独立人眼审查都把这条
+           列为 blocker（SCHW Ex12 三个数连着被划、LPLA Ex16 连续 9 个百分比被划断）。
+           光靠 txt() 的白色描边挡不住：描边只压得住画在它**下面**的东西。 */
+        el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
+          'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
+      }
       for (i = 0; i < n; i++) {
         /* 原来这里是直接 barPath(Y(values[i]))，没走截轴：设了 ycap 的话柱和数值标签
            会一起画到画布外几百像素（IBKR 现有 payload 没设过 ycap，所以一直没暴露）。
@@ -816,7 +980,22 @@
           el: txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 }) });
       }
       thinLabels(labg);
-      if (ex.yoy_txt) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt, null, M.l);
+      if (yoyS && Y2) {
+        var lcy = col(yoyS.color || 'GOLD'), vy = yoyS.values;
+        /* 零线：y/y 的正负是这条线的全部意义，没有零线读者只能靠右轴刻度反推 */
+        if (r0 < -1e-9 && r1 > 1e-9)
+          el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0), stroke: lcy,
+            'stroke-width': 0.7, 'stroke-dasharray': '2 2' }, g);
+        polyline(vy, lcy, 1.6, false, true, Y2);
+        var jy = lastFinite(vy);
+        /* 末点读数标在点的**右下方**（同 deck 的 xytext=(5,-7)）：柱顶那一排数值标签
+           在点的上方，标上面必压。 */
+        if (jy >= 0)
+          txt(g, Xc(jy) + 5, Y2(vy[jy]) + 9.5, fmtOf(yoyS.yfmt || 'pct0')(vy[jy]),
+            { size: 8, anchor: 'start', weight: 700, fill: lcy });
+      }
+      /* y/y 折线在场时不再画 y/y 气泡：同一件事说两遍，气泡还占着左上角 */
+      if (ex.yoy_txt && !yoyS) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt, null, M.l);
       if (ex.mom_txt) {
         var last = ex.values[n - 1];
         /* 气泡与箭头按**窗口末端**定位，不能写死 Xc(9)/Xc(11)。
@@ -864,26 +1043,13 @@
         LE.push({ y: Y(sr.values[0]) + 3.2, t: fe(sr.values[0]), c: sc });
         RE.push({ y: Y(sr.values[n - 1]) + 3.2, t: fe(sr.values[n - 1]), c: sc });
       }
-      var spread = function (arr) {
-        var gap = 9.6, lo = M.t + 7, hi = M.t + ph + 3, k, over;
-        arr.sort(function (a, b) { return a.y - b.y; });
-        for (k = 1; k < arr.length; k++)
-          if (arr[k].y - arr[k - 1].y < gap) arr[k].y = arr[k - 1].y + gap;
-        over = arr.length ? arr[arr.length - 1].y - hi : 0;
-        if (over > 0) for (k = 0; k < arr.length; k++) arr[k].y -= over;
-        if (arr.length && arr[0].y < lo) {
-          /* 上下都顶满了（系列太多）：从上边界往下顺排，宁可离线远一点也不能叠 */
-          for (k = 0; k < arr.length; k++) arr[k].y = lo + k * gap;
-        }
-        return arr;
-      };
       /* 左端标签的右边界：刻度栏左侧再留 4px。tickW 量不到时（图被 display:none）
          退回一个够宽的常数，宁可离轴远也不要压上去。 */
       var lx = M.l - 10 - (tickW || 26);
-      spread(LE).forEach(function (d) {
+      spreadY(LE).forEach(function (d) {
         txt(g, lx, d.y, d.t, { size: 8, anchor: 'end', fill: d.c });
       });
-      spread(RE).forEach(function (d) {
+      spreadY(RE).forEach(function (d) {
         txt(g, Xc(n - 1) + 7, d.y, d.t, { size: 8, anchor: 'start', fill: d.c });
       });
     } else if (kind === 'stacked_dual') {
@@ -1086,7 +1252,10 @@
       var fyl = fmtOf(ex.label_fmt || ex.fmt || 'f0c');
       for (s = 0; s < ex.series.length; s++) {
         var isCur = (s === hly);
-        polyline(ex.series[s].values, ycs[s], isCur ? 2 : 1.1, false, isCur);
+        /* 往年线 1.1 → 1.4：deck 那边 1.1 是 matplotlib 点（高 DPI 输出），
+           照搬成 1.1 CSS px 后最浅那两条几乎是半透明的。加粗只加往年，
+           当年仍是 2.0 + 圆点标记，主次不变。 */
+        polyline(ex.series[s].values, ycs[s], isCur ? 2 : 1.4, false, isCur);
         if (!isCur) continue;
         var jl = lastFinite(ex.series[s].values), vl = jl >= 0 ? ex.series[s].values[jl] : null;
         /* 末点被截时真值已由 capLabel 竖排标出，别再横着标一遍 */
@@ -1117,6 +1286,13 @@
        左上角要留给那几个竖排真值标签。 */
     if (capOn && ex.cap_note)
       txt(svg, M.l + pw, 8, ex.cap_note, { size: 7.4, anchor: 'end', style: 'italic', fill: BREAK });
+    /* 零点没对齐就必须写出来（见 ALIGN_WASTE_MAX）。
+       画在绘图区内的左上角而不是画布顶：那里是柱图天然的留白（y1 至少是 max 的 1.22 倍），
+       而画布顶那一条要留给截轴的竖排真值。挂在 svg 上（在 g 之后）保证压在数据上面，
+       文字本身有白色描边打底。 */
+    if (misalign)
+      txt(svg, M.l + 3, M.t + 9, '左右轴零点不同高（两轴独立缩放）',
+        { size: 7.4, anchor: 'start', style: 'italic', fill: BREAK });
 
     if (ex.ylab) {
       var cy = M.t + ph / 2;
@@ -1232,6 +1408,11 @@
     } else {
       out.push({ name: ex.legend || ex.ylab || '数值',
         color: ex.kind === 'gs_bar' ? C.BLUE : C.NAVY, values: ex.values, fmt: f });
+      /* gs_bar 开了次轴 y/y 时，表格视图与 tooltip 都要有这一行 ——
+         图上有、表里没有，读者会以为图画错了。 */
+      var yq = ex.kind === 'gs_bar' ? rhsOf(ex) : null;
+      if (yq) out.push({ name: yq.name || 'y/y', color: col(yq.color || 'GOLD'),
+        values: yq.values, fmt: fmtOf(yq.yfmt || 'pct0') });
     }
     return out;
   }
@@ -1251,7 +1432,10 @@
         items.push(['line', col(ex.series[i].color), ex.series[i].name]);
     } else if (ex.kind === 'gs_bar') {
       items.push(['sq', C.BLUE, ex.legend]);
-      items.push(['dash', C.NAVY, 'Prior 12mo Avg.']);
+      /* 给了 ex.yoy 就是次轴同比折线，均线那条虚线根本没画，图例也不能留 */
+      var yl = rhsOf(ex);
+      if (yl) items.push(['line', col(yl.color || 'GOLD'), yl.name || 'y/y (RHS)']);
+      else items.push(['dash', C.NAVY, 'Prior 12mo Avg.']);
     } else if (ex.kind === 'gs_line_avg') {
       items.push(['line', C.NAVY, ex.legend]);
       items.push(['dash', C.BLUE, ex.avg_label || 'Prior 12mo Avg.']);

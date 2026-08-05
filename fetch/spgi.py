@@ -420,6 +420,26 @@ def update(series_dir, cache_dir):
     """把新月份追加到 series/spgi.csv 与 series/spgi_clean.csv，返回新增月份列表。
 
     幂等：已存在的月份跳过。任一列算不出来就抛异常，绝不写 NaN。
+
+    ── series/spgi.csv 不可删（孤儿盘点请勿标记为可删）────────────────────────
+    两个 CSV 是本函数**同一次调用里一起写的**，中间不存在「先出 raw、再清洗成
+    clean」这个环节 —— 所以 spgi.csv 不是 spgi_clean.csv 的上游中间产物，
+    删掉它不会「由清洗步骤重新生成」。
+
+    没有任何 build/*.py 读 spgi.csv（画图只读 spgi_clean.csv），按「谁读它」
+    盘点必然把它判成断链孤儿。但它在本模块里承担两个不可替代的职责，都是**读**：
+
+    1. 去重台账。下面 have_raw 取自 spgi.csv，与 clean_by_month 一起构成
+       「这个月是否已入库」的判据。文件没了，_read_csv 直接抛
+       SpgiFetchError（见该函数：本模块只追加、不从零建库），SPGI 抓取当场失败。
+    2. 官方重述体检的**唯一基线**。下面那段循环逐行拿本期 xlsx 重算 spgi.csv
+       的历史月份，不一致就告警（不改历史，改写历史必须人工决定）。
+       这件事 spgi_clean.csv 顶不了：它的数值是 repr 未清洗写法，且 2024 年的
+       绝对值是拿 2025 年值除以官方同比反算出来的（见模块 docstring 坑 3/4），
+       拿它当基线会满屏假告警。基线丢了，官方悄悄重述历史就再没人发现。
+
+    结论：spgi.csv = 本模块的私有台账 + 重述基线，只被 fetch 读回、不进 build。
+    要动它之前先把上面两条职责搬走，否则删除 = SPGI 抓取炸掉 + 永久丢失重述告警。
     """
     path, asof, url = _resolve_source(cache_dir)
     data = parse(path)
