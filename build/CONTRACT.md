@@ -152,3 +152,12 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
    长历史图用全序列并标 `full: True`。
 5. **失败要响**：解析结果缺列、月份对不上，抛异常让 `monthly_run.py` 记 FAIL，
    **绝不静默写 NaN 上线**。
+
+   这条不靠自觉：写文件一律走 `build/payload_guard.py` 的 `write_dash(path, payload, ticker)`，
+   它在写出**之前**递归扫 payload，发现 NaN / Infinity（含已被 f-string 格式化成
+   `$nanbn` `nan%` 的展示串）就报出具体路径（`exhibits[7].values[3]` + 该图编号标题）
+   并 exit 1，旧的 `data/*.js` 原地不动。新增生成器**不要**自己写 `json.dump` ——
+   `json.dump` 默认 `allow_nan=True`，写出的裸 `NaN` 是非法 JSON 但合法 JS，
+   浏览器照渲染，退出码还是 0。
+   `null` 不在拦截范围：缺月、未满季作废的 y/y、Cboe 滞后一月的 RPC、HKEX 月中才披露的
+   new_listings 都是合法留空，一律走 `L()/LN()` 出 `null`。

@@ -29,6 +29,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CSV = os.path.join(ROOT, 'series', 'cboe.csv')
@@ -220,6 +222,13 @@ def main():
     XL25 = [mlab(p) for p in W25]
     XL_LONG = [mlab(p) for p in ALL]
 
+    # 口径断点：2017 年为 Bats pro-forma combined，2018-01 起才是实际口径。
+    # break_at 语义是「从这一期起与左侧不可比」，边界落在**首个 2018 月的左缘**。
+    # 取「首个 year>=2018 的下标」而不是硬编码 12、也不是数首年的月数：源文件若哪天
+    # 回补到 2016，数首年月数会把虚线错画到 Jan-17。首月已晚于 2017 则不画（=None）。
+    I_2018 = next((i for i, p in enumerate(ALL) if p.year >= 2018), None)
+    BREAK_PF = I_2018 if I_2018 else None       # 0 也视作无断点（左缘无意义）
+
     # RPC 与 implied revenue 的窗口以 LATEST_RPC 结尾：末点为 null 时 lines_endlabels
     # 会对 null 调 toFixed 而崩，且一个空的末点也不带信息
     i_rpc = ALL.index(LATEST_RPC)
@@ -320,7 +329,7 @@ def main():
     })
 
     # ── Exhibit 6：Full U.S. options ADV history（gsx.long_line → lines，通栏）──
-    ex.append({
+    ex6 = {
         'n': 6, 'kind': 'lines', 'fmt': 'f1', 'xlabels': XL_LONG, 'xstep': max(1, len(ALL) // 14),
         'full': True, 'height': 300,
         'title': 'Full U.S. options ADV history since 2017',
@@ -331,10 +340,18 @@ def main():
                 f'{comma(adv_all[0], 1)} mn/日 → {comma(adv_all[-1], 1)} mn/日，'
                 f'约 {adv_all[-1] / adv_all[0]:.1f} 倍。最近 3 个月：'
                 + '、'.join(f'{XL_LONG[i]} {adv_all[i]:.1f}' for i in (-3, -2, -1))
-                + '。⚠️ 2017 年为 Bats pro-forma combined 口径（Cboe 2017-02 完成收购 Bats），'
-                  '与其后年份不完全可比。原 deck 在末 3 个月画了一个红色虚线椭圆，'
-                  '网页图表引擎没有这个元件，改在本注里点名。',
-    })
+                + '。⚠️ 红色竖虚线左侧（2017 年）为 Bats pro-forma combined 口径'
+                  '（Cboe 2017-02 完成收购 Bats），与其后年份不完全可比，'
+                  '读长期趋势应从虚线右侧起算；倍数一句是端点对端点，同样受此影响。'
+                  '（另注：原 deck 在末 3 个月画了一个红色虚线椭圆做强调，'
+                  '网页图表引擎没有这个元件，与本图的口径断点线无关。）',
+    }
+    if BREAK_PF:
+        # 标签必须点明「异口径的是虚线左边那段」—— lpla/msci 的先例里变口径的是断点
+        # 右侧，这里方向相反，照抄 'M&A' 这种中性词会读反。
+        ex6['break_at'] = BREAK_PF
+        ex6['break_label'] = '2017 = Bats pro-forma'
+    ex.append(ex6)
 
     # ── Exhibit 7：Proprietary index options ADV by product（gsx.multi_line → lines_endlabels）──
     # 单位用「千张/日」而不是原 deck 的「百万张/日」：引擎的格式器没有 f2，
@@ -512,8 +529,13 @@ def main():
                 f'美国期权 RPC {comma(rpc_l, 3, "$")}（{mlab(LATEST_RPC)}，三个月滚动）· '
                 f'Implied 期权交易收入 {comma(rev_l, 2, "$")}mn/日 · '
                 f'CFE 期货 ADV {fut_l:,.0f}k/日（{pctf(yoy(fut_all))} y/y）')
+    # 首页卡片把 through_label（=LATEST 月）紧贴这一行渲染，读者会把三个指标一并归到
+    # 最新月；RPC 却滞后一期（口径月 = LATEST_RPC）。口径月必须留在卡片上，否则与本页
+    # Exhibit 1「最新月 RPC 单元格为空」直接冲突。「三个月滚动」这半句舍在子页 headline
+    # 与 notes 里 —— 一并写进来会到 66 字，破 CONTRACT 的 hub_line ≤60 字上限。
     hub_line = (f'美国期权 ADV {adv_l:.1f}mn/日（{pctf(yoy(adv_all))} y/y）· '
-                f'指数期权占比 {sh_l:.0f}% · RPC {comma(rpc_l, 3, "$")}')
+                f'指数期权占比 {sh_l:.0f}% · RPC {comma(rpc_l, 3, "$")}'
+                + (f'（{mlab(LATEST_RPC)}）' if LATEST_RPC != LATEST else ''))
 
     notes = [
         f'<b>数据源与节奏。</b>全部数值来自本仓 <code>series/cboe.csv</code>，'
@@ -597,14 +619,8 @@ def main():
         f'2017 figures are Bats pro-forma combined. 3Y %ile = 当月读数在最近 36 个月中的分位。'
     )
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        f.write(f'// 由 build/cboe.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(OUT, payload, 'cboe')
 
     print(f'数据 {ALL[0]} → {LATEST}（{len(ALL)} 个月）；RPC 至 {LATEST_RPC}')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张图）'

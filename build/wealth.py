@@ -25,7 +25,9 @@
   · 客户资产 —— HOOD total platform assets ⇄ SCHW/LPL total client assets ⇄ IBKR client equity
   · 净流入   —— HOOD net deposits ⇄ SCHW core NNA ⇄ LPL organic NNA（都是客户净转入，
                 都按「当月流量 x 12 / 上月末资产」年化，HOOD 自家披露口径也是这个）
-  · 日均交易 —— HOOD DATs（股票+期权+加密之和）⇄ SCHW DATs ⇄ IBKR cleared DARTs
+  · 日均交易 —— HOOD DATs（股票+期权+加密之和）⇄ SCHW DATs ⇄ IBKR total client DARTs
+                （IBKR 披露的总量口径，含未在 IBKR 清算的客户 —— 与另两家的客户总成交
+                笔数可比；IBKR 单页那条 implied cleared DARTs 是另一个更窄的推导口径）
   · 融资余额 —— HOOD margin book ⇄ SCHW month-end margin ⇄ IBKR margin loans
 
 不入图：
@@ -46,6 +48,8 @@ import sys
 
 import numpy as np
 import pandas as pd
+
+import payload_guard
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -68,6 +72,34 @@ MEMBERS = [
 ACQ = {'2023-01': 3.2, '2023-03': 0.5, '2024-04': 5.0, '2024-08': 0.3, '2024-09': 0.3,
        '2024-10': 88.3, '2024-11': 0.8, '2024-12': 0.3, '2025-01': 0.1, '2025-02': 0.7,
        '2025-03': 7.1, '2025-08': 275.0, '2025-12': 2.0}
+
+# 结构性断点：ACQ 里两笔整体并表 —— Atria（2024-10，+$88.3bn，约当月资产的 6%）与
+# Commonwealth（2025-08，+$275.0bn，约 14%）。凡是画「as-reported LPL 客户资产」的图
+# 都要把它画出来（CONTRACT.md §5.2：口径断点必须画出来，不能靠图注文字提一句就算数）。
+# 与 ACQ 挨着放，是因为它们是同一件事的两种用法 —— 改一处必须改另一处。
+# 标签点名 LPL：单票页上整幅红线天然只指 LPL，横截面页上四条线并排，不点名会被读成
+# 「四家在这里都换了口径」。
+ACQ_BREAKS = [(pd.Period('2024-10', 'M'), 'LPL Atria'),
+              (pd.Period('2025-08', 'M'), 'LPL Commonwealth')]
+
+
+def brks(idx, drawn=None, n=None):
+    """把结构性断点映射到给定窗口的 x 索引，返回可直接展开进 exhibit dict 的片段。
+
+    窗口盖不到的断点自动省略（各图窗口起点不同、dense_win 还会随披露变动，
+    硬编码索引下个月就错位）；一个都盖不到就返回空 dict，图上不画、图注也不会
+    声称画了 —— drawn 收集真正画上的 exhibit 编号，图注文案由它生成。"""
+    lst = list(idx)
+    at = [lst.index(p) for p, _ in ACQ_BREAKS if p in lst]
+    lb = [label for p, label in ACQ_BREAKS if p in lst]
+    if not at:
+        return {}
+    if drawn is not None and n is not None:
+        drawn.append(n)
+    return {'break_at': at, 'break_label': lb}
+
+
+BRK_DRAWN = []          # 真正画上断点线的 exhibit 编号，供口径说明引用
 
 
 # ────────────────────────────── 读数据 + 发布门槛 ──────────────────────────────
@@ -273,6 +305,31 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 CUR, PRV, YAG = LATEST, LATEST - 1, LATEST - 12
 
 
+def _lp_rank_txt():
+    """LPL as-reported y/y 与剔并购后的 y/y、以及它与 Schwab 的名次关系。
+
+    断点线告诉读者「这里不可比」，但不告诉他不可比到什么程度。当期这两个数横跨
+    Schwab 时，名次是反的 —— 这句话必须给出数字，否则读者只会照着端点标签读
+    LPL +38% > Schwab +27%。算不出来（缺月、缺 Schwab）就返回空串，不写半句。"""
+    try:
+        lp_now, lp_ago = float(df['lpla_assets'].loc[CUR]), float(df['lpla_assets'].loc[YAG])
+        sc = float(df['schw_yoy'].loc[CUR])
+    except (KeyError, TypeError, ValueError):
+        return '', None
+    if not all(np.isfinite(v) for v in (lp_now, lp_ago, sc)) or lp_ago == 0:
+        return '', None
+    t12 = sum(v for k, v in ACQ.items() if YAG < pd.Period(k, 'M') <= CUR)
+    raw, exq = (lp_now / lp_ago - 1) * 100, ((lp_now - t12) / lp_ago - 1) * 100
+    txt = (f'{mlab(CUR)} 的 LPL 读数为 <b>{raw:+.1f}%</b>，剔掉滚动 12 个月的 Acquired NNA'
+           f'（${t12:,.1f}bn）之后是 <b>{exq:+.1f}%</b>，'
+           + (f'<b>低于</b> Schwab 的 {sc:+.1f}% —— 名次是反的。'
+              if exq < sc else f'仍高于 Schwab 的 {sc:+.1f}%。'))
+    return txt, exq
+
+
+LP_RANK_TXT, LP_YOY_EX = _lp_rank_txt()
+
+
 def cell(v, d, kind):
     if v is None or not np.isfinite(v):
         return '—'
@@ -313,7 +370,7 @@ def pctile36(s):
 SUM_ROWS = [
     ('group', 'Client assets ($bn) —— 同一单位，直接可比'),
     ('row', 'schw', 'Schwab total client assets', 'schw_assets', 0, '$', 'ratio'),
-    ('row', 'lpla', 'LPL total client assets', 'lpla_assets', 0, '$', 'ratio'),
+    ('row', 'lpla', 'LPL total client assets（含并购转入）', 'lpla_assets', 0, '$', 'ratio'),
     ('row', 'ibkr', 'IBKR client equity', 'ibkr_assets', 0, '$', 'ratio'),
     ('row', 'hood', 'Robinhood total platform assets', 'hood_assets', 0, '$', 'ratio'),
     ('group', 'Organic growth（%，年化）'),
@@ -329,7 +386,7 @@ SUM_ROWS = [
     ('row', 'hood', 'Robinhood margin book', 'hood_margin', 1, '$', 'ratio'),
     ('group', 'Activity（k trades / day）'),
     ('row', 'schw', 'Schwab DATs', 'schw_dats', 0, '', 'ratio'),
-    ('row', 'ibkr', 'IBKR cleared DARTs', 'ibkr_dats', 0, '', 'ratio'),
+    ('row', 'ibkr', 'IBKR total client DARTs（含未清算）', 'ibkr_dats', 0, '', 'ratio'),
     ('row', 'hood', 'Robinhood DATs（股票+期权+加密）', 'hood_dats', 0, '', 'ratio'),
 ]
 
@@ -362,6 +419,9 @@ summary = {
              'IBKR 不披露净新增资产（只披露净新增账户），故这些行只有披露该项的公司。'
              '比率类指标（年化有机增速、账户增速）的差异用 pp/bp，不用百分比变化；'
              'Robinhood DATs 官方单位为 mn，此处 x1,000 换成 k 与另两家同轴（核对表仍保留 mn 原始单位）。'
+             'IBKR 那行是公司披露的 <b>Total Client DARTs</b>（含通过 IBKR 执行但不在 IBKR 清算的客户），'
+             '与 Schwab / Robinhood 的客户总成交笔数同口径；公司另披露的 Cleared Avg. DART per Account '
+             '推导出的 cleared DARTs 约为此值的 85%，见 IBKR 单页 Exhibit 4/18，两者不要混读。'
              '3Y %ile = 当月读数在最近 36 个月里高于多少个百分比的观测。'
              '判据同全站：36 个月里 ≥90% 的月环比不降就把该行分位留空 —— '
              '几乎只增不减的序列分位恒为 100，是噪音不是信息。'
@@ -401,12 +461,15 @@ ex.append({
     'title': f'Client assets since {mlab(B18)}, rebased to 100',
     'ylab': f'index, {mlab(B18)} = 100',
     'series': s2,
+    **brks(I18, BRK_DRAWN, 2),
     'note': (firms_note(inc2, exc2,
                         'Robinhood 的月度经营指标自 2023-04 才有，进不了 2018 基期的图 —— '
                         '把它从自己的首月当 100 起画，会与另外三家比出一个纯属基期不同的假斜率；'
                         '四家同基期的版本见下一张。')
-             + 'LPL 这条线含 Atria（2024-10）与 Commonwealth（2025-08）两次并购转入，'
-             '另外三家不含并购。' + GATE),
+             + '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
+             '2025-08 Commonwealth +$275.0bn）：从那一期起 LPL 这条线与左侧不可比，'
+             '另外三家不含并购、不受影响。重定基图上并购是<b>永久抬升</b>的 —— '
+             '断点右侧的全部水平差里有一块不是自己长出来的。' + GATE),
 })
 
 # ── Exhibit 3：客户资产 2023-04 基期重定基（四家同基期）──
@@ -426,11 +489,16 @@ ex.append({
     'title': f'Client assets since {mlab(B23)}, rebased to 100 —— 四家同基期',
     'ylab': f'index, {mlab(B23)} = 100',
     'series': s3,
+    **brks(I23, BRK_DRAWN, 3),
     'note': (firms_note(inc3, exc3)
              + f'基期取 {mlab(B23)}（Robinhood 月度经营指标的首月），四家从同一天起跑，'
              '斜率之差才是真的增长之差。口径：Schwab / LPL 为 total client assets，'
              'IBKR 为 client equity，Robinhood 为 total platform assets —— '
-             '都是「客户放在这家平台上的资产总额」，可直接并排。' + GATE),
+             '都是「客户放在这家平台上的资产总额」，可直接并排。'
+             '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
+             '2025-08 Commonwealth +$275.0bn），只影响 LPL 这一条线：'
+             '断点右侧 LPL 与另外三家的斜率差里有一块是买来的，不是长出来的。'
+             '有机口径见 Exhibit 5。' + GATE),
 })
 
 # ── Exhibit 4：客户资产 y/y ──
@@ -441,9 +509,12 @@ ex.append({
     'n': 4, 'kind': 'lines_endlabels', 'fmt': 'pct0', 'xlabels': xls(_i4), 'xstep': 2,
     'title': 'Client asset growth, y/y', 'ylab': '% y/y', 'zero_line': True,
     'series': s4,
+    **brks(_i4, BRK_DRAWN, 4),
     'note': (firms_note(inc4, exc4)
-             + 'LPL 在 2024-10（Atria）与 2025-08（Commonwealth）的跳升是并购转入，不是有机增长 —— '
-             '这两个月起的 12 个月里，它的 y/y 与另外三家不可比。' + win_note(_i4) + GATE),
+             + '<b>红色竖虚线 = LPL 的两次整体并表</b>（2024-10 Atria +$88.3bn、'
+             '2025-08 Commonwealth +$275.0bn），只影响 LPL 这一条线，另外三家不受影响。'
+             '并购转入不是有机增长，跳升起的 12 个月里 LPL 的 y/y 与另外三家不可比。'
+             + LP_RANK_TXT + '有机口径见 Exhibit 5。' + win_note(_i4) + GATE),
 })
 
 # ── Exhibit 5：年化有机增速（净流入口径三家）──
@@ -523,7 +594,7 @@ ex.append({
 
 # ── Exhibit 9：日均交易笔数 ──
 _IT9 = [('schw', 'schw_dats', 'Schwab DATs'),
-        ('ibkr', 'ibkr_dats', 'IBKR cleared DARTs'),
+        ('ibkr', 'ibkr_dats', 'IBKR total client DARTs'),
         ('hood', 'hood_dats', 'Robinhood DATs')]
 _i9 = dense_win(_IT9)
 s9, inc9, exc9 = sr(_IT9, _i9)
@@ -534,9 +605,14 @@ ex.append({
     'series': s9,
     'note': (firms_note(inc9, exc9, 'LPL 不披露交易笔数。')
              + '<b>三家的「一笔」不是同一件事：</b>Schwab DATs 数客户成交笔数；'
-             'IBKR DARTs 只数已清算的、收佣金的委托（cleared commissionable orders）；'
+             'IBKR 这条线用的是公司披露的 <b>Total Client DARTs</b>，'
+             '含通过 IBKR 执行但不在 IBKR 清算的 introducing-broker 客户；'
              'Robinhood 是股票 + 期权 + 加密三个市场的 DATs 之和（官方单位 mn，此处 x1,000 换成 k）。'
              '所以水平值只能当量级读，方向与拐点才是可比的信息。'
+             '<b>这里取总量是为了与另两家的客户总成交笔数可比</b> —— IBKR 另按 '
+             'Cleared Avg. DART per Account 推导过一条更窄的 implied cleared DARTs'
+             '（见 IBKR 单页 Exhibit 4/18），约为本图数值的 85%，两条线不要混读；'
+             '「cleared」修饰的是账户（IBKR 自清算的账户），不是订单。'
              'Schwab 的 DATs 自 2026-01 的月报才有，滚动表回溯至 '
              f'{mlab(df["schw_dats"].dropna().index[0]) if has("schw_dats") else "—"}，'
              '所以本图窗口从那里起。' + win_note(_i9) + GATE),
@@ -627,8 +703,10 @@ def heat(n, t, title, extra=''):
 _hn = 13
 for _t, _title, _extra in [
     ('schw', 'Schwab client assets y/y (%)', ''),
-    ('lpla', 'LPL client assets y/y (%)', '2024-10（Atria）与 2025-08（Commonwealth）'
-                                          '起的 12 个月带着并购转入，不是有机增长。'),
+    ('lpla', 'LPL client assets y/y (%)', '2024-10（Atria +$88.3bn）与 '
+                                          '2025-08（Commonwealth +$275.0bn）起的 12 个格子带着并购转入，'
+                                          '不是有机增长；热力矩阵这个图型画不了断点竖线，'
+                                          '带断点线的同口径图见 Exhibit 4，剔并购后的有机口径见 Exhibit 5。'),
     ('ibkr', 'IBKR client equity y/y (%)', ''),
     ('hood', 'Robinhood platform assets y/y (%)', 'Robinhood 的月度披露自 2023-04 起，'
                                                   '所以 y/y 自 2024-04 才有，矩阵行数少于另外三家。'),
@@ -639,6 +717,19 @@ for _t, _title, _extra in [
     if _h:
         ex.append(_h)
         _hn += 1
+
+
+# 汇总表画不了断点线（表格没有 x 轴），所以 LPL 那一行的并购口径只能写进表注。
+# 放在这里而不是 summary 的字面量里，是因为 BRK_DRAWN 要等 exhibit 全部建完才有值 ——
+# 图注不能声称画了一条其实没画的线。
+if LP_RANK_TXT:
+    summary['note'] += (
+        'LPL 那行是 as-reported 口径，含 Atria（2024-10 +$88.3bn）与 '
+        'Commonwealth（2025-08 +$275.0bn）两次整体并表，表格画不出断点线：'
+        + LP_RANK_TXT
+        + (f'带断点线的同口径图见 Exhibit {"、".join(str(n) for n in BRK_DRAWN)}，'
+           if BRK_DRAWN else '')
+        + '剔并购后的有机口径见 Exhibit 5。')
 
 
 # ────────────────────────────── 核对表 ──────────────────────────────
@@ -659,7 +750,7 @@ TCOLS = [
     ('lpla', 'LPL acquired NNA ($bn)', 'lq', 'lpla_acq', 1),
     ('hood', 'HOOD net deposits ($bn)', 'hf', 'hood_flow', 1),
     ('schw', 'SCHW DATs (k)', 'sd', 'schw_dats', 0),
-    ('ibkr', 'IBKR DARTs (k)', 'id', 'ibkr_dats', 0),
+    ('ibkr', 'IBKR total client DARTs (k)', 'id', 'ibkr_dats', 0),
     ('hood', 'HOOD DATs (mn)', 'hd', 'hood_dats_mn', 1),
 ]
 TCOLS = [c for c in TCOLS if c[0] in HAS and c[3] in df.columns and has(c[3])]
@@ -712,7 +803,7 @@ notes = [
     '<b>「可比」不等于「相同」，各图注已逐条标出差异。</b>客户资产的三种叫法'
     '（client assets / client equity / platform assets）都是「客户放在这家平台上的资产」，'
     '可直接并排；但日均交易的「一笔」三家定义不同（Schwab 数成交笔数、'
-    'IBKR 只数已清算收佣金的委托、Robinhood 是三个市场之和），'
+    'IBKR 报的是 Total Client DARTs、含不在 IBKR 清算的客户、Robinhood 是三个市场之和），'
     '融资余额里 Schwab 含 short credits 而另两家不含，'
     '账户口径 IBKR 数账户、Robinhood 数「有入金的客户」。'
     '这些图的<b>水平值只能当量级读，方向与拐点才是可比的信息</b>。',
@@ -725,8 +816,14 @@ notes = [
     '<b>LPL 的并购转入已从有机口径里剔除。</b>Atria（2024-10，$88.3bn）与 '
     'Commonwealth（2025-08，$275.0bn）等 Acquired NNA 来自官方月报同页的披露，'
     '逐条硬编码在本脚本与 <code>build/lpla.py</code> 里（不是 CSV 的一列，改一处要改两处）。'
-    'Exhibit 5 用的是剔除后的 organic NNA；Exhibit 4 与 Exhibit 14 的 y/y 是<b>含</b>并购的'
-    '总资产口径，所以那两次跳升之后的 12 个月里，LPL 与另外三家不可比 —— 图注已标。',
+    'Exhibit 5 用的是剔除后的 organic NNA；Exhibit 2、3、4 与 Exhibit 14 画的是<b>含</b>并购的 '
+    'as-reported 口径，所以那两次跳升之后的 12 个月里，LPL 与另外三家不可比。'
+    + (f'<b>Exhibit {"、".join(str(n) for n in BRK_DRAWN)} 已在 2024-10 与 2025-08 的左缘'
+       f'画出红色竖虚线并标 LPL Atria / LPL Commonwealth</b>（语义：该期起 LPL 这条线与左侧'
+       '不可比，另外三家不受影响）。' if BRK_DRAWN else '')
+    + 'Exhibit 5 已是剔除后的口径，本身连续可比，故不画断点；'
+    'Exhibit 1 汇总表与 Exhibit 14 热力矩阵的图型都不支持断点线，改在各自的图注里写明。'
+    + (f'当期的量级：{LP_RANK_TXT}' if LP_RANK_TXT else ''),
 
     '<b>横截面页独有的两张归一化图。</b>Exhibit 11（融资余额 / 客户资产）与 '
     'Exhibit 12（客户现金 / 客户资产）把余额按各自的客户资产归一化：'
@@ -785,12 +882,8 @@ def main():
     out_dir = os.path.join(ROOT, 'data')
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'wealth.js')
-    with open(path, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload（否则 monthly_run 的幂等检查永久失效）
-        f.write(f'// 由 build/wealth.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(path, payload, 'wealth')
     print(f'共同最新月 {LATEST}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）'
           f' | 各家: ' + ', '.join(f'{t}→{LATEST_EACH[t]}' for t in sorted(RAW))
           + (f' | 未就绪: {[t for t, _ in skipped]}' if skipped else ''))

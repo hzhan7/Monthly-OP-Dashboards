@@ -107,10 +107,11 @@ def main():
     payload = {
         'grace': GRACE,
         'groups': groups,
+        # 不要在这里链回 costco-monthly-sales / ibkr-monthly-metrics 两个旧仓：
+        # 它们的内容已整体并入本仓，旧仓会被删除，链过去就是 404。
         'footer': ('数据与算法源自本机 <code>monthly-op-charts</code> 项目与各 skill 的解析管道 · '
-                   '仅供个人研究，不构成投资建议 · '
-                   '<a href="https://hzhan7.github.io/ibkr-monthly-metrics/">旧 IBKR 站</a> · '
-                   '<a href="https://hzhan7.github.io/costco-monthly-sales/">旧 COST 站</a>（已迁入本站）'),
+                   '每张图右上角可切「表格」视图逐条核对原值 · '
+                   '仅供个人研究，不构成投资建议'),
     }
     os.makedirs(DATA, exist_ok=True)
     with open(os.path.join(DATA, 'roster.js'), 'w', encoding='utf-8') as f:

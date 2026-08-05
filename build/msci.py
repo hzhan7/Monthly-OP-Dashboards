@@ -23,6 +23,8 @@ import datetime
 import json
 import os
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -347,22 +349,25 @@ def main():
     bpq = [BP_Q[q] for q in qs]
     XLbp = [mlab(qlab_month(q)) for q in qs]
     avg12_8 = sum(bpq[-5:-1]) / 4.0                       # 前 4 个季度 = Prior 12mo Avg.
-    yoy8 = bpq[-1] - bpq[-5]                              # 比率序列的同比是百分点差
+    # 序列本身的刻度就是 bp（CSV unit=bp_of_etf_aum），所以两个 bp 相减得到的同比差额
+    # 单位仍是 bp，不是 pp。标成 pp 会把幅度放大 100 倍（-0.49bp 读成 -49bp）。
+    yoy8 = bpq[-1] - bpq[-5]                              # bp 序列的同比是基点差（bp）
     ex.append({
         # 原 deck 用 dec=2；网页侧只能用 f1 —— assets/charts.js 的 FMT 里没有 'f2'，
         # 传 'f2' 会静默退回 f1（fmtOf 的默认分支）。宁可显式写 f1，也不要让格式静默降级。
         # 三位小数的精确值写进图注与核对表。
         'n': 8, 'kind': 'gs_bar', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': XLbp,
         'title': (f'Effective asset-based fee rate — {last_q} {last_bp:.3f}bp, '
-                  f'{yoy8:+.2f}pp YoY（{bpq[0]:.2f}bp → {bpq[-1]:.2f}bp over {len(qs)} quarters）'),
+                  f'{yoy8:+.2f}bp YoY（{bpq[0]:.2f}bp → {bpq[-1]:.2f}bp over {len(qs)} quarters）'),
         'ylab': 'bp of average ETF AUM', 'legend': 'Effective rate (quarterly)',
         'values': RL(bpq), 'avg12': R(avg12_8),
-        'yoy_txt': f'{yoy8:+.2f}pp y/y',
+        'yoy_txt': f'{yoy8:+.2f}bp y/y',
         'note': ('Reported asset-based fee revenue / average MSCI-linked ETF AUM. '
                  'This is the bridge\'s real uncertainty: AUM compounded but the rate compressed from '
                  f'{bpq[0]:.1f}bp to {bpq[-1]:.1f}bp in {len(qs) - 1} quarters. '
                  f'The period-end ETF fee of {DISC_Q[last_q]:.2f}bp is lower as it also covers '
-                 'non-ETF licensing. 比率序列的同比用<b>百分点差</b>，不是「百分比的百分比变化」；'
+                 'non-ETF licensing. 本图 y 轴刻度就是 bp，所以同比用<b>基点差（bp）</b>，'
+                 '不是「百分比的百分比变化」，也不是百分点（1pp = 100bp）；'
                  'x 轴标的是各季末月份。柱顶标签四舍五入到 0.1bp，逐季精确值（bp）：'
                  + '、'.join(f'{q} {BP_Q[q]:.3f}' for q in qs) + '。'),
     })
@@ -510,7 +515,8 @@ def main():
         '年线图最近 6 年、热力矩阵最近 11 个年度、核对表 13 个月。'
         'Exhibit 12 取 24 个点（y/y 在第 25 格无值），画面内容与原 deck 相同。',
         '标题里的当期数字（YoY / MoM / 倍数 / 分位）全部随最新月重算，没有写死的字面量；'
-        '比率序列（Exhibit 8）的同比一律用<b>百分点差</b>，不用「百分比的百分比变化」。',
+        '有效费率（Exhibit 8）以 bp 为刻度，其同比一律用<b>基点差（bp）</b>的绝对差，'
+        '不用「百分比的百分比变化」，也不写成百分点（1pp = 100bp）。',
         '汇总表的「月末 − 月均」一行会在零附近变号，百分比变化无意义，故其 m/m 与 y/y 用绝对额（$bn）；'
         '近 3 年分位对几乎单调的序列会恒等于 100，判定为单调（逐月差 ≥0 占比 ≥90%）时该行分位留空。',
     ]
@@ -542,14 +548,8 @@ def main():
     }
 
     out = os.path.join(ROOT, 'data', 'msci.js')
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, 'w', encoding='utf-8') as fh:
-        # 构建日期只写首行注释，不进 payload：进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        fh.write(f'// 由 build/msci.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        fh.write('window.DASH = ')
-        json.dump(payload, fh, ensure_ascii=False, separators=(',', ':'))
-        fh.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(out, payload, 'msci')
 
     print(f'数据最新月 {LATEST}｜月度序列 {months[0]} → {months[-1]}（{len(months)} 个月）')
     print(f'费率季度 {qs[0]} → {qs[-1]}（{len(qs)} 季）｜隐含 ABF 覆盖 {abf_months[0]} → {abf_months[-1]}')

@@ -29,6 +29,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 D = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(D)
 SERIES = os.path.join(ROOT, 'series')
@@ -427,16 +429,50 @@ def main():
     # ── Exhibit 1：汇总表（gsx.summary_table 的行分组范式）──
     cur, prv, yag = LATEST, LATEST - 1, LATEST - 12
 
+    def _rank36(win, c):
+        """c 在 36 个月窗口 win 里的百分位（0-100）。"""
+        return float((win.values < c).sum()) / max(1, len(win) - 1) * 100
+
     def pctile36(s):
-        """近 36 个月分位。单调序列（几乎只增不减）留空 —— 分位恒为 100，是噪音。"""
-        h = s.dropna().iloc[-36:]
-        c = s.get(cur, np.nan)
+        """近 36 个月分位。近乎单调的序列留空 —— 分位钉在 100（或 0）不动，是噪音不是信息。
+
+        判据不用 CONTRACT §2 写的「上升月份占比 ≥ 90%」代理，而是**直接回放这一列**：
+        把序列逐月截断，重算过去 24 个月每个月本该印出的分位，数其中有多少个月钉在
+        极值（100 或 0）。理由是这个代理在本页根本分不开（实测于 series/lpla.csv）：
+
+            列                       上升月占比   过去 24 个月里印 100 的月数
+            advisory_assets           0.800        20 / 24
+            brokerage_assets          0.771        20 / 24
+            total_assets              0.771        20 / 24
+            pct_advisory              0.800        14 / 24（分位实测 66–100，有真实离散度）
+
+        市值型存量序列每年有 20%+ 的下跌月，所以代理判不出它单调 —— 可它照样月月刷
+        36 个月新高，分位列就是一列恒定的绿 100。反过来，任何低到能盖住 brokerage
+        (0.771) 的门槛都会连 % Advisory (0.800) 一起误杀，而后者是比率不是存量、
+        Commonwealth 并表把 advisory 占比推到记录高位是有内容的读数。也就是说
+        **调门槛救不了这个代理，只能换判据**。
+
+        门槛 0.70 取自实测间隔的中点：留空组 20/24 = 0.833，保留组里最高的
+        % Advisory 14/24 = 0.583，17/24 = 0.708 到两侧各差 3 个月，不是贴着数据卡的。
+        """
+        ss = s.dropna()
+        c = ss.get(cur, np.nan)
+        h = ss.iloc[-36:]
         if len(h) < 8 or not np.isfinite(c):
             return None
-        d = np.diff(h.values)
-        if len(d) and float((d >= 0).sum()) / len(d) >= 0.90:
+        hi = lo = n = 0
+        for k in range(min(24, len(ss))):
+            w = ss.iloc[:len(ss) - k]
+            wh = w.iloc[-36:]
+            if len(wh) < 8:
+                break
+            n += 1
+            p = _rank36(wh, float(w.iloc[-1]))
+            hi += p >= 100
+            lo += p <= 0          # 单调下行的对称情形：分位恒为 0，同样没有信息
+        if n and max(hi, lo) / n >= 0.70:
             return None
-        return float((h.values < c).sum()) / max(1, len(h) - 1) * 100
+        return _rank36(h, c)
 
     def srow(label, col, dec, mode, pct=False, money='', inv=False):
         s = df[col].dropna()
@@ -495,7 +531,9 @@ def main():
         'note': 'Per GS convention: flow items (NNA) show an absolute change rather than a '
                 'percentage, and are read through the annualised organic growth line. '
                 + QNOTE + '. 3Y %ile = 当月读数在最近 36 个月里高于多少百分比的观测；'
-                '近乎单调的存量序列（上升月份占比 ≥ 90%）分位无信息量，留空。',
+                '若回放过去 24 个月、该行有 ≥ 70% 的月份分位钉在 100（或 0），说明这一列'
+                '恒定不动、无信息量，留空 —— Advisory / Brokerage / Total client assets '
+                '三行（24 个月里 20 个月都在刷 36 个月新高）即因此留空，它们的强弱读 m/m 与 y/y。',
     }
 
     # ── 末尾核对表（官方原始单位，未换算）──
@@ -595,15 +633,9 @@ def main():
                    '仅供个人研究，不构成投资建议'),
     }
 
-    os.makedirs(os.path.join(ROOT, 'data'), exist_ok=True)
     path = os.path.join(ROOT, 'data', 'lpla.js')
-    with open(path, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 否则 monthly_run 的「data 有没有实质变化」
-        # 检查（忽略首行的正文比较）永久失效，每天都会产出一个 no-op commit。
-        f.write(f'// 由 build/lpla.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(path, payload, 'lpla')
 
     print(f'数据截至 {LATEST} | 25 个月窗口 {W25.index[0]} → {W25.index[-1]} | '
           f'长历史 {df.index[0]} → {df.index[-1]}（{len(df)} 个月）')

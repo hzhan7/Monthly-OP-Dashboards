@@ -28,6 +28,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series', 'cost.csv')
@@ -199,12 +201,22 @@ def main():
     ex.append(stack_ex(12, 'us_a', 'US Core Comp Growth Trends'))
 
     # Ex 13 —— 仓库数（全历史）
-    wh = df.dropna(subset=['wh_total'])
-    v0, v1 = wh['wh_total'].iloc[0], wh['wh_total'].iloc[-1]
+    # 2016-08 / 2017-08 / 2017-09 三个月的新闻稿未披露仓库数。这里不能 dropna：
+    # dropna 会把这 3 个月从 x 轴上一并抹掉，剩下的点等距连成一条线 ——
+    # Jun-16→Jan-17 的 7 个月与 Jan-17→Jul-17 的 6 个月在图上一样宽，
+    # 「一年新开多少家」直接从图上读会偏，且页面无任何提示（违反 CONTRACT §5.3）。
+    # 保留完整月度轴，缺失月由 L() 传 None，charts.js 的 lines 分支遇 null 抬笔断线。
+    # 用 first/last_valid_index 而不是整段 df，是保留 dropna 原本「序列两端不留空」的效果
+    # （本例首尾都有值，结果就是全部 127 行；将来该列若晚于 Dec-15 才开始也仍然正确）。
+    wh = df.loc[df['wh_total'].first_valid_index():df['wh_total'].last_valid_index()]
+    whv = wh['wh_total'].dropna()          # annot 的首末端点必须落在真实观测上
+    v0, v1 = whv.iloc[0], whv.iloc[-1]
     ex.append({
         'n': 13, 'kind': 'lines', 'title': 'Warehouse Count', 'yfmt': 'int',
         'xlabels': [mlab(p) for p in wh.index], 'xstep': 6,
-        'annot': f'{mlab(wh.index[0])}: {v0:.0f} → {mlab(wh.index[-1])}: {v1:.0f}',
+        'annot': f'{mlab(whv.index[0])}: {v0:.0f} → {mlab(whv.index[-1])}: {v1:.0f}',
+        'src_extra': '2016-08 / 2017-08 / 2017-09 三个月的新闻稿未披露仓库数，'
+                     '线在这三处断开，不做插值补点。',
         'series': [{'name': 'Total warehouses', 'color': 'NAVY', 'values': L(wh['wh_total'])},
                    {'name': 'US & PR', 'color': 'BLUE', 'values': L(wh['wh_us'])}],
     })
@@ -258,8 +270,15 @@ def main():
     USDF = lambda v: '—' if not np.isfinite(v) else f'${v:.2f}bn'
     INTF = lambda v: '—' if not np.isfinite(v) else f'{v:,.0f}'
 
-    def srow(label, col, mode, vfmt):
-        """mode: pp = 比率指标（变化只能是百分点差）/ abs = 绝对个数 / ratio = 百分比变化。"""
+    def srow(label, col, mode, vfmt, mm_ok=True):
+        """mode: pp = 比率指标（变化只能是百分点差）/ abs = 绝对个数 / ratio = 百分比变化。
+
+        mm_ok=False 用于「相邻月本身就不可比」的行（4-4-5 零售日历下的绝对额）：
+        m/m 整格留空。算得出来不等于该显示 —— 净销售额 4 周月与 5 周月相邻，
+        m/m 的绝对多数是周数比而不是经营变化，一旦算出来还会按符号被涂成绿色，
+        与表注里「不可当趋势读」的说明正好相反。这与 pctile36 因为同一条 4-4-5
+        理由把该行 3Y %ile 留空是同一条口径规则，只是当时只落实到了分位列。
+        """
         c, p1, p12 = sget(col, cur), sget(col, prv), sget(col, yag)
 
         def delta(a, b):
@@ -275,7 +294,7 @@ def main():
                 s = f'{v:+.1f}%'
             return (s, 'pos' if v > 0 else ('neg' if v < 0 else ''))
 
-        mm, yy = delta(c, p1), delta(c, p12)
+        mm, yy = (delta(c, p1) if mm_ok else ('', '')), delta(c, p12)
         p = pctile36(col, c)
         return {'kind': 'row', 'label': label, 'cells': [
             {'v': vfmt(c), 'cls': 'cur'}, {'v': vfmt(p1)}, {'v': vfmt(p12)},
@@ -303,7 +322,7 @@ def main():
             srow("Other Int'l", 'oi_r', 'pp', PCTF),
             srow('E-comm / Digitally-Enabled', 'ec_r', 'pp', PCTF),
             G('净销售额'),
-            srow('净销售额 ($bn)', 'net_sales_bn', 'ratio', USDF),
+            srow('净销售额 ($bn)', 'net_sales_bn', 'ratio', USDF, mm_ok=False),
             srow('净销售额 y/y', 'ns_yoy', 'pp', PCTF),
             srow('非 comp 贡献 (y/y − 报告 comp)', 'nc_gap', 'pp', PPF),
             G('仓库数（期末）'),
@@ -312,8 +331,9 @@ def main():
         ],
         'note': ('m/m、y/y 对比率指标一律取百分点差（pp），对绝对量取百分比或个数差；'
                  f'3Y %ile = 该读数在最近 36 个月中的分位（100 = 三年最高）。'
-                 f'净销售额 m/m 含 4-4-5 日历影响（本月 {iv(df["weeks"].iloc[-1])} 周 vs '
-                 f'上月 {iv(df["weeks"].iloc[-2])} 周），不可当趋势读。'),
+                 f'净销售额是 4-4-5 零售日历下的月度绝对额，相邻月在周数与季节性上都不可比'
+                 f'（本月 {iv(df["weeks"].iloc[-1])} 周 vs 上月 {iv(df["weeks"].iloc[-2])} 周），'
+                 f'其 m/m 与 3Y %ile 一律留空，不做周均折算；y/y 对齐同一零售月，可比。'),
     }
 
     # ── 近 13 个月核对表（与 PDF 第 4 页一致；逐条核对用，放在页面最后）──
@@ -404,13 +424,8 @@ def main():
                    '仅供个人研究，不构成投资建议'),
     }
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释：幂等检查忽略首行即可，数据没变时正文逐字节相同。
-        f.write(f'// 由 build/cost.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(OUT, payload, 'cost')
 
     print(f'cost: 数据截至 {LATEST} | CSV 共 {len(df)} 个月 {df.index[0]} → {df.index[-1]}')
     print(f'53 周周数错位月份（自动识别）: {sorted(str(p) for p in WEEK_BREAKS)}')

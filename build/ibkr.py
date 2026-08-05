@@ -45,6 +45,8 @@ import re
 
 import numpy as np
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -221,8 +223,10 @@ def main():
     COMM = {}
     for w in WIN:
         p = os.path.join(CACHE, f'pr_{w.replace("-", "")}.pdf')
-        if not os.path.exists(p):
-            raise SystemExit(f'缺少新闻稿缓存 {p}（先跑 fetch/ibkr.py）')
+        # 判有效而不只判存在：下载失败会在磁盘上留下 0 字节残骸，只判 exists 会放它过去，
+        # 然后 br.parse_pr 崩在 EmptyFileError —— 报错点离真正的病因（一次瞬时 404）很远。
+        if not os.path.exists(p) or os.path.getsize(p) < 5000:
+            raise SystemExit(f'新闻稿缓存缺失或损坏 {p}（删掉它再跑 fetch/ibkr.py）')
         COMM[w] = br.parse_pr(p)
 
     # 数据源发布日：优先取目标月新闻稿的电头日期（"GREENWICH, CT, August 3, 2026 —"），
@@ -687,13 +691,11 @@ def main():
     if source_date:
         payload['source_date'] = source_date
 
-    os.makedirs(os.path.join(ROOT, 'data'), exist_ok=True)
     path = os.path.join(ROOT, 'data', 'ibkr.js')
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(f'// 由 build/ibkr.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    # 这里原来是裸 json.dump（allow_nan 默认 True），最新行少一个值就把字面 NaN
+    # 写进 data/ibkr.js —— 文件变成非法 JSON、合法 JS，页面照渲染而退出码是 0。
+    payload_guard.write_dash(path, payload, 'ibkr')
 
     print(f'目标月 {target} | 窗口 {WIN[0]} → {WIN[-1]}（{len(WIN)} 个月）| '
           f'长历史 {ALL[0]} → {ALL[-1]}（{len(ALL)} 个月）')

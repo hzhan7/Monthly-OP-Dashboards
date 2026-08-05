@@ -30,6 +30,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -652,13 +654,8 @@ def main():
     out_dir = os.path.join(ROOT, 'data')
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'axp.js')
-    with open(path, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        f.write(f'// 由 build/axp.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(path, payload, 'axp')
 
     print(f'最新月 {LATEST}  ·  旧口径 {old.index[0]} → {old.index[-1]}（{len(old)} 个月）'
           f'  ·  新口径 {new.index[0]} → {new.index[-1]}（{len(new)} 个月）'

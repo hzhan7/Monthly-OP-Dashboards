@@ -32,6 +32,8 @@ import datetime
 import json
 import os
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series', 'spgi_clean.csv')
@@ -161,14 +163,22 @@ CUR = LATEST
 PRV = shift(LATEST, -1)
 YAG = shift(LATEST, -12)
 
-# (板块, 标签, 序列, 小数位, pct, mode)；mode='pp' → 差值用 pp/bp，'ratio' → 百分比变化
+# (板块, 标签, 序列, 小数位, pct, mode, xmonth)
+#   mode='pp' → 差值用 pp/bp，'ratio' → 百分比变化
+#   xmonth   → 该行的水平值跨月是否可比。False 时 m/m 与 3Y %ile 一律留空：
+#              两者都是「拿这个月的读数去比另一个月的读数」，分母不同就无从解释。
 SUM_ROWS = [
-    ('S&P Dow Jones Indices', None, None, 0, False, ''),
-    (None, 'ADV of exchange-traded derivatives (mn contracts)', ADV, 2, False, 'ratio'),
-    (None, 'ADV y/y as disclosed (%)', ADVY, 1, True, 'pp'),
-    ('S&P Global Ratings', None, None, 0, False, ''),
-    (None, 'Billed issuance y/y as disclosed (%)', BIY, 1, True, 'pp'),
-    (None, 'Billed issuance index (2024 same month = 100)', BIDX, 1, False, 'ratio'),
+    ('S&P Dow Jones Indices', None, None, 0, False, '', True),
+    (None, 'ADV of exchange-traded derivatives (mn contracts)', ADV, 2, False, 'ratio', True),
+    (None, 'ADV y/y as disclosed (%)', ADVY, 1, True, 'pp', True),
+    ('S&P Global Ratings', None, None, 0, False, '', True),
+    (None, 'Billed issuance y/y as disclosed (%)', BIY, 1, True, 'pp', True),
+    # 链式指数：每个月各自以自己的 2024 同月为基数（见 Exhibit 3 图注与页脚说明第 3 条）。
+    # m/m 展开是 (BI_Jun26/BI_Jun24)/(BI_May26/BI_May24) —— 两个不同且从未披露的分母的
+    # 比值之比，不对应任何可解释的量；分位是把 18 个各带不同基数的读数排在一起比大小
+    # （与 CONTRACT §2 对 4-4-5 净销售额、build/cost.py 对 net_sales_bn 的处理同构）。
+    # y/y 保留：BI_2024 同月在分子分母上精确对消，等于官方披露的同比。
+    (None, 'Billed issuance index (2024 same month = 100)', BIDX, 1, False, 'ratio', False),
 ]
 
 
@@ -193,20 +203,23 @@ def diff_cell(v, mode):
 
 
 srows = []
-for grp, lab, arr, dec, pct, mode in SUM_ROWS:
+for grp, lab, arr, dec, pct, mode, xmonth in SUM_ROWS:
     if lab is None:
         srows.append({'kind': 'group', 'label': grp})
         continue
     ic, ip, iy = at(CUR), at(PRV), at(YAG)
     c, p1, p12 = arr[ic], arr[ip], arr[iy]
-    pv = pctile36(arr[:ic + 1])
+    # 跨月不可比的行不进分位：pctile36 只会挡单调序列，挡不住「每期基数不同」。
+    pv = pctile36(arr[:ic + 1]) if xmonth else None
     pcell = {'v': ''} if pv is None else {
         'v': f'{pv:.0f}', 'cls': 'hi' if pv >= 66 else ('lo' if pv <= 33 else '')}
     srows.append({'label': lab, 'cells': [
         {'v': num(c, dec, pct), 'cls': 'cur'},
         {'v': num(p1, dec, pct)},
         {'v': num(p12, dec, pct)},
-        diff_cell(diff(c, p1, mode), mode),
+        # 走 diff_cell(None) 而不是就地塞 {'v': ''}：空格子只有一个来源，
+        # 也和 diff() 因分母为 0 / 异号而留空的写法完全同形。
+        diff_cell(diff(c, p1, mode) if xmonth else None, mode),
         diff_cell(diff(c, p12, mode), mode),
         pcell,
     ]})
@@ -220,7 +233,14 @@ summary = {
     'note': (DNOTE + '.&nbsp; ' + INOTE + '.&nbsp; ' + EVENT + '.<br>'
              '两条 y/y 行本身就是比率，m/m 与 y/y 一律用百分点差（|差|&lt;1 用 bp），'
              '不是「百分比的百分比变化」。3Y %ile = 当月读数在近 36 个月里高于百分之多少的观测；'
-             '两条 y/y 与指数序列 2025-01 才起步，分位只有 18 个观测垫底，只能当粗略刻度读。'),
+             '两条 y/y 与指数序列 2025-01 才起步，分位只有 18 个观测垫底，只能当粗略刻度读。<br>'
+             '<b>指数行的 m/m 与 3Y %ile 是刻意留空，不是缺数</b>：指数每个月各自以自己的 '
+             '2024 同月为基数，跨月的变化是两个不同分母（且从未披露）的比值之比，'
+             '不对应任何可解释的量，分位同理是拿苹果比橘子。'
+             f'该行只有 y/y 可读 —— 2024 年同月基数在分子分母上对消，'
+             f'{num(BIDX[at(CUR)], 1)} / {num(BIDX[at(YAG)], 1)} 恰好等于官方披露的 '
+             f'{BIY[at(CUR)]:+.0f}%（上一行）。相邻两列的水平值仍照 Exhibit 3 列出供核对，'
+             '但不可相减。'),
 }
 
 # ────────────────────────── Exhibit 2：SPDJI ADV ──────────────────────────
@@ -485,14 +505,8 @@ payload = {
 
 
 def main():
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        f.write(f'// 由 build/spgi.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(OUT, payload, 'spgi')
     print(f'spgi: 数据截至 {LATEST}，Exhibit 1 汇总表 + '
           f'{len(EXHIBITS)} 张图 + Exhibit {table["n"]} 核对表 → '
           f'{os.path.relpath(OUT, ROOT)} ({os.path.getsize(OUT) / 1024:.1f} KB)')

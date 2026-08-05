@@ -145,7 +145,13 @@ def update(series_dir, cache_dir=None):
     newest = max(data)
     ym = newest.replace('-', '')
     pr = os.path.join(SKILL_CACHE, f'pr_{ym}.pdf')
-    if not os.path.exists(pr):
+    # 判有效而不只判存在。只判 exists 时，一个 0 字节残骸就等于「已经有了」→ 永不重试，
+    # 而 build/ibkr.py 会崩在 EmptyFileError → 该家每次 FAIL；等 series 里已经写进这个月
+    # 之后，fetch 又会认为「没有新月份」而返回 NOCHANGE ——
+    # 于是 IBKR **永久**停在旧月份，调度器每天读到的却是 NOTHING_TO_DO。
+    if not os.path.exists(pr) or os.path.getsize(pr) < 5000:
+        if os.path.exists(pr):
+            os.remove(pr)                       # 残骸先清掉，否则下面这次成功也覆盖不干净
         try:
             br.curl(br.PR_URL.format(ym=ym), pr)
         except Exception as e:

@@ -206,9 +206,16 @@
     }
   }
 
-  /* PDF 里的白底灰框圆角气泡，可带虚线箭头 */
-  function oval(g, x, y, s, arrowTo) {
+  /* PDF 里的白底灰框圆角气泡，可带虚线箭头。
+     xlo：气泡左缘的下限（绘图区左边界）。调用点只给中心点、不知道文案有多宽，
+     所以钳制必须放在算出 w 之后的这里 —— 一处管住全部四个调用点。
+     不钳的后果：y 轴刻度数字是 anchor:end 画在 M.l-6 的，而白底 rect 在刻度之后绘制，
+     气泡一越界就把顶档刻度整个盖掉（lpla Ex10 的「3.5%」被盖 61%，只剩一个「3」）。
+     触发条件纯几何：gs_bar 的气泡定位在 M.l + band*0.75，只要 w > 1.5*band + 12
+     就必然伸进刻度栏 —— 25 根柱的窄卡片上 band 只有 10~21px，「-0.5pp y/y」w=74，必中。 */
+  function oval(g, x, y, s, arrowTo, xlo) {
     var w = Math.max(28, s.length * 6.2 + 12);
+    if (xlo != null && x - w / 2 < xlo) x = xlo + w / 2;
     el('rect', { x: x - w / 2, y: y - 8, width: w, height: 17, rx: 5,
       fill: '#fff', stroke: '#555555', 'stroke-width': 0.9 }, g);
     txt(g, x, y + 3.6, s, { size: 10, style: 'italic', fill: '#000' });
@@ -694,6 +701,48 @@
       }
       return cut;
     }
+    /* ── 逐点数值标签的密度控制 ──
+       每根柱都标数值，在窄卡片 / 窄屏上 band 会掉到 10px 出头，而「$10.35」这类标签
+       实测宽 25px —— 相邻标签直接叠字（schw Ex5 @375px 实测横向重叠 14.15px，
+       25 根柱的标签连成「$9.41$9.57$9.74…」一条串，一个都读不出）。band 随视口等比缩，
+       字号却是写死的 8px，所以这是几何必然，不是某张图碰巧。
+
+       做法：不猜宽度、也不缩字号（要让 25 个「$10.35」不重叠得压到 3.5px 以下，
+       那是不可读）。先照常把标签全部画出来，再用**实测 bbox** 判断是不是真的压在一起；
+       压上了才按步长抽稀，步长从最后一期往回数，保证最新一期永远有标签。
+       被抽掉的数值在「表格」视图里一个不少，切一下就能看到。
+
+       关键性质：一对标签都没压上时一个都不删 —— 所以本来就不挤的图（COST / IBKR
+       两个已上线的站，实测最小标签间距 29px）输出逐字节不变，不是靠调参保证的。
+       只对「一个 x 一个标签」的图型调用：并排柱（grouped_bars）的同 x 多标签
+       用步长抽不掉，得另想办法，别往这里挂。 */
+    var LAB_GAP = 1.5;                            // 留给读者的最小横向间隙
+    function thinLabels(nodes) {
+      var m = nodes.length, i, j, k, bx = [], b, keep, ok;
+      if (m < 3) return;                          // 只有两个标签，抽完只剩一个，不值当
+      for (i = 0; i < m; i++) {
+        try { b = nodes[i].el.getBBox(); } catch (e) { return; }
+        if (!b || !b.width) return;               // 量不到（卡片被 display:none）：一个都不删
+        bx.push({ i: nodes[i].i, el: nodes[i].el,
+          x: b.x, r: b.x + b.width, y: b.y, b: b.y + b.height });
+      }
+      function hit(a, c) {
+        return Math.max(a.x, c.x) - Math.min(a.r, c.r) < LAB_GAP &&
+               Math.min(a.b, c.b) - Math.max(a.y, c.y) > 0.2;
+      }
+      var last = bx[bx.length - 1].i;
+      for (k = 1; k <= m; k++) {
+        keep = bx.filter(function (o) { return (last - o.i) % k === 0; });
+        ok = true;
+        for (i = 0; i < keep.length && ok; i++)
+          for (j = i + 1; j < keep.length; j++) if (hit(keep[i], keep[j])) { ok = false; break; }
+        if (ok) break;
+      }
+      if (k <= 1) return;
+      for (i = 0; i < bx.length; i++)
+        if ((last - bx[i].i) % k) bx[i].el.parentNode.removeChild(bx[i].el);
+    }
+
     /* 竖排数值标签（qtr_bar 用）：柱很高时把标签压回画布内，不许越过 viewBox 顶 */
     function vLabel(x, yTop, s, o) {
       var need = s.length * (o.size || 8) * 0.62;
@@ -735,7 +784,7 @@
       for (s = 0; s < ex.series.length; s++)
         polyline(ex.series[s].values, col(ex.series[s].color), 1.6, false, !!ex.markers);
     } else if (kind === 'gs_bar') {
-      var wg = BW(0.62), fb = fmtOf(ex.fmt);
+      var wg = BW(0.62), fb = fmtOf(ex.fmt), labg = [];
       for (i = 0; i < n; i++) {
         /* 原来这里是直接 barPath(Y(values[i]))，没走截轴：设了 ycap 的话柱和数值标签
            会一起画到画布外几百像素（IBKR 现有 payload 没设过 ycap，所以一直没暴露）。
@@ -743,18 +792,20 @@
         if (!isNum(ex.values[i])) continue;
         var cutg2 = capBar(Xc(i) - wg / 2, wg, ex.values[i],
           (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE);
-        if (!cutg2) txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 });
+        if (!cutg2) labg.push({ i: i,
+          el: txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 }) });
       }
+      thinLabels(labg);
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
         'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
-      if (ex.yoy_txt) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt);
+      if (ex.yoy_txt) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt, null, M.l);
       if (ex.mom_txt) {
         var last = ex.values[n - 1];
         /* 气泡与箭头按**窗口末端**定位，不能写死 Xc(9)/Xc(11)。
            原先是照 PDF 的 13 个月窗口硬编的坐标，窗口一改成 25 根柱，箭头就指到第 12 根，
            而那根柱看着完全正常 —— 读者会把它当成最新月。n=13 时 n-4/n-2 正好还原原值。 */
         oval(g, Xc(n - 4) + band * 0.2, Y(Math.min(last * 1.13, y1 * 0.94)), ex.mom_txt,
-          [Xc(n - 2) + band * 0.3, Y(last * 1.06)]);   // PDF: arrow_to=(11.8, vals[-1]*1.06)
+          [Xc(n - 2) + band * 0.3, Y(last * 1.06)], M.l);   // PDF: arrow_to=(11.8, vals[-1]*1.06)
       }
     } else if (kind === 'gs_line' || kind === 'gs_line_avg') {
       var fv = fmtOf(ex.fmt);
@@ -767,16 +818,19 @@
       }
       polyline(ex.values, C.NAVY, 1.8, true, false);
       var off = (kind === 'gs_line_avg' ? 0.05 * 1.7 : 0.06 * 1.6) * rngv;
+      var labl = [];
       for (i = 0; i < n; i++) {
         var vv = ex.values[i];
         var up = !(i > 0 && i < n - 1 && vv < (ex.values[i - 1] + ex.values[i + 1]) / 2);
-        txt(g, Xc(i), Y(vv + (up ? off : -off)) + (up ? 0 : 7), fv(vv), { size: 8, fill: C.NAVY });
+        labl.push({ i: i, el: txt(g, Xc(i), Y(vv + (up ? off : -off)) + (up ? 0 : 7), fv(vv),
+          { size: 8, fill: C.NAVY }) });
       }
+      thinLabels(labl);
       if (ex.ovals_at_bottom) {
         var by = Y(dmn - rngv * 0.12);
-        if (ex.yoy_txt) oval(g, Xc(1), by, ex.yoy_txt, [Xc(2) + band * 0.6, by]);
+        if (ex.yoy_txt) oval(g, Xc(1), by, ex.yoy_txt, [Xc(2) + band * 0.6, by], M.l);
         // 同上：按窗口末端定位，不写死 13 个月窗口的下标
-        if (ex.mom_txt) oval(g, Xc(n - 4) + band * 0.1, by, ex.mom_txt, [Xc(n - 2) + band * 0.5, by]);
+        if (ex.mom_txt) oval(g, Xc(n - 4) + band * 0.1, by, ex.mom_txt, [Xc(n - 2) + band * 0.5, by], M.l);
       }
     } else if (kind === 'lines_endlabels') {
       var fe = fmtOf(ex.fmt);
@@ -818,21 +872,40 @@
       var ws = BW(0.62), base = [];
       for (i = 0; i < n; i++) base.push(0);
       for (s = 0; s < ex.stacks.length; s++) {
-        var st = ex.stacks[s];
+        var st = ex.stacks[s], labst = [];
         for (i = 0; i < n; i++) {
           var lo = base[i], hi = base[i] + st.values[i];
           var hgt = Math.max(0, Y(lo) - Y(hi) - (s ? 1.5 : 0));
           el('rect', { x: Xc(i) - ws / 2, y: Y(hi), width: ws, height: hgt, fill: col(st.color) }, g);
           if (st.label && hgt > 8)
-            txt(g, Xc(i), (Y(lo) + Y(hi)) / 2 + 2.4, comma(st.values[i], 0),
-              { size: 6.6, fill: col(st.label_color) });
+            labst.push({ i: i,
+              el: txt(g, Xc(i), (Y(lo) + Y(hi)) / 2 + 2.4, comma(st.values[i], 0),
+                { size: 6.6, fill: col(st.label_color) }) });
           base[i] = hi;
         }
+        /* 段内数值同样会横向连成一片（cboe Ex5 @375px 的「11,836」「12,215」重叠 3.3px）。
+           一段一抽：同一段的标签在同一带高度上，互相压的只会是左右邻居。 */
+        thinLabels(labst);
       }
       polyline(ex.line.values, col(ex.line.color), 1.8, true, false, Y2);
-      for (i = 0; i < n; i++)
-        txt(g, Xc(i), Y2(ex.line.values[i]) - 5, ex.line.values[i].toFixed(1) + '%',
-          { size: 6.6, fill: col(ex.line.color) });
+      /* 左右两轴各自缩放（左轴 0..stackMax*1.28，右轴 0..ymax），两者没有耦合，
+         右轴折线经常落在柱体内部 —— 那里已经有段内数值标签，两个 6.6px 的数字会在
+         同一个 x 上叠成一团（hood Ex9 的 Jun-25：「384」与「41.5%」基线只差 0.1px，
+         放大后印成「4384%」，两个真值都读不出）；而且绿字压在深蓝/灰段上，
+         对比度只有 1.9~2.5:1，本来也读不动。
+         落进柱体就把百分比抬到柱顶之上的白底空白里（y1 = mx*1.28，最高的柱顶上方
+         永远留着 22% 的绘图区高度），x 不动，仍看得出对应哪一列；抬上去之后是
+         白底，#548235 对比度 5.4:1，顺带把对比度问题一起解决。
+         Math.min 是关键：折线本来就在柱顶之上时取值不变，不动没坏的图。 */
+      var labsd = [];
+      for (i = 0; i < n; i++) {
+        if (!isNum(ex.line.values[i])) continue;
+        var yPct = Y2(ex.line.values[i]) - 5;
+        if (isNum(base[i])) yPct = Math.min(yPct, Y(base[i]) - 2);
+        labsd.push({ i: i, el: txt(g, Xc(i), yPct, ex.line.values[i].toFixed(1) + '%',
+          { size: 6.6, fill: col(ex.line.color) }) });
+      }
+      thinLabels(labsd);
 
     /* ══════════════ 以下七个图型对应 build/gsx.py 的同名函数 ══════════════ */
 

@@ -25,6 +25,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -133,6 +135,28 @@ def avg_prior12(a):
 
 def main():
     df = load()
+
+    # ── 序列完整性体检：中间缺月必须响，不能静默降级 ──
+    # 近期图的窗口一律由 tail_contiguous 取「末尾逐月连续段」。这个函数是为南向通
+    # 2022-01~2025-06 那 40 个月的**真实停发**设计的（Exhibit 5 的图注专门讲它，
+    # 缺口不用直线连 —— CONTRACT 规矩 3），所以对南向的空洞必须保留原行为。
+    # 但对逐月必发的列，中间少一个月会让「末尾连续段」只剩最后 1 个点：25 点窗口塌成
+    # 1 点、y/y 与 m/m 全变「—」、Exhibit 3 还会写出字面 NaN，而退出码仍是 0，
+    # 页面照常发布且肉眼看不出 —— 正是 CONTRACT 规矩 5 要禁的「静默写 NaN 上线」。
+    # 尾部半行（当前 2026-07 只有衍生品/IPO/南向）不受影响：那是各列自己的末月之后，
+    # 不构成中间空洞，也是 fetch/hkex.py 声明的正常状态。
+    GAPPY_OK = {'southbound_adt_hkdbn'}          # 唯一允许中间空洞的列，见上
+    for c in [x for x in df.columns if x not in GAPPY_OK]:
+        s = df[c].dropna()
+        if len(s) < 2:
+            continue
+        holes = [str(p) for p in
+                 pd.period_range(s.index[0], s.index[-1], freq='M').difference(s.index)]
+        if holes:
+            raise SystemExit(
+                f'series/hkex.csv 的 {c} 在 {s.index[0]}~{s.index[-1]} 之间缺 {len(holes)} 个月：'
+                f'{holes[:6]}{" …" if len(holes) > 6 else ""}。近期图窗口取末尾逐月连续段，'
+                f'中间缺月会把 25 点窗口砍成 1 点并写出 NaN，请先补齐 series/hkex.csv 再重建')
 
     # 汇总表用「核心量指标已齐备」的最后一个月；衍生品 / IPO / 南向更新更快，图上保留最新月
     CORE = df['adt_hkdbn'].dropna()
@@ -622,12 +646,34 @@ def main():
         '页面不做任何计算。',
     ]
 
+    # ── headline / hub_line：整行锁死在 LATEST，不许各取各的 [-1] ──
+    # 这一行紧挨着抬头的「数据截至 {through_label}」，首页卡片上也已经有一个权威月份徽章，
+    # 两处都没有逐指标标月份的位置 —— 所以整行必须与 data_through 同口径。
+    # 取各序列自己的末值会串到 NEWEST（衍生品与南向比现货多披露一个月），
+    # 于是同一页对同一指标给出两个互斥读数（衍生品 1,731 vs 1,926、南向 129.2 vs 130.0），
+    # 与本页 Exhibit 1 和 /exchanges/ Exhibit 1 直接打架。
+    # 领先一个月的读数不会丢：Exhibit 6 / 18 / 19 逐点带月份标签地展示它们。
+    def hv(col, name):
+        """headline 用的序列：截到 LATEST 的末尾连续段，并校验末月确实是 LATEST。"""
+        s = tail_contiguous(df[col].loc[:LATEST]).iloc[-25:]
+        if not len(s) or s.index[-1] != LATEST:
+            raise SystemExit(f'headline 口径月错位：{name}({col}) 末月 = '
+                             f'{s.index[-1] if len(s) else "空序列"}，data_through = {LATEST}')
+        return s.values
+
+    h_adt = hv('adt_hkdbn', 'ADT')
+    h_sb = hv('southbound_adt_hkdbn', '南向 ADT')
+    h_dv = hv('deriv_adv_k', '衍生品 ADV')
+    h_mc = hv('mktcap_hkdtn', '市值')
+    h_vel = hv('velocity', '换手率')
+    h_tfee = hv('implied_tradefee_hkdbn', '隐含现货交易费') * 1000.0
+
     headline = (
-        f'ADT HK${adt_v[-1]:,.1f}bn/日（{pctf(yoy(adt_v), 1)} y/y，{pctf(mom(adt_v), 1)} m/m）'
-        f' · 南向 ADT HK${df["southbound_adt_hkdbn"].dropna().iloc[-1]:,.1f}bn'
-        f' · 衍生品 ADV {dv_v[-1]:,.0f} 千张/日（{pctf(yoy(dv_v), 1)} y/y）'
-        f' · 市值 HK${mc_v[-1]:,.1f}tn · 换手率 {vel_v[-1]:,.1f}%'
-        f' · 隐含现货交易费 HK${tfee_v[-1]:,.0f}mn/月'
+        f'ADT HK${h_adt[-1]:,.1f}bn/日（{pctf(yoy(h_adt), 1)} y/y，{pctf(mom(h_adt), 1)} m/m）'
+        f' · 南向 ADT HK${h_sb[-1]:,.1f}bn'
+        f' · 衍生品 ADV {h_dv[-1]:,.0f} 千张/日（{pctf(yoy(h_dv), 1)} y/y）'
+        f' · 市值 HK${h_mc[-1]:,.1f}tn · 换手率 {h_vel[-1]:,.1f}%'
+        f' · 隐含现货交易费 HK${h_tfee[-1]:,.0f}mn/月'
     )
 
     payload = {
@@ -640,8 +686,8 @@ def main():
                     f'覆盖 {mlab(adt_long.index[0])} → {mlab(NEWEST)}（核心量指标至 {mlab(LATEST)}）· '
                     f'版式沿用 Goldman Sachs GIR 的 HKEX exhibit 体例 · 仅图，无观点',
         'headline': headline,
-        'hub_line': f'ADT HK${adt_v[-1]:,.0f}bn/日（{pctf(yoy(adt_v))} y/y）· '
-                    f'衍生品 ADV {dv_v[-1]:,.0f}k 张/日',
+        'hub_line': f'ADT HK${h_adt[-1]:,.0f}bn/日（{pctf(yoy(h_adt))} y/y）· '
+                    f'衍生品 ADV {h_dv[-1]:,.0f}k 张/日',
         'source': SRC,
         'xlabels': XL_ADT,
         'xlabels_long': XL_LONG,
@@ -653,16 +699,13 @@ def main():
                   '仅供个人研究，不构成投资建议 · 所有推导值均已在图注中标注 Implied 与假设',
     }
 
-    out_dir = os.path.join(ROOT, 'data')
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f'{TICKER}.js')
-    with open(path, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        f.write(f'// 由 build/{TICKER}.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 兜底：json.dump 对 float('nan') 会写出**字面 NaN** —— 那不是合法 JSON，
+    # 但 Python 的 json.loads 与浏览器的 window.DASH = 都照单全收，于是坏 payload
+    # 能一路发布而不报错（CONTRACT 规矩 5）。缺值一律走 LN() 出 null，不能出 NaN。
+    # 这里原本有一份本地的 scan_nonfinite，已并入 build/payload_guard.py 统一实现
+    # （多一条：还扫已被 f-string 格式化进展示串的小写 nan，本地那版看不见）。
+    path = os.path.join(ROOT, 'data', f'{TICKER}.js')
+    payload_guard.write_dash(path, payload, TICKER)
 
     print(f'核心月 {LATEST} | 最新月 {NEWEST} | 长历史 {adt_long.index[0]} → {adt_long.index[-1]}'
           f'（{len(adt_long)} 个月）')

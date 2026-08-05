@@ -40,6 +40,8 @@ import sys
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -560,14 +562,8 @@ payload = {
 
 
 def main():
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, 'w', encoding='utf-8') as f:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        f.write(f'// 由 build/{TICKER}.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    payload_guard.write_dash(OUT, payload, TICKER)
     print(f'共同最新月 {LATEST} | 各家: '
           + ', '.join(f'{d}={latest_each[k]}' for k, d, _, _, _ in HEAD))
     print(f'短板 {"、".join(LAG)} | 共同窗口 {START} → {LATEST}（{len(IDX)} 个月）')

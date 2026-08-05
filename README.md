@@ -16,7 +16,9 @@
 ```
 
 `/cost/` 与 `/ibkr/` 原先是两个独立仓库（costco-monthly-sales / ibkr-monthly-metrics），
-已迁入本仓；旧地址保留为跳转页，老链接不会断。
+**已整体并入本仓，那两个仓库将被删除**。两家的数据源没有变（COST 走
+`~/.claude/skills/COST月度销售` 的解析管道，IBKR 走 `~/.claude/skills/IBKR月度指标`），
+本仓不依赖那两个旧仓的任何文件，页面上也不留指向它们的链接。
 
 ## 目录结构
 

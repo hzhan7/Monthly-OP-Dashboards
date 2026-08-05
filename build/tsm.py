@@ -27,6 +27,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import payload_guard
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
@@ -189,18 +191,20 @@ def main():
             txt = f'{v:+.1f}%'
         return txt, cls
 
+    # 末位 cum = True 标记「周期内累计」序列（QTD/YTD）—— 跨期归零的锯齿序列，
+    # 它的 m/m 与 3Y %ile 两列在结构上就没有信息，一律留空（详见循环里的注释）。
     SUM_ROWS = [
-        ('group', 'Revenue', None, None, None, None, None),
-        ('row', 'Monthly revenue (NT$bn)', rev_bn, 1, False, 'ratio', False),
-        ('row', '3-month moving avg. (NT$bn)', rev_3ma, 1, False, 'ratio', False),
-        ('group', 'Cumulative', None, None, None, None, None),
-        ('row', 'Quarter-to-date (NT$bn)', qtd_bn, 1, False, 'ratio', False),
-        ('row', 'Year-to-date (NT$bn)', ytd_bn, 1, False, 'ratio', False),
-        ('group', 'Seasonality', None, None, None, None, None),
-        ('row', '% of trailing-12-month revenue', share_ttm, 2, True, 'pp', False),
+        ('group', 'Revenue', None, None, None, None, None, False),
+        ('row', 'Monthly revenue (NT$bn)', rev_bn, 1, False, 'ratio', False, False),
+        ('row', '3-month moving avg. (NT$bn)', rev_3ma, 1, False, 'ratio', False, False),
+        ('group', 'Cumulative', None, None, None, None, None, False),
+        ('row', 'Quarter-to-date (NT$bn)', qtd_bn, 1, False, 'ratio', False, True),
+        ('row', 'Year-to-date (NT$bn)', ytd_bn, 1, False, 'ratio', False, True),
+        ('group', 'Seasonality', None, None, None, None, None, False),
+        ('row', '% of trailing-12-month revenue', share_ttm, 2, True, 'pp', False, False),
     ]
-    srows, blanked = [], []
-    for kind, lab, s, dec, pct, mode, inv in SUM_ROWS:
+    srows, blanked, cum_blanked = [], [], []
+    for kind, lab, s, dec, pct, mode, inv, cum in SUM_ROWS:
         if kind == 'group':
             srows.append({'kind': 'group', 'label': lab})
             continue
@@ -210,9 +214,23 @@ def main():
         mm, yy = chg(c, p1, mode), chg(c, p12, mode)
         mtx, mcls = chg_txt(mm, mode, inv)
         ytx, ycls = chg_txt(yy, mode, inv)
-        pc = pctile36(s, c)
+        if cum:
+            # 周期内累计行的两列结构性噪音，一并留空：
+            #  · m/m：同期内分子分母只差一个月，恒等于「上月累计 + 当月营收」
+            #    （Jun-26：827.7 + 442.7 = 1,270.4 → +53.5%），跨期时又变成 1 个月比
+            #    3/12 个月（Jan-26 会印 QTD −61.6%、YTD −89.5% 并涂红，而当月 y/y 是 +36.8%）。
+            #    两种情形都不可比，且符号由日历位置决定 —— 算出来再上色只会误导。
+            #  · 3Y %ile：分位池混装 1/2/3 个月量纲的累计值，读数由「本月是期内第几个月」
+            #    决定 —— 实测季内第 1/2/3 月分别锚在 29–43 / 77–89 / 97–100，组间差碾压组内差。
+            #    （pctile36 的单调判据抓不住这种带周期重置的锯齿：YTD diff>=0 占比 0.914 会留空，
+            #    QTD 只有 0.686 就漏过去了 —— 漏过去纯粹因为它归零更频繁，不是因为更有信息。）
+            # 可比的口径是 y/y：QTD 是 3 个月 vs 3 个月、YTD 是 6 个月 vs 6 个月，保留。
+            mtx, mcls = '', ''
+            cum_blanked.append(lab)
+        pc = None if cum else pctile36(s, c)
         if pc is None:
-            blanked.append(lab)
+            if not cum:
+                blanked.append(lab)
             pcell = {'v': ''}
         else:
             pv = (100 - pc) if inv else pc
@@ -236,7 +254,14 @@ def main():
                  '「3Y %ile」= 当月读数在最近 36 个月中高于多少百分比的观测，分位越高越极端；'
                  '比率行（占 TTM 比重）的 m/m、y/y 一律用百分点差（|差|&lt;1pp 时改用 bp），'
                  '不用「百分比的百分比变化」。'
-                 + (f'年内单调累计的行（{"、".join(blanked)}）分位恒接近 100，是噪音不是信息，已留空。'
+                 + (f'周期内累计的行（{"、".join(cum_blanked)}）的 m/m 与 3Y %ile 已一并留空：'
+                    'm/m 的分子分母在同一期内只差一个月（本期累计 = 上月累计 + 当月营收），'
+                    '跨期时又变成 1 个月比 3／12 个月，两种情形都不可比，正负号只反映日历位置；'
+                    '分位则由「本月是期内第几个月」决定 —— 季内第 1／2／3 个月分别锚在约 '
+                    '30／80／100，与经营好坏无关。这两行的可比读数是 y/y'
+                    '（QTD 为 3 个月 vs 3 个月、YTD 为 6 个月 vs 6 个月），已保留。'
+                    if cum_blanked else '')
+                 + (f'单调序列的行（{"、".join(blanked)}）分位恒接近 100，是噪音不是信息，已留空。'
                     if blanked else '')),
     }
 
@@ -534,8 +559,12 @@ def main():
          '网页引擎无此图元，已省略；(3) Exhibit 7 与 Exhibit 9 在 PDF 里是 <code>gsx.lvl_bar</code>，'
          '网页对应的 <code>gs_bar</code> 纵轴强制自 0 起会把负值柱画到画布外，故改用单组 '
          '<code>grouped_bars</code>（保留负值与柱顶数值标签）。'),
-        ('<b>汇总表的分位</b>：「3Y %ile」= 当月读数在最近 36 个月中高于多少百分比的观测。'
-         '年内单调累计的序列（YTD）分位恒接近 100，是噪音不是信息，按数据契约留空；'
+        ('<b>汇总表的分位与累计行</b>：「3Y %ile」= 当月读数在最近 36 个月中高于多少百分比的观测。'
+         '周期内累计的序列（QTD／YTD）的 <b>m/m 与分位两列一律留空</b>：分位由「本月是期内'
+         '第几个月」决定（季内第 1／2／3 个月锚在约 30／80／100），m/m 则只是「上月累计 + 当月营收」'
+         '的算术恒等式、跨季跨年时又变成 1 个月比 3／12 个月 —— 两者都与经营好坏无关，'
+         '按数据契约「不可比的相邻期不算变化率、单调/锯齿序列不算分位」留空。'
+         '这两行看 y/y（3 个月 vs 3 个月、6 个月 vs 6 个月，口径可比）。'
          '比率行的 m/m、y/y 一律用百分点（|差|&lt;1pp 时改用 bp）。'),
     ]
 
@@ -562,22 +591,13 @@ def main():
                    '仅供个人研究，不构成投资建议'),
     }
 
-    # ── 上线前的自检：payload 里不许有 NaN / Infinity（json.dump 会写成裸字面量，
-    #    浏览器 JSON 解析不了；而 window.DASH = 是 JS 求值，NaN 会被静默吞进图里）──
-    txt = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-    for bad in ('NaN', 'Infinity', 'null,null,null,null,null,null,null,null,null,null,null,null]'):
-        if bad in txt and bad in ('NaN', 'Infinity'):
-            raise SystemExit(f'payload 里出现 {bad}，拒绝写出')
-
-    os.makedirs(DATA, exist_ok=True)
+    # 上线前的自检：payload 里不许有 NaN / Infinity（json.dump 会写成裸字面量，
+    # 浏览器 JSON 解析不了；而 window.DASH = 是 JS 求值，NaN 会被静默吞进图里）。
+    # 原来这里是本地一段大小写敏感的 `'NaN' in txt` 子串检查，已并入
+    # build/payload_guard.py 统一实现 —— 那版漏掉了已被 f-string 格式化进展示串的
+    # 小写 nan（`f'{nan:+.1f}%'` → `'nan%'`），共用版按词边界一并抓。
     path = os.path.join(DATA, 'tsm.js')
-    with open(path, 'w', encoding='utf-8') as fh:
-        # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
-        # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
-        fh.write(f'// 由 build/tsm.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        fh.write('window.DASH = ')
-        fh.write(txt)
-        fh.write(';\n')
+    payload_guard.write_dash(path, payload, 'tsm')
 
     print(f'窗口 {ALL[0]} → {ALL[-1]}（{len(ALL)} 个月）· 季度 {qsum.index[0]} → {qsum.index[-1]}')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张）+ Exhibit {table["n"]} 核对表')
