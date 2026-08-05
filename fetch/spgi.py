@@ -55,6 +55,9 @@ investor.spglobal.com 和 s29.q4cdn.com 都挂在 Cloudflare 后面。实测：
 ════════ 对外接口 ════════
     latest_month(cache_dir) -> "YYYY-MM" | None
     update(series_dir, cache_dir) -> ["YYYY-MM", ...]   # 新增的月份，幂等
+
+依赖：openpyxl（读 xlsx）。其余全是标准库，刻意不引 pandas —— 本模块的输出要和
+历史 CSV 逐字节一致，pandas 的浮点格式化会自作主张。
 """
 
 import calendar

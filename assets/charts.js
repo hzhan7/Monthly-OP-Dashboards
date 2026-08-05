@@ -13,7 +13,20 @@
      lines_endlabels  多条平滑线 + 仅两端标数值          IBKR Ex9
      stacked_dual     堆叠柱 + 右轴线（段内标数值）       IBKR Ex8
 
+   12 家看板新增的图型 ←→ build/gsx.py 的同名函数（PDF 版与网页版必须同型）：
+     heat_matrix      行=年 列=月 的热力矩阵，格内写数值   gsx.heat_matrix
+     year_lines       每年一条线叠在 1-12 月轴上，当年红   gsx.year_lines
+     qtr_bar          月度汇总成季度柱 + 右轴 y/y          gsx.qtr_bar
+     seasonality      灰=历史同月均值 / 蓝=今年 配对柱     gsx.seasonality
+     bridge_bar       正上负下的恒等式桥 + 净额菱形        gsx.bridge_bar
+     grouped_bars     同一 x 上两根并排柱 + 右轴误差线     gsx.implied_vs_actual
+     range_band       指引区间带状填充 + 实际值菱形        gsx.range_vs_actual
+   字段清单见 cache/engine_kinds.md（数据契约）。
+
    所有数值由 build_data.py（复用 skill 同一份算法）预先算好，本文件只负责画。
+   —— 新图型同此：累计值、历史同月均值、季度合计、误差率一律在 Python 侧算完再传。
+      唯一的例外是「桥」的净额：给了 ex.net 就用给的，没给才在这里求和（那是恒等式，
+      不是口径判断）。
 
    ex 上与「基线规范」直接对应的可选字段（build_data.py 传入）：
      ycap    number    截轴上界（规矩 7）。超界的柱画到 cap 并加断口符号，超界的点钳位
@@ -185,26 +198,213 @@
     }
   }
 
+  /* ────────────────────── 新图型共用的小零件 ────────────────────── */
+  function isNum(v) { return v != null && isFinite(v); }
+
+  /* qtr_bar 的末季未满时，右轴那条 y/y 一律作废。
+     拿 2 个月的累计去比上年完整 3 个月，必然砸出一个 -8% 之类的假坑，而线是连续的、
+     没有任何视觉提示说这一点不可比 —— 读者会当成业务塌了。柱子有浅蓝 + 图例提示，
+     线没有，所以只能丢。
+     在引擎侧丢而不是指望每个 build/<t>.py 传 null：这是口径错误不是排版偏好，
+     漏一次就是发布一张误导图。
+     范围计算、绘图、表格视图、tooltip **四处都要用它** —— 漏掉任何一处就会出现
+     「图上没有但表里有」的不一致，或者右轴被一个不画出来的点撑开。 */
+  function lineVals(ex) {
+    var v = ex.line && ex.line.values;
+    if (!v || ex.kind !== 'qtr_bar') return v;
+    if (isNum(ex.partial_months) && +ex.partial_months > 0 &&
+        +ex.partial_months < (ex.qtr_months || 3)) {
+      v = v.slice();
+      v[v.length - 1] = null;
+    }
+    return v;
+  }
+  function lastFinite(a) {
+    var k;
+    for (k = (a || []).length - 1; k >= 0; k--) if (isNum(a[k])) return k;
+    return -1;
+  }
+
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function rgbOf(h) {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+  /* 在两个 C.* 之间线性插值。热力图必须有连续色标，但端点只许取 C.* —— 中间色是
+     这两个端点的混合，不算新引入的颜色。 */
+  function mix(a, b, t) {
+    var A = rgbOf(a), B = rgbOf(b), o = '#', k, v;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    for (k = 0; k < 3; k++) {
+      v = Math.round(A[k] + (B[k] - A[k]) * t);
+      o += (v < 16 ? '0' : '') + v.toString(16);
+    }
+    return o;
+  }
+  /* 深底上的字必须翻白，否则 RdGn 两端（RED/GREEN 亮度都只有 0.4 上下）压着深色字看不清。
+     gsx 里格子字固定 #111111，那是 matplotlib 的老毛病，网页版不跟。 */
+  function inkOn(hex) {
+    var r = rgbOf(hex);
+    return (0.299 * r[0] + 0.587 * r[1] + 0.114 * r[2]) / 255 > 0.58 ? C.INK : C.WHITE;
+  }
+  /* numpy.percentile 的线性插值版，用来复刻 gsx.heat_matrix 的 5/95 分位色标 */
+  function pctile(sorted, p) {
+    if (!sorted.length) return 0;
+    var idx = (sorted.length - 1) * p, lo = Math.floor(idx), hi = Math.ceil(idx);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  }
+  function heatScale(ex) {
+    var m = ex.matrix || [], fin = [], i, j, row;
+    for (i = 0; i < m.length; i++) {
+      row = m[i] || [];
+      for (j = 0; j < row.length; j++) if (isNum(row[j])) fin.push(+row[j]);
+    }
+    fin.sort(function (a, b) { return a - b; });
+    var lo = fin.length ? pctile(fin, 0.05) : 0;
+    var hi = fin.length ? pctile(fin, 0.95) : 1;
+    if (!(hi > lo)) { lo = lo - 0.5; hi = hi + 0.5; }     // 全同值：不除零，整片中性色
+    var loc = ex.reverse ? C.GREEN : C.RED, hic = ex.reverse ? C.RED : C.GREEN;
+    return { lo: lo, hi: hi, loc: loc, hic: hic,
+      at: function (v) {
+        var t = (v - lo) / (hi - lo);
+        return t < 0.5 ? mix(loc, C.WHITE, t * 2) : mix(C.WHITE, hic, t * 2 - 1);
+      } };
+  }
+
+  /* year_lines 的配色：旧年份由浅到深，当年红色加粗（同 gsx 的 cmap 阶梯）。
+     draw / seriesRows / legendHTML 三处必须拿到同一组颜色，所以抽出来。 */
+  function yearColors(ex) {
+    /* 阶梯对应 gsx 的 [LGRAY, #C9D6E4, BLUE, MBLUE, NAVY]：两个浅端由 C.* 兑白得到。
+       最浅一档不能直接用 C.GRID —— 那是网格线的颜色，数据线跟网格同色等于没画。 */
+    var ramp = [mix(C.GRAY, C.WHITE, 0.5), mix(C.BLUE, C.WHITE, 0.45),
+                C.BLUE, C.MBLUE, C.NAVY], ser = ex.series || [];
+    var nS = ser.length, hl = ex.highlight != null ? +ex.highlight : nS - 1, out = [], k, t;
+    for (k = 0; k < nS; k++) {
+      if (ser[k].color) { out.push(col(ser[k].color)); continue; }
+      if (k === hl) { out.push(C.RED); continue; }
+      t = nS > 2 ? Math.round(k / (nS - 2) * (ramp.length - 1)) : ramp.length - 1;
+      out.push(ramp[Math.max(0, Math.min(ramp.length - 1, t))]);
+    }
+    return out;
+  }
+
+  function stackLen(ex) {
+    var L = 0, k, st = ex.stacks || [];
+    for (k = 0; k < st.length; k++) L = Math.max(L, (st[k].values || []).length);
+    return L;
+  }
+  /* 桥的净额：口径上应由 Python 给（ex.net），没给才在这里按恒等式求和 */
+  function bridgeNet(ex, n) {
+    if (ex.net && ex.net.values) return ex.net.values;
+    var out = [], i, s, t, any, v;
+    for (i = 0; i < n; i++) {
+      t = 0; any = false;
+      for (s = 0; s < ex.stacks.length; s++) {
+        v = ex.stacks[s].values[i];
+        if (isNum(v)) { t += v; any = true; }
+      }
+      out.push(any ? t : null);
+    }
+    return out;
+  }
+
+  function diamond(g, x, y, r, fill, stroke, sw) {
+    el('path', { d: 'M' + x.toFixed(2) + ' ' + (y - r).toFixed(2) +
+      'L' + (x + r).toFixed(2) + ' ' + y.toFixed(2) +
+      'L' + x.toFixed(2) + ' ' + (y + r).toFixed(2) +
+      'L' + (x - r).toFixed(2) + ' ' + y.toFixed(2) + 'Z',
+      fill: fill, stroke: stroke || null, 'stroke-width': sw || null }, g);
+  }
+
+  /* 把 tooltip 定位到某个画布 x（与 draw() 里的逻辑一致，heat_matrix 也要用） */
+  function placeTip(tip, host, xInSvg, W) {
+    var tw = tip.offsetWidth, px = xInSvg / W * host.clientWidth;
+    tip.style.left = Math.max(2, Math.min(host.clientWidth - tw - 2, px - tw / 2)) + 'px';
+    tip.style.top = '0px';
+  }
+
+  /* ───────────── heat_matrix：行=年、列=月的热力矩阵（gsx.heat_matrix）─────────────
+     它不吃 band/y 轴那一整套，所以在 draw() 里提前分流，自己排版。
+     色标取 5/95 分位：一两个离群月不该把整张表压成一片白。 */
+  function drawHeat(host, ex, W) {
+    var rows = ex.rows || [], cols = ex.cols || MONTHS, m = ex.matrix || [];
+    if (!rows.length || !cols.length) { host.innerHTML = '<p class="note">无数据</p>'; return; }
+    var fmt = fmtOf(ex.fmt || 'f1'), i, j, v;
+    var M = { t: 3, r: 6, b: 15, l: ex.row_lab_w || 32 };
+    var pw = Math.max(60, W - M.l - M.r), cw = pw / cols.length;
+    var chh = Math.max(13, Math.min(26, ex.cell_h || 19));
+    var ph = rows.length * chh, H = M.t + ph + M.b;
+    var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
+      'aria-label': 'Exhibit ' + ex.n + ': ' + ex.title }, host);
+    var g = el('g', {}, svg), sc = heatScale(ex);
+    var maxLen = 1;
+    for (i = 0; i < rows.length; i++)
+      for (j = 0; j < cols.length; j++) {
+        v = (m[i] || [])[j];
+        if (isNum(v)) maxLen = Math.max(maxLen, fmt(+v).length);
+      }
+    /* 字号按格宽收缩：半栏 12 列时一格只有 ~38px，宁可字小也不能让数字压出格子 */
+    var fs = Math.max(4.6, Math.min(9, (cw - 5) / (maxLen * 0.58), chh * 0.52));
+    var tip = host.parentElement ? host.parentElement.querySelector('.tip') : null;
+    var name = ex.legend || ex.ylab || '数值', pf = precise(fmt);
+
+    for (i = 0; i < rows.length; i++) {
+      for (j = 0; j < cols.length; j++) {
+        v = (m[i] || [])[j];
+        var ok = isNum(v), x = M.l + j * cw, y = M.t + i * chh;
+        var fc = ok ? sc.at(+v) : C.GRID;
+        var rc = el('rect', { x: x.toFixed(2), y: y.toFixed(2), width: cw.toFixed(2),
+          height: chh, fill: fc, stroke: C.WHITE, 'stroke-width': 1.1 }, g);
+        if (ok) txt(g, x + cw / 2, y + chh / 2 + fs * 0.35, fmt(+v),
+          { size: +fs.toFixed(2), fill: inkOn(fc) });
+        if (tip) (function (node, head, val, sw, cx) {
+          node.setAttribute('style', 'cursor:crosshair');
+          node.addEventListener('mouseenter', function () {
+            tip.innerHTML = '<div class="th">' + head + '</div><div class="row"><i style="background:' +
+              sw + '"></i><span>' + name + '</span><b>' +
+              (val == null ? '—' : pf(val)) + '</b></div>';
+            tip.style.opacity = 1;
+            placeTip(tip, host, cx, W);
+          });
+        }(rc, rows[i] + ' · ' + cols[j], ok ? +v : null, fc, x + cw / 2));
+      }
+      txt(g, M.l - 5, M.t + i * chh + chh / 2 + 3, rows[i], { size: 8, anchor: 'end' });
+    }
+    var cfs = Math.max(5, Math.min(8, cw / 3.4));
+    for (j = 0; j < cols.length; j++)
+      txt(g, M.l + (j + 0.5) * cw, M.t + ph + 11, cols[j], { size: +cfs.toFixed(2) });
+    if (tip) g.addEventListener('mouseleave', function () { tip.style.opacity = 0; });
+  }
+
   function draw(host, ex, opt) {
     host.innerHTML = '';
     opt = opt || {};
     var W = host.clientWidth || 520, i, s;
+    if (ex.kind === 'heat_matrix') { drawHeat(host, ex, W); return; }
     var labels = ex.xlabels || opt.xlabels || [], n = labels.length;
     if (!n) { host.innerHTML = '<p class="note">无数据</p>'; return; }
-    /* x 标签角度：COST 月份标签 90°、IBKR 月份标签 45°、COST Ex12 年份水平（同 PDF） */
-    var rot = ex.xrot != null ? ex.xrot : (n > 20 ? 90 : 45);
-    var XB = rot === 90 ? 48 : (rot === 0 ? 22 : 36);
     var kind = ex.kind;
-    var dual = kind === 'bar_line_dual' || kind === 'stacked_dual';
+    /* x 标签角度：COST 月份标签 90°、IBKR 月份标签 45°、COST Ex12 年份水平（同 PDF）。
+       year_lines 的 x 是 Jan..Dec 十二格，PDF 里是水平标的，默认跟着走。 */
+    var rot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45));
+    var XB = rot === 90 ? 48 : (rot === 0 ? 22 : 36);
+    /* 新图型里 qtr_bar / grouped_bars 的右轴（y/y、误差）是可选的：payload 没给 ex.line
+       就退化成单轴柱图，不画空的右刻度。 */
+    var dual = kind === 'bar_line_dual' || kind === 'stacked_dual' ||
+               ((kind === 'qtr_bar' || kind === 'grouped_bars') && !!(ex.line && ex.line.values));
     var perPointLabels = kind === 'gs_bar' || kind === 'gs_line' || kind === 'gs_line_avg' ||
-                         kind === 'stacked_dual' || kind === 'lines_endlabels';
+                         kind === 'stacked_dual' || kind === 'lines_endlabels' ||
+                         kind === 'qtr_bar' || kind === 'seasonality' || kind === 'bridge_bar' ||
+                         kind === 'grouped_bars' || kind === 'range_band' || kind === 'year_lines';
     var H = (opt.height || (perPointLabels ? 268 : 248)) + XB;
     /* 截轴时真值标注竖排在图顶之上，顶边距要留够一行竖排文字（约 22px）；
        右轴有标题时右边距要在刻度数字之外再让出一列。 */
     var capOn = ex.ycap != null || ex.yfloor != null;
     var M = { t: capOn ? 30 : 14,
               r: dual ? (ex.ylab2 ? 56 : 42)
-                      : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ? 42 : 14),
+                      : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ||
+                         kind === 'year_lines' ? 42 : 14),
               b: XB, l: ex.ylab ? 56 : 46 };
     var pw = Math.max(60, W - M.l - M.r), ph = Math.max(80, H - M.t - M.b);
 
@@ -239,8 +439,28 @@
     var lv = [];
     if (kind === 'bar_line') lv = ex.bar.values.concat(ex.line.values);
     else if (kind === 'bar_line_dual') lv = ex.bar.values.slice();
-    else if (kind === 'lines' || kind === 'lines_endlabels') {
+    else if (kind === 'lines' || kind === 'lines_endlabels' || kind === 'year_lines') {
       for (s = 0; s < ex.series.length; s++) lv = lv.concat(ex.series[s].values);
+    } else if (kind === 'seasonality') {
+      lv = (ex.base.values || []).concat(ex.actual.values || []);
+    } else if (kind === 'grouped_bars') {
+      for (s = 0; s < ex.groups.length; s++) lv = lv.concat(ex.groups[s].values);
+    } else if (kind === 'range_band') {
+      lv = (ex.lo || []).concat(ex.hi || [], ex.actual || []);
+      if (isNum(ex.qtd)) lv.push(ex.qtd);
+    } else if (kind === 'bridge_bar') {
+      /* 桥的纵轴要罩住「正向堆到哪」「负向堆到哪」两条包络，不是单项的最值 */
+      var bp_, bn_, bv_;
+      for (i = 0; i < n; i++) {
+        bp_ = 0; bn_ = 0;
+        for (s = 0; s < ex.stacks.length; s++) {
+          bv_ = ex.stacks[s].values[i];
+          if (!isNum(bv_)) continue;
+          if (bv_ >= 0) bp_ += bv_; else bn_ += bv_;
+        }
+        lv.push(bp_); lv.push(bn_);
+      }
+      lv = lv.concat(bridgeNet(ex, n));
     } else if (kind === 'stacked_dual') {
       for (i = 0; i < n; i++) {
         var tot = 0;
@@ -262,6 +482,18 @@
     if (kind === 'gs_bar') { y0 = 0; y1 = mx * 1.22; }
     else if (kind === 'stacked_dual') { y0 = 0; y1 = mx * 1.28; }
     else if (kind === 'bars_labeled') { y0 = 0; y1 = mx * 1.13; }
+    /* 以下四个与 gsx.py 同名函数的 set_ylim 一一对应（qtr_bar 的 1.32 是给竖排标签留的） */
+    else if (kind === 'qtr_bar') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.32; }
+    else if (kind === 'seasonality') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.26; }
+    else if (kind === 'grouped_bars') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.22; }
+    else if (kind === 'bridge_bar') {
+      var bpad = (mx - mn) * 0.16 || 1; y0 = mn - bpad; y1 = mx + bpad;
+    } else if (kind === 'range_band') {
+      /* gsx 用 min*0.88 / max*1.10 的乘法留白；那在负值上会往零点缩（越界画到画布外），
+         所以只在整段非负时照抄，含负值时改成按极差加白。 */
+      if (mn >= 0) { y0 = mn * 0.88; y1 = mx * 1.10; }
+      else { var rr0 = (mx - mn) || 1; y0 = mn - rr0 * 0.12; y1 = mx + rr0 * 0.10; }
+    }
     else if (kind === 'gs_line' || kind === 'gs_line_avg') {
       if (avg != null) { mn = Math.min(mn, avg); mx = Math.max(mx, avg); }
       var rr = (mx - mn) || 1, pd = kind === 'gs_line_avg' ? 0.35 : 0.30;
@@ -293,7 +525,9 @@
     var r0 = null, r1 = null, rtk = null, rc = null;
     if (dual) {
       rc = ex.line;
-      var rv = rc.values.filter(function (v) { return v != null && isFinite(v); });
+      /* 用 lineVals()：被作废的未满季 y/y 不能参与右轴量程，否则轴被一个根本不画出来的
+         点撑开（实测会把 0~15% 的轴拉成 -10%~15%，整条线压扁在上半幅）。 */
+      var rv = lineVals(ex).filter(function (v) { return v != null && isFinite(v); });
       if (kind === 'stacked_dual') { rtk = ticks(0, rc.ymax || 60, 6); r0 = 0; r1 = rtk[rtk.length - 1]; }
       else {
         rtk = ticks(Math.min.apply(null, rv.concat([0])), Math.max.apply(null, rv), 9);
@@ -410,6 +644,38 @@
       }
     }
 
+    /* ── 新图型共用：截轴不删点的柱与点 ──
+       与上面 bar_line 分支里那段内联逻辑同规矩（超界画到边界 + 断口符号 + 真值竖排），
+       抽成函数是因为新图型里同一张图要画好几组柱（配对柱、并排柱、区间带）。 */
+    function clampY(v) {
+      if (ex.ycap != null && v > y1) return y1;
+      if (ex.yfloor != null && v < y0) return y0;
+      return v;
+    }
+    function capBar(xl, w, v, color, r) {
+      var vp = clampY(v), cut = vp !== v;
+      el('path', { d: barPath(xl, Y(0), Y(vp), w, cut ? 0 : (r == null ? 3 : r)), fill: color }, g);
+      if (cut) { capMark(g, xl + w / 2, Y(vp), w); capLabel(xl + w / 2 + 3.4, v > vp, capFmt(v)); }
+      return cut;
+    }
+    /* 被截的「点」（菱形/圆点）一律换成空心红圈 + 真值，同 polyline 里的规矩 */
+    function capPoint(x, v) {
+      var vp = clampY(v), cut = vp !== v;
+      if (cut) {
+        el('circle', { cx: x.toFixed(2), cy: Y(vp).toFixed(2), r: 2.9, fill: C.WHITE,
+          stroke: BREAK, 'stroke-width': 1.1 }, g);
+        capLabel(x + 3.4, v > vp, capFmt(v));
+      }
+      return cut;
+    }
+    /* 竖排数值标签（qtr_bar 用）：柱很高时把标签压回画布内，不许越过 viewBox 顶 */
+    function vLabel(x, yTop, s, o) {
+      var need = s.length * (o.size || 8) * 0.62;
+      var yy = Math.max(yTop, need + 2);
+      txt(g, x, yy, s, { size: o.size || 8, anchor: 'start', fill: o.fill || C.INK,
+        transform: 'rotate(-90 ' + x.toFixed(2) + ' ' + yy.toFixed(2) + ')' });
+    }
+
     if (kind === 'bar_line' || kind === 'diverging_bars' || kind === 'bars_labeled' || kind === 'bar_line_dual') {
       var vals = (kind === 'bar_line' || kind === 'bar_line_dual') ? ex.bar.values : ex.values;
       var w = BW(0.75);
@@ -445,9 +711,13 @@
     } else if (kind === 'gs_bar') {
       var wg = BW(0.62), fb = fmtOf(ex.fmt);
       for (i = 0; i < n; i++) {
-        el('path', { d: barPath(Xc(i) - wg / 2, Y(0), Y(ex.values[i]), wg, 3),
-          fill: (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE }, g);
-        txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 });
+        /* 原来这里是直接 barPath(Y(values[i]))，没走截轴：设了 ycap 的话柱和数值标签
+           会一起画到画布外几百像素（IBKR 现有 payload 没设过 ycap，所以一直没暴露）。
+           改走 capBar 后，没设 ycap 时输出与从前逐字节相同。 */
+        if (!isNum(ex.values[i])) continue;
+        var cutg2 = capBar(Xc(i) - wg / 2, wg, ex.values[i],
+          (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE);
+        if (!cutg2) txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 });
       }
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
         'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
@@ -506,6 +776,176 @@
       for (i = 0; i < n; i++)
         txt(g, Xc(i), Y2(ex.line.values[i]) - 5, ex.line.values[i].toFixed(1) + '%',
           { size: 6.6, fill: col(ex.line.color) });
+
+    /* ══════════════ 以下七个图型对应 build/gsx.py 的同名函数 ══════════════ */
+
+    /* qtr_bar ← gsx.qtr_bar：季度柱 + 右轴 y/y；未满季用浅蓝并在图例里写明「几 of 3」。
+       数值标签竖排在柱顶（gsx 是 rotation=90），所以纵轴上界给 1.32 倍。
+       右轴的金色（gsx GOLD）不在本文件的 C.* 里，默认退到 GREEN，payload 可指定。 */
+    } else if (kind === 'qtr_bar') {
+      var wq = BW(0.70), fq = fmtOf(ex.label_fmt || ex.fmt || 'f0c');
+      var partialQ = isNum(ex.partial_months) && +ex.partial_months > 0 &&
+                     +ex.partial_months < (ex.qtr_months || 3);
+      for (i = 0; i < n; i++) {
+        var vq = ex.values[i];
+        if (!isNum(vq)) continue;
+        var cq = (partialQ && i === n - 1) ? C.BLUE : C.NAVY;
+        if (markSet && markSet[i]) cq = 'url(#' + hatchId + ')';
+        var cutq = capBar(Xc(i) - wq / 2, wq, vq, cq);
+        if (cutq || ex.bar_labels === false) continue;
+        if (vq >= 0) vLabel(Xc(i), Y(vq) - 4, fq(vq), { size: 7.4 });
+        else txt(g, Xc(i), Y(vq) + 9, fq(vq), { size: 7.4 });   // 负柱不竖排，会插进柱体里
+      }
+      if (Y2) {
+        var lcq = col((ex.line.color) || 'GREEN');
+        /* 未满季的那根柱有浅蓝 + 图例提示，但**右轴的 y/y 必须一起丢掉**：
+           拿 2 个月的累计去比上年完整 3 个月，必然砸出一个 -8% 之类的假坑，
+           而线是连续的、没有任何视觉提示说这一点不可比 —— 读者会当成业务塌了。
+           这里在引擎侧直接丢，不指望每个 build/<t>.py 都记得传 null：
+           这是口径错误，不是排版偏好，漏一次就是发布一张误导图。 */
+        var lvq = lineVals(ex);
+        if (r0 < -1e-9 && r1 > 1e-9)
+          el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0), stroke: lcq,
+            'stroke-width': 0.7, 'stroke-dasharray': '2 2' }, g);
+        polyline(lvq, lcq, 1.6, false, true, Y2);
+        var jq = lastFinite(lvq);
+        if (jq >= 0)
+          txt(g, Xc(jq) + 5, Y2(lvq[jq]) + 3.2,
+            fmtOf(ex.line.yfmt || 'pct0')(lvq[jq]),
+            { size: 8, anchor: 'start', weight: 700, fill: lcq });
+      }
+
+    /* seasonality ← gsx.seasonality：灰柱 = 过去 N 年同月均值、蓝柱 = 本期实际。
+       两根柱各占 band 的 0.40，在 band 中心相接（同 matplotlib 的 ±0.20 偏移）。 */
+    } else if (kind === 'seasonality') {
+      var wb = BW(0.40), fsz = fmtOf(ex.label_fmt || ex.fmt || 'f1');
+      var cb = col((ex.base && ex.base.color) || 'GRAY');
+      var ca = col((ex.actual && ex.actual.color) || 'MBLUE');
+      var bvals = (ex.base && ex.base.values) || [], avals = (ex.actual && ex.actual.values) || [];
+      for (i = 0; i < n; i++) {
+        if (isNum(bvals[i])) capBar(Xc(i) - wb, wb, bvals[i], cb);
+        if (!isNum(avals[i])) continue;
+        var cuta = capBar(Xc(i), wb, avals[i], ca);
+        if (!cuta && ex.bar_labels !== false)
+          txt(g, Xc(i) + wb / 2, Y(avals[i]) + (avals[i] < 0 ? 9 : -4), fsz(avals[i]),
+            { size: 7.6, fill: ca });
+      }
+
+    /* bridge_bar ← gsx.bridge_bar：正的往上堆、负的往下堆，菱形标净额。
+       堆叠段不参与截轴（截一段堆叠柱等于把恒等式画错），只有净额点会被截。 */
+    } else if (kind === 'bridge_bar') {
+      var wbr = BW(0.70), posB = [], negB = [];
+      for (i = 0; i < n; i++) { posB.push(0); negB.push(0); }
+      for (s = 0; s < ex.stacks.length; s++) {
+        var stb = ex.stacks[s], cbb = col(stb.color);
+        for (i = 0; i < n; i++) {
+          var vb = stb.values[i];
+          if (!isNum(vb) || vb === 0) continue;
+          var bb0 = vb >= 0 ? posB[i] : negB[i], bb1 = bb0 + vb;
+          if (vb >= 0) posB[i] = bb1; else negB[i] = bb1;
+          /* 段也要吃截轴：不然一根 −46 的市值变动段会径直画到 x 轴标签底下去。
+             这里只把「画到哪」钳住，真值下面按列标出，堆叠关系一个不删。 */
+          var yA = Y(clampY(bb0)), yB = Y(clampY(bb1));
+          if (Math.abs(yA - yB) < 0.05) continue;      // 整段在界外，不画 0 高的柱
+          el('rect', { x: (Xc(i) - wbr / 2).toFixed(2), y: Math.min(yA, yB).toFixed(2),
+            width: wbr.toFixed(2), height: Math.abs(yA - yB).toFixed(2), fill: cbb }, g);
+        }
+      }
+      var netv = bridgeNet(ex, n);
+      for (i = 0; i < n; i++) {
+        /* 包络被截：柱端画断口 + 真值。净额与包络重合时（全负/全正列）不重复标 */
+        if (ex.ycap != null && posB[i] > y1) {
+          capMark(g, Xc(i), Y(y1), wbr);
+          if (!(isNum(netv[i]) && Math.abs(netv[i] - posB[i]) < 1e-9))
+            capLabel(Xc(i) + 3.4, true, capFmt(posB[i]));
+        }
+        if (ex.yfloor != null && negB[i] < y0) {
+          capMark(g, Xc(i), Y(y0) - 8, wbr);
+          if (!(isNum(netv[i]) && Math.abs(netv[i] - negB[i]) < 1e-9))
+            capLabel(Xc(i) + 3.4, false, capFmt(negB[i]));
+        }
+        if (!isNum(netv[i]) || capPoint(Xc(i), netv[i])) continue;
+        diamond(g, Xc(i), Y(netv[i]), 3.2, col(ex.net_color || 'INK'));
+      }
+
+    /* grouped_bars ← gsx.implied_vs_actual：同一 x 上两根并排柱 + 右轴误差线。
+       误差是这张图存在的理由（桥的假设可不可信），所以末点误差要标出来。 */
+    } else if (kind === 'grouped_bars') {
+      var gps = ex.groups || [], ng = Math.max(1, gps.length);
+      var wgb = BW(0.74 / ng), xg0 = -(ng * wgb) / 2;
+      var gdef = ['BLUE', 'NAVY', 'MBLUE', 'GRAY'];
+      var fgb = fmtOf(ex.label_fmt || ex.fmt || 'f0c');
+      for (s = 0; s < gps.length; s++) {
+        var cg = col(gps[s].color || gdef[s % gdef.length]);
+        for (i = 0; i < n; i++) {
+          var vg = gps[s].values[i];
+          if (!isNum(vg)) continue;
+          var cutg = capBar(Xc(i) + xg0 + s * wgb, wgb, vg, cg);
+          if (!cutg && ex.bar_labels)
+            txt(g, Xc(i) + xg0 + (s + 0.5) * wgb, Y(vg) + (vg < 0 ? 8.5 : -4), fgb(vg),
+              { size: 6.6, fill: cg });
+        }
+      }
+      if (Y2) {
+        var lce = col((ex.line.color) || 'RED');
+        if (r0 < -1e-9 && r1 > 1e-9)
+          el('line', { x1: M.l, x2: M.l + pw, y1: Y2(0), y2: Y2(0), stroke: lce,
+            'stroke-width': 0.7, 'stroke-dasharray': '2 2' }, g);
+        polyline(ex.line.values, lce, 1.4, false, true, Y2);
+        var je = lastFinite(ex.line.values);
+        if (je >= 0)
+          txt(g, Xc(je) + 5, Y2(ex.line.values[je]) + 3.2,
+            fmtOf(ex.line.yfmt || 'pct1')(ex.line.values[je]),
+            { size: 8, anchor: 'start', weight: 700, fill: lce });
+      }
+
+    /* range_band ← gsx.range_vs_actual：指引区间画成带、实际值打菱形。
+       未完成期的累计值（qtd）用空心红菱形，标签压在点下方，跟实际值分得开。 */
+    } else if (kind === 'range_band') {
+      var wrb = BW(0.74), frb = fmtOf(ex.label_fmt || ex.fmt || 'f1');
+      var loA = ex.lo || [], hiA = ex.hi || [], acA = ex.actual || [];
+      for (i = 0; i < n; i++) {
+        if (isNum(loA[i]) && isNum(hiA[i])) {
+          var t0 = Math.min(loA[i], hiA[i]), t1 = Math.max(loA[i], hiA[i]);
+          var c0 = clampY(t0), c1 = clampY(t1), yT = Y(c1), yB = Y(c0);
+          el('rect', { x: (Xc(i) - wrb / 2).toFixed(2), y: yT.toFixed(2),
+            width: wrb.toFixed(2), height: Math.max(0.9, yB - yT).toFixed(2), fill: C.BLUE }, g);
+          var hwr = wrb * 0.46;
+          el('line', { x1: (Xc(i) - hwr).toFixed(2), x2: (Xc(i) + hwr).toFixed(2),
+            y1: yT.toFixed(2), y2: yT.toFixed(2), stroke: C.MBLUE, 'stroke-width': 0.9 }, g);
+          el('line', { x1: (Xc(i) - hwr).toFixed(2), x2: (Xc(i) + hwr).toFixed(2),
+            y1: yB.toFixed(2), y2: yB.toFixed(2), stroke: C.MBLUE, 'stroke-width': 0.9 }, g);
+          if (c1 !== t1) { capMark(g, Xc(i), yT, wrb); capLabel(Xc(i) + 3.4, true, frb(t1)); }
+          if (c0 !== t0) capLabel(Xc(i) + 3.4, false, frb(t0));
+        }
+        if (!isNum(acA[i]) || capPoint(Xc(i), acA[i])) continue;
+        diamond(g, Xc(i), Y(acA[i]), 3.4, col(ex.actual_color || 'NAVY'));
+        if (ex.bar_labels !== false)
+          txt(g, Xc(i), Y(acA[i]) - 7, frb(acA[i]), { size: 7.6, fill: col(ex.actual_color || 'NAVY') });
+      }
+      if (isNum(ex.qtd)) {
+        var jd = ex.qtd_at != null ? +ex.qtd_at : n - 1;
+        if (jd >= 0 && jd < n && !capPoint(Xc(jd), ex.qtd)) {
+          diamond(g, Xc(jd), Y(ex.qtd), 4.2, C.WHITE, C.RED, 1.4);
+          txt(g, Xc(jd), Y(ex.qtd) + 12, frb(ex.qtd), { size: 7.8, fill: C.RED, weight: 700 });
+        }
+      }
+
+    /* year_lines ← gsx.year_lines：每年一条线叠在 Jan..Dec 上，当年红色加粗带点。
+       累计与否由 Python 决定（传进来的就是要画的值），本文件不再 cumsum。 */
+    } else if (kind === 'year_lines') {
+      var ycs = yearColors(ex), hly = ex.highlight != null ? +ex.highlight : ex.series.length - 1;
+      var fyl = fmtOf(ex.label_fmt || ex.fmt || 'f0c');
+      for (s = 0; s < ex.series.length; s++) {
+        var isCur = (s === hly);
+        polyline(ex.series[s].values, ycs[s], isCur ? 2 : 1.1, false, isCur);
+        if (!isCur) continue;
+        var jl = lastFinite(ex.series[s].values), vl = jl >= 0 ? ex.series[s].values[jl] : null;
+        /* 末点被截时真值已由 capLabel 竖排标出，别再横着标一遍 */
+        if (jl >= 0 && clampY(vl) === vl)
+          txt(g, Xc(jl) + 5, Y(vl) + 3.2, fyl(vl),
+            { size: 8.2, anchor: 'start', weight: 700, fill: ycs[s] });
+      }
     }
 
     /* 结构性断点（规矩 6）：口径变更、并表、周数不可比等「左右两侧不能连着读」的位置。
@@ -596,6 +1036,51 @@
       out.push({ name: ex.line.name, color: col(ex.line.color), values: ex.line.values, fmt: FMT.pct1 });
     } else if (ex.kind === 'diverging_bars') {
       out.push({ name: 'Reported − Core', color: C.NAVY, values: ex.values, fmt: f });
+
+    /* ── 新图型：表格视图与 tooltip 都吃这里的行，缺一个就是「切过去一片空白」 ── */
+    } else if (ex.kind === 'year_lines') {
+      var yc = yearColors(ex);
+      for (i = 0; i < ex.series.length; i++)
+        out.push({ name: ex.series[i].name, color: yc[i], values: ex.series[i].values, fmt: f });
+    } else if (ex.kind === 'qtr_bar') {
+      out.push({ name: ex.legend || ex.ylab || '季度合计', color: C.NAVY, values: ex.values,
+        fmt: fmtOf(ex.fmt || ex.label_fmt) });
+      if (ex.line && ex.line.values)
+        /* 同样走 lineVals()：图上抹掉的未满季 y/y，表格与 tooltip 也必须是「—」。
+           两边不一致时，人会以为图画漏了，反而去信那个本来就不可比的数。 */
+        out.push({ name: ex.line.name || 'y/y', color: col(ex.line.color || 'GREEN'),
+          values: lineVals(ex), fmt: fmtOf(ex.line.yfmt || 'pct0') });
+    } else if (ex.kind === 'seasonality') {
+      var bs = ex.base || {}, as = ex.actual || {};
+      out.push({ name: bs.name || '同月均值', color: col(bs.color || 'GRAY'),
+        values: bs.values || [], fmt: f });
+      out.push({ name: as.name || '实际', color: col(as.color || 'MBLUE'),
+        values: as.values || [], fmt: f });
+    } else if (ex.kind === 'bridge_bar') {
+      for (i = 0; i < ex.stacks.length; i++)
+        out.push({ name: ex.stacks[i].name, color: col(ex.stacks[i].color),
+          values: ex.stacks[i].values, fmt: f });
+      out.push({ name: (ex.net && ex.net.name) || 'Net change', color: col(ex.net_color || 'INK'),
+        values: bridgeNet(ex, stackLen(ex)), fmt: f });
+    } else if (ex.kind === 'grouped_bars') {
+      var gd = ['BLUE', 'NAVY', 'MBLUE', 'GRAY'];
+      for (i = 0; i < ex.groups.length; i++)
+        out.push({ name: ex.groups[i].name, color: col(ex.groups[i].color || gd[i % gd.length]),
+          values: ex.groups[i].values, fmt: f });
+      if (ex.line && ex.line.values)
+        out.push({ name: ex.line.name || 'Error', color: col(ex.line.color || 'RED'),
+          values: ex.line.values, fmt: fmtOf(ex.line.yfmt || 'pct1') });
+    } else if (ex.kind === 'range_band') {
+      var nm = ex.names || {};
+      out.push({ name: nm.lo || 'Guidance low', color: C.BLUE, values: ex.lo || [], fmt: f });
+      out.push({ name: nm.hi || 'Guidance high', color: C.MBLUE, values: ex.hi || [], fmt: f });
+      out.push({ name: nm.actual || 'Actual', color: col(ex.actual_color || 'NAVY'),
+        values: ex.actual || [], fmt: f });
+      if (isNum(ex.qtd)) {
+        var qv = [], qj = ex.qtd_at != null ? +ex.qtd_at : (ex.actual || []).length - 1;
+        for (i = 0; i < (ex.actual || []).length; i++) qv.push(i === qj ? ex.qtd : null);
+        out.push({ name: nm.qtd || 'Quarter-to-date', color: C.RED, values: qv, fmt: f });
+      }
     } else {
       out.push({ name: ex.legend || ex.ylab || '数值',
         color: ex.kind === 'gs_bar' ? C.BLUE : C.NAVY, values: ex.values, fmt: f });
@@ -629,11 +1114,58 @@
     } else if (ex.kind === 'diverging_bars') {
       items.push(['sq', C.NAVY, 'Reported > Core（油汇顺风）']);
       items.push(['sq', C.RED, 'Reported < Core（油汇拖累）']);
+
+    /* ── 新图型 ── */
+    } else if (ex.kind === 'heat_matrix') {
+      /* 矩阵没有系列可列，图例改成一条色标 + 两端真值 —— 否则读者只能靠格内数字，
+         看不出「这一格算高还是低」是相对什么定的。 */
+      var hs = heatScale(ex), hf = fmtOf(ex.fmt || 'f1');
+      items.push(['grad', hs.loc + ',' + C.WHITE + ',' + hs.hic,
+        hf(hs.lo) + ' → ' + hf(hs.hi) + '（5–95 分位色标）']);
+    } else if (ex.kind === 'year_lines') {
+      var ycl = yearColors(ex);
+      for (i = 0; i < ex.series.length; i++) items.push(['line', ycl[i], ex.series[i].name]);
+    } else if (ex.kind === 'qtr_bar') {
+      items.push(['sq', C.NAVY, ex.legend || 'Complete quarter']);
+      if (isNum(ex.partial_months) && +ex.partial_months > 0 &&
+          +ex.partial_months < (ex.qtr_months || 3))
+        items.push(['sq', C.BLUE, 'QTD (' + ex.partial_months + ' of ' +
+          (ex.qtr_months || 3) + ' months)']);
+      if (ex.line && ex.line.values)
+        items.push(['line', col(ex.line.color || 'GREEN'), ex.line.name || 'y/y (RHS)']);
+    } else if (ex.kind === 'seasonality') {
+      items.push(['sq', col(((ex.base || {}).color) || 'GRAY'),
+        (ex.base || {}).name || 'Prior-year same-month avg.']);
+      items.push(['sq', col(((ex.actual || {}).color) || 'MBLUE'),
+        (ex.actual || {}).name || 'Actual']);
+    } else if (ex.kind === 'bridge_bar') {
+      for (i = 0; i < ex.stacks.length; i++)
+        items.push(['sq', col(ex.stacks[i].color), ex.stacks[i].name]);
+      items.push(['dia', col(ex.net_color || 'INK'), (ex.net && ex.net.name) || 'Net change']);
+    } else if (ex.kind === 'grouped_bars') {
+      var gdf = ['BLUE', 'NAVY', 'MBLUE', 'GRAY'];
+      for (i = 0; i < ex.groups.length; i++)
+        items.push(['sq', col(ex.groups[i].color || gdf[i % gdf.length]), ex.groups[i].name]);
+      if (ex.line && ex.line.values)
+        items.push(['line', col(ex.line.color || 'RED'), ex.line.name || 'Error (RHS)']);
+    } else if (ex.kind === 'range_band') {
+      var rn = ex.names || {};
+      items.push(['sq', C.BLUE, rn.range || 'Guidance range']);
+      items.push(['dia', col(ex.actual_color || 'NAVY'), rn.actual || 'Actual']);
+      if (isNum(ex.qtd)) items.push(['odia', C.RED, rn.qtd || 'Quarter-to-date']);
     }
     if (!items.length) return '';
+    /* 新增的三种图示（菱形/空心菱形/色标）只用行内样式，不动 style.css ——
+       那份文件是三个站共用的，为了图例改它等于同时改已上线的两个站。 */
     return '<div class="legend">' + items.map(function (it) {
+      var dia = 'width:8px;height:8px;transform:rotate(45deg)';
       var sw = it[0] === 'sq' ? '<i class="sq" style="background:' + it[1] + '"></i>'
         : it[0] === 'dash' ? '<i class="dash" style="border-top-color:' + it[1] + '"></i>'
+        : it[0] === 'dia' ? '<i style="background:' + it[1] + ';' + dia + '"></i>'
+        : it[0] === 'odia' ? '<i style="background:' + C.WHITE + ';border:1.4px solid ' +
+            it[1] + ';' + dia + '"></i>'
+        : it[0] === 'grad' ? '<i style="width:54px;height:9px;background:linear-gradient(90deg,' +
+            it[1] + ')"></i>'
         : '<i style="background:' + it[1] + '"></i>';
       return '<span>' + sw + it[2] + '</span>';
     }).join('') + '</div>';
@@ -649,7 +1181,28 @@
     return fn;
   }
 
+  /* 热力矩阵的表格视图不是「期间 × 系列」，而是把矩阵原样铺开（行=年、列=月），
+     不给它单独一支就是切到表格一片空白。 */
+  function heatTable(ex) {
+    var cols = ex.cols || MONTHS, rows = ex.rows || [], m = ex.matrix || [];
+    var fmt = precise(fmtOf(ex.fmt || 'f1')), i, j, v;
+    var h = '<div class="tblwrap"><table><caption>Exhibit ' + ex.n +
+      ' — 表格视图（与图同源数值）</caption><thead><tr><th>' + (ex.row_head || '年') + '</th>';
+    for (j = 0; j < cols.length; j++) h += '<th>' + cols[j] + '</th>';
+    h += '</tr></thead><tbody>';
+    for (i = 0; i < rows.length; i++) {
+      h += '<tr><td>' + rows[i] + '</td>';
+      for (j = 0; j < cols.length; j++) {
+        v = (m[i] || [])[j];
+        h += '<td>' + (isNum(v) ? fmt(+v) : '—') + '</td>';
+      }
+      h += '</tr>';
+    }
+    return h + '</tbody></table></div>';
+  }
+
   function tableHTML(ex, labels) {
+    if (ex.kind === 'heat_matrix') return heatTable(ex);
     var rows = seriesRows(ex), i, j;
     var h = '<div class="tblwrap"><table><caption>Exhibit ' + ex.n +
       ' — 表格视图（与图同源数值）</caption><thead><tr><th>期间</th>';

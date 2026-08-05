@@ -163,3 +163,29 @@ footer code { font-size: 10.5px; }
   .nav a.home { margin-left: 0; }
   .hub { grid-template-columns: 1fr; }
 }
+
+/* ── 汇总表（Exhibit 1）与通栏卡片 ──────────────────────────────────────────
+   这几条原先散在两个旧站里：COST 放在自己的 style.css，IBKR 内联在 index.html 的
+   <style> 块。总仓的 14 个页面外壳里没有任何内联样式（外壳只跟 ticker 有关，
+   见 build/make_shells.py），所以必须集中到这里，否则汇总表会退化成裸表格。 */
+.card.wide { grid-column: 1 / -1; }
+
+/* 末尾高亮那条是给核对表的「最新月」行准备的；汇总表最后一行只是普通指标，要关掉 */
+table.sum tbody tr:last-child { background: none; font-weight: 400; }
+table.sum tbody tr:last-child td:first-child { background: #fff; }
+table.sum td.cur { font-weight: 700; }
+/* 分栏线画在「水平值」与「变化率」之间。page.js 给 summary.sep 指定的那一列
+   （通常是 m/m）打 sep 类，所以线画在**左**缘 —— 语义是「从这一列起是变化率」。 */
+table.sum td.sep { border-left: 1px solid #bbbbbb; }
+table.sum th.sep { border-left: 1px solid #ffffff; }
+table.sum tr.grp td, table.sum tr.grp td:first-child {
+  background: var(--mblue); color: #fff; font-weight: 700; text-align: left; font-size: 10.5px;
+}
+table.sum td.pos { color: var(--green); }
+table.sum td.neg { color: var(--red); }
+table.sum td.hi  { color: var(--green); }   /* 分位高 */
+table.sum td.lo  { color: var(--red); }     /* 分位低 */
+
+/* 「官网下载失败，沿用本地缓存」的红标 */
+.chip { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 3px;
+        background: #fdecec; color: var(--red); border: 1px solid #e6b3b3; font-size: 11px; }

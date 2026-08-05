@@ -423,22 +423,26 @@ def verify_tail(series_dir, cache_dir, n=3):
             continue
         old = pd.read_csv(os.path.join(series_dir, csv_name), index_col=0)
         old.index = pd.PeriodIndex(old.index, freq=freq)
-        worst = (None, None, 0.0)
-        print(f'\n=== {csv_name} 最后 {n} 期逐列对账 ===')
+        worst, ncell, nbad = (None, None, 0.0), 0, 0
+        print(f'\n=== {csv_name} 最后 {n} 期逐列对账（源：{os.path.basename(path)}）===')
         for per in old.index[-n:]:
             if per not in df.index:
-                print(f'  {per}: 官方文件里没有这一期'); continue
+                print(f'  {per}: 官方文件里没有这一期'); nbad += 1; continue
             for c in old.columns:
                 a, b = float(old.loc[per, c]), df.loc[per, c]
+                ncell += 1
                 if b is None or pd.isna(b):
-                    print(f'  {per} {c}: CSV={a} 官方=空'); continue
+                    print(f'  {per} {c}: CSV={a} 官方=空'); nbad += 1; continue
                 d = abs(a - float(b))
                 rel = d / abs(a) * 100 if a else (0.0 if d == 0 else float('inf'))
                 if d > 1e-9:
                     print(f'  {per} {c}: CSV={a} 官方={b} 差 {d:g}({rel:.2f}%)')
+                    nbad += 1
                 if rel > worst[2]:
                     worst = (per, c, rel)
-        print(f'  最大相对偏差 {worst[2]:.4f}%' + (f' @ {worst[0]} {worst[1]}' if worst[0] else ''))
+        print(f'  比对 {len(old.index[-n:])} 期 x {len(old.columns)} 列 = {ncell} 个单元格，'
+              f'不一致 {nbad} 个，最大相对偏差 {worst[2]:.4f}%'
+              + (f' @ {worst[0]} {worst[1]}' if worst[0] else ''))
 
 
 if __name__ == '__main__':
