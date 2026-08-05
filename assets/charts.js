@@ -50,9 +50,22 @@
   var C = {
     NAVY: '#1F3864', BLUE: '#9DC3E6', MBLUE: '#2E75B6',
     GRAY: '#A6A6A6', GREEN: '#548235', RED: '#B23A48',
+    /* gsx.py 的第 6 个序列色。原先漏在这里，导致六品种堆叠图（CME）没有第 6 个颜色可用，
+       只能把 RED 拿去当数据色 —— 而 RED 在这套语言里是断点与离群值的专用色，
+       一根红柱到底是「金属品种」还是「这个点被截轴了」就分不清了。 */
+    GOLD: '#BF9000',
     WHITE: '#FFFFFF', GRID: '#E3E3E3', AXIS: '#999999', INK: '#333333',
   };
-  var col = function (k) { return C[k] || k; };
+  /* 认得的色名 → 十六进制；本来就是 CSS 颜色（#xxx / rgb() / url(#pat)）的原样放行；
+     其余一律退回 NAVY。
+     原先是 `C[k] || k`：payload 写了 'GOLD' 这种 C 里没有的名字时，字符串会被原样塞进
+     fill 属性，浏览器当作无效值 → 渲染成黑色。黑色不在这套配色里，但它看起来像是
+     「故意的深色」，所以这种错会一路上线而没人看出来。退回 NAVY 至少是本套色。 */
+  var col = function (k) {
+    if (C[k]) return C[k];
+    if (typeof k === 'string' && /^(#|rgb|hsl|url\()/i.test(k)) return k;
+    return C.NAVY;
+  };
   var BREAK = '#C00000';        // 断点/截轴标注专用红，与 gsx.py 的 RED 同一角色
   var uid = 0;                  // 一页多张图共存，pattern 之类的 id 必须全局唯一
 
@@ -76,6 +89,14 @@
     usd0:  function (v) { return '$' + v.toFixed(0); },
     usd1:  function (v) { return '$' + v.toFixed(1); },
     usd2:  function (v) { return '$' + v.toFixed(2); },
+    /* 高精度档。缺这几个的时候 fmtOf 会**静默**退回 f1，于是 $0.0719 的合约单价被印成
+       $0.1、3 位小数的 RPC 掉到 1 位有效数字 —— 图还是画出来了，只是数字没了意义。
+       补齐比让每个生成器各自换单位绕过去更稳妥。 */
+    f2:    function (v) { return v.toFixed(2); },
+    f3:    function (v) { return v.toFixed(3); },
+    pct2:  function (v) { return v.toFixed(2) + '%'; },
+    usd3:  function (v) { return '$' + v.toFixed(3); },
+    usd4:  function (v) { return '$' + v.toFixed(4); },
   };
   var fmtOf = function (k) { return FMT[k] || FMT.f1; };
 
@@ -724,8 +745,11 @@
       if (ex.yoy_txt) oval(g, Xc(0) + band * 0.25, Y(y1 * 0.93), ex.yoy_txt);
       if (ex.mom_txt) {
         var last = ex.values[n - 1];
-        oval(g, Xc(9) + band * 0.2, Y(Math.min(last * 1.13, y1 * 0.94)), ex.mom_txt,
-          [Xc(11) + band * 0.3, Y(last * 1.06)]);   // PDF: arrow_to=(11.8, vals[-1]*1.06)
+        /* 气泡与箭头按**窗口末端**定位，不能写死 Xc(9)/Xc(11)。
+           原先是照 PDF 的 13 个月窗口硬编的坐标，窗口一改成 25 根柱，箭头就指到第 12 根，
+           而那根柱看着完全正常 —— 读者会把它当成最新月。n=13 时 n-4/n-2 正好还原原值。 */
+        oval(g, Xc(n - 4) + band * 0.2, Y(Math.min(last * 1.13, y1 * 0.94)), ex.mom_txt,
+          [Xc(n - 2) + band * 0.3, Y(last * 1.06)]);   // PDF: arrow_to=(11.8, vals[-1]*1.06)
       }
     } else if (kind === 'gs_line' || kind === 'gs_line_avg') {
       var fv = fmtOf(ex.fmt);
@@ -746,7 +770,8 @@
       if (ex.ovals_at_bottom) {
         var by = Y(dmn - rngv * 0.12);
         if (ex.yoy_txt) oval(g, Xc(1), by, ex.yoy_txt, [Xc(2) + band * 0.6, by]);
-        if (ex.mom_txt) oval(g, Xc(9) + band * 0.1, by, ex.mom_txt, [Xc(11) + band * 0.5, by]);
+        // 同上：按窗口末端定位，不写死 13 个月窗口的下标
+        if (ex.mom_txt) oval(g, Xc(n - 4) + band * 0.1, by, ex.mom_txt, [Xc(n - 2) + band * 0.5, by]);
       }
     } else if (kind === 'lines_endlabels') {
       var fe = fmtOf(ex.fmt);

@@ -88,18 +88,21 @@
     el('lead').innerHTML = sh;
   }
 
-  /* ── Exhibit 2..N ── */
-  var lead = el('lead'), grid = el('grid'), needRedraw = false;
+  /* ── Exhibit 2..N ──
+     全部挂进同一个 grid，通栏图靠 CSS 的 grid-column: 1/-1 就地横跨两列。
+     早先的写法是把 ex.full 的图挂进汇总表那个容器，结果散落在各处的通栏图
+     （CME 的 Ex6/17/18）会被一起提到 Exhibit 2 前面，编号读起来是 1→6→17→18→2→3。
+     GS deck 的图号就是阅读顺序，打乱它比少一张图更糟。 */
+  var grid = el('grid'), needRedraw = false;
   D.exhibits.forEach(function (ex) {
-    var mount = ex.full ? lead : grid;
-    window.Exhibits.card(mount, ex, {
+    window.Exhibits.card(grid, ex, {
       source: D.source,
       xlabels: ex.x === 'long' ? D.xlabels_long : D.xlabels,
       height: ex.height,
     });
-    /* 通栏卡片是在 card() 渲染之后才加的 class，SVG 的 viewBox 还是按半栏宽算的，
+    /* 通栏 class 是在 card() 渲染之后才加的，SVG 的 viewBox 还是按半栏宽算的，
        被 CSS 拉伸后字号会整体偏大 —— 所以加完 class 必须重画一遍。 */
-    if (ex.full) { mount.lastElementChild.classList.add('wide'); needRedraw = true; }
+    if (ex.full) { grid.lastElementChild.classList.add('wide'); needRedraw = true; }
   });
   if (needRedraw) window.Exhibits.redrawAll();
 
