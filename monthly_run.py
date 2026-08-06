@@ -61,6 +61,14 @@ CROSS = ['exchanges', 'wealth']
 # 3 天是照实测发布日反推的：LAG 是给红点用的、刻意给宽，减 3 天之后各家的开闸日
 # 正好落在实测发布日当天或前一天（cost LAG 7 → 第 4 天开闸，实测 8/5 发布 = 第 4 天）。
 EARLY = 3
+# 例外：LAG 明显高于实测发布日的，减 3 天还是会迟到。格式同 LAG = (常规月, 季末月)。
+EARLY_BY = {
+    # SPGI 季末月实测 31 天（2025-06 → 7/31）到 41 天（2025-12 → 2/10），跨度 10 天，
+    # 而 LAG[1]=46 是照最慢那次再放宽定的 —— 红点要的正是这个上界，不能改。
+    # 闸门若也用 46-3=43，最快的那一季要迟到 12 天，所以照**最早**的 31 天开闸。
+    # 代价是最慢的那一季会空跑 10 天，那只是 10 个「还没发」的请求。
+    'spgi': (3, 15),
+}
 
 
 def sh(cmd, cwd=HERE, check=True):
@@ -230,8 +238,10 @@ def not_due(t):
         y, m = n // 12, n % 12 + 1
         end = datetime.date(y, m, 1)                   # 候选月月末 + 1 天
         cy, cm = (y, m - 1) if m > 1 else (y - 1, 12)  # 候选月本身
-        days = lag[1] if cm % 3 == 0 else lag[0]
-        if today >= end + datetime.timedelta(days=max(0, days - EARLY)):
+        qe = cm % 3 == 0
+        days = lag[1] if qe else lag[0]
+        early = EARLY_BY.get(t, (EARLY, EARLY))[1 if qe else 0]
+        if today >= end + datetime.timedelta(days=max(0, days - early)):
             return through >= f'{cy}-{cm:02d}'
     return False
 
