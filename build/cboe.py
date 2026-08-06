@@ -27,10 +27,12 @@ series/cboe.csv，页面不做任何计算。
 import datetime
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
 
+import brief as B
 import payload_guard
 import pctile
 
@@ -45,6 +47,33 @@ WIN_LONG = 25       # 原 deck 的 lvl_bar / multi_line 窗口
 WIN_SHORT = 13      # 原 deck 的 stack_share 窗口
 WIN_QTR = 14        # 原 deck 的 qtr_bar 窗口（季度数）
 HEAT_YEARS = 10     # 原 deck 的 heat_matrix n_years
+
+# 顶部 brief 用：RPC 的滚动口径。公司自己写明是 three-month rolling average（见 notes），
+# 但没说是哪三个月。用「(w 三个月成交量加权的指数占比) x 指数 RPC + 余下 x 多重挂牌 RPC」
+# 去复原披露的混合 RPC，对齐窗口实测只有 M-2..M 一个解：
+#   M-2..M 平均绝对误差 0.10%（最大 0.72%）｜M-1..M+1 2.28%｜M..M+2 4.01%｜单月 3.42%
+# 相差一个量级，不是调参调出来的。compose_brief 每次重跑都会重算这个误差并卡阈值。
+RPC_WIN = 3
+BRIEF_HI = 330      # brief 去标签字数的自压上界（B.render 的护栏是 230-380）。贴着上界发布
+                    # 等于把「下个月名次多一位数」当成停更风险；压法见 compose_brief 末尾
+RPC_FIT_TOL = 2.0   # 复原误差上限（%）。实测 0.10%，留 20 倍余量：这道闸只拦「口径变了」
+                    # 那种量级的事故，不拦月度噪音（拦太紧会让整页因为一个数据毛刺永久停更）
+
+# brief 的 R1 峰值扫描扫哪几条产品线。只放**公司单列披露的成交量**，不放派生比值
+# （占比、implied 收入那些各自有图）；每条都是「越高越好」的量，故 peak_scan 不传 inverse。
+# 不放美国期权总量与自有指数期权总量：它们是下面九条里若干条的合计，放进来等于把同一件事
+# 数两遍，「九条里只有一条创新高」这句就不成立了。
+BRIEF_LINES = [
+    ('SPX 期权', 'adv_spx_options_kcontracts'),
+    ('XSP 期权', 'adv_xsp_options_kcontracts'),
+    ('VIX 期权', 'adv_vix_options_kcontracts'),
+    ('VIX 期货', 'adv_vix_futures_kcontracts'),
+    ('CFE 期货', 'adv_futures_kcontracts'),
+    ('美股撮合', 'adv_us_equities_matched_shares_bn'),
+    ('欧股 ADNV', 'adv_eu_equities_adnv_eurbn'),
+    ('全球外汇', 'adv_fx_adnv_usdbn'),
+    ('多重挂牌期权', 'adv_multilist_options_kcontracts'),
+]
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
@@ -260,6 +289,313 @@ def summary_block(df, cur, prv, yag):
         'rows': rows,
         'blank_why': blanks,        # 供 notes 生成表注，不进页面渲染
     }
+
+
+# ─────────────────────── 顶部 ~300 字数据总结（payload 的 brief）───────────────────────
+def compose_brief(ALL, i0, tot, ix, ru, ri, rm, lines):
+    """Cboe 页顶部的 ~300 字数据总结。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R4 单位恒等 /
+    R5 标注 / R6 有效位），那边只算事实，句子在这里拼——措辞是口径的一部分，属于各家自己。
+    每个数字都是当场从序列算的，**没有一处硬编码**：排名、滚出窗口的是哪个月、峰值停在
+    哪一年，下个月重跑都会自己变。**每个定性词也一样**——「只有 N 条」「与总数反向」
+    「同比全为正」「最高」全部由当场算出的量决定分支（`B.quant()` / `B.need()` /
+    `B.top_pct()`）。写死的措辞配算出来的数字是这一段返工过的主因，别再往回写。
+
+    ═══ Cboe 独有，别家不能照抄 ═══
+      · **R3（日历护栏）在这里不成立，而且用了就是错的。** cboe.csv 的 adv_* 列公司披露
+        的本来就是 ADV（每日平均），不是当月合计；再除一次交易日会造出一个根本不存在的
+        修正。全站只有 IBKR / COST 那种「当月合计」列才轮得到 R3。
+      · **RPC 是三个月滚动平均、滞后一个月发布**，这两条合起来造出一个别家没有的基数陷阱：
+        混合 RPC 的环比可以整段由「三个月窗口换掉了哪个月」决定，而与本月的定价、本月的
+        成交完全无关。本段的主句讲的就是这件事，其余 13 家没有一家的单价序列是滚动的。
+      · Cboe 是全清单里唯一官方**同时**按月披露量（ADV）与单位价（RPC）、且按两本账
+        （自有指数 / 多重挂牌）分别披露的标的，所以「动的是结构还是单价」可以真的算出来
+        并回验；其余各家只有量，价得靠季度费率去凑。
+      · 排名一律从 `i0`（首个非 pro-forma 月）起算，与 Exhibit 6 那条红色断点虚线同一个
+        下标。2017 年是 Bats pro-forma combined 口径，混进分母会把一次并表算成历史区间。
+        同一个理由使 `B.regime_ratio()` 在本页不可用——它的基期写死取序列首年，那正好是
+        pro-forma 的 2017 年（T4/R4 因此整条跳过，不是忘了写）。**环比同样受这条约束**：
+        上一期 RPC 落在 i0 之前时两期不可比，那一句宁可不写。
+      · 本页没有反向指标（RPC、ADV 都是越高越好），故 `peak_scan` 不传 inverse；
+        九条产品线经 `B.is_monotonic()` 判定无一单调，「创新高」在这里是信息不是噪音。
+
+    ═══ R5 的标记挂在哪（核验退回过一次：方向挂反了）═══
+      两条分账 RPC（指数 / 多重挂牌）与九条 ADV 都是**公司披露列**，所以「拆开两本账」
+      本身不是推导，不能挂（推导值）——挂在那里等于把公司自己发的数标成我们算的。真正的
+      推导值是：三个月成交量加权权重、结构/单价分解、指数占比，标记跟着这几个走。分解虽然
+      不再逐项印数，但「跌的是结构不是单价」这个判断整个建在它上面，所以标记不跟着数字走、
+      跟着**依据**走，留在那句判断后面。
+      另外「M-2 至 M」这个对齐窗口是**拟合**出来的（公司只说 three-month rolling，没说
+      是哪三个月，见文件头 RPC_WIN 的注释），故单标「拟合口径」，与「推导值」不是一回事。
+
+    ═══ 分解印到哪一层（2026-08 收窄）═══
+      分解照算，正文**只印结论**：「跌的是结构不是单价」。此前印的是「结构 -1.46¢、
+      费率合计 -0.22¢、复原余项 -0.06¢」三项带余项——读者要先做一次三项加法才跟得上，
+      比样板（build/ibkr.py 的二元恒等式 + 一句落点）深一档。洞察保留，层数收掉。
+      随之作废的还有余项那套倒算逻辑：分解对**复原**序列 wn·ri+(1−wn)·rm 是恒等式，
+      而 d_rpc 用的是**披露**的 ru，两者差一个复原残差，所以当时得把余项按印出来的两位
+      小数倒算出来才能让三个数相加等于总数。不印分项就没有加不平的问题，这一层一并删掉。
+      复原误差仍然每次重算，但只作 RPC_FIT_TOL 那道闸的判据，不进正文。
+
+    ═══ 字数 ═══
+      `B.render()` 的护栏是 230-380，那是拦「模板拼坏了」用的。这里自己压到 BRIEF_HI
+      以内：贴着上界发布等于把「下个月排名多一位数」当成停更风险。压法不是删限定语
+      （推导值 / 拟合口径 / 滞后一期），而是先试最小的删法，见函数末尾。
+    """
+    i = len(ALL) - 1
+    y0 = ALL[i0][:4]                       # 排名区间的起点年（= pro-forma 之后）
+    fin = np.where(np.isfinite(np.asarray(ru, float)))[0]
+    fin = fin[fin >= i0]
+    # RPC 最新可得月（比成交量晚一期）。断点之后一个都还没披露时为 None——此时整块 RPC
+    # 叙述不写，页面照发（B.need 的规矩：缺值是「该句不写」，不是整页构建失败）。
+    j = int(fin[-1]) if len(fin) else None
+
+    def m(k, ref):
+        """月份标签。与参照月同年时只写「6 月」，跨年才补年份。
+
+        RPC 的三个月窗口每年有两次跨年（12 月那一档含 10、11、12 月，1 月那一档含
+        11、12、1 月）。恒不写年份，1 月的页面上「11 月换成 1 月」会被读成同一年往前退；
+        恒写年份则一句话里塞四个「2026 年」。所以按需补。"""
+        return (f'{ALL[k][:4]} 年 {int(ALL[k][5:7])} 月' if ALL[k][:4] != ALL[ref][:4]
+                else f'{int(ALL[k][5:7])} 月')
+
+    def ordinal(rk, n, unit='高'):
+        """排名措辞。第 1 名写「最高」——「第 1 高」不是中文。"""
+        return f'{n} 个月里最{unit}' if rk == 1 else f'{n} 个月里第 {rk} {unit}'
+
+    def fold(names, cap=2, count=True):
+        """名字最多列 cap 条，其余折成「等 N 条」（count=False 时只写「等」）。
+
+        并列条数是当场算的：回放到 2019 年会有六七条线并列停在同一个月，全列出来一句话
+        就撑破字数护栏。cap 从 3 收到 2，是因为三条并列 + 三个排名恰好卡在护栏上界附近，
+        再多一条就发不出去——折叠省下的字必须够抵掉后面多出来的排名项。"""
+        head = '、'.join(names[:cap])
+        if len(names) <= cap:
+            return head
+        return head + (f'等{B.cn(len(names))}条' if count else '等')
+
+    def w3(k):
+        """三个月滚动的量加权指数占比（推导值）。
+
+        分子分母必须取**同一批月份**：各自 nansum 时，哪天 ix 与 tot 在窗口内的不同月
+        缺值，比值会静默混月（当前 115 行两列全无 NaN，未触发，但这道掩码是白拿的）。
+        窗口不足 RPC_WIN 个月时按现有月份算——负下标会把序列尾巴卷进来。"""
+        a = max(0, k - RPC_WIN + 1)
+        x = np.asarray(ix[a:k + 1], float)
+        t = np.asarray(tot[a:k + 1], float)
+        msk = np.isfinite(x) & np.isfinite(t)
+        s = float(t[msk].sum())
+        return float(x[msk].sum() / s) if msk.any() and s else float('nan')
+
+    # ── 「披露的混合 RPC 能不能被两本账复原」的当场回验。误差每次重算：口径哪天变了
+    #    （比如改成两个月滚动）这道闸会响，而不是静默印错话。样本为空（序列只有两三个月、
+    #    或断点后还没攒够一个窗口）时不响——那不是口径变了，是还没数可拟合，此时下面的
+    #    分解整块不写。
+    j_hi = j if j is not None else i0 - 1
+    fit = [abs((w3(k) * ri[k] + (1 - w3(k)) * rm[k]) / ru[k] - 1)
+           for k in range(max(i0, RPC_WIN - 1), j_hi + 1)
+           if B.need(ru[k], ri[k], rm[k], w3(k)) and ru[k]]
+    if fit and float(np.mean(fit)) * 100 > RPC_FIT_TOL:
+        raise SystemExit(
+            f'brief: 混合 RPC 用「三个月滚动量加权 x 两本账 RPC」复原的平均误差 '
+            f'{float(np.mean(fit)) * 100:.2f}% 超过 {RPC_FIT_TOL}%，RPC 的滚动口径可能变了。'
+            f'先重新拟合 RPC_WIN 与对齐窗口，不要让 compose_brief 照旧印那句分解。')
+
+    sh = ix / tot * 100                     # 单月指数占比（%，推导值）
+    n_sh = int(np.isfinite(sh[i0:]).sum())  # 量口径的样本月数：比 RPC 多一个月（RPC 滞后一期）
+    n_ri = int(np.isfinite(ri[i0:]).sum())
+    n_ru = int(np.isfinite(ru[i0:]).sum())
+
+    # ── 两道闸，决定 RPC 这一块能写到哪一层。写不动的部分由量口径那句顶上，页面照发。
+    have_chg = (j is not None and j - 1 >= i0
+                and B.need(ru[j], ru[j - 1], ri[j], ri[j - 1], rm[j], rm[j - 1]))
+    have_dec = have_chg and bool(fit) and B.need(w3(j), w3(j - 1))
+
+    rk_ri = B.rank_of(ri[i0:], j - i0) if j is not None else None
+    hi_txt = f'指数期权 RPC 是 {y0} 年以来 {ordinal(rk_ri, n_ri)}' if rk_ri else ''
+
+    # ── s1：本期变动 + 贵的那本账在历史里的位置 + 动的是结构还是单价。一句三段，都是读数
+    #    或由读数直接比出来的判断，不含中间步骤。
+    head1 = punch = ''
+    if have_chg:
+        # ── mix vs rate 分解（推导值）。各项都用**分**表示，不做除法：RPC 走平的月份
+        #    「mix 占跌幅百分之几」会除出一个爆炸的数，而分是它本来的差异单位（CONTRACT §2：
+        #    比率类指标的差异不写百分比变化；RPC 以美元计价，其差异形式就是 ¢/张）。
+        d_rpc = (ru[j] - ru[j - 1]) * 100                                # ¢/张
+        flat = round(d_rpc, 2) == 0
+        w_dn = '变动' if flat else ('跌' if d_rpc < 0 else '涨')
+        # 「滞后一期」是口径标注，但它也得由数据说：j == i 的月份 RPC 并不滞后。
+        lag = '（滞后一期）' if j < i else ' '
+        chg = '环比几乎持平' if flat else f'环比{w_dn} {abs(d_rpc):.2f}¢'
+
+        punch = ''
+        if have_dec:
+            # 分解照算，但**只印结论不印分项**：谁在动是这句话的信息，三个带余项的数是
+            # 读者要自己做一遍加法才跟得上的中间步骤（分寸见 docstring「印到哪一层」）。
+            wn, wp = w3(j), w3(j - 1)
+            d_mix = (wn - wp) * (ri[j - 1] - rm[j - 1]) * 100            # 结构效应 ¢/张
+            d_rate = (wn * (ri[j] - ri[j - 1])
+                      + (1 - wn) * (rm[j] - rm[j - 1])) * 100            # 两本账单价效应合计
+            # 「跌的是结构不是单价」是**判断**不是读数，三个分支全部由这两项当场比出来：
+            # 回放 101 个可比月里结构主导 76 个月、单价主导 25 个月、两者量级相当 34 个月，
+            # 写死任何一句都会在别的月份变成假话。判据分两道——
+            #   ① 方向：主导项必须与总变动同向，否则「跌的是 X」会把一个在往上顶的分项
+            #      说成下跌的原因（2019-10 就是这种月：总数 -0.02¢，两项 ∓0.4¢ 互相抵消）
+            #   ② 量级：主导项至少是另一项的 2 倍才配说「不是」，否则只说两头都在动
+            m2, r2 = round(d_mix, 2), round(d_rate, 2)
+            drv, oth = ((m2, r2) if abs(m2) >= abs(r2) else (r2, m2))
+            lead = '结构' if abs(m2) >= abs(r2) else '单价'
+            if flat:
+                # 总数持平时没有方向可归因，能说的只是两项互相抵消（同号则连这句也不成立）
+                punch = ('<b>结构与单价互相抵消</b>'
+                         if m2 and r2 and (m2 < 0) != (r2 < 0) else '')
+            elif drv and (drv < 0) == (d_rpc < 0) and abs(drv) >= 2 * abs(oth):
+                punch = (f'<b>{w_dn}的是{lead}不是'
+                         f'{"单价" if lead == "结构" else "结构"}</b>（推导值，三个月成交量加权）')
+            else:
+                punch = '<b>结构与单价都在动</b>（推导值，三个月成交量加权）'
+        head1 = f'{m(j, i)} RPC{lag}{chg}'
+    elif j is not None:
+        head1 = f'{m(j, i)} RPC 与上一期不可比（上一期落在 {y0} 年前的 pro-forma 口径里）'
+        punch = ''
+    else:
+        head1 = punch = ''
+
+    # ── s2：R2 的基数。上面那个「结构」在 Cboe 有一半是机械的——三个月窗口换掉了哪个月，
+    #    与本月定价无关。这是 Cboe 独有的基数陷阱，别家的单价序列都不是滚动的。
+    s2, swap = '', ''
+    if have_dec:
+        k_out = j - RPC_WIN                 # 滚出窗口的那个月；落在 i0 之前就不写这一句
+        if k_out >= i0 and B.need(sh[k_out], sh[j]):
+            rk_out = B.rank_of(sh[i0:], k_out - i0)
+            # 第二个月份挂在**滚出月**上做参照，不挂在本月：1 月的页面上两头都是去年，
+            # 挂本月会印成「2020 年 9 月换成 2020 年 12 月」，年份白写两遍。
+            # 占比是 load() 里的派生列（指数 ADV ÷ 美国期权总 ADV），R5 要求正文带标记；
+            # 上一句那个（推导值）挂的是分解与权重，管不到这里，所以这里自己再挂一次。
+            swap = (f'RPC 按 M-2 至 M 滚动（拟合口径），这一档把指数占比（推导值）'
+                    f'{sh[k_out]:.1f}%（{ordinal(rk_out, n_sh)}）的 {m(k_out, i)}'
+                    f'换成 {sh[j]:.1f}% 的 {m(j, k_out)}')
+        # 一句话一个意思：s1 说清是结构还是单价在动，这一句只说滚动窗口换掉了哪个月。
+        s2 = swap + '。' if swap else ''
+
+    # ── s2b：没有上面那句窗口换月时（断点后的头几个月、RPC 缺值月），指数占比的位置就
+    #    没人交代了。改从量口径直接给——tot 与 ix 两列没有缺口，任何截止月都算得出。
+    s2b = ''
+    if not swap:
+        # 量口径的窗口同样从 i0 起：2017 是 Bats pro-forma combined，环比与排名都不能
+        # 跨过断点去比（与上面 RPC 那句同一条规矩，不是两套）。
+        beq = B.base_effect(np.asarray(tot, float)[i0:], i - i0)
+        rk_sh = B.rank_of(sh[i0:], i - i0)
+        bits = [f'{m(i, i)}指数占比 {sh[i]:.1f}%（{ordinal(rk_sh, n_sh)}）'] if rk_sh else []
+        if beq['mm'] is not None:
+            bits.append('美国期权总 ADV 环比 ' + B.pct(beq['mm'])
+                        + (f'、同比 {B.pct(beq["yy"])}' if beq['yy'] is not None else ''))
+        if beq['rank']:
+            bits.append(f'总 ADV 排 {ordinal(beq["rank"], n_sh)}')
+        # 自有指数期权这条线是本页的主角，RPC 讲不动的月份至少把它的量交代掉
+        bix = B.base_effect(np.asarray(ix, float)[i0:], i - i0)
+        if bix['mm'] is not None:
+            bits.append('指数期权 ADV 环比 ' + B.pct(bix['mm'])
+                        + (f'（{ordinal(bix["rank"], n_sh)}）' if bix['rank'] else ''))
+        s2b = ('量口径（推导值：占比 = 指数 ADV ÷ 美国期权总 ADV）：'
+               + '，'.join(bits) + '。') if bits else ''
+
+    # ── s3：R2 的落点。分四种，都由数据挑：变动小于历史月变动中位数时它本身就不是信号
+    #    （回放里 0.01¢ 的月份确实出现过，照印「会读成费率战」等于给噪音配一段解读）；
+    #    反号才轮得到窗口效应那句；同向时是真下行，说成误读就把事实讲反了；同比还没有
+    #    （断点后不足 12 个月）时三种都判不出来，那就不下这个判断——原来这里会印「同向」，
+    #    在没有同比的月份那是假话。
+    s3 = ''
+    if j is not None:
+        be = B.base_effect(ru[i0:], j - i0)
+        dif = np.abs(np.diff(np.asarray(ru[i0:j + 1], float)))
+        noise = float(np.nanmedian(dif)) * 100 if np.isfinite(dif).any() else None
+        head3 = '环比与同比反号，' if be['yy'] is not None and be['conflict'] else ''
+        rank3 = ''
+        if be['rank']:
+            # 分母写出来：RPC 口径比量口径少一个月，两处名次不是同一个分母（核验点名）。
+            # 名次本身还不够——「跌完还在前 7%」才是与 headline 相反的那半句，故带 top_pct；
+            # 但只在前半区带：排在后半区时「前 96%」是句废话，那时只给分母。R2 要的上月
+            # 名次同理，只有上月真的在前三高（基数效应的触发条件）才占这几个字。
+            prev = f'上月第 {be["prev_rank"]}、' if (be['prev_rank'] or 99) <= 3 else ''
+            # 全文的数字与汉字之间留一个空格，B.top_pct 返回的「前7%」不带，这里补上
+            where = ('的' + re.sub(r'(\d)', r' \1', B.top_pct(be['rank'], n_ru), count=1)
+                     if be['rank'] * 2 <= n_ru else '中')
+            rank3 = f'混合 RPC {prev}本月第 {be["rank"]}（{n_ru} 个月{where}）'
+        end3 = ''
+        if have_chg and B.need(noise) and abs(d_rpc) < noise:
+            end3 = f'<b>这一{w_dn}小于历史月变动中位数 {noise:.2f}¢，本身不算信号</b>'
+        elif have_chg and be['yy'] is not None:
+            end3 = (f'<b>只看这一{w_dn}会读成费率{"战" if d_rpc < 0 else "回升"}</b>'
+                    if be['conflict'] else f'<b>这一{w_dn}不只是窗口效应</b>')
+        body3 = head3 + rank3 + ('——' + end3 if rank3 and end3 else end3)
+        s3 = body3 + '。' if body3 else ''
+
+    # ── s4：R1 产品线峰值扫描。谁停在自己的最高点，谁的峰值还停在很多年前。
+    #    九条 ADV 全部非单调（B.is_monotonic 判定），所以「创新高」在这里是信息不是噪音；
+    #    真有单调列被 skip_monotonic 剔掉时，「N 条」跟着用实际扫过的条数，不写死 len(lines)。
+    pk = B.peak_scan(ALL[i0:], [(nm, a[i0:]) for nm, a in lines], i - i0)
+    n_scan = len(pk['at_peak']) + len(pk['off_peak'])
+    # 「只有一条」是定性词，必须跟着比例走：回放里最多 4/9 条同时停在峰值，那时写「只有」
+    # 就是把普遍现象说成稀缺。B.quant() 按 k/n 挑「只有／有／多达」。
+    # 条数已经在「只有 N 条」里给过，括号里再写一遍「等四条」是同一个数说两次
+    top = (f'{B.quant(len(pk["at_peak"]), n_scan, "条")}停在自己的峰值'
+           f'（{fold(pk["at_peak"], count=False)}）' if pk['at_peak']
+           else '没有一条停在自己的峰值')
+    tone = pos = grp_txt = ''
+    if pk['off_peak']:
+        old = min(k for _, k in pk['off_peak'])          # 最早的那个峰值月
+        all_grp = [nm for nm, k in pk['off_peak'] if k == old]
+        grp, srs = all_grp[:2], dict(lines)
+        rk = [(B.rank_of(srs[nm][i0:], i - i0), int(np.isfinite(srs[nm][i0:]).sum()))
+              for nm in grp]
+        # 同比方向当场算（写死「两位数正增长」下个月就可能变成假话），且必须覆盖
+        # **被这句话点到的全部**产品线（含折进「等 N 条」的那几条），不能只看列名的两条。
+        # 一条都算不出来（不足 12 个月）时不写方向——「涨跌互见」在没有同比的月份是假话。
+        yy = [srs[nm][i] / srs[nm][i - 12] - 1 for nm in all_grp
+              if i >= 12 and B.need(srs[nm][i], srs[nm][i - 12]) and srs[nm][i - 12]]
+        tone = ('同比全为正' if all(v > 0 for v in yy) else
+                ('同比已全部转负' if all(v < 0 for v in yy) else '同比涨跌互见')) if yy else ''
+        # 分母相同就只写一次；哪天组里混进历史更短的产品（如 XSP 从 2019 起）再逐条写
+        dn = {n for _, n in rk if n}
+        if all(r for r, _ in rk):
+            pos = (f'{dn.pop()} 个月里排第 ' + '、'.join(str(r) for r, _ in rk) + ' 位'
+                   if len(dn) == 1 else '排第 ' + '、'.join(f'{r}/{n}' for r, n in rk) + ' 位')
+        # 「的」不是可省的虚字：产品线名可能以拉丁字母收尾（欧股 ADNV），直接接汉字会
+        # 印成「ADNV峰值」，与全页「字母数字与汉字之间留空」的排版不一致。
+        grp_txt = f'{fold(all_grp)}的峰值仍停在 {m(ALL.index(old), i)}'
+
+    def assemble(drop=()):
+        # 「但」要同时满足两个条件才成立，缺一个都会印出一句假转折：
+        #   (1) 前半句真的给了一个跌／涨（不可比的月份没有转折可转）；
+        #   (2) 分账 RPC 的名次真的在**前半区** —— 否则「RPC 跌了，但分账排第 11 高」
+        #       里的「但」无处落脚。重放到 2019-03 至 2019-07 会印「但…15 个月里第 11 高」，
+        #       正是这种假转折。判据当场算，不写死名次门槛。
+        hi_is_high = rk_ri is not None and n_ri and rk_ri * 2 <= n_ri
+        hi = '' if 'hi' in drop else (
+            ('但' + hi_txt) if have_chg and hi_txt and hi_is_high else hi_txt)
+        s1 = '，'.join(x for x in [head1, hi, punch] if x)
+        tail = '；' + '，'.join(x for x in [grp_txt,
+                                          '' if 'tone' in drop else tone,
+                                          '' if 'pos' in drop else pos] if x) if grp_txt else ''
+        s4 = f'量这边{B.cn(n_scan)}条产品线{top}{tail}。'
+        return [s1 + '。' if s1 else '', s2, s2b, s3, s4]
+
+    # ── 字数：render 的 230-380 是拦「模板拼坏了」的，贴着上界发布是可预见的停更风险
+    #    （名次多一位数、产品线改名都会撞破，整页就 SystemExit 发不出去）。所以在这里自己
+    #    压到 BRIEF_HI 以内，压法是省可省项，而不是删任何限定语（推导值 / 拟合口径 /
+    #    滞后一期）——那些是口径的一部分，删了就是另一句话。可省的三项：
+    #      tone 峰值停在多年前那几条的同比方向（5 个字，最便宜）
+    #      pos  那几条今天的名次（约 18 个字）
+    #      hi   指数 RPC 自己的名次（最后才动：它是 s1 那个转折的依据）
+    #    顺序按「先试最小的删法」排，不是固定优先级：只超 3 个字时省掉 tone 就够了，
+    #    没必要连名次一起砍掉。三项都省完还超，说明真的拼坏了，交给 render 的护栏去响。
+    for drop in ((), ('tone',), ('pos',), ('pos', 'tone'), ('pos', 'tone', 'hi')):
+        body = assemble(drop)
+        if len(re.sub(r'<[^>]+>', '', ''.join(x for x in body if x))) <= BRIEF_HI:
+            break
+    return B.render(body)
 
 
 # ────────────────────────────── 主流程 ──────────────────────────────
@@ -753,6 +1089,20 @@ def main():
                     f'（次月第 3 个工作日）· 覆盖 {XL_LONG[0]} – {XL_LONG[-1]}（{len(ALL)} 个月）'
                     f'· 版式沿用 Goldman Sachs GIR monthly-metrics note · 只出图，不带观点',
         'headline': headline,
+        # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+        # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+        # i0 传 BREAK_PF（首个非 pro-forma 月），与 Exhibit 6 的断点虚线同一个下标 ——
+        # 排名的分母不能混进 2017 年的 Bats pro-forma combined 口径。
+        # ALL 在本文件里是 pandas Period 的列表，brief.py 的月份口径是 'YYYY-MM' 字符串
+        # （`B.mo()` 直接切片），所以在边界上转一次，不让 Period 漏进规则库。
+        'brief': compose_brief(
+            [str(p) for p in ALL], BREAK_PF or 0,
+            df['adv_us_options_kcontracts'].values.astype(float),
+            df['adv_index_options_kcontracts'].values.astype(float),
+            df['rpc_us_options_usd'].values.astype(float),
+            df['rpc_index_options_usd'].values.astype(float),
+            df['rpc_multilist_options_usd'].values.astype(float),
+            [(nm, df[c].values.astype(float)) for nm, c in BRIEF_LINES]),
         'hub_line': hub_line,
         'source': SRC,
         'xlabels': XL13,

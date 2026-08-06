@@ -46,6 +46,7 @@ import re
 
 import numpy as np
 
+import brief as B
 import payload_guard
 import pctile
 
@@ -183,102 +184,65 @@ def signed(v, d, unit):
 
 
 def compose_brief(ALL, acc, eq, cr, mg, ann, nn, dart, td, opt, fut, stk):
-    """页面顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+    """IBKR 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
 
-    定位：一行数据条（headline）给的是**读数**，这一段给的是**读数该怎么读**。
-    所以这里刻意不复述 headline 与 Exhibit 1 已经印过的数字 —— 仓库既有的
-    「规矩 13：只留一行数据条，叙述性 bullets 里的数字全部在下面的表和图里」
-    禁的就是那种复述式摘要。这一段只写图表本身讲不出来的三件事：
-    **基数效应、口径背离、所处区间**。
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），那边只算事实，句子在这里拼 ——
+    措辞是口径的一部分，属于各家自己。
 
-    整段在 Python 侧拼好（CONTRACT：页面不做计算，也不做措辞判断）。
-    每个数字都是当场从序列算出来的，**没有一处硬编码** —— 下个月重跑自己会变，
-    包括「第几高」「几个月最低」「峰值停在哪个月」这些排名类表述。
+    每个数字都是当场从序列算出来的，**没有一处硬编码**：排名、「几个月最低」、
+    「峰值停在哪个月」下月重跑都会自己变。
 
-    ═══ 六条规则：哪些可以原样搬给另外 11 家 ═══
-      R1 峰值扫描   对所有**存量**列取 argmax，报本月命中了哪几个、没命中的峰值停在
-                    哪个月。防的是「看到一个新高就以为全线新高」。
-      R2 基数护栏   m/m 与 y/y 反号时强制补一句基数说明；上月若处在全样本前三高，
-                    必须同句给出上月的排名。这是本项目最高频的误读源。
-      R3 日历护栏   凡「当月合计量」型指标（成交量／合约数／股数），交易日环比变动
-                    ≥1 天时，必须同时给出表面 m/m 与日均 m/m。两者的缺口**不等于**
-                    交易日的比例变化 —— 它随跌幅深浅而变，不能写成固定值。
-      R4 单位恒等   人均／户均指标的同比 ≡ 分子同比 ÷ 分母同比，只能报两个增速之商，
-                    不能写成「一半分子一半分母」的比例拆分（那是错的）。
-      R5 标注规则   A/B 形式而公司只披露 A 与 B 的，正文必带「（推导值）」；命中公司
-                    Notes 一次性调整的，必带「（还原口径）」。两条都是机械触发。
-      R6 有效位     $ 取整、bn 一位、% 一位，同页统一。
-
-    ═══ IBKR 独有，别家不能照搬 ═══
-      · `ann_dart_acct` 的分母是 **cleared** 账户，而 `darts` 含 non-cleared，两者不同源。
-        所以文中保留「cleared」一词，且全篇不做 darts ÷ accounts 这类跨口径除法。
-      · `net_new` 的 2025-03 / 2025-09 一次性调整（见 ADJ）是 IBKR 专有，别家各有各的表。
-      · R3 只对成交量类的「当月合计」列成立。月末时点值（融资余额、客户现金）没有日历
-        效应，硬套 R3 会造出一个**假修正**。
+    ═══ IBKR 独有，别家不能照抄 ═══
+      · `ann_dart_acct` 的分母是 **cleared** 账户，而 `darts` 含 non-cleared，
+        两者不同源。所以文中保留「cleared」一词，且全篇不做 darts ÷ accounts
+        这类跨口径除法（Exhibit 13 的图注讲的就是这个推导误差）。
+      · `net_new` 的 2025-03 / 2025-09 一次性调整（见 ADJ）是 IBKR 专有，
+        排名一律按**还原口径**算，句子里必须写「（还原口径）」。
+      · R3 日历护栏在这里成立，是因为 opt/fut/stk 三列是**当月合计**。
+        月末时点值（融资余额、客户现金）没有日历效应，硬套会造出一个假修正。
     """
     i = len(ALL) - 1
     n = len(ALL)
-    mo = lambda k: int(k[5:7])                       # 'YYYY-MM' → 月份数字
-    # 小计数写中文数字：「4个总量指标」在一句中文里读起来像个金额，「四个」才是量词。
-    # 只覆盖 1-10，超出就退回阿拉伯数字（真到两位数时中文反而更难读）。
-    cn = lambda v: '一二三四五六七八九十'[v - 1] if 1 <= v <= 10 else str(v)
 
-    # ── R1：存量指标的峰值扫描 ───────────────────────────────────────────
-    STOCKS = [('账户', acc), ('权益', eq), ('现金', cr), ('融资', mg)]
-    at_peak = [nm for nm, a in STOCKS if int(np.nanargmax(a)) == i]
-    off_peak = [(nm, ALL[int(np.nanargmax(a))]) for nm, a in STOCKS if int(np.nanargmax(a)) != i]
-    peak_months = sorted({mo(k) for _, k in off_peak})
-    s1 = (f'{mo(ALL[i])}月末账户<b>{acc[i]:,.1f}千户</b>为{n}个月最高，'
-          f'是{cn(len(STOCKS))}个总量指标里唯一创新高的：'
-          f'{"、".join(nm for nm, _ in off_peak)}峰值停在{"、".join(str(x) for x in peak_months)}月。')
+    # ── R1：存量峰值扫描。账户数几乎只增不减，本该被 is_monotonic 挡掉，
+    #    但「四个总量里只有它创新高」正是本月要讲的事，故显式不跳过。
+    pk = B.peak_scan(ALL, [('账户', acc), ('权益', eq), ('现金', cr), ('融资', mg)], i,
+                     skip_monotonic=False)
+    s1 = (f'{B.mo(ALL[i])}月末账户<b>{B.num(acc[i], 1)}千户</b>为{n}个月最高，'
+          f'是{B.cn(len(pk["at_peak"]) + len(pk["off_peak"]))}个总量指标里唯一创新高的：'
+          f'{"、".join(nm for nm, _ in pk["off_peak"])}峰值停在{B.peak_months_txt(pk["off_peak"])}月。')
 
-    # ── R2：净新增的基数护栏 ─────────────────────────────────────────────
-    rank = int((nn > nn[i]).sum()) + 1                # 名次按**还原口径**排，见 ADJ
-    mm, yy = nn[i] / nn[i - 1] - 1, nn[i] / nn[i - 12] - 1
-    prev_rank = int((nn > nn[i - 1]).sum()) + 1
-    s2 = (f'净新增{nn[i]:,.1f}千户（还原口径）排历史第{rank}；'
-          f'环比从{mo(ALL[i - 1])}月{nn[i - 1]:,.1f}千户跌{abs(mm) * 100:.1f}%，'
-          f'但{mo(ALL[i - 1])}月是全样本'
-          f'{"最高月" if prev_rank == 1 else f"第{prev_rank}高月"}，同比{yy * 100:+.1f}%，'
-          f'<b>只看环比会误读成塌方</b>。')
+    # ── R2：净新增的基数护栏。名次按还原口径排（见 ADJ）。
+    be = B.base_effect(nn, i)
+    s2 = (f'净新增{B.num(nn[i], 1)}千户（还原口径）排历史第{be["rank"]}；'
+          f'环比从{B.mo(ALL[i - 1])}月{B.num(nn[i - 1], 1)}千户跌{abs(be["mm"]) * 100:.1f}%，'
+          f'但{B.mo(ALL[i - 1])}月是全样本'
+          f'{"最高月" if be["prev_is_max"] else f"第{be['prev_rank']}高月"}，'
+          f'同比{B.pct(be["yy"])}，<b>只看环比会误读成塌方</b>。')
 
-    # ── R3：日历护栏。opt/stk 是**当月合计**，td 变动会把 m/m 整体推偏 ──────
-    o_d, f_d, s_d = opt / td, fut / td, stk / td
-    lower = [j for j in range(i) if s_d[j] < s_d[i]]  # 上一次日均更低是多久以前
-    gap = i - lower[-1] if lower else i
-    s3 = (f'先扣日历：{mo(ALL[i])}月{td[i]:.0f}个交易日比{mo(ALL[i - 1])}月多'
-          f'{td[i] - td[i - 1]:.0f}天，期权表面跌{abs(opt[i] / opt[i - 1] - 1) * 100:.1f}%、'
-          f'日均实跌{abs(o_d[i] / o_d[i - 1] - 1) * 100:.1f}%，'
-          f'股票日均跌{abs(s_d[i] / s_d[i - 1] - 1) * 100:.1f}%为{gap}个月最低。')
+    # ── R3：opt/stk 是当月合计，交易日多一天会把跌幅整体盖住一截。
+    co, cs = B.calendar_split(opt, td, i), B.calendar_split(stk, td, i)
+    gap = B.months_since_lower(cs['series'], i)
+    s3 = (f'先扣日历：{B.mo(ALL[i])}月{td[i]:.0f}个交易日比{B.mo(ALL[i - 1])}月多'
+          f'{co["dday"]:.0f}天，期权表面跌{abs(co["raw"]) * 100:.1f}%、'
+          f'日均实跌{abs(co["per_day"]) * 100:.1f}%，'
+          f'股票日均跌{abs(cs["per_day"]) * 100:.1f}%为{gap}个月最低。')
 
-    # ── R4：分母侧。期间均值对期间均值，不与单月读数混用 ──────────────────
-    y0 = ALL[0][:4]
-    base = [j for j, k in enumerate(ALL) if k[:4] == y0]
-    win = list(range(i - 12, i + 1))
-    # 十条序列一起比，才撑得住「唯一下行」这个最高级。少列几条会把结论说虚。
-    # 三条成交量列一律用**日均**（合计量含交易日数，直接比期间均值会混进日历噪音）。
-    METRICS = [('账户', acc), ('净新增', nn), ('总DARTs', dart), ('人均年化cleared DART', ann),
-               ('期权/日', o_d), ('期货/日', f_d), ('股票/日', s_d),
-               ('权益', eq), ('现金', cr), ('融资', mg)]
-    down = [nm for nm, a in METRICS if np.nanmean(a[win]) / np.nanmean(a[base]) < 1]
-    cr_pa = cr * 1e9 / (acc * 1e3)                    # 户均现金：推导值，公司不披露商
-    is_min = int(np.nanargmin(cr_pa)) == i
-    s4 = (f'分母：{cn(len(METRICS))}个指标只有{"、".join(down)}相对起点下行'
-          f'（{y0}年均{np.nanmean(ann[base]):.1f}倍→近13个月{np.nanmean(ann[win]):.1f}倍）；'
-          f'户均现金（推导值）<b>${cr_pa[i]:,.0f}</b>'
-          f'为{n}个月{"最低" if is_min else "低位"}，同比{(cr_pa[i] / cr_pa[i - 12] - 1) * 100:+.1f}%，'
-          f'是客户现金{(cr[i] / cr[i - 12] - 1) * 100:+.1f}%除以账户'
-          f'{(acc[i] / acc[i - 12] - 1) * 100:+.1f}%的商，属摊薄而非撤资。')
+    # ── R4：分母侧。期间均值对期间均值，不与单月读数混用；三条成交量列先日均化。
+    rg = B.regime_ratio(ALL, [('账户', acc), ('净新增', nn), ('总DARTs', dart),
+                              ('人均年化cleared DART', ann), ('期权/日', opt / td),
+                              ('期货/日', fut / td), ('股票/日', stk / td),
+                              ('权益', eq), ('现金', cr), ('融资', mg)], i)
+    pu = B.per_unit(cr, acc, i, scale=1e9 / 1e3)      # 户均现金：$bn ÷ 千户 → 美元
+    s4 = (f'分母：{B.cn(len(rg["ratios"]))}个指标只有{"、".join(rg["down"])}相对起点下行'
+          f'（{rg["y0"]}年均{np.nanmean(ann[rg["base_idx"]]):.1f}倍→'
+          f'近13个月{np.nanmean(ann[rg["win_idx"]]):.1f}倍）；'
+          f'户均现金（推导值）<b>{B.usd(pu["value"])}</b>'
+          f'为{n}个月{"最低" if pu["is_min"] else "低位"}，同比{B.pct(pu["yoy"])}，'
+          f'是客户现金{B.pct(pu["num_yoy"])}除以账户{B.pct(pu["den_yoy"])}的商，属摊薄而非撤资。')
 
-    body = s1 + s2 + s3 + s4
-    # 字数护栏：口径固定为**去掉 HTML 标签后**的字符数。范围给得宽（240-400），
-    # 只拦「模板拼坏了」这种量级的事故 —— 卡死 280-330 会让某个月因为多两个字
-    # 而整页发不出去，那是拿公开页面的新鲜度换一个纯排版指标，不划算。
-    plain = re.sub(r'<[^>]+>', '', body)
-    if not 240 <= len(plain) <= 400:
-        raise SystemExit(f'brief 长度 {len(plain)} 字超出 240-400，模板可能拼坏了：{plain[:120]}…')
-    return f'<h4>本月读数怎么读</h4><p>{body}</p>'
-
+    return B.render([s1, s2, s3, s4])
 
 def main():
     br = load_pipeline()
