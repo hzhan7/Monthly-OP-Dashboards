@@ -67,6 +67,11 @@ def qi(q):
     return int(y) * 4 + int(k) - 1
 
 
+def qname(j):
+    """绝对季序号 → '2026Q2'（qi 的逆运算，用来现算「缺哪几个季度」）。"""
+    return f'{j // 4:04d}Q{j % 4 + 1}'
+
+
 def qlab_month(q):
     """'2023Q3' → 该季末月份 '2023-09'（原 deck 把季度费率挂在季末月上）。"""
     y, k = q.split('Q')
@@ -184,6 +189,38 @@ def main():
     BR_NOTE = ('Assumption: monthly asset-based fee = month average AUM x the effective rate / 12 '
                f'({last_q} = {last_bp:.3f}bp, held flat after). The rate is back-solved from '
                'reported revenue, so closed quarters are an allocation, not an estimate.')
+
+    # ── 费率的期间披露（Exhibit 7 / 8 / 10 / 12 与核对表的「有效费率」列共用）──
+    # AUM 每月往前走、费率每季才更新一次，所以「最新一两个月用的是上一季费率」是这页的
+    # 常态口径而不是 bug —— 但图上看不出来，读者有权知道当期到底吃的哪一季。
+    # 整段全部从数据现算：季度号写死的话，下个季度这句话就变成假话。
+    DQ = qof(LATEST)                                     # 本页数据最新月所在季度
+    lag_q = qi(DQ) - qi(last_q)                          # 费率落后数据月所在季度几个季度
+    # 沿用段的起点：第一个「所在季度还没有披露费率」的月份（n_ffill=0 时为 None）
+    ffill_from = next((k for k in abf_months if qof(k) not in BP_Q), None)
+    # 过期判据：季报总在季末之后才发，故「费率落后 1 个季度」是正常节奏（本季末月的费率
+    # 要等下季才披露）；比上一季还老才算过期，此时必须显式说，不能让读者自己去数。
+    STALE = lag_q > 1
+    miss_qs = [qname(j) for j in range(qi(last_q) + 1, qi(DQ) + 1)]
+    FEE_Q_BODY = (
+        f'费率取 <b>{last_q}</b> 的公司披露值（{last_bp:.3f}bp），'
+        f'本页 AUM 数据截至 {mlab(LATEST)}（{DQ}）—— 费率按季披露、AUM 按月披露，两者天然错位。'
+        + (f'因此 {mlab(ffill_from)} 起的 {n_ffill} 个月沿用 {last_q} 的费率，'
+           '这一段的隐含值是估计而不是分摊。'
+           if n_ffill else
+           f'本轮费率已覆盖到最新月所在的 {DQ}，没有任何月份沿用更早季度的费率。')
+        + (f' ⚠️ <b>费率已过期</b>：尚未更新至 {"、".join(miss_qs)}，本图仍用 {last_q} '
+           f'的费率，落后本页数据月所在季度 {lag_q} 个季度（正常节奏是落后 1 季以内）。'
+           if STALE else ''))
+    FEE_Q_CN = '<b>费率期间</b>：' + FEE_Q_BODY          # 图注里用，自带小标题
+    FEE_Q_EN = (
+        f'Quarterly fee rate: latest disclosed is {last_q} at {last_bp:.3f}bp, while AUM here runs '
+        f'through {mlab(LATEST)} ({DQ})'
+        + (f'; the {n_ffill} month(s) from {mlab(ffill_from)} carry the {last_q} rate forward.'
+           if n_ffill else
+           f' — the rate already covers {DQ}, so no month carries an older quarter’s rate.')
+        + (f' WARNING: the rate has not been updated to {"/".join(miss_qs)}; it lags the data '
+           f'quarter {DQ} by {lag_q} quarters.' if STALE else ''))
 
     # ── 窗口（全部从最新月倒推）──
     W25 = [ym(li - k) for k in range(24, -1, -1)]        # 月度图 25 个月，同 win=25
@@ -381,10 +418,10 @@ def main():
         'ylab': '$mn / month', 'ylab2': '% y/y', 'legend': 'Implied asset-based fee',
         'values': RL([abf[k] for k in W25a]),
         'yoy': {'name': 'y/y (RHS)', 'color': 'GOLD', 'values': RL(yoy7_s), 'yfmt': 'pct0'},
-        'src_extra': BR_NOTE,
+        'src_extra': BR_NOTE + ' ' + FEE_Q_EN,
         'note': ('<b>Implied</b>：不是公司披露的月度值。' + BR_NOTE +
                  f' 序列自 {mlab(abf_months[0])} 起，因为费率最早只回溯到 {qs[0]}。'
-                 '金色线是<b>右轴同比</b>（%），不是滚动均线。'),
+                 '金色线是<b>右轴同比</b>（%），不是滚动均线。' + FEE_Q_CN),
     })
 
     # ══════════════════════════ Exhibit 8：有效费率（季度） ══════════════════════════
@@ -424,7 +461,10 @@ def main():
                  f'最近一季 {yoy8:+.2f}bp。y 轴刻度就是 bp，故同比用<b>基点差（bp）</b>，'
                  '不是「百分比的百分比变化」，也不是百分点（1pp = 100bp）；'
                  'x 轴标的是各季末月份。逐季精确值（bp）：'
-                 + '、'.join(f'{q} {BP_Q[q]:.3f}' for q in QS8) + '。'),
+                 + '、'.join(f'{q} {BP_Q[q]:.3f}' for q in QS8) + '。' + FEE_Q_CN
+                 + f'本图最右一根柱就是 {last_q}，右侧没有画到的月份不是数据缺失，'
+                 '而是该季费率还没披露。'),
+        'src_extra': FEE_Q_EN,
     })
 
     # ══════════════════════════ Exhibit 9：逐年 AUM 路径 ══════════════════════════
@@ -469,12 +509,12 @@ def main():
         'partial_months': n_last_aq, 'qtr_months': 3,
         'line': {'name': 'y/y (RHS)', 'color': 'GREEN', 'values': RL(aq_yoy), 'yfmt': 'pct0'},
         'src_extra': ('Quarterly sum of the monthly bridge; the latest bar is quarter-to-date '
-                      'if the quarter is incomplete'),
+                      'if the quarter is incomplete. ' + FEE_Q_EN),
         'note': ('<b>Implied</b>：月度桥的季度合计。已收官季度可与公司披露的 asset-based fee 收入对表 —— '
                  + '；'.join(f'{q} 隐含 ${aqsum[q]:.0f}mn vs 实际 ${REV_Q[q]:.0f}mn'
                              f'（差 {(aqsum[q] / REV_Q[q] - 1) * 100:+.1f}%）'
                              for q in AQW[-4:] if q in REV_Q)
-                 + '。差异来自月均 AUM 与公司季均口径的细微出入，不是费率错。'),
+                 + '。差异来自月均 AUM 与公司季均口径的细微出入，不是费率错。' + FEE_Q_CN),
     })
 
     # ══════════════════════════ Exhibit 11：全历史（月均） ══════════════════════════
@@ -509,10 +549,11 @@ def main():
         'title': (f'Implied fee revenue, y/y — {mlab(LATEST)} {sgn_pct(yv[-1])}，'
                   f'慢于平均 AUM 的 {sgn_pct(aum_yoy)}'),
         'ylab': '% y/y', 'values': RL(yv),
-        'src_extra': 'Grows more slowly than AUM because the effective rate has been compressing',
+        'src_extra': ('Grows more slowly than AUM because the effective rate has been compressing. '
+                      + FEE_Q_EN),
         'note': ('增速慢于 AUM，差额就是有效费率的压缩（见 Exhibit 8）。'
                  f'{mlab(LATEST)}：隐含费收 {sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
-                 f'缺口 {yv[-1] - aum_yoy:+.1f}pp。'),
+                 f'缺口 {yv[-1] - aum_yoy:+.1f}pp。' + FEE_Q_CN),
     })
 
     # ══════════════════════════ Exhibit 13：m/m 热力矩阵 ══════════════════════════
@@ -573,6 +614,12 @@ def main():
         + (f'本次有 {n_ffill} 个月落在这一段。' if n_ffill else
            f'本次费率已覆盖到最新月 {mlab(LATEST)}，沿用段为空，桥全程是分摊。')
         + f'隐含序列只回溯到 {mlab(abf_months[0])}（费率最早覆盖 {qs[0]}）。',
+        # 核对表（Exhibit 14）的渲染器只吃 cols/rows，挂不上 note；它的「有效费率」列
+        # 里同一季的三个月是同一个数，读者最容易把它误读成月度披露值 —— 所以这条必须在。
+        '<b>费率的期间口径（Exhibit 7 / 8 / 10 / 12 与核对表的「有效费率」列）</b>：' + FEE_Q_BODY
+        + f'Exhibit 8 的最右一根柱就是 {last_q}；核对表里同属一个季度的月份填的是<b>同一个</b>'
+        '费率值（季度值下挂到月，不是月度披露）。判据本身也是现算的：费率最新可得季度比'
+        '「数据月所在季度的上一季」还老，就在上面这段里加一句过期提示。',
         f'<b>桥的真实不确定性在费率而不是 AUM。</b>{qs[0]}–{last_q} 这 {len(qs)} 个季度里 AUM 复利上行，'
         f'但有效费率从 {BP_Q[qs[0]]:.2f}bp 压到 {BP_Q[qs[-1]]:.2f}bp（Exhibit 8 只画最近 {len(QS8)} 季，'
         f'即 {QS8[0]} 的 {bpq[0]:.2f}bp → {QS8[-1]} 的 {bpq[-1]:.2f}bp）；'

@@ -243,6 +243,38 @@ def one(t, force):
     return 'NEW' if added else 'REBUILT', (','.join(added) if added else out.splitlines()[-1][:60])
 
 
+def fee_rates():
+    """刷新季度费率表 series/fee_rates.csv，返回失败清单（成功时空表）。
+
+    它不是 ticker，所以不走 TICKERS 那条按家循环的路：一张表六家共用，
+    由 fetch/fee_rates.py 内部逐家合并。它自己保证「要么这一家全写、要么这一家不写」。
+
+    有新季度时 data/*.js 会跟着变（六个生成器读这张表），所以必须跑在 build_cross 与
+    roster 之前 —— 否则本轮的费率更新要等下一次跑才会出现在页面上。
+    """
+    p = os.path.join(HERE, 'fetch', 'fee_rates.py')
+    if not os.path.exists(p):
+        return []
+    try:
+        added = load(p, 'fetch_fee_rates').update(SERIES, CACHE) or []
+    except Exception as e:
+        print(f'{"fee_rates":<10} FAIL     {type(e).__name__}: {str(e)[:120]}')
+        return ['fee_rates']
+    if not added:
+        print(f'{"fee_rates":<10} NOCHANGE 无新季度')
+        return []
+    # 有新季度 → 六个用它的生成器都要重跑，否则 CSV 变了而页面还是旧费率
+    print(f'{"fee_rates":<10} NEW      {len(added)} 条: {", ".join(f"{c} {p_}" for c, p_ in added[:6])}')
+    bad = []
+    for t in ['axp', 'cme', 'lpla', 'hkex', 'msci', 'schw']:
+        try:
+            sh([sys.executable, os.path.join(HERE, 'build', f'{t}.py')])
+        except Exception as e:
+            print(f'{t:<10} FAIL     费率更新后重建失败: {str(e)[:100]}')
+            bad.append(t)
+    return bad
+
+
 def build_cross(force):
     """横截面页：成员齐了才生成。返回**失败**的页面清单，交给 main() 计入总状态。
 
@@ -302,6 +334,12 @@ def main():
             ok.append(t)
             if st == 'NEW':
                 months[t] = msg
+
+    # 季度费率表：AXP / CME / LPLA / HKEX / MSCI / SCHW 六页靠它反解「隐含收入」与
+    # 「有效费率」。它是**季度**的，不该每天下；但也不能不管 —— 没人维护的那阵子它冻在
+    # 2026-Q2，月度数字照常更新而费率那一层是死的，页面上完全看不出来。
+    # 所以顺带查一次（几个 HTTP 请求），有新季度才写。失败只记一条，不拖累 12 家月度更新。
+    fails += fee_rates()
 
     # 横截面页失败必须计入 fails。它们没有自己的披露节奏（roster 给 lag=None，
     # 首页永远不给它们判红点），末行总状态是这两页唯一的故障信号 ——

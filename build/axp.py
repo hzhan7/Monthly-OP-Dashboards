@@ -485,6 +485,46 @@ summary = {
 }
 
 
+# ──────────────────── 费率期间披露（Exhibit 6 / 7 用）────────────────────
+# 月度余额每月往前走，净利息收益率却按季度披露 —— 所以「最新一两个月的隐含值用的是
+# 上一季的费率」是本页的**常态口径**，不是 bug。但读者有权知道是哪一季，尤其当官方
+# 财报延迟、费率落后两个季度以上时。
+#
+# 整句一律现算：季度号写死的话下季度就变成假话（本仓踩过 schw「过去 32 个季度」、
+# cost「Exhibit 4 画了红线」两次）。三个量都从数据来：
+#   _Q_DATA  本页数据月所在季度
+#   _Q_FEE   fee_rates.csv 里最新可得的费率季度
+#   _Q_USED  最新月实际套用的那一季（ffill 后 = 不晚于 _Q_DATA 的最后一季）
+# 过期判据：_Q_USED 比「_Q_DATA 的上一季」还老（即滞后 >= 2 季）时显式报警。
+def _qlab(q):
+    return f'{q.year}-Q{q.quarter}'
+
+
+_Q_DATA = LATEST.asfreq('Q')
+_Q_FEE = _niy.index[-1]
+_Q_USED = max([q for q in _niy.index if q <= _Q_DATA], default=_Q_FEE)
+_V_USED = float(_niy.loc[_Q_USED])
+_CARRY = [m for m in avgbal.index if m.asfreq('Q') > _Q_USED]
+_LAG = (_Q_DATA - _Q_USED).n
+
+FEE_PERIOD_NOTE = (
+    f'<b>费率取哪一季：</b>净利息收益率是<b>季度</b>披露值，'
+    f'fee_rates 里最新可得的是 {_qlab(_Q_FEE)}（{float(_niy.iloc[-1]):.1f}%）；'
+    f'本页数据截至 {mlab(LATEST)}，该月的隐含值用的是 <b>{_qlab(_Q_USED)} 的 {_V_USED:.1f}%</b>。')
+if _CARRY:
+    FEE_PERIOD_NOTE += (
+        f'{mlab(_CARRY[0])}–{mlab(_CARRY[-1])}（{len(_CARRY)} 个月）所在季度尚无披露费率，'
+        f'一律沿用 {_qlab(_Q_USED)} 的值 —— 这几个月的柱高只反映余额变化，费率那一档是冻住的。')
+else:
+    FEE_PERIOD_NOTE += '窗口内每个月都落在已披露费率的季度内，没有月份需要沿用上一季。'
+if _LAG >= 2:
+    FEE_PERIOD_NOTE += (
+        f'<b>⚠️ 费率已落后 {_LAG} 个季度：尚未更新至 {_qlab(_Q_DATA - 1)}'
+        f'（更没有 {_qlab(_Q_DATA)}），本图仍在用 {_qlab(_Q_USED)} 的 {_V_USED:.1f}%。</b>'
+        f'费率与最新月之间隔了不止一个季度，隐含值的误差会随口径漂移放大，'
+        f'水平请当作粗略量级读，不要读斜率。')
+
+
 # ────────────────────────────── Exhibit 2..18 ──────────────────────────────
 ex = []
 
@@ -516,7 +556,7 @@ ex.append(multi_line_ex(
 ex.append(gs_bar_ex(
     6, SEC_A + 'Implied U.S. card net interest income', avgbal['implied_nii_usdmn'],
     win=25, yfmt='f0c', fmt='f0c', ylab='$mn / month', yoy_yfmt='pct1',
-    note=NII_NOTE, src_extra=SRC_N))
+    note=NII_NOTE + '　' + FEE_PERIOD_NOTE, src_extra=SRC_N))
 
 # Exhibit 7：本页唯一一张**不画次轴同比**的 lvl_bar 图。费率是季度阶梯，窗口内同比
 # 恒为 +0.20pp（常数），画出来的次轴必然退化：量程 0–0.2pp、刻度四舍五入成一列重复
@@ -527,21 +567,33 @@ _niy_y = lvl_yoy(tail_contiguous(avgbal['niy']), True).iloc[-25:].dropna()
 _niy_yy_set = sorted({round(float(v), 2) for v in _niy_y.values})
 _niy_w = avgbal['niy'].dropna().iloc[-25:]
 _niy_avg = float(np.nanmean(np.asarray(_niy_w.values, float)[-13:-1]))
-if len(_niy_yy_set) != 1:
-    # 常数假设一旦不成立（公司改了披露频率、或补了缺季），这张图就该恢复次轴同比。
-    raise SystemExit(f'Exhibit 7 的同比不再是常数（窗口内取值 {_niy_yy_set}）——'
-                     f'去掉 no_yoy=True，改回次轴同比')
+# 常数假设不成立时**自动改回次轴同比**，不要硬失败退出。
+# 这里曾经是 `raise SystemExit`，而触发条件恰恰是常态：月度数字本来就走在季度费率前面，
+# 费率一落后一个季度，ffill 就把最后一档拉平、同比不再是常数 —— 那一天起 AXP 页
+# 再也构建不出来，而调度器只会看到一行 FAIL。断言本身说的处置（「改回次轴同比」）
+# 是对的，那就让它自己改回去，别等人来改代码。
+_niy_const = len(_niy_yy_set) == 1
+if _niy_const:
+    _niy_note = (
+        f'费率是<b>季度阶梯</b>（同一季度三个月同值），窗口内每一季都恰好比去年同季高 '
+        f'{_niy_yy_set[0]:+.2f}pp —— 同比是个<b>常数</b>，不带任何信息。'
+        f'其余同类图（Exhibit 2/4/6/8）都按原 deck 画次轴同比线，只有这一张不画：'
+        f'常数同比会让次轴量程塌成一个点，刻度被四舍五入成一列重复读数，'
+        f'末点读数又必然压在轴的最高刻度上。这里改画 12 个月均线'
+        f'（{_niy_avg:.2f}%，费率看「当前 vs 过去一年均值」才有参考意义）。')
+else:
+    _niy_note = (
+        f'费率是<b>季度阶梯</b>（同一季度三个月同值）。窗口内同比取值 '
+        f'{"、".join(f"{v:+.2f}pp" for v in _niy_yy_set)} —— 不是常数，'
+        f'故本图按原 deck 画次轴同比线（同比恒定时这张图会改画 12 个月均线，'
+        f'因为常数同比会让次轴量程塌成一个点）。')
 ex.append(gs_bar_ex(
     7, SEC_A + 'Net interest yield on card balances', avgbal['niy'],
-    win=25, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True, no_yoy=True,
-    note=f'费率是<b>季度阶梯</b>（同一季度三个月同值），窗口内每一季都恰好比去年同季高 '
-         f'{_niy_yy_set[0]:+.2f}pp —— 同比是个<b>常数</b>，不带任何信息。'
-         f'其余同类图（Exhibit 2/4/6/8）都按原 deck 画次轴同比线，只有这一张不画：'
-         f'常数同比会让次轴量程塌成一个点，刻度被四舍五入成一列重复读数，'
-         f'末点读数又必然压在轴的最高刻度上。这里改画 12 个月均线'
-         f'（{_niy_avg:.2f}%，费率看「当前 vs 过去一年均值」才有参考意义）。'
+    win=25, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True,
+    no_yoy=_niy_const,
+    note=_niy_note +
          f'柱从 0 起是费率的正确基线，但 {_niy_w.min():.1f}%–{_niy_w.max():.1f}% 的差异'
-         f'在 0 基线上肉眼分不出来，<b>水平请读柱顶数值</b>。',
+         f'在 0 基线上肉眼分不出来，<b>水平请读柱顶数值</b>。　' + FEE_PERIOD_NOTE,
     src_extra=SRC_N + '.  The disclosed company-wide yield, stepped quarterly. This is the '
               'rate the bridge above multiplies by, so it is where the bridge can go wrong.'))
 
@@ -746,7 +798,8 @@ NOTES = [
 
     f'<b>Exhibit 6 是推导值，标了 Implied。</b>{NII_NOTE} 净利息收益率是公司整体口径（含非美卡与其他贷款），'
     f'而余额只取美国 Consumer + Small Business 卡，两者总体不一致；季度费率按「当季各月同值、'
-    f'最新季之后沿用」摊到月度（Exhibit 7 画的就是这条阶梯）。公司不按月披露 NII，因此这张图无从对账。',
+    f'最新季之后沿用」摊到月度（Exhibit 7 画的就是这条阶梯）。公司不按月披露 NII，因此这张图无从对账。'
+    f'　{FEE_PERIOD_NOTE}',
 
     f'Exhibit 6 / 7 的序列比其余新口径图短两个月：{new.index[0]} 与 {new.index[0] + 1} 落在 '
     f'{_niy.index[0]} 之前，没有可用的新口径净利息收益率，按「缺列就没有那个点」处理，不做外推。',

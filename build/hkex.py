@@ -41,6 +41,11 @@ def mlab(p):
     return p.strftime('%b-%y')
 
 
+def qlab(q):
+    """PeriodIndex(freq='Q') 的一格 → 「2026-Q2」，与 series/fee_rates.csv 的 period 列同写法。"""
+    return f'{q.year}-Q{q.quarter}'
+
+
 def load():
     df = pd.read_csv(os.path.join(SERIES, 'hkex.csv'))
     df['month'] = pd.PeriodIndex(df['month'], freq='M')
@@ -70,6 +75,78 @@ def to_monthly(rate_q, month_index):
     q = pd.PeriodIndex(month_index).asfreq('Q')
     return pd.Series([rate_q.get(x, np.nan) for x in q],
                      index=month_index, dtype=float).ffill()
+
+
+# ────────────────────────── 费率口径披露（全部现算，不写死季度号） ──────────────────────────
+# 月度量每月往前走，费率按季度更新 —— 所以「最新一两个月的隐含值用的是上一季费率」是这一页
+# 的常态，不是 bug。但读者有权知道自己看的这个月是拿哪一季的费率算出来的，尤其在公司财报
+# 延迟、费率落后两个季度以上的时候。
+#
+# 下面两个函数**只从数据现算**季度号与落后月数：本仓已经因为把季度号／图形特征写死在文案里
+# 翻过车（schw 的「过去 32 个季度单边降」、cost 的「Exhibit 4 画了红线」），
+# 写死的句子下一季就变成假话，而且没有任何检查会响。
+#
+# 过期判据（两个函数共用）：**同一季费率被沿用的月数 ≥ 5**。
+# 判据写成月数而不是「落后几个季度」，是因为后者在每个季度刚翻页时都会误报：
+# 数据月 Jul-26 落在 2026-Q3，「上一季」是 2026-Q2，而 HKEX 的 Q2 业绩要到八月中才发 ——
+# 那时费率最新只能到 2026-Q1，按季度差判就成了「落后两季」，可它完全正常。
+# 按月数看则很干净：一季费率正常最多被沿用 4 个月（本季 3 个月 + 下季首月、业绩未发），
+# 第 5 个月还在沿用，就说明公司披露真的晚了或漏了一季，那时才值得提示。
+STALE_CARRY_MONTHS = 5
+
+
+def _carry_months(rq_last, last_month):
+    """数据月里「本季费率尚未披露、只能沿用 rq_last」的那些月份。"""
+    first = rq_last.asfreq('M', 'end') + 1
+    if last_month < first:
+        return []
+    return list(pd.period_range(first, last_month, freq='M'))
+
+
+def _stale_tail(rq_last, last_month):
+    """费率落后到异常程度时的显式提示，否则空串。"""
+    carry = _carry_months(rq_last, last_month)
+    if len(carry) < STALE_CARRY_MONTHS:
+        return ''
+    return (f' <b>⚠️ 费率已经落后</b>：最新可得仍是 {qlab(rq_last)}，'
+            f'到 {mlab(last_month)} 已被连续沿用 {len(carry)} 个月 —— '
+            f'{qlab(rq_last + 1)} 及之后各季公司尚未披露费率。'
+            f'一季费率正常最多沿用 {STALE_CARRY_MONTHS - 1} 个月，'
+            f'超过即为披露延迟；在补上之前，本页隐含值仍按 {qlab(rq_last)} 的费率计算。')
+
+
+def vintage_monthly(rate_qs, last_month, what, scope='本图'):
+    """月度隐含值图的费率口径句：最后一个数据月用的是哪一季费率、有几个月在沿用上一季。
+
+    rate_qs 给这张图实际用到的**全部**季度参数（费率 + 交易日数）；取它们里最早的末季，
+    这样 fetch 只补上其中一个 metric 时，图注说的仍是真正生效的那一季。
+    """
+    rq_last = min(s.index[-1] for s in rate_qs)
+    carry = _carry_months(rq_last, last_month)
+    txt = (f'<b>费率口径</b>：{what}取公司披露的季度值，最新可得为 {qlab(rq_last)}；'
+           f'{scope}数据截至 {mlab(last_month)}，')
+    stale = _stale_tail(rq_last, last_month)
+    if carry:
+        span = mlab(carry[0]) + (f' 至 {mlab(carry[-1])}' if len(carry) > 1 else '')
+        txt += (f'其中 {span} 这 {len(carry)} 个月尚无对应季度的披露费率，'
+                f'一律沿用 {qlab(rq_last)} 的费率。')
+        # 这句安抚只在沿用月数还在正常区间时说；已经判为落后了还说「是常态」就是自相矛盾
+        if not stale:
+            txt += '月度量按月走、费率按季更新，最新一两个月用上一季费率是这一页的常态口径，不是缺数。'
+    else:
+        txt += f'费率已覆盖到该月所在的 {qlab(rq_last)}，没有任何月份在沿用更早的费率。'
+    return txt + stale
+
+
+def vintage_quarterly(last_plotted_q, month_of_page, what):
+    """季度图的费率口径句：最后一格是哪一季、比本页月度数据落后多少。"""
+    data_q = month_of_page.asfreq('Q')
+    lag = (data_q - last_plotted_q).n
+    txt = (f'<b>费率口径</b>：{what}按季披露，x 轴最后一格是 {qlab(last_plotted_q)}；'
+           f'本页月度数据已到 {mlab(month_of_page)}（{qlab(data_q)}），'
+           + (f'比费率新 {lag} 个季度 —— 季度口径本就滞后于月度量，本图只画有披露的季度、不外推。'
+              if lag else '两者同季。'))
+    return txt + _stale_tail(last_plotted_q, month_of_page)
 
 
 def tail_contiguous(s):
@@ -436,7 +513,9 @@ def main():
                           '季内各月同费率，最新季之后沿用。'
                           '月度交易日数按「季度交易日数 ÷ 3」摊，不是当月实际交易日数。'
                           '单位用 HK$mn（公司分部收入的披露单位），原 deck 是 HK$bn 保留两位小数，'
-                          '两者等价。次轴金色折线是同比（同原 deck 的 lvl_bar）。',
+                          '两者等价。次轴金色折线是同比（同原 deck 的 lvl_bar）。 '
+                + vintage_monthly([tf_list, td], tfee_c.index[-1],
+                                  '法定挂牌交易费率与季度交易日数'),
     })
 
     # ══════════ Exhibit 11：桥的检验（gsx.implied_vs_actual）══════════
@@ -461,7 +540,8 @@ def main():
                 f'  Mean absolute error over the window: {mae:.1f}%.'
                 f' 误差始终为正、区间 {np.nanmin(err):+.1f}% ~ {np.nanmax(err):+.1f}%，'
                 '说明免费成交占比稳定 —— 这条误差线一旦变窄或变宽，就是 mix 在动。'
-                f'只有 {len(qidx)} 个季度可比，因为公司分部收入拆分只回溯到 {qidx[0]}。',
+                f'只有 {len(qidx)} 个季度可比，因为公司分部收入拆分只回溯到 {qidx[0]}。 '
+                + vintage_quarterly(qidx[-1], LATEST, '法定费率、交易日数与现货分部交易费收入'),
     })
 
     # ══════════ Exhibit 12：有效费率 vs 法定费率（gsx.multi_line, dec=4）══════════
@@ -486,7 +566,8 @@ def main():
                 '单位由原 deck 的「% of turnover（4 位小数）」改为「每成交 HK$1m 的交易费」'
                 f'（× 10,000，等价换算）：法定 HK${lst_r[-1]:,.1f} 恒定，'
                 f'实收 HK${eff_r[-1]:,.1f}，捕获率 {eff_r[-1] / lst_r[-1] * 100:.1f}%。'
-                'x 轴标的是各季末月份。',
+                'x 轴标的是各季末月份。 '
+                + vintage_quarterly(rq[-1], LATEST, '有效费率（由收入倒算）与法定挂牌费率'),
     })
 
     # ══════════ Exhibit 13：隐含现货清算费收入（gsx.lvl_bar, dec=2）══════════
@@ -502,7 +583,9 @@ def main():
         'note': CLR_NOTE + ' 清算费有最低/最高收费与 CCASS 结算费等分项，倒算出的有效费率把这些'
                            '一并吸收进去了，所以它随 mix 漂移，不能当法定费率读。'
                            f'次轴金色折线是同比（同原 deck 的 lvl_bar），自 '
-                           f'{first_yoy_month(cfee.index, y13)} 起才有 —— 序列要满 12 个月。',
+                           f'{first_yoy_month(cfee.index, y13)} 起才有 —— 序列要满 12 个月。 '
+                + vintage_monthly([cf, td], cfee_c.index[-1],
+                                  '由收入倒算的有效清算费率与季度交易日数'),
     })
 
     # ══════════ Exhibit 14：衍生品 ADV 超长历史（gsx.long_line）══════════
@@ -738,7 +821,11 @@ def main():
         '最新季之后沿用最后一个已知值；月度交易日数按「季度交易日数 ÷ 3」摊，'
         f'不是当月实际交易日数。因此 Exhibit 10 / 13 的隐含收入序列自 {mlab(tfee_c.index[0])} 起，'
         f'早于此的月份不画（宁可短，不拿近似值糊）；这两张图与其余近期图一样只展示最近 '
-        f'{len(tfee)} 个月，图上最左一格是 {mlab(tfee.index[0])}，不是序列起点。',
+        f'{len(tfee)} 个月，图上最左一格是 {mlab(tfee.index[0])}，不是序列起点。'
+        + vintage_monthly([tf_list, td, cf], tfee_c.index[-1],
+                          '本页全部隐含收入图的费率', scope='隐含收入序列')
+        + '（这句与 Exhibit 10 / 11 / 12 / 13 的费率口径说明一样，都由 series/fee_rates.csv '
+          '的最新季度现算，不写死季度号。）',
 
         f'<b>桥的误差是结构性的，不是估算误差</b>：Exhibit 11 显示按法定费率算出的交易费'
         f'系统性高于实际披露 {np.nanmin(err):+.1f}% ~ {np.nanmax(err):+.1f}%（窗口内平均绝对误差 {mae:.1f}%），'

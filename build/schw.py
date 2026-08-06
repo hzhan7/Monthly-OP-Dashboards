@@ -138,10 +138,34 @@ _bs_idx = pd.PeriodIndex([q.asfreq('M', 'end') for q in _ratio.index], freq='M')
 _bs = pd.DataFrame({'iea_share': _ratio.values,
                     'nim': _nim.reindex(_ratio.index).values}, index=_bs_idx)
 
+# ── 费率的「有效期」：本页月度数据每月前推，fee_rates.csv 每季才更新一次 ──
+# 两张表节奏不同，所以「这张图用的是哪一季的费率、月度数据已经走到哪个月」这件事
+# 长期存在，而且每个月的答案都不一样。它不是 bug，是口径 —— 但读者有权知道，
+# 尤其当官方财报延迟、费率落后两个季度以上时。
+# 下面四个量全部现算：写死季度号的话，下一季页面上就是一句假话
+# （本文件已经为「过去 32 个季度单边降」返工过一次，同一个坑不踩第二遍）。
+_FEE_USED_Q = _ratio.index[-1]                  # Exhibit 13 实际画到的最后一季
+_FEE_HAVE_Q = _iea.index.intersection(_nim.index).max()   # 表里 SCHW 两个指标都齐的最新季
+_LATEST_Q = LATEST.asfreq('Q')                  # 本页月度数据所在季
+_FEE_LAG = (_LATEST_Q - _FEE_USED_Q).n          # 费率落后本页月度数据几个季度
+# 末季的比值分母是该季客户资产的月度均值 —— 月份不满 3 个时它与前几季不是同一口径。
+_FEE_Q_MONTHS = int(assets[assets.index.asfreq('Q') == _FEE_USED_Q].dropna().shape[0])
+# 有月度数据、却还没有对应季度费率的那几个月（季度线在此处收尾，不外推）。
+_FEE_TAIL = [p for p in df.index if p > _FEE_USED_Q.asfreq('M', 'end')]
+# 「过期」判据：费率最新季比「本页数据月所在季的上一季」还老，即落后 ≥2 个季度。
+# 落后 0–1 季只是节奏差（季报总在季末之后才发），落后 ≥2 季说明这张表没跟上，要明说。
+_FEE_STALE = _FEE_LAG >= 2
+
 
 # ────────────────────────────── 格式化零件 ──────────────────────────────
 def mlab(p):
     return p.strftime('%b-%y')
+
+
+def qlab(q):
+    """季度 Period → 「2026-Q2」，与 series/fee_rates.csv 的 period 列写法一致，
+    读者要回源核对时能直接在 CSV 里搜到这个字符串。"""
+    return f'{q.year}-Q{q.quarter}'
 
 
 def comma(v, d=0):
@@ -582,6 +606,42 @@ ex.append({
              '没有上月基数，算不出环比，故本图从次月起画，不留空点。'),
 })
 
+
+def fee_period_note(head='<b>费率期间。</b>'):
+    """本页唯一用到 series/fee_rates.csv 的地方是 Exhibit 13（生息资产占比 + NIM）。
+    这句话回答读者的三个问题：图上的费率是哪一季的、本页月度数据走到哪个月、
+    两者错开时页面怎么处理。整句从数据现算 —— 季度号一律走 qlab()，不写死。"""
+    t = (f'{head}生息资产与净息差是<b>季度</b>披露，本图两条线取至 '
+         f'{qlab(_FEE_USED_Q)} 的公司披露值（<code>series/fee_rates.csv</code>；每季取自'
+         '该季自己那份 8-K Ex-99.1 业绩新闻稿的原报值，官方后来的重述不回填）；'
+         f'本页月度数据截至 {mlab(LATEST)}，属 {qlab(_LATEST_Q)}。')
+    if _FEE_TAIL:
+        # 落后几个月时逐月点名；落后久了改成区间，否则一年就是 12 个月份名，读不动。
+        who = ('、'.join(mlab(p) for p in _FEE_TAIL) if len(_FEE_TAIL) <= 3 else
+               f'{mlab(_FEE_TAIL[0])} 至 {mlab(_FEE_TAIL[-1])}')
+        t += (f'{who} 这 {len(_FEE_TAIL)} 个月已有月报数字、尚无对应季度的费率，'
+              f'季度线到 {mlab(_bs.index[-1])} 为止 —— 本页<b>不</b>把上一季的费率'
+              '沿用到这几个月，也不外推、不补点。')
+    elif _FEE_Q_MONTHS >= 3:
+        t += '月度序列与季度线收在同一个季末，本图没有跨季沿用。'
+    else:
+        # 费率比月报先到（季报发布日早于当季最后一个月的月报），季度线反而跑在前面。
+        t += (f'费率反而跑在月报前面：季度线已画到 {qlab(_FEE_USED_Q)}'
+              f'（x 轴标 {mlab(_FEE_USED_Q.asfreq("M", "end"))}），而本页月报只到 '
+              f'{mlab(LATEST)}，该季尚未走完。')
+    if _FEE_STALE:
+        t += (f'<b>⚠ 费率已过期：</b>{qlab(_FEE_USED_Q + 1)} 起的费率尚未进表，'
+              f'已落后本页月度数据 {_FEE_LAG} 个季度（正常节奏是 0–1 季），'
+              f'本图仍只到 {qlab(_FEE_USED_Q)}，请勿把它当作最新一季的水平读。')
+    if _FEE_HAVE_Q > _FEE_USED_Q:
+        t += (f'（表里 SCHW 已有 {qlab(_FEE_HAVE_Q)} 的费率，但该季的客户资产月份还没齐，'
+              '比值的分母算不实，本图暂不画那一点。）')
+    if _FEE_Q_MONTHS < 3:
+        t += (f'末季 {qlab(_FEE_USED_Q)} 的分母只由 {_FEE_Q_MONTHS} 个月的客户资产求均，'
+              '与前几季不是同一口径，该点只看方向不看水平。')
+    return t
+
+
 # ── Exhibit 13：为什么这里没有「量 → 收入」桥（季度序列）──
 bs = _bs.iloc[-14:]
 _r0, _r1 = float(bs['iea_share'].iloc[0]), float(bs['iea_share'].iloc[-1])
@@ -601,6 +661,9 @@ ex.append({
              'would be false precision. Both series are quarterly。'
              'x 轴标的是各季<b>季末月</b>；PDF 版此处保留 2 位小数，网页图表引擎的格式器只到 '
              '1 位小数，切到「表格」视图可读到 2 位。'),
+    # 费率的期间放 src_extra —— 它是「这两条线的数出自哪一季」的出处说明，
+    # 紧贴 Source 行显示；过期时那句 ⚠ 也在同一段，读者不用翻到页尾的方法论。
+    'src_extra': fee_period_note(),
 })
 
 # ── Exhibit 14：核心净新增资产全历史 ──
@@ -795,7 +858,11 @@ notes = [
     f'<b>数据源与节奏。</b>Schwab Monthly Activity Report，通常次月 12–14 日发布；'
     f'本页数据截至 {mlab(LATEST)}，全序列自 {mlab(df.index[0])} 起。'
     '所有数值来自 <code>series/schw.csv</code>、<code>series/schw_avg_margin.csv</code> 与 '
-    '<code>series/fee_rates.csv</code>，无任何估算或补插。',
+    '<code>series/fee_rates.csv</code>，无任何估算或补插。'
+    f'前两者是<b>月度</b>表，<code>fee_rates.csv</code> 是<b>季度</b>表（随季报更新），'
+    f'本页只有 Exhibit 13 用它，SCHW 两个指标都齐的最新一季是 {qlab(_FEE_HAVE_Q)}；'
+    '两张表节奏不同，页面上「月度已走到哪个月、费率停在哪一季」的差随时可能出现，'
+    '每张相关图的 Source 行下都写明了当期口径。',
 
     f'<b>季末月口径。</b>{QNOTE}——3/6/9/12 月没有独立月报，这四个月的数值取自当季季报，'
     '所以序列是连续的，但它与其余月份的披露载体不同（Exhibit 2、6、14 的图注均标了这一条）。',
@@ -838,7 +905,8 @@ notes = [
     f'其中 {_UP_ALL} 个季度环比上升，高点是 {mlab(_bs["iea_share"].idxmax())} 的 '
     f'{float(_bs["iea_share"].max()):.1f}%。所以不搭桥，改把这个比值本身画出来'
     '（Exhibit 13）—— 它本身就是 NII 增长受限的原因。'
-    '该图两条线都是<b>季度</b>数据，来自季报。',
+    '该图两条线都是<b>季度</b>数据，来自季报。'
+    + fee_period_note(head='费率的期间：'),
 
     f'<b>截轴不删点。</b>Exhibit 15 的纵轴截在 {comma(NBA_CAP)}k：'
     + (f'{_ov_txt} 是 TD Ameritrade 并表带来的账户转移，不是当月新开户，'

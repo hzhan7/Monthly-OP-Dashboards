@@ -85,6 +85,15 @@ def mlab(p):
     return f'{MONTHS[p.month - 1]}-{p.year % 100:02d}'
 
 
+def qlab(q):
+    """季度 Period → '2026-Q2'，与 series/fee_rates.csv 的 period 写法一致。
+
+    pandas 的 str(Period) 给的是 '2026Q2'，和费率表里的 '2026-Q2' 差一个连字符；
+    图注要让读者能拿着这个季度号回 CSV 里直接 grep，所以统一成 CSV 的写法。
+    """
+    return f'{q.year}-Q{q.quarter}'
+
+
 def num(v, dec=0):
     if v is None or not np.isfinite(v):
         return '—'
@@ -181,11 +190,45 @@ rpc_m = to_monthly(RPC['total'], df.index)
 df['implied_txn_rev_usdmn'] = df['total_vol_mn'] * rpc_m    # 百万张 x $/张 = $mn
 RPC_Q, RPC_V = RPC['total'].index[-1], float(RPC['total'].iloc[-1])
 
+# ══════════ 费率期间披露 ══════════
+# 成交量按月往前走，RPC 一个季度才更新一次 —— 所以「最新一两个月的隐含值用的是上一季
+# 费率」是本页的常驻口径，不是 bug。但页面此前只说了「最新季之后沿用」，没说清本月究竟
+# 挂在哪一季上，读者无从判断这个隐含收入落后多少。下面几行把期间算出来写进图注。
+#
+# 季度号一个都不许写死：写死的话下季度这句话就自动变成假话（本仓踩过 schw「过去 32 个
+# 季度单边降」、cost「Exhibit 4 画了红线」两次同类坑）。全部由 df.index 与
+# fee_rates.csv 现算，随数据自动滚动。
+CUR_Q = LATEST.asfreq('Q')            # 本页最新数据月所在的季度
+RPC_LAG = (CUR_Q - RPC_Q).n           # 费率比数据月落后几个季度；正常节奏 = 1
+# 落在最新可得费率季度之后的月份 —— 这些月的隐含值是拿上一季费率外推出来的
+CARRY = [p for p in df.index if p.asfreq('Q') > RPC_Q]
+# 统一收尾在中文字上（「…这 N 个月」），后面无论接「尚无」还是「的隐含值」都不留半角缝
+_CARRY_TXT = ('' if not CARRY else
+              f'{mlab(CARRY[0])} 这 1 个月' if len(CARRY) == 1 else
+              f'{mlab(CARRY[0])}–{mlab(CARRY[-1])} 这 {len(CARRY)} 个月')
+
+# 正常节奏（RPC_LAG == 1，本季用上一季费率）只陈述期间；落后两季及以上要显式示警。
+RATE_PERIOD = (
+    f'<b>费率期间</b>：本页数据截至 {mlab(LATEST)}（{qlab(CUR_Q)}），费率取 CME 季报披露的 '
+    f'{qlab(RPC_Q)} 值（总 RPC ${RPC_V:.3f}），这是目前可得的最新一季。'
+    + (f'{qlab(RPC_Q)} 及以前各月用其所属季度的实际披露费率；{_CARRY_TXT}尚无对应季度费率，'
+       f'沿用 {qlab(RPC_Q)} 的 ${RPC_V:.3f} 推算。' if CARRY else
+       f'本页每个月都落在已披露费率的季度内，没有任何一个月是沿用上一季费率。'))
+
+RATE_STALE = ('' if RPC_LAG < 2 else
+              f'<b>⚠ 费率已过期</b>：按正常节奏，{qlab(CUR_Q)} 的月份至少应当能用上 '
+              f'{qlab(CUR_Q - 1)} 的费率，但 fee_rates.csv 里最新只到 {qlab(RPC_Q)}，'
+              f'比正常节奏又老了 {RPC_LAG - 1} 个季度（多半是官方季报延迟）。'
+              f'{_CARRY_TXT}的隐含值因此建立在 {RPC_LAG} 个季度以前的费率上；'
+              f'期间若发生品种结构位移或定价调整，本图会系统性偏离，'
+              f'费率补齐后这些月份的数值会被改写。')
+
 BR_NOTE = ('Assumption: monthly transaction revenue = contracts traded x average rate per contract '
-           f'({RPC_Q} = ${RPC_V:.3f}, held flat after). CME derives RPC from reported revenue, so '
+           f'({qlab(RPC_Q)} = ${RPC_V:.3f}, held flat after). CME derives RPC from reported revenue, so '
            'closed quarters reconstruct a known total — the value is the current quarter. '
            '费率是季度值，当季各月共用该季 RPC，最新季之后沿用；品种结构变化会让混合 RPC 偏离，'
-           f'见 Exhibit {EX_RPC}。')
+           f'见 Exhibit {EX_RPC}。'
+           + RATE_PERIOD + RATE_STALE)
 
 W13 = df.index[-WIN_BAR:]
 W25 = df.index[-WIN_LINE:]
@@ -432,6 +475,16 @@ ex.append(gs_bar(EX_REV, 'implied_txn_rev_usdmn', 'Implied transaction revenue',
                  'usd0', 'Implied transaction revenue', note=BR_NOTE))
 
 _rq = RPC['total'].index[-WIN_QTR:]
+# 四条品种曲线各自的最新可得季度未必与总 RPC 同步（某一季只补了一部分品种时会脱节），
+# 脱节的那条曲线在末端会断开。差异现算，不写死品种名与季度号。
+_RPC_ZH = {'total': '总 RPC', 'rates': '利率', 'equity': '股指', 'energy': '能源',
+           'metals': '金属'}
+_rpc_behind = [(k, RPC[k].index[-1]) for k in ('rates', 'equity', 'energy', 'metals')
+               if RPC[k].index[-1] != RPC_Q]
+_RPC_SYNC = ('' if not _rpc_behind else
+             '注意四条曲线并未同步：'
+             + '、'.join(f'{_RPC_ZH[k]}最新只到 {qlab(q)}' for k, q in _rpc_behind)
+             + f'（其余为 {qlab(RPC_Q)}），末端断开处即缺该季披露。')
 ex.append({
     'n': EX_RPC, 'kind': 'lines_endlabels', 'fmt': 'usd2',
     'xlabels': [mlab(q.asfreq('M', 'end')) for q in _rq],
@@ -446,11 +499,16 @@ ex.append({
                   'revenue even when total ADV is flat. This is the main uncertainty in the bridge '
                   'above.'),
     'note': (f'季度值，x 轴标的是各季末月（{mlab(_rq[0].asfreq("M", "end"))} = 1Q{_rq[0].year % 100:02d}，'
-             f'最新为 {RPC_Q}）。'
+             f'最新为 {qlab(RPC_Q)}）。'
              f'{mlab(_rq[-1].asfreq("M", "end"))}：利率 ${RPC["rates"].iloc[-1]:.3f}、'
              f'股指 ${RPC["equity"].iloc[-1]:.3f}、能源 ${RPC["energy"].iloc[-1]:.3f}、'
              f'金属 ${RPC["metals"].iloc[-1]:.3f} —— 图上按 $0.01 显示（原 PDF 为 $0.001），'
-             '第三位小数以此注为准。'),
+             '第三位小数以此注为准。' + _RPC_SYNC
+             # 本图本身只画季度费率、不跨月外推，但它是 EX_REV 那张隐含收入桥的费率来源，
+             # 所以同一句期间披露在这里也要出现：读者看到曲线停在哪一季，就知道隐含收入
+             # 那张图的最新一两个月是拿哪一季的费率算的。
+             + f'本图曲线止于 {qlab(RPC_Q)}，Exhibit {EX_REV} 的隐含收入即以此季费率为准。'
+             + RATE_PERIOD + RATE_STALE),
 })
 
 ex.append(gs_bar(EX_FX, 'adv_fx_kcontracts', 'FX complex ADV', 'k contracts / day', 'f0c', 'FX ADV'))
@@ -520,9 +578,11 @@ NOTES = [
 
     f'<b>唯一的推导值：Exhibit {EX_REV}。</b>Implied transaction revenue = 当月成交合约数 × '
     f'每张平均费率（RPC）。RPC 是季度值（CME 季报），当季各月共用该季费率，'
-    f'最新季（{RPC_Q} = ${RPC_V:.3f}）'
+    f'最新季（{qlab(RPC_Q)} = ${RPC_V:.3f}）'
     '之后沿用。CME 的 RPC 本身是用已披露收入倒推的，所以已收官季度只是把一个已知总额重建一遍 —— '
-    '这张图的价值全在<b>当前未收官的季度</b>。标题带 Implied 即表示非公司披露值。',
+    '这张图的价值全在<b>当前未收官的季度</b>。标题带 Implied 即表示非公司披露值。'
+    # 「用的是哪一季费率」随每月新数据自动变化，所以这句由数据现算，不写死季度号。
+    + RATE_PERIOD + RATE_STALE,
 
     f'<b>RPC 的口径风险。</b>各品种 RPC 相差数倍（Exhibit {EX_RPC}），因此总 ADV 不变、'
     f'只要品种结构位移，混合费率与隐含收入照样会动。这是上面那座桥最大的不确定性，'

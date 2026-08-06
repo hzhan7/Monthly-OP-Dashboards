@@ -272,6 +272,42 @@ def main():
                f'({cy.index[-1]} = {cy.iloc[-1]:,.4g} bp) and held flat for months after '
                'that quarter')
 
+    # ── 费率期间的披露文案（全部现算）───────────────────────────────────────
+    # 月度数字每月往前走、费率按季度更新，所以「本月的隐含值用的是哪一季的费率」是
+    # 长期存在的口径事实，不是 bug —— 但读者有权知道。文案一律从 series/fee_rates.csv
+    # 现算：写死季度号的话，下一季就变成假话（本仓已经踩过 schw「过去 32 个季度」、
+    # cost「Exhibit 4 画了红线」两次同类的坑）。
+    def rate_q_for(p):
+        """月份 p 实际用到的费率季度 = 不晚于该月所属季度的最后一个可得季度（对齐 ffill）。"""
+        prior = [q for q in cy.index if q <= p.asfreq('Q')]
+        return prior[-1] if prior else None
+
+    LAT_Q = LATEST.asfreq('Q')            # 本页数据最新月所在季度
+    RQ_LAST = cy.index[-1]                # 最新可得费率季度
+    RQ_LAT = rate_q_for(LATEST)           # 最新月真正用到的费率季度
+    LAG_Q = None if RQ_LAT is None else (LAT_Q - RQ_LAT).n
+    # 「过期」判据：最新可得费率季度比「数据月所在季度的上一季」还老（滞后 ≥ 2 个季度）。
+    # 正常节奏下 LAG_Q 只会是 0 或 1（季初一两个月还没等到当季财报），那是口径不是异常。
+    FEE_STALE = LAG_Q is not None and LAG_Q >= 2
+    # 窗口内所属季度尚无披露费率、只能沿用上一季的月份
+    CARRY_M = [p for p in df.index[-WIN_L:] if p.asfreq('Q') not in cy.index]
+    _carry_span = ('' if not CARRY_M else
+                   mlab(CARRY_M[0]) if len(CARRY_M) == 1
+                   else f'{mlab(CARRY_M[0])}–{mlab(CARRY_M[-1])}')
+    FEE_Q_NOTE = (
+        f'<b>费率期间：</b>净收益率按季度披露，本页月度数据截至 {mlab(LATEST)}（{LAT_Q}）。'
+        + (f'{mlab(LATEST)} 的隐含值取 {RQ_LAT} 公司披露的 {float(cy.loc[RQ_LAT]):,.4g} bp'
+           + ('（与该月同季，无滞后）。' if LAG_Q == 0 else
+              f'（{LAT_Q} 尚无披露费率，沿用上一可得季度，滞后 {LAG_Q} 个季度）。')
+           if RQ_LAT is not None else '最新月早于任何一个可得费率季度，隐含值留空。')
+        + (f'近 {WIN_L} 个月窗口里有 {len(CARRY_M)} 个月（{_carry_span}）所属季度尚无披露费率、'
+           '沿用上一季费率，其余月份用的是本季费率。' if CARRY_M else
+           f'近 {WIN_L} 个月窗口里每个月都用到了自己所属季度的披露费率。')
+        + (f'<b>⚠️ 费率尚未更新至 {LAT_Q}，也未更新至 {LAT_Q - 1}</b> —— 本图仍用 '
+           f'{RQ_LAST} 的读数（滞后 {LAG_Q} 个季度，通常是公司财报延后）。'
+           '这期间利率环境若已变化，隐含值不会跟着动，落差要算在费率口径上、不是业务上。'
+           if FEE_STALE else ''))
+
     # 桥的季度验证：只保留满 3 个月的季度
     imp_m = df['implied_cash_rev_usdmn'].dropna()
     qi = pd.PeriodIndex(imp_m.index).asfreq('Q')
@@ -542,7 +578,7 @@ def main():
                   'Implied client-cash revenue', 'Implied client-cash revenue ($mn / month)',
                   'usd0', BR_NOTE + '。<b>推导值，非公司披露</b>，验证见 Exhibit 14。'
                   '规模基数是月末客户现金，因此与 Exhibit 9 一样跨并表跳升。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25))
+                  breaks=BK25, brk_note=BN25, extra=FEE_Q_NOTE))
 
     # ── Exhibit 14：Bridge check（gsx.implied_vs_actual）──
     qs = [q for q in imp_q.index if q in act_q.index][-WIN_Q:]
@@ -550,6 +586,19 @@ def main():
     act_v = np.array([float(act_q[q]) for q in qs])
     err = np.where(act_v != 0, (imp_v / act_v - 1) * 100, np.nan)
     mae = float(np.nanmean(np.abs(err)))
+    # 「未满 3 个月的季度」也现算 —— 这句原先写死「2026Q2 只有 2 个月」，下一季就是假话
+    _part = sorted(q for q in cnt.index if int(cnt.get(q, 0)) != 3)
+    PART_TXT = ('未满 3 个月的季度不参与对比（'
+                + '、'.join(f'{q} 只有 {int(cnt[q])} 个月' for q in _part) + '）。'
+                if _part else '本页月度序列覆盖到的季度都满 3 个月，没有季度被排除。')
+    # 对比窗口里哪些季度的隐含值是用「上一季费率」算的 —— 那几季验的是费率的时滞，
+    # 不是月末/季均余额这一个近似，误差读数要分开看。
+    _qc = [q for q in qs if q not in cy.index]
+    FEE_Q14 = FEE_Q_NOTE + ((
+        f'对比窗口 {qs[0]}–{qs[-1]} 内，'
+        + (f'{"、".join(str(q) for q in _qc)} 用的是上一季费率（这几季的误差同时含费率时滞），'
+           if _qc else '每个季度都用到了本季披露的费率，')
+        + f'公司披露的实际客户现金收入已更新至 {act_q.index[-1]}。') if qs else '')
     ex.append({
         'n': 14, 'kind': 'grouped_bars', 'xlabels': [str(q) for q in qs],
         'fmt': 'f0c', 'label_fmt': 'f0c',
@@ -563,11 +612,12 @@ def main():
         'note': 'Reported = the client-cash revenue line in LPL results. The bridge applies the '
                 'disclosed yield to MONTH-END cash while LPL earns it on AVERAGE cash — that '
                 f'proxy error is what this tests. 窗口内平均绝对误差 {mae:.1f}%。'
-                '未满 3 个月的季度不参与对比（2026Q2 只有 2 个月）。'
+                + PART_TXT +
                 '误差线跨零而柱恒正，本引擎又要求两轴零点画在同一高度，所以左轴基线被'
                 '拉到负区（收入本身不会为负）—— 这是双轴对齐的既定代价，浪费率约 25%，'
                 '在引擎的 38% 阈值以内，故保留对齐而不是让两轴零点错位。'
                 '原 deck 的 matplotlib 不对齐零点、误差线直接压在柱上。',
+        'src_extra': FEE_Q14,
     })
 
     # ── Exhibit 15：Brokerage assets（gsx.lvl_bar, win=25）──
@@ -913,7 +963,13 @@ def main():
             '<b>数据源。</b>全部数值来自 <code>series/lpla.csv</code>（LPL Financial IR 月度经营指标'
             f'新闻稿，{df.index[0]} 起逐月连续）与 <code>series/fee_rates.csv</code>（LPLA 季度净收益率与'
             '季度实际客户现金收入）。页面不做任何计算，所有口径判断与格式化都在 '
-            '<code>build/lpla.py</code> 里完成。',
+            '<code>build/lpla.py</code> 里完成。'
+            f'两份源的更新节奏不同：月度序列到 {mlab(LATEST)}，净收益率到 {RQ_LAST}、'
+            f'季度实际客户现金收入到 {act_q.index[-1]}。费率按季度披露而月度数字每月往前走，'
+            '所以某个月所属季度尚未披露费率时，该月的隐含值沿用上一可得季度的费率；'
+            + (f'本期近 {WIN_L} 个月窗口里有 {len(CARRY_M)} 个月是这样算的。' if CARRY_M
+               else f'本期近 {WIN_L} 个月窗口里没有这样的月份。')
+            + '逐图的期间说明见 Exhibit 13 / 14 图下的「费率期间」一行。',
             '<b>季末月口径。</b>' + QNOTE + '（3/6/9/12 月无独立月报，取自当季季报），'
             '因此这几个月的披露时点与其余月份不同，但口径一致。',
             BRK_NOTE,
@@ -950,7 +1006,7 @@ def main():
             '公司披露的季度净收益率 ÷ 12，是<b>推导值</b>；Exhibit 6 的 Market gains 是恒等式'
             '配平项（当月资产变动 − 当月 NNA），同样不是披露值。Exhibit 14 把桥算出的季度值'
             f'与公司披露的实际值并排，窗口内平均绝对误差 {mae:.1f}% —— 误差主要来自'
-            '「月末余额 vs 季度平均余额」这一个近似。',
+            '「月末余额 vs 季度平均余额」这一个近似。' + FEE_Q_NOTE,
             '<b>窗口。</b>近期柱图与双序列线图沿用原 deck 的 25 个月窗口，堆叠图与滚存桥用 13 个月，'
             '季度图用 14 个季度，长历史图用全序列。窗口一律从数据最新月倒推，不依赖构建当天的日期。'
             '断点线也随窗口现算：滚出窗口就不画，同时这段说明里的编号清单也跟着少一张，'
