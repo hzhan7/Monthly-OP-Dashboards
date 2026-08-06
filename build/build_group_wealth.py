@@ -10,7 +10,8 @@
   · 融资余额：SCHW month-end margin / IBKR margin —— LPLA 不披露
   · 日均交易：SCHW DATs / IBKR DARTs —— LPLA 不披露
   · 有机增速：SCHW core NNA / LPLA organic NNA —— IBKR 不披露净新增资产，只披露净新增账户
-IBKR 数据为只读引用自 ~/.claude/skills/IBKR月度指标 的官方历史指标 PDF，未改动该项目。
+IBKR 数据来自官方历史指标 PDF（原先只读引用 /IBKR月度指标 skill，该 skill 已删除；
+解析管道搬到 fetch/ibkr_source.py，落库在 series/ibkr.csv）。
 """
 import os, sys
 import numpy as np

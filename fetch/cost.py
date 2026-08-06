@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Costco (COST) 月度销售抓取 —— 复用 /COST月度销售 skill 的解析管道。
+"""Costco (COST) 月度销售抓取 —— GlobeNewswire 新闻稿。
 
 ═══ 源 ═══
-GlobeNewswire 上的 Costco 月度销售新闻稿。查找与解析都走 skill 的
-`~/.claude/skills/COST月度销售/monthly_update.py`（`find_release` / `curl` / `parse_release`），
-**本模块不重写解析逻辑**：那份代码是 skill 与本看板共用的，各写一份迟早会分叉，
-而分叉的表现是「skill 的 PDF 和网页看板对同一个月给出不同的 comp」——最难发现的那种错。
+GlobeNewswire 上的 Costco 月度销售新闻稿。查找与解析在 `fetch/cost_release.py`
+（`find_release` / `curl` / `parse_release`），那份代码原本在 skill「COST月度销售」的
+`monthly_update.py` 里、由 skill 与本看板共用；skill 删除时**逐字搬进了本仓库**，
+所以总仓现在自包含，不再读 `~/.claude` 的 skills 目录下的任何东西。
+（当初共用是为了避免分叉 —— 分叉的表现是「skill 的 PDF 和网页看板对同一个月给出不同的
+comp」，最难发现的那种错。skill 没了，分叉的对象也没了。）
 
 curl 通道，不需要 Chrome。
 
 ═══ 数据落在哪 ═══
-真值仍是 skill 的 `cost_monthly.csv`（/COST月度销售 skill 自己也在读它，
-本模块只追加不改结构）。同时镜像一份到 `series/cost.csv`，让总仓自成体系
-——十二家里只有它一家的数据在仓库外，排查问题时会格外费劲。
-两份内容始终一致，以 skill 那份为准。
+真值就是本仓库的 `series/cost.csv`（原先是 skill 的 `cost_monthly.csv`，本模块只镜像；
+skill 删除后镜像的上游没了，历史内容原样成为真值，逐字节未改）。本模块只往它追加，
+不改结构、不重排、不重新格式化已有行。
+
+历史行是 pandas 写出来的（`5.0` / `698.0`），本模块新追加的行是 csv.writer 写 int（`5`）。
+两种写法并存是既有状态，**别为了统一而重写整表** —— 那会把「本月新增 1 行」淹没在
+128 行改动里，review 时根本看不出这个月的数据是什么。
 
 ═══ 发布节奏 ═══
 每零售月结束后首个周三美东盘后（≈SGT 次日凌晨）。
@@ -30,32 +35,87 @@ import csv
 import importlib.util
 import os
 
-SKILL = os.path.expanduser('~/.claude/skills/COST月度销售')
-CSV = os.path.join(SKILL, 'cost_monthly.csv')
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SERIES = os.path.join(ROOT, 'series')
+CSV_NAME = 'cost.csv'
 
 
 class CostFetchError(RuntimeError):
     """本模块所有失败路径统一抛它，调度器只需 catch 一种。"""
 
 
-def _skill():
-    p = os.path.join(SKILL, 'monthly_update.py')
+_MOD = None
+
+
+def _release():
+    """加载 fetch/cost_release.py（新闻稿的查找与解析）。
+
+    不用 `import cost_release`：本模块会被 monthly_run.py 用
+    spec_from_file_location 加载，那时 fetch/ 根本不在 sys.path 上，
+    裸 import 会 ModuleNotFoundError。与 fetch/fee_rates.py 的 _load 同规则。
+    """
+    global _MOD
+    if _MOD is not None:
+        return _MOD
+    p = os.path.join(HERE, 'cost_release.py')
     if not os.path.exists(p):
-        raise CostFetchError(f'找不到 skill 解析管道: {p}')
-    spec = importlib.util.spec_from_file_location('cost_mu', p)
+        raise CostFetchError(f'找不到解析管道: {p}')
+    spec = importlib.util.spec_from_file_location('cost_release', p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    _MOD = mod
     return mod
 
 
-def _read_csv():
-    if not os.path.exists(CSV):
-        raise CostFetchError(f'skill 的 cost_monthly.csv 不存在: {CSV}')
-    with open(CSV, newline='', encoding='utf-8') as f:
+def _csv(series_dir=None):
+    return os.path.join(series_dir or SERIES, CSV_NAME)
+
+
+def _read_csv(series_dir=None):
+    path = _csv(series_dir)
+    if not os.path.exists(path):
+        raise CostFetchError(f'series/cost.csv 不存在: {path}')
+    with open(path, newline='', encoding='utf-8') as f:
         rows = list(csv.reader(f))
     if len(rows) < 2:
-        raise CostFetchError('cost_monthly.csv 没有数据行')
+        raise CostFetchError('series/cost.csv 没有数据行')
     return rows[0], rows[1:]
+
+
+# 报告口径 ⇄ 除油汇口径 的五组配对。两套口径同时出现在同一张 comp 表里，
+# 解析器要靠「表 1 = 报告、表 2 = 调整」把它们分开。
+_CALIBER_PAIRS = [('us_r', 'us_a'), ('ca_r', 'ca_a'), ('oi_r', 'oi_a'),
+                  ('tc_r', 'tc_a'), ('ec_r', 'ec_a')]
+
+
+def _guard_two_calibers(key, rec, url):
+    """两套口径完全相同 → 判定解析走错分支，拒绝入库。
+
+    **现有的缺列护栏挡不住这一类**：2026-07 那期 GlobeNewswire 改了表格 markup
+    （每个值列重复一遍，(8,4) 变 (8,6)），于是「表 1/表 2」的月表判据全部落空，
+    控制流掉进为 2 月合并稿准备的那个分支，从**同一张表**里取 toks[0] 当报告、
+    toks[1] 当调整 —— 而那两个 token 是被复制的同一列。
+    结果是 16 列一列不缺、只是「除油汇核心 comp」被写成了报告口径，
+    Exhibit 里最关键的那条线整条错，而全程不抛异常、静默入库、直接上公开页。
+
+    判据的依据是实测而不是直觉：series/cost.csv 里 103 个有完整两套口径的月份，
+    **五个地区同时相等的一次都没有**（最多 3 个地区相等，仅出现过 1 次）。
+    所以「全部相等」是解析走错分支的可靠信号，不会误伤真实数据。
+    """
+    same, avail = [], []
+    for a, b in _CALIBER_PAIRS:
+        va, vb = rec.get(a), rec.get(b)
+        if va is None or vb is None:
+            continue
+        avail.append(a)
+        if va == vb:
+            same.append(f'{a}={va}')
+    if len(avail) >= 4 and len(same) == len(avail):
+        raise CostFetchError(
+            f'{key} 的报告口径与除油汇口径逐个相等（{", ".join(same)}）—— '
+            f'几乎可以确定是 comp 表解析走错了分支（历史 103 个月里从未出现过全部相等）。'
+            f'拒绝入库。请核对新闻稿的表格结构：{url}')
 
 
 def _next_month(ym):
@@ -71,7 +131,7 @@ def latest_month(cache_dir=None):
     """
     _, rows = _read_csv()
     last = rows[-1][0]
-    mu = _skill()
+    mu = _release()
     y, m = _next_month(last)
     try:
         url = mu.find_release((y, m))
@@ -80,26 +140,17 @@ def latest_month(cache_dir=None):
     return f'{y}-{m:02d}' if url else last
 
 
-def _mirror(series_dir):
-    """把 skill CSV 原样镜像到 series/cost.csv（逐字节复制，不做任何重新格式化）。
-
-    不用 pandas 读写：那会把浮点重新渲染一遍（35879.42523809524 → 35879.425238），
-    等于悄悄改了历史数据，而 diff 看上去只是「格式变了」。
-    """
-    with open(CSV, 'rb') as src, open(os.path.join(series_dir, 'cost.csv'), 'wb') as dst:
-        dst.write(src.read())
-
-
 def update(series_dir, cache_dir=None):
-    """把官方还没入库的零售月写进 skill 的 cost_monthly.csv，返回新增月份列表。
+    """把官方还没入库的零售月写进 series/cost.csv，返回新增月份列表。
 
     幂等：已有的月份不重复追加，重复跑第二遍返回 []。
     解析结果缺任何一个已有列 → 抛异常，绝不静默写 NaN。
     """
-    head, rows = _read_csv()
+    path = _csv(series_dir)
+    head, rows = _read_csv(series_dir)
     have = {r[0] for r in rows}
     last = rows[-1][0]
-    mu = _skill()
+    mu = _release()
     added = []
 
     # 一次最多补 6 个月：正常只差 1 个月，差很多说明前面漏跑了很久，
@@ -126,17 +177,17 @@ def update(series_dir, cache_dir=None):
         missing = [c for c in head[1:] if c not in rec]
         if missing:
             raise CostFetchError(f'{key} 解析缺列 {missing} ({url})')
-        # 照抄既有行尾：csv.writer 默认写 \r\n，而 cost_monthly.csv 是纯 LF，
-        # 用默认值会往全 LF 的文件里插一条孤立的 CRLF 行，再被 _mirror 逐字节搬进 series/。
-        with open(CSV, 'rb') as f:
+        _guard_two_calibers(key, rec, url)
+        # 照抄既有行尾：csv.writer 默认写 \r\n，而 cost.csv 是纯 LF，
+        # 用默认值会往全 LF 的文件里插一条孤立的 CRLF 行。
+        with open(path, 'rb') as f:
             term = '\r\n' if b'\r\n' in f.read(4096) else '\n'
-        with open(CSV, 'a', newline='', encoding='utf-8') as f:
+        with open(path, 'a', newline='', encoding='utf-8') as f:
             csv.writer(f, lineterminator=term).writerow([key] + [rec[c] for c in head[1:]])
         added.append(key)
         have.add(key)
         last = key
 
-    _mirror(series_dir)
     return added
 
 

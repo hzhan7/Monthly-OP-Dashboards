@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Interactive Brokers (IBKR) 月度经营指标抓取 —— 复用 /IBKR月度指标 skill 的解析管道。
+"""Interactive Brokers (IBKR) 月度经营指标抓取。
 
 ═══ 源 ═══
 IBKR 官网 IR：
   · Historical Brokerage Metrics PDF（11 页，逐年逐月，每月更新）—— 全部存量指标
   · 各月 Metrics 新闻稿 PDF —— 佣金与产品明细，历史 PDF 里没有
 
-下载与解析都走 skill 的 `~/.claude/skills/IBKR月度指标/build_report.py`
-（`curl` / `parse_hist_page` / `parse_pr` / `LABELS`）。**本模块不重写解析逻辑**：
-那份代码是 skill 与本看板共用的，各写一份迟早分叉，而分叉的表现是
-「skill 的 PDF 和网页看板对同一个月给出不同的 DARTs」——最难发现的那种错。
+下载与解析走同目录的 `fetch/ibkr_source.py`（`curl` / `parse_hist_page` /
+`parse_pr` / `LABELS`）。那份文件搬自已删除的 `/IBKR月度指标` skill 的
+`build_report.py`，逐字复制、注释照留。**本模块不重写解析逻辑**：解析口径只能有
+一处定义，各写一份迟早分叉，而分叉的表现是「两处对同一个月给出不同的 DARTs」
+——最难发现的那种错。
 
 ═══ 数据落在哪 ═══
-skill 的 `cache/`（hist_latest.pdf + 各月 pr_YYYYMM.pdf）是真值。本模块另把历史指标表
-解析成 `series/ibkr.csv`（与其余十一家同构），让总仓自成体系、排查时不用翻到 skill 里去。
+`cache/ibkr/`（hist_latest.pdf + 各月 pr_YYYYMM.pdf，gitignored）是原始件。本模块另把
+历史指标表解析成 `series/ibkr.csv`（与其余十一家同构，tracked），排查时不必开 PDF。
 
 ═══ 发布节奏 ═══
 每月第一个美股交易日（美东 ~16:00 = SGT 次日凌晨），遇假日顺延。
@@ -31,21 +32,34 @@ import csv
 import importlib.util
 import os
 
-SKILL = os.path.expanduser('~/.claude/skills/IBKR月度指标')
-SKILL_CACHE = os.path.join(SKILL, 'cache')
+HERE = os.path.dirname(os.path.abspath(__file__))
+PIPELINE = os.path.join(HERE, 'ibkr_source.py')
+# 缓存目录只在 ibkr_source.CACHE 定义一处（build/ibkr.py 也指向它）——
+# 这里不再复制一份常量：两处各写各的正是「fetch 下到 A、build 去 B 找」的来源。
+
+_MOD = None
 
 
 class IbkrFetchError(RuntimeError):
     """本模块所有失败路径统一抛它，调度器只需 catch 一种。"""
 
 
-def _skill():
-    p = os.path.join(SKILL, 'build_report.py')
-    if not os.path.exists(p):
-        raise IbkrFetchError(f'找不到 skill 解析管道: {p}')
-    spec = importlib.util.spec_from_file_location('ibkr_br', p)
+def _pipeline():
+    """按路径加载 fetch/ibkr_source.py。
+
+    不用裸 `import ibkr_source`：本模块被 monthly_run.py 用 spec_from_file_location
+    加载，那时 fetch/ 根本不在 sys.path 上（fetch/fee_rates.py 同一个坑）。
+    加载结果缓存住 —— latest_month() 与 update() 会先后各叫一次。
+    """
+    global _MOD
+    if _MOD is not None:
+        return _MOD
+    if not os.path.exists(PIPELINE):
+        raise IbkrFetchError(f'找不到解析管道: {PIPELINE}')
+    spec = importlib.util.spec_from_file_location('ibkr_source', PIPELINE)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    _MOD = mod
     return mod
 
 
@@ -55,8 +69,8 @@ def _hist(br, refresh=True):
     每次都重下：这个 PDF 是判断「官方发新数据了没有」的唯一依据，
     吃缓存等于永远看不到新月份。
     """
-    os.makedirs(SKILL_CACHE, exist_ok=True)
-    path = os.path.join(SKILL_CACHE, 'hist_latest.pdf')
+    os.makedirs(br.CACHE, exist_ok=True)
+    path = os.path.join(br.CACHE, 'hist_latest.pdf')
     if refresh:
         try:
             br.curl(br.HIST_URL, path)
@@ -91,7 +105,7 @@ def _hist(br, refresh=True):
 
 def latest_month(cache_dir=None):
     """官方源当前最新月 'YYYY-MM'（以有 trading_days 的最后一月为准）。"""
-    return max(_hist(_skill()))
+    return max(_hist(_pipeline()))
 
 
 def update(series_dir, cache_dir=None):
@@ -99,7 +113,7 @@ def update(series_dir, cache_dir=None):
 
     幂等：已有的月份不重复追加，也不改写（官方极少重述，真要重刷历史请手工全量重建）。
     """
-    br = _skill()
+    br = _pipeline()
     data = _hist(br)
     csv_path = os.path.join(series_dir, 'ibkr.csv')
     if not os.path.exists(csv_path):
@@ -117,7 +131,7 @@ def update(series_dir, cache_dir=None):
     cols = head[1:]
     unknown = [c for c in cols if c not in {k for k, _ in br.LABELS}]
     if unknown:
-        raise IbkrFetchError(f'series/ibkr.csv 有 skill LABELS 里没有的列 {unknown}，'
+        raise IbkrFetchError(f'series/ibkr.csv 有 ibkr_source.LABELS 里没有的列 {unknown}，'
                              f'两边口径已分叉，拒绝写入')
 
     added = []
@@ -144,7 +158,7 @@ def update(series_dir, cache_dir=None):
     # 已缓存的连续区间画佣金图，缺口不会被画成直线。
     newest = max(data)
     ym = newest.replace('-', '')
-    pr = os.path.join(SKILL_CACHE, f'pr_{ym}.pdf')
+    pr = os.path.join(br.CACHE, f'pr_{ym}.pdf')
     # 判有效而不只判存在。只判 exists 时，一个 0 字节残骸就等于「已经有了」→ 永不重试，
     # 而 build/ibkr.py 会崩在 EmptyFileError → 该家每次 FAIL；等 series 里已经写进这个月
     # 之后，fetch 又会认为「没有新月份」而返回 NOCHANGE ——

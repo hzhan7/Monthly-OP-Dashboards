@@ -17,15 +17,14 @@
 # ── 谁在用 ────────────────────────────────────────────────────────────────────
 
 # pandas —— 28 个模块（fetch/* 的解析、build/* 的序列对齐与 Period 索引）；
-#   另外 ~/.claude/skills/COST月度销售/{monthly_update,build_report,parse_dump}.py 也用它，
-#   而 fetch/cost.py 是直接 exec 那份 skill 代码的（共用解析管道，见 fetch/cost.py 顶部注释），
-#   所以本仓库和那个 skill 必须跑在同一个 pandas 上。
+#   COST 的解析管道（fetch/cost_release.py 的 pd.read_html）曾住在 /COST月度销售 skill 里、
+#   由 skill 与本仓库共用；skill 已删除、代码已搬进本仓库，所以「两边要同版本」这条约束没了。
 #
 #   ⚠️ 3.0 是**行为破坏性大版本**，别顺手升也别顺手降：
 #   1. `astype(str)` 产出 StringDtype(storage='python', na_value=nan)，**NaN 仍是 float**，
 #      不再像 2.x 那样被转成字符串 'nan'。凡是 `astype(str)` 之后直接 ' '.join / 假定元素都是 str
 #      的地方，在 3.0 下必抛 TypeError。COST 的 comp 表解析
-#      （monthly_update.py:95-96）就是这么死的 —— GlobeNewswire 的表必然带空单元格，
+#      （fetch/cost_release.py 的 parse_release）就是这么死的 —— GlobeNewswire 的表必然带空单元格，
 #      所以是 100% 复现，不是偶发。现已在那里补 `.fillna('nan')` 修好。
 #   2. read_csv / read_html 读出的文本列默认是 StringDtype 而不是 object dtype。
 #      任何 `dtype == object` 的判断在 3.0 下都不再成立（本仓库目前没有这种写法，别新写）。
@@ -46,7 +45,7 @@ numpy==2.5.1
 openpyxl==3.1.5
 
 # lxml —— **没有任何一行代码直接 import 它，但它是硬依赖**，最容易在重装环境时漏掉。
-#   ~/.claude/skills/COST月度销售/monthly_update.py:87 的 `pd.read_html()` 需要一个 HTML parser 后端。
+#   fetch/cost_release.py 的 `pd.read_html()`（parse_release 里解 comp 表）需要一个 HTML parser 后端。
 #   pandas 的 flavor=None 顺序是 lxml → bs4+html5lib；本机 html5lib **没装**，
 #   实测 `read_html(flavor='bs4')` 直接 ImportError。也就是说 lxml 掉了就没有后备，
 #   COST 整条链立刻死，且报错信息是「Import html5lib failed」——跟 Costco 毫无关系，极难联想。
@@ -62,9 +61,10 @@ pymupdf==1.28.0
 pdfplumber==0.11.10
 
 # matplotlib —— 本仓库的**网页看板路径不用它**（data/*.js 是纯 JSON payload，图在浏览器里画）。
-#   仍然必须装，因为两处还在用：
+#   仍然必须装，因为还有一处在用：
 #     · build/gsx.py（GS exhibit 版式绘图库）+ build/build_*.py 这批出 PDF 的旧脚本，monthly_run.py 不调，但仍在仓库里且能跑
-#     · ~/.claude/skills/{COST月度销售,IBKR月度指标}/build_report.py —— 这两个 skill 的 PDF 流程完全靠它
+#   （原来还有第二条「/COST月度销售 与 /IBKR月度指标 两个 skill 的 build_report.py 靠它」，
+#    两个 skill 已删除，那条随之作废 —— 但 matplotlib 不能因此摘掉，上面那条仍然成立。）
 #   中文字体只有 Hiragino Sans GB 可用（本机无 YaHei/PingFang 可靠回落）。
 matplotlib==3.11.1
 

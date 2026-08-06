@@ -5,8 +5,8 @@
 所以 **exhibit 的顺序、编号、标题文案、图注、窗口、截轴与断点一张都没改**，
 改的只有三处工程约定：
 
-  1. 数据源改读本仓库的 series/cost.csv（内容与 ~/.claude/skills/COST月度销售/
-     cost_monthly.csv 逐字节相同，后者仍由 /COST月度销售 skill 每月解析官网新闻稿后更新）。
+  1. 数据源改读本仓库的 series/cost.csv —— 它就是真值，由 fetch/cost.py 每月解析
+     官网新闻稿后追加（历史内容承自已删除的 /COST月度销售 skill，逐字节未改）。
   2. payload 顶层字段名改成 build/CONTRACT.md 的统一契约（window.DASH，
      不再是 window.COST_DATA），补上 ticker / tracker / title / notes / footer。
   3. 汇总表的行由 {cur,prev,yag,mm,...} 摊平成 cells 数组，末尾核对表由裸数组

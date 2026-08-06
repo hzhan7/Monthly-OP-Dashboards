@@ -14,11 +14,12 @@
 ═══ 数据源 ═══
   · `series/ibkr.csv` —— 历史指标表（2016-01 起逐月，官方原始单位），由 fetch/ibkr.py 落库。
     **所有存量/流量指标都从这里读**，本模块不下载、不自己解析历史 PDF 的数字。
-  · `~/.claude/skills/IBKR月度指标/cache/pr_YYYYMM.pdf` —— 月度新闻稿，佣金与平均订单规模
-    （历史指标表里没有这两列，CSV 也就没有）。解析函数复用 skill 的 `build_report.py::parse_pr`，
-    不重写：那份代码是 skill 出 PDF 与本站共用的，各写一份迟早分叉，而分叉的表现是
-    「skill 的 PDF 与网页对同一个月给出不同的 CPT」——最难发现的那种错。
-  · `~/.claude/skills/IBKR月度指标/cache/hist_latest.pdf` —— 只取 Notes 段的**文字**
+  · `cache/ibkr/pr_YYYYMM.pdf` —— 月度新闻稿，佣金与平均订单规模
+    （历史指标表里没有这两列，CSV 也就没有）。解析函数复用 `fetch/ibkr_source.py::parse_pr`，
+    不重写：解析口径只能有一处定义，各写一份迟早分叉，而分叉的表现是
+    「fetch 落库的数与网页画出来的 CPT 对不上同一个月」——最难发现的那种错。
+    （`ibkr_source.py` 搬自已删除的 `/IBKR月度指标` skill 的 `build_report.py`，逐字复制。）
+  · `cache/ibkr/hist_latest.pdf` —— 只取 Notes 段的**文字**
     （账户口径调整的原文），用作护栏与图注；一个数字都不从这里取。
 
 ═══ 口径 ═══
@@ -51,8 +52,8 @@ import pctile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
-SKILL = os.path.expanduser('~/.claude/skills/IBKR月度指标')
-CACHE = os.path.join(SKILL, 'cache')
+PIPELINE = os.path.join(ROOT, 'fetch', 'ibkr_source.py')
+CACHE = os.path.join(ROOT, 'cache', 'ibkr')
 
 SRC = ('Source: Company data (IBKR monthly brokerage metrics); '
        'chart format after Goldman Sachs GIR')
@@ -87,12 +88,15 @@ COLS = ['trading_days', 'accounts', 'net_new', 'darts', 'ann_dart_acct',
         'opt_contracts', 'fut_contracts', 'stk_shares', 'equity', 'credits', 'margin']
 
 
-def load_skill():
-    """只为拿 parse_pr（新闻稿解析）——历史指标的数字一律走 series/ibkr.csv。"""
-    p = os.path.join(SKILL, 'build_report.py')
-    if not os.path.exists(p):
-        raise SystemExit(f'找不到 skill 解析管道: {p}')
-    spec = importlib.util.spec_from_file_location('ibkr_br', p)
+def load_pipeline():
+    """只为拿 parse_pr（新闻稿解析）——历史指标的数字一律走 series/ibkr.csv。
+
+    按路径加载而不是 `import ibkr_source`：管道文件在 fetch/ 下，本脚本以子进程方式
+    跑（sys.path[0] 是 build/），裸 import 找不到它。
+    """
+    if not os.path.exists(PIPELINE):
+        raise SystemExit(f'找不到解析管道: {PIPELINE}')
+    spec = importlib.util.spec_from_file_location('ibkr_source', PIPELINE)
     br = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(br)
     return br
@@ -127,7 +131,7 @@ def read_series():
 def parse_hist_notes(page):
     """抓历史指标 PDF 每页 'Notes:' 到页脚之间、与口径调整有关的条目原文。
 
-    skill 的 parse_hist_page 用的是整串锚定的数字正则，Notes 段的长句一句都命中不了，
+    ibkr_source.parse_hist_page 用的是整串锚定的数字正则，Notes 段的长句一句都命中不了，
     于是「表内差分 ≠ 真实账户增长」这类说明被整段丢弃，Ex3 就挂着 +22pp 的错值而
     页面上没有任何痕迹。这里单独再抓一遍：既渲染到页面上，也用来做护栏——
     命中脚注却没在 ADJ 里登记的月份直接 raise，宁可月度 routine 失败也不静默发错图。
@@ -179,7 +183,7 @@ def signed(v, d, unit):
 
 
 def main():
-    br = load_skill()
+    br = load_pipeline()
     import fitz
 
     series = read_series()
