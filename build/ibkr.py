@@ -46,6 +46,7 @@ import re
 
 import numpy as np
 
+import brief as B
 import payload_guard
 import pctile
 
@@ -181,6 +182,67 @@ def signed(v, d, unit):
         s = f'{0.0:.{d}f}'
     return s + unit
 
+
+def compose_brief(ALL, acc, eq, cr, mg, ann, nn, dart, td, opt, fut, stk):
+    """IBKR 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），那边只算事实，句子在这里拼 ——
+    措辞是口径的一部分，属于各家自己。
+
+    每个数字都是当场从序列算出来的，**没有一处硬编码**：排名、「几个月最低」、
+    「峰值停在哪个月」下月重跑都会自己变。
+
+    ═══ IBKR 独有，别家不能照抄 ═══
+      · `ann_dart_acct` 的分母是 **cleared** 账户，而 `darts` 含 non-cleared，
+        两者不同源。所以文中保留「cleared」一词，且全篇不做 darts ÷ accounts
+        这类跨口径除法（Exhibit 13 的图注讲的就是这个推导误差）。
+      · `net_new` 的 2025-03 / 2025-09 一次性调整（见 ADJ）是 IBKR 专有，
+        排名一律按**还原口径**算，句子里必须写「（还原口径）」。
+      · R3 日历护栏在这里成立，是因为 opt/fut/stk 三列是**当月合计**。
+        月末时点值（融资余额、客户现金）没有日历效应，硬套会造出一个假修正。
+    """
+    i = len(ALL) - 1
+    n = len(ALL)
+
+    # ── R1：存量峰值扫描。账户数几乎只增不减，本该被 is_monotonic 挡掉，
+    #    但「四个总量里只有它创新高」正是本月要讲的事，故显式不跳过。
+    pk = B.peak_scan(ALL, [('账户', acc), ('权益', eq), ('现金', cr), ('融资', mg)], i,
+                     skip_monotonic=False)
+    s1 = (f'{B.mo(ALL[i])}月末账户<b>{B.num(acc[i], 1)}千户</b>为{n}个月最高，'
+          f'是{B.cn(len(pk["at_peak"]) + len(pk["off_peak"]))}个总量指标里唯一创新高的：'
+          f'{"、".join(nm for nm, _ in pk["off_peak"])}峰值停在{B.peak_months_txt(pk["off_peak"])}月。')
+
+    # ── R2：净新增的基数护栏。名次按还原口径排（见 ADJ）。
+    be = B.base_effect(nn, i)
+    s2 = (f'净新增{B.num(nn[i], 1)}千户（还原口径）排历史第{be["rank"]}；'
+          f'环比从{B.mo(ALL[i - 1])}月{B.num(nn[i - 1], 1)}千户跌{abs(be["mm"]) * 100:.1f}%，'
+          f'但{B.mo(ALL[i - 1])}月是全样本'
+          f'{"最高月" if be["prev_is_max"] else f"第{be['prev_rank']}高月"}，'
+          f'同比{B.pct(be["yy"])}，<b>只看环比会误读成塌方</b>。')
+
+    # ── R3：opt/stk 是当月合计，交易日多一天会把跌幅整体盖住一截。
+    co, cs = B.calendar_split(opt, td, i), B.calendar_split(stk, td, i)
+    gap = B.months_since_lower(cs['series'], i)
+    s3 = (f'先扣日历：{B.mo(ALL[i])}月{td[i]:.0f}个交易日比{B.mo(ALL[i - 1])}月多'
+          f'{co["dday"]:.0f}天，期权表面跌{abs(co["raw"]) * 100:.1f}%、'
+          f'日均实跌{abs(co["per_day"]) * 100:.1f}%，'
+          f'股票日均跌{abs(cs["per_day"]) * 100:.1f}%为{gap}个月最低。')
+
+    # ── R4：分母侧。期间均值对期间均值，不与单月读数混用；三条成交量列先日均化。
+    rg = B.regime_ratio(ALL, [('账户', acc), ('净新增', nn), ('总DARTs', dart),
+                              ('人均年化cleared DART', ann), ('期权/日', opt / td),
+                              ('期货/日', fut / td), ('股票/日', stk / td),
+                              ('权益', eq), ('现金', cr), ('融资', mg)], i)
+    pu = B.per_unit(cr, acc, i, scale=1e9 / 1e3)      # 户均现金：$bn ÷ 千户 → 美元
+    s4 = (f'分母：{B.cn(len(rg["ratios"]))}个指标只有{"、".join(rg["down"])}相对起点下行'
+          f'（{rg["y0"]}年均{np.nanmean(ann[rg["base_idx"]]):.1f}倍→'
+          f'近13个月{np.nanmean(ann[rg["win_idx"]]):.1f}倍）；'
+          f'户均现金（推导值）<b>{B.usd(pu["value"])}</b>'
+          f'为{n}个月{"最低" if pu["is_min"] else "低位"}，同比{B.pct(pu["yoy"])}，'
+          f'是客户现金{B.pct(pu["num_yoy"])}除以账户{B.pct(pu["den_yoy"])}的商，属摊薄而非撤资。')
+
+    return B.render([s1, s2, s3, s4])
 
 def main():
     br = load_pipeline()
@@ -320,6 +382,11 @@ def main():
     ann_all, acc_all, eq_all = A('ann_dart_acct'), A('accounts'), A('equity')
     cr_all, mg_all, dart_all = A('credits'), A('margin'), A('darts')
     nn_all = np.array([real_nn[m] for m in ALL], float)
+    # 顶部 brief 的日历护栏（R3）要的三条：交易日数与两条**当月合计**成交量列。
+    # 用原始合约数／股数而不是 Ex8 的 product DARTs —— 后者要除以新闻稿里的平均订单
+    # 规模，而新闻稿本地只缓存 13 个月，长历史那半段算不出来。
+    td_all, opt_all = A('trading_days'), A('opt_contracts')
+    fut_all, stk_all = A('fut_contracts'), A('stk_shares')
 
     roll12 = np.full(len(ALL), np.nan)
     for i in range(11, len(ALL)):
@@ -741,6 +808,10 @@ def main():
                      f'format from IBKR company data · 窗口 {XL[0]} – {XL[-1]} · '
                      f'Exhibits 14–18 为 {XL_LONG[0]} 起全历史'),
         'headline': headline,
+        # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+        # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+        'brief': compose_brief(ALL, acc_all, eq_all, cr_all, mg_all, ann_all, nn_all,
+                               dart_all, td_all, opt_all, fut_all, stk_all),
         'hub_line': hub,
         'source': SRC,
         'xlabels': XL,

@@ -68,6 +68,16 @@
   set('sub', D.subtitle);
   set('headline', D.headline);
 
+  /* ── 数据总结（brief）──
+     一行数据条给的是**读数**，这一段给的是**读数该怎么读**：基数效应、口径背离、
+     所处区间。两者职责不同，所以没有并进 headline。
+     文字整段在 Python 侧拼好（同 CONTRACT：页面不做计算，也不做措辞判断）。
+     生成器没给 brief 的页面保持 hidden，不会留下一个空框。 */
+  if (D.brief) {
+    var bn = el('brief');
+    if (bn) { bn.innerHTML = D.brief; bn.hidden = false; }
+  }
+
   /* ── Exhibit 1：汇总表 ──
      不进 charts.js：那份文件是 SVG 绘图内核，塞 HTML 表格进去会让它同时承担两种职责。 */
   var S = D.summary;
