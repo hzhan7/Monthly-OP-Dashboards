@@ -28,7 +28,6 @@ import os
 import numpy as np
 import pandas as pd
 
-import brief as B
 import payload_guard
 import pctile
 
@@ -636,188 +635,6 @@ NOTES = [
     '图上的「百万张」「百万美元」都是本页换算后的口径，核对时请以核对表为准。',
 ]
 
-# ══════════════════ 6.5 页顶 brief：读数该怎么读（规则库 build/brief.py）══════════════════
-# 品种三元组：(ADV 列, 中文名, 对应的月末持仓列)。
-# 这里原先还带着「该品种 ADV 的 exhibit 号」，供 brief 里那句「Exhibit 12 那根涨柱是换手
-# 不是建仓」用。那半句已经删掉（一句话一个意思，品类那句的落点是量与仓，不是导航），
-# 号码字段随之成了死数据 —— 留着只会让下一个人以为正文里还引着 exhibit 号。
-CLS_BRIEF = [('adv_rates_kcontracts', '利率', 'oi_rates_contracts'),
-             ('adv_equity_kcontracts', '股指', 'oi_equity_contracts'),
-             ('adv_energy_kcontracts', '能源', 'oi_energy_contracts'),
-             ('adv_ag_kcontracts', '农产品', 'oi_ag_contracts'),
-             ('adv_fx_kcontracts', '外汇', 'oi_fx_contracts'),
-             ('adv_metals_kcontracts', '金属', 'oi_metals_contracts')]
-
-# 电子化占比与分品种持仓这两组列 load() 没有校验（它只管画图要用的那几列），而 brief 要用。
-# 这里区分两种「缺」，处理方式相反：
-#   · **列不在** = 数据管道坏了，直接响。不静默少一句话：少掉的那一句在页面上没有任何痕迹。
-#   · **列在、某个月是 NaN** = 常态，不是故障（CME 的 2021-04 整月没拆 Globex 电子成交／
-#     公开喊价／场外协议三列，CSV 里就是空的）。这属于 brief.py::need() 管的事：把用到那个
-#     格子的半句降级成「哪个月缺了什么」，既不静默少一句、也不为一句解读让整页发不出去。
-#     原实现只查列名，于是 2021-04（分子缺）与 2022-04（它的 i-12 缺）两个月分别抛
-#     TypeError 与 KeyError，整页构建失败且不给任何口径提示。
-_BRIEF_COLS = ['adv_globex_electronic_kcontracts'] + [o for _, _, o in CLS_BRIEF]
-_miss_brief = [c for c in _BRIEF_COLS if c not in df.columns]
-if _miss_brief:
-    raise SystemExit(f'series/cme.csv 缺 brief 需要的列 {_miss_brief}')
-
-
-def compose_brief(months, adv, oi, gx, cls):
-    """CME 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
-
-    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R4 单位恒等 /
-    R5 标注 / R6 有效位）：那边只算事实，句子在这里拼 —— 措辞是口径的一部分，属于各家自己。
-    职责与 `headline` 互补：那一行给读数，这一段给「读数该怎么读」。
-
-    ═══ 分寸以 build/ibkr.py 的 compose_brief() 为准（既是上限也是下限）═══
-    四句四个层次，每句一个意思。ibkr 那版是 规模 / 基数 / 日历 / 分母；本页第三层的
-    「日历」用不了（见下），换成 CME 自己那层独有的信息——**品类的量与仓**：
-
-        s1 规模：两个总量（成交与持仓）在全样本里的位置，谁创了新高、谁的峰值停在哪个月
-        s2 基数：环比与同比反号时，上月在全样本里排第几（不给这个会把回落读成转向）
-        s3 品类：六个品种里 ADV 上行、月末持仓收缩各几个，两头都占的是谁
-        s4 分母：电子化占比（推导值）+ R4 的两个增速之商 + 一句落点
-
-    第一版这里是五层，多出来的一句是「口径分层：ADV 是流量、月末持仓是时点存量……
-    互不印证」——那是写给构建者看的方法论议论，不是导读；总持仓的位置与峰值已经在 s1 里，
-    删的只是那句议论，分支判断（谁创新高／峰值停在哪月／缺读数怎么办）一条没少。
-
-    每个数字都当场从序列算出：排名、峰值停在哪个月、占比的分子分母增速，下月重跑全会自己变。
-    **每个定性词也一样**：「只有／多达」走 `B.quant()`、「前 N%」走 `B.top_pct()`（向上取整，
-    四舍五入会把第 23/223 印成「前 10%」，那是假话）、「唯一创新高／高基数／没挪窝」一律由
-    当场算出的判据选分支。写死的措辞配算出来的数字是本页返工过的老毛病 —— 历史重放里过半的
-    月份会印出「六个品种里 ADV 上行的只有六个」这种自相矛盾的句子，本月读着通顺纯属数据凑巧。
-
-    ═══ CME 独有，别家不能照抄 ═══
-      · **R3（日历护栏）在本页完全不适用，不是「用不上」而是「用了就是造假」。**
-        CME 披露的 `adv_*` 本来就是 ADV（当月合计 ÷ 当月交易日，公司在 xlsx 里已经除过），
-        `oi_*` 是月末时点存量 —— 两类列都没有可再扣的日历成分。CSV 里那一列 trading_days
-        存在，只是为了让 Exhibit 3 把「总量口径 vs 按日口径」的差摆出来（Barclays 调整），
-        绝不是给 brief 再除一次的分母。对 ADV 套 `calendar_split()` 会凭空造出一个
-        根本不存在的「日历修正」，而且它长得跟真的一样。
-      · **同一个品种的 ADV 与 OI 反向才是本页的核心信息**：CME 六个品种的 ADV（流量）
-        与月末持仓（存量）是两套独立披露，Exhibit 1 只汇总总持仓、分品种持仓一格都没有。
-        所以「某品种成交回升的同时持仓在缩」这件事，除了这一段，全页任何图表都读不出来 ——
-        它把一根往上的涨柱从「需求回来了」改读成「换手」。别家（IBKR/COST）没有这组对照。
-      · **电子化占比是推导值**：公司披露 Globex 电子成交与 Total ADV 两个绝对量，不披露商，
-        故正文带「（推导值）」（R5）。它的同比只能按 R4 报**两个增速之商**，
-        不能写成「几成来自电子、几成来自总量」的比例拆分 —— 那个拆法数学上就是错的。
-      · **本页有真实缺值**：`adv_globex_electronic_kcontracts` 在 2021-04 整月为空，
-        于是 2021-04（占比本身）与 2022-04（它的 i-12，同比）两个月都算不出来。凡是要用到
-        某一格的半句，拼之前一律过 `B.need()`，缺就换成「哪个月缺了什么」——不让 None 流进
-        `B.top_pct()` / `B.pct()`，也不因为一句解读把整页构建掀掉。
-      · CME 没有反向指标（无逾期率/坏账率一类越低越好的序列），故 `peak_scan` 一律
-        `inverse=False`；也没有公司 Notes 的一次性重述，故无「（还原口径）」标注。
-    """
-    i = len(months) - 1
-    n = len(months)
-    if i < 1:
-        # 四句里有三句以上月为参照。这不是数据缺值而是调用错误（本页窗口本身就要 13 个月：
-        # CUR/PRV/YAG 取的是 LATEST、LATEST-1、LATEST-12），照本仓「失败要响」处理。
-        raise SystemExit(f'brief 至少需要 2 个月，收到 {n} 个月')
-    # 分位只在名次落在前半段时才印：「第12（前100%）」是真话但没有信息，n 小的时候尤其吵；
-    # 后半段退回「第r/n」这个中性写法（已验收的 ibkr.py 样板通篇只报名次，不报分位）。
-    # 印分位一律走 B.top_pct（向上取整）—— 四舍五入会把第 23/223 印成「前 10%」，那是假话。
-    top = lambda r: (f'（{B.top_pct(r, n)}）' if r / n <= 0.5 else f'/{n}') if r else ''
-    quant = lambda c: B.quant(c, len(cls), '个')
-
-    # ── R1 峰值扫描（两个总量：ADV 与月末持仓）。skip_monotonic=False 的理由同 ibkr.py：
-    #    「谁创了新高」正是这一句要讲的事，被单调性挡掉就没得讲了。两条序列 load() 都
-    #    校验过无缺值，但仍按 peak_scan 的返回拼句 —— 名字由它给，不在句子里写死。
-    pk = B.peak_scan(months, [('成交', adv), ('持仓', oi)], i, skip_monotonic=False)
-    ntot = B.cn(len(pk['at_peak']) + len(pk['off_peak']))
-    off_txt = '、'.join(f'{nm}峰值停在 {m}' for nm, m in pk['off_peak'])
-    if not pk['off_peak']:
-        tail = f'{ntot}个总量指标同时创 {n} 个月新高'
-    elif pk['at_peak']:
-        # 创新高的是哪一个必须点名：主语是 ADV，而创新高的可能是持仓，含糊会挂错。
-        tail = f'创 {n} 个月新高的只有{"、".join(pk["at_peak"])}，{off_txt}'
-    else:
-        tail = f'{ntot}个总量指标一个都没创新高，{off_txt}'
-    rnk, orank = B.rank_of(adv, i), B.rank_of(oi, i)
-    s1 = (f'{B.mo(months[i])}月总 ADV <b>{B.num(adv[i] / 1000, 1)}mn张/日</b>排全样本 {n} 个月'
-          f'第{rnk}{top(rnk)}、月末持仓 {B.num(oi[i], 1)}mn张第{orank}{top(orank)}，{tail}。')
-
-    # ── R2 基数护栏。CME 的月度量能天生锯齿（季月换月、到期周、宏观事件挤在同一个月），
-    #    环比与同比反号是常态；不给出上月在全样本里的位置，读者会把「从一个极值月回落」
-    #    直接读成需求转向。本页最高频的一处误读。
-    be = B.base_effect(adv, i)
-    pr, pmo = be['prev_rank'], B.mo(months[i - 1])
-    # 上月在全样本里的位置：这一句的全部作用就是让读者知道环比的分母是不是一个极值月。
-    # 「最高月」由 prev_is_max 判，不写死；名次缺（该月无读数）时整句退化成只讲方向。
-    prev_where = ('全样本最高月' if be['prev_is_max'] else f'全样本第{pr}高月') if pr else '无读数'
-    if be['mm'] is None:
-        # 上月缺读数或为零时 prev_where 也没得说，整句退成一句交代，不硬拼出「是无读数」。
-        s2 = f'{pmo}月无可比读数，本月的环比与基数都不报。'
-    else:
-        mtxt = (f'环比从{pmo}月{B.num(adv[i - 1] / 1000, 1)}mn'
-                f'{"跌" if be["mm"] < 0 else "涨"}{abs(be["mm"]) * 100:.1f}%')
-        if be['conflict']:
-            # 「高基数」不能写死：它只有在上月自身确实靠前时才成立。上月若排在后三分之二，
-            # 这个环比跌就不是被极值顶出来的，那时只能说两个方向不一致，不能编出基数效应。
-            hi_base = be['mm'] < 0 and pr is not None and pr / n <= 1 / 3
-            why = ('环比跌掉的是上月的高基数，不是需求' if hi_base
-                   else '两个方向各说各话，只读环比会读反')
-            s2 = f'{mtxt}，但{pmo}月是{prev_where}，同比{B.pct(be["yy"])}，<b>{why}</b>。'
-        elif be['yy'] is None:
-            s2 = (f'{mtxt}，{pmo}月是{prev_where}；序列到本月共 {n} 个月，'
-                  f'还差 {12 - i} 个月才够算同比，环比只能与上月自身的位置比。')
-        else:
-            s2 = f'{mtxt}，同比{B.pct(be["yy"])}，两者同向，{pmo}月是{prev_where}，环比可直读。'
-
-    # ── 品类结构 × 存量：ADV 是流量、OI 是月末时点存量，同一个品种两者反向才是信息。
-    fin2 = lambda a: B.need(a[i], a[i - 1])
-    a_up = [z for _, z, a, _ in cls if fin2(a) and a[i] > a[i - 1]]
-    o_dn = [z for _, z, _, o in cls if fin2(o) and o[i] < o[i - 1]]
-    solo = [z for z in a_up if z in o_dn]
-    k = B.cn(len(cls))
-    # B.quant 的判据只对 1..len(cls) 有定义：0 走进去会印出「只有0个」（cn 对 0 返回 '0'）。
-    # 计数为零是常有的月份，不是异常，所以在这里换成中文的说法，不去改 brief.py 的判据。
-    cnt = lambda c: quant(c) if c else '一个也没有'
-    if solo:
-        # solo 不一定只有一家（重放里 43% 的月份 ≥2 家）：全员点名，唯一性暗示不能留在句子里。
-        s3 = (f'品类：{k}个品种里 ADV 环比上行的{cnt(len(a_up))}、月末持仓收缩的'
-              f'{cnt(len(o_dn))}，两头都占的是{"、".join(solo)}，量回来了、仓在往外走。')
-    elif a_up:
-        # o_dn 为空时「两头都占的一个也没有」是废话（前半句已经说了没有品种在缩仓），
-        # 而且会让「一个也没有」在同一句里出现两次。只有确有品种缩仓时才点这一句。
-        s3 = (f'品类：{k}个品种里 ADV 环比上行的{cnt(len(a_up))}、月末持仓收缩的'
-              f'{cnt(len(o_dn))}，{"两头都占的一个也没有，" if o_dn else ""}量仓同向可直读。')
-    else:
-        s3 = (f'品类：{k}个品种的 ADV 环比无一上行，月末持仓收缩的{cnt(len(o_dn))}，'
-              f'是全线回落而不是结构轮动。')
-
-    # ── R4 单位恒等 + R5 标注：电子化占比 = Globex 电子成交 ÷ Total ADV，公司只披露分子分母。
-    #    同比只能报两个增速之商，不能做「几成来自分子」的比例拆分。
-    pu = B.per_unit(gx, adv, i, scale=100.0)
-    if not B.need(gx[i], adv[i]):
-        s4 = (f'电子化占比（推导值）本月不报：{months[i]} 的 Globex 电子成交在 CME 的 xlsx 里'
-              f'就是空的，占比与它的同比都算不出来。')
-    else:
-        srank = B.rank_of(pu['series'], i)
-        if B.need(pu.get('yoy'), pu.get('num_yoy'), pu.get('den_yoy')):
-            # 「没挪窝」得由商的大小说了算：商大到一个百分点以上就是渠道结构自己在动。
-            move = '渠道结构没跟着量能动' if abs(pu['yoy']) <= 0.01 else '渠道结构自身也在移'
-            # R4：只报两个同比之商（(1+分子同比)÷(1+分母同比)−1），不做「几成来自分子」的拆分。
-            ytxt = (f'同比{B.pct(pu["yoy"])}，是电子成交{B.pct(pu["num_yoy"])}除以总 ADV '
-                    f'{B.pct(pu["den_yoy"])}的商，{move}')
-        else:
-            ytxt = ('序列不足 12 个月，同比暂缺' if i < 12
-                    else f'{months[i - 12]} 的分子缺读数，同比暂缺')
-        s4 = (f'电子化占比（推导值）<b>{B.num(pu["value"])}%</b>'
-              f'排第{srank}{top(srank)}，{ytxt}。')
-
-    return B.render([s1, s2, s3, s4])
-
-
-BRIEF = compose_brief(
-    [str(p) for p in df.index],
-    df['adv_total_kcontracts'].values,
-    df['oi_total_contracts'].values / 1e6,
-    df['adv_globex_electronic_kcontracts'].values,
-    [(c, z, df[c].values, df[o].values) for c, z, o in CLS_BRIEF])
-
-
 # ══════════════════════════ 7. 抬头与 payload ══════════════════════════
 _adv_yy = float(df['adv_yoy'][CUR])
 # 抬头原先只写 y/y。7 月 ADV 是 +23.0% y/y 但 −11.9% m/m（一年里第二大的环比跌幅），
@@ -846,9 +663,6 @@ payload = {
                  f'月末未平仓 {df["oi_total_mn"][CUR]:,.1f}mn 张'
                  f'（{pct(_oi_yy)} y/y）· 利率品种占 ADV {_share:.0f}% · '
                  f'隐含交易收入 ${df["implied_txn_rev_usdmn"][CUR]:,.0f}mn'),
-    # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
-    # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
-    'brief': BRIEF,
     'hub_line': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日，{pct(_adv_yy)} y/y、'
                  f'{pct(_adv_mm)} m/m；利率品种占 {_share:.0f}%'),
     'source': SRC,

@@ -20,24 +20,18 @@
 <p class="subtitle" id="sub">—</p>
 <p class="headline" id="headline">—</p>
 
-<!-- 数据总结：由 data/<t>.js 的 brief 字段注入。带 hidden，生成器没给 brief 的页面
-     不会留下一个空的带框方块（尚未接入的那几家就是这种情况）。 -->
-<div class="brief" id="brief" hidden></div>
-
 <!-- 通栏区：汇总表 + 标了 full 的长历史图（127 根柱塞进半栏每根不到 3px） -->
 <div class="grid full" id="lead"></div>
 
 <div class="grid" id="grid"></div>
 
-<h2 class="section" id="tblhead">核对表</h2>
-<div class="grid full" id="tbl"></div>
-
-<!-- 口径与方法说明排在附录之后：它是查证用的参考资料，不是阅读路径的一环。
-     排在图与附录中间时，它把「看图 → 拿附录逐条核对」这条动线截断了。 -->
 <div class="prose">
   <h2>口径与方法说明</h2>
   <ol id="notes"></ol>
 </div>
+
+<h2 class="section" id="tblhead">核对表</h2>
+<div class="grid full" id="tbl"></div>
 
 <footer id="foot"></footer>
 
