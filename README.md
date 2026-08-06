@@ -40,10 +40,33 @@ fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/CONTRACT.md   payload 数据契约（写生成器前先读它）
 build/roster.py     生成 data/roster.js（总览页与导航的目录）
+build/repo.py       仓库定位 + 发布日台账入口（生成器共用）
+build/monthlab.py   x 轴月份标签 `Jul-26` 的唯一实现
+build/feerates.py   series/fee_rates.csv 的共享读取层（整表读一次）
+build/payload_guard.py  写出前拦 NaN（CONTRACT §5 第 5 条的唯一执行点）
+build/pctile.py     汇总表 3Y %ile 的唯一实现
 data/<t>.js         生成物，页面直接 <script src> 加载
 cache/              下载来的原始文件（gitignore）
 monthly_run.py      月度入口（cron 跑的就是它）
+scripts/verify_build.py  回归护栏：重生成 data/*.js 并与 HEAD 逐字节比对
 ```
+
+## 改了生成器之后
+
+```bash
+python3 scripts/verify_build.py     # 全部 15 个 data/*.js 与 HEAD 逐字节一致？（约 0.5s）
+python3 build/test_monthlab.py      # 月份标签的等价性测试
+```
+
+build 层是纯函数（`series/*.csv` → `data/<t>.js`，不联网、不看时钟、不用随机数，
+窗口一律从数据最新月倒推），所以「同一份 CSV 重复跑，输出逐字节相同」是可断言的 ——
+`verify_build.py` 断言的就是这一条，判据与上面两个旧仓搬迁时一样是**逐字节**，
+唯一允许的差异是首行那句构建日期注释。它在临时沙箱里跑（`series/` 与 `cache/`
+只读软链进去），不动工作树里的 `data/*.js`。
+
+纯重构（抽公共代码、改内部结构）应当 15/15 全绿；**输出真该变的时候**（改了口径、
+加了 exhibit），预期看到相应几家「不一致」，此时逐条核对差异是不是你想要的那一处，
+确认后再连同新的 `data/*.js` 一起提交。
 
 **[注] 个别 `series/*.csv` 只被 `fetch/` 读回当台账，不进 build —— 「没有 build 读它」
 不等于它是断链孤儿。** 目前是 `series/spgi.csv`：它与 `spgi_clean.csv` 在
