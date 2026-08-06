@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+import feerates          # series/fee_rates.csv 的共享读取层（整表读一次）
 from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
@@ -63,20 +64,12 @@ def load():
 
 
 def rate_series(metric, scale=1.0):
-    """series/fee_rates.csv 里 HKEX 的某个季度参数，索引 PeriodIndex(freq='Q')。"""
-    d = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
-    d = d[(d['company'] == 'HKEX') & (d['metric'] == metric)].copy()
-    if not len(d):
-        raise SystemExit(f'fee_rates.csv 里没有 HKEX/{metric}')
-    d['q'] = pd.PeriodIndex(d['period'].str.replace('-', ''), freq='Q')
-    return d.set_index('q')['value'].astype(float).sort_index() * scale
+    """series/fee_rates.csv 里 HKEX 的某个季度参数，索引 PeriodIndex(freq='Q')。
 
-
-def to_monthly(rate_q, month_index):
-    """季度费率 → 月度：当季各月用该季费率；最新季之后沿用最后一个已知值。"""
-    q = pd.PeriodIndex(month_index).asfreq('Q')
-    return pd.Series([rate_q.get(x, np.nan) for x in q],
-                     index=month_index, dtype=float).ffill()
+    scale 是纯量纲缩放（与 CSV 的 unit 列无关），留在本页：它是本页各图自己的
+    单位选择，不是这张表的属性。
+    """
+    return feerates.series('HKEX', metric) * scale
 
 
 # ────────────────────────── 费率口径披露（全部现算，不写死季度号） ──────────────────────────
@@ -556,8 +549,8 @@ def main():
     tf_eff = rate_series('trading_fee_effective_rate_both_sides')      # 由收入倒算
     tf_list = rate_series('trading_fee_listed_rate_per_side', 2.0)     # 挂牌费率，双边
     td = rate_series('trading_days')
-    tf_m = to_monthly(tf_list, df.index)
-    td_q = to_monthly(td, df.index)
+    tf_m = feerates.to_monthly(tf_list, df.index)
+    td_q = feerates.to_monthly(td, df.index)
     df['implied_tradefee_hkdbn'] = df['adt_hkdbn'] * (td_q / 3.0) * tf_m / 100.0
     BR_NOTE = ('Assumption: monthly cash trading-fee revenue = ADT x trading days x the statutory '
                'both-sides trading-fee rate published in the HKEX fee schedule (0.00565% per side). '
@@ -565,7 +558,7 @@ def main():
                'not an identity.')
 
     cf = rate_series('clearing_fee_effective_rate_both_sides')
-    cf_m = to_monthly(cf, df.index)
+    cf_m = feerates.to_monthly(cf, df.index)
     df['implied_clearfee_hkdbn'] = df['adt_hkdbn'] * (td_q / 3.0) * cf_m / 100.0
     CLR_NOTE = ('Assumption: monthly clearing-fee revenue = ADT x trading days x the effective '
                 f'both-sides clearing rate ({cf.index[-1]} = {cf.iloc[-1]:.5f}%, held flat after). '

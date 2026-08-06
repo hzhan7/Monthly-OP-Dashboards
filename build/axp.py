@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+import feerates          # series/fee_rates.csv 的共享读取层（整表读一次）
 from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
@@ -93,15 +94,8 @@ need(old, ['consumer_balance_usdbn', 'consumer_nco_pct', 'consumer_dq30_pct',
            'sbs_nco_pct'], 'axp.csv')
 
 # 季度 net interest yield（新口径）→ 月度：当季各月用该季值，最新季之后沿用
-_rates = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
-_r = _rates[(_rates['company'] == 'AXP') & (_rates['metric'] == 'net_interest_yield_newbasis')]
-if not len(_r):
-    raise SystemExit('fee_rates.csv 里没有 AXP/net_interest_yield_newbasis')
-_niy = (_r.assign(q=pd.PeriodIndex(_r['period'].str.replace('-', ''), freq='Q'))
-          .set_index('q')['value'].astype(float).sort_index())
-_q = pd.PeriodIndex(avgbal.index).asfreq('Q')
-avgbal['niy'] = pd.Series([_niy.get(qq, np.nan) for qq in _q],
-                          index=avgbal.index, dtype=float).ffill()
+_niy = feerates.series('AXP', 'net_interest_yield_newbasis')
+avgbal['niy'] = feerates.to_monthly(_niy, avgbal.index)
 avgbal['us_avg_bal'] = avgbal['consumer_avg_bal_usdbn'] + avgbal['smb_avg_bal_usdbn']
 avgbal['implied_nii_usdmn'] = avgbal['us_avg_bal'] * 1000.0 * avgbal['niy'] / 100.0 / 12.0
 
