@@ -49,6 +49,7 @@ import sys
 import numpy as np
 import pandas as pd
 
+import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
 import payload_guard
 import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
 
@@ -457,6 +458,34 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 CUR, PRV, YAG = LATEST, LATEST - 1, LATEST - 12
 
 
+def acq_roll12(idx):
+    """LPL 各月的滚动 12 个月 Acquired NNA（含当月），$bn。
+
+    还原口径在本模块只有这一处定义：y/y 用它剔分子月的并购、客户现金占比用它剔分母 ——
+    两处各写各的，就会出现「同一句话在两种还原约定下结论相反」而没人发现。
+    """
+    s = pd.Series({pd.Period(k, 'M'): v for k, v in ACQ.items()}).reindex(idx).fillna(0.0)
+    return s.rolling(12, min_periods=1).sum()
+
+
+def lp_yoy_ex(d, cur):
+    """LPL 客户资产 y/y 的剔并购口径 →（y/y%, 该月滚动 12 个月 Acquired NNA）。
+
+    传 d/cur 而不是读全局，是为了能把序列截到历史任一个月重放：t12 跟着那个月的
+    12 个月窗口自己变，不是写死的 $277.0bn（并表滚出窗口那天它必须自己归零）。
+    算不出来（缺月、分母为零）返回 (None, None)，由调用方决定这句写不写。
+    """
+    yag = cur - 12
+    try:
+        now, ago = float(d['lpla_assets'].loc[cur]), float(d['lpla_assets'].loc[yag])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    if not B.need(now, ago) or ago == 0:
+        return None, None
+    t12 = sum(v for k, v in ACQ.items() if yag < pd.Period(k, 'M') <= cur)
+    return ((now - t12) / ago - 1) * 100, t12
+
+
 def _lp_rank_txt():
     """LPL as-reported y/y 与剔并购后的 y/y、以及它与 Schwab 的名次关系。
 
@@ -470,8 +499,8 @@ def _lp_rank_txt():
         return '', None
     if not all(np.isfinite(v) for v in (lp_now, lp_ago, sc)) or lp_ago == 0:
         return '', None
-    t12 = sum(v for k, v in ACQ.items() if YAG < pd.Period(k, 'M') <= CUR)
-    raw, exq = (lp_now / lp_ago - 1) * 100, ((lp_now - t12) / lp_ago - 1) * 100
+    exq, t12 = lp_yoy_ex(df, CUR)
+    raw = (lp_now / lp_ago - 1) * 100
     txt = (f'{mlab(CUR)} 的 LPL 读数为 <b>{raw:+.1f}%</b>，剔掉滚动 12 个月的 Acquired NNA'
            f'（${t12:,.1f}bn）之后是 <b>{exq:+.1f}%</b>，'
            + (f'<b>低于</b> Schwab 的 {sc:+.1f}% —— 名次是反的。'
@@ -1182,6 +1211,262 @@ headline = (f'共同最新月 {mlab(LATEST)}（短板 {LAG}）'
                f'（剔并购 {signed(LP_YOY_EX, 1, "%")}）'
                if _LP_YOY_NOW is not None and LP_YOY_EX is not None else ''))
 
+
+# ── 这里原来有一个 `_lp_cash_clause()`：brief 里 LPL 客户现金占比的那一句 ──
+# 整句撤了（理由见 compose_brief 的「分寸」一节），函数跟着删掉 —— 留一个没人调用的
+# 生成器，下一个人只会照它把句子接回去，而接回去的正是本轮要收的那一层。
+#
+# 它当年修对的两件事记在这里，谁要重写这一句必须一并带上：
+#   1. 占比的**分母**被 2025-08 并入 Commonwealth（Acquired NNA +$275.0bn）机械摊薄，
+#      极值断言（「N 个月最低」）必须先用 `acq_roll12()` 还原再判，还原后仍是最低才
+#      许写「最低」—— 与客户资产 y/y 的剔并购是同一条约定，口径只能有一处定义。
+#   2. 不许用「亦然」承接 IBKR 那句：IBKR 那句里有「绝对额创新高」与「摊薄非撤资」，
+#      而 LPL 的现金绝对额离 2022-06 的自身峰值还差一大截，承接过来就是假话。
+# 并表当月对这条比率的一次性摊薄仍在 Exhibit 12 的图注里现算（dilution_txt），
+# 没有随这一句消失。
+
+
+def compose_brief(df, latest):
+    """横截面页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），那边只算事实，句子在这里拼 ——
+    措辞是口径的一部分，属于各家自己。每个数字都当场从序列算，**没有一处硬编码**：
+    共同最新月、领先几个月、齐备几家、名次、「N 个月最高/最低」、峰值停在哪个月，
+    下个月重跑全部自己变。
+
+    ═══ 横截面页独有，单票页不能照抄 ═══
+      · **第一句必须是「能不能比」，不是「谁更强」。** 单票页的读数就是那家的最新读数；
+        本页统一定格在<b>共同最新月</b>（最慢的成员决定），各家自己往往已多披露 1-2 个月。
+        不先说这一句，读者会拿本页的横比当「当下」，而它是一个被最慢那家钉住的旧截面。
+      · **可比性是分层的，按指标族逐族点名。** 四家齐备的只有客户资产一族；客户现金
+        （Schwab 不单列、Robinhood 拆成不可合计的两条）与账户存量（IBKR 数账户、
+        Robinhood 数人）各只剩两家。把只有两家的族当成「四家横比」是本页最大的误读源。
+      · **「谁创新高」在横截面上受序列长度左右**（R1 的横截面变体）。Schwab 的月末融资
+        余额只有 2025-01 起的历史、Robinhood 只有 2023-04 起，IBKR 有 2016-01 起 ——
+        在一条 17 个月的序列上「停在峰值」与在 125 个月上「峰值停在 2017 年」根本不是
+        同一件事。单票页没有这个问题，所以这句话别家写不出来。
+      · **LPL 的名次要按还原口径报**：as-reported 的客户资产 y/y 含 Atria 与
+        Commonwealth 两次整体并表，剔掉滚动 12 个月的 Acquired NNA（`acq_roll12()`）
+        之后名次会掉，句子里必带「（还原口径）」（R5）。这条约定对**任何**以 LPL 客户
+        资产为分母的比率同样成立：分母被并表机械摊薄，极值断言（「N 个月最低」）必须
+        先还原再判，还原后不成立就不许写「最低」。现金占比那一句本轮整句撤了
+        （见下方「分寸」），约定留着 —— 谁要把它写回来，得连着还原一起写回来。
+      · **R3（日历护栏）在本页全程不适用**：本页没有任何「当月合计量」列 —— 客户资产 /
+        现金 / 融资余额都是月末时点值，DATs/DARTs 三家披露的本来就是<b>日均</b>笔数。
+        再除一次交易日会造出一个根本不存在的修正（brief.py 开头点名的那个坑）。
+
+    ═══ 措辞由当场算出的量决定分支，一个定性词都不许写死 ═══
+      「只有 / 创新高 / 最低 / 却」这类词全部挂在当月算出的名次、占比、`peak_scan`
+      的分组上：本月读着通顺的句子，下个月数字一变就会变成假话，而那种假话没有任何
+      自动检查拦得住（历史重放是唯一能逮到它的手段）。同理，缺值月一律**该句不写**
+      （`B.need`），不是让整页构建失败。
+
+    ═══ 分寸：以 build/ibkr.py 的 compose_brief() 为准 ═══
+    那一版是用户逐句验收过的标准，既是上限也是下限 —— 四句四层、一句一个意思、~300 字。
+    本页此前是六句，且句句是三四个从句的串联：比样板花哨。收的办法不是砍字数，是砍层数。
+
+    现在五句，比样板多的那一层是开头的「能不能比」（横截面页的身份，不能省）：
+
+        能不能比（时点 + 覆盖）→ 谁领先（还原口径下名次会不会翻）
+        → 基数（上月名次解释本月读数）→ 谁背离（绝对额与归一化占比同月一头一尾）
+        → 峰值的可比性（「在自身峰值」在 17 个月和 125 个月的序列上不是同一件事）
+
+    撤掉的是「LPL 客户现金占比亦为全样本最低，降幅 X% 来自 Commonwealth 并表当月」
+    那一句。它不是错的（「极值先还原再判」那一层是对的，约定见上），是**逐家展开**：
+    紧接着 IBKR 现金那句再讲第二家的同一个指标，读者拿到的是第二个例子而不是第二个
+    层次；句尾「降幅的 X% 来自并表当月」还多压了一层贡献度拆解。跨公司比较写到
+    「谁领先谁背离 + 口径可比性的边界」就够，再往下就是把横截面页写成四份单票页。
+      （旁证：历史重放里它在 2018-2020 一路印出「LPL 占比排倒数前100%」—— 序列还短的
+      月份里「倒数前 100%」等于没说，一句自己就撑不住的话不值得占掉整整一句的篇幅。）
+
+    口径标注（推导值 / 还原口径 / 并购并表）一个都不因为收篇幅而删：那不是花哨，
+    是诚实。被撤的是整句，不是某句的标注。
+    """
+    i = len(df.index) - 1
+    MO = [str(p) for p in df.index]
+    # 「两个月 / 两家」这条中文量词规矩已经由 brief.cn() 统管（序数写「第二」时传
+    # ordinal=True），本页不再自己包一层 —— 同一条规矩在两处定义，早晚会分叉。
+    cn = B.cn
+    fin = lambda a: int(np.isfinite(np.asarray(a, float)).sum())
+
+    # ── 边界一（时点）：本页的读数不是各家自己的最新读数 ──────────────────
+    # 只点名跑得最快的那一家 + 领先几个月：四家逐一列月份会把这一句撑到整段的三分之一，
+    # 而页脚已经逐家列过。这里要读者记住的是「本页不是当下」这一件事。
+    # 「本页定格在共同最新月」抬头已经印过（headline / subtitle 各一次），这里不复述，
+    # 只写抬头给不出的那一半：领先的那家多披露了几个月、而本页不取。
+    ahead = [(t, (LATEST_EACH[t] - latest).n) for t in RAW if LATEST_EACH[t] > latest]
+    if ahead:
+        t0, gap = max(ahead, key=lambda x: (x[1], x[0]))
+        ahead_txt = f'本页不取 {NAME[t0]} 多出的{cn(gap)}个月'
+    else:
+        ahead_txt = '各家最新月一致'
+
+    # ── 边界二（覆盖）：可比性是分层的，逐族点名齐备几家 ────────────────────
+    FAMS = [('客户资产', ['schw_assets', 'lpla_assets', 'ibkr_assets', 'hood_assets']),
+            ('净流入', ['schw_flow', 'lpla_flow', 'hood_flow']),
+            ('融资余额', ['schw_margin', 'ibkr_margin', 'hood_margin']),
+            ('日均交易', ['schw_dats', 'ibkr_dats', 'hood_dats']),
+            ('客户现金', ['lpla_cash', 'ibkr_cash']),
+            ('账户存量', ['ibkr_accounts', 'hood_accounts'])]
+    cnt = {nm: sum(1 for c in cs if c in df.columns and np.isfinite(df[c].loc[latest]))
+           for nm, cs in FAMS}
+    full = [nm for nm, k in cnt.items() if k == len(HAS)]
+    kmin = min(cnt.values())
+    # kmin == 成员数意味着六族全齐，那时「最窄的是谁」是个没有内容的句子，整句省掉
+    narrow = [nm for nm, k in cnt.items() if k == kmin] if kmin < len(HAS) else []
+    # 月份本身抬头已经印过（「共同最新月 May-26（短板 …）」），这里不再复述
+    # 「只有」这类量词由 B.quant 按占比给：齐备的族数是当场数出来的，写死「只有」
+    # 会在六族齐备的那个月印出「六族里齐备的只有六族」。
+    if not full:
+        s1 = f'能不能比：{ahead_txt}；{cn(len(FAMS))}族没有一族{cn(len(HAS))}家齐备。'
+    else:
+        s1 = (f'能不能比：{ahead_txt}；'
+              f'{B.quant(len(full), len(FAMS), "族")}{cn(len(HAS))}家齐备'
+              f'（<b>{"、".join(full)}</b>）'
+              + (f'，{"、".join(narrow)}各{cn(kmin)}家。' if narrow else '。'))
+
+    # ── 相对表现 + R5：名次一律按还原口径报 ─────────────────────────────
+    # LP_YOY_EX 是当期的模块级常量，这里改成按 latest 现算 —— 否则把序列截到历史某月
+    # 重放时，用的还是当期那个 t12，名次会算在一个不属于那个月的还原口径上。
+    yy = {NAME[t]: float(df[f'{t}_yoy'].loc[latest]) for t in ('schw', 'lpla', 'ibkr', 'hood')
+          if t in HAS and f'{t}_yoy' in df.columns and np.isfinite(df[f'{t}_yoy'].loc[latest])}
+    order = sorted(yy, key=yy.get, reverse=True)
+    lp_ex, _t12 = lp_yoy_ex(df, latest)
+    s2 = ''
+    if len(order) >= 2 and lp_ex is not None and NAME['lpla'] in yy:
+        adj = dict(yy, **{NAME['lpla']: lp_ex})
+        order2 = sorted(adj, key=adj.get, reverse=True)
+        r0, r1 = order.index(NAME['lpla']) + 1, order2.index(NAME['lpla']) + 1
+        # 完整位次留给 Exhibit 1 与 Exhibit 4 的端点标签，「谁居首」也留给它们 ——
+        # 位次表本身不是解读（本页第一句的职责是「能不能比」而不是「谁更强」），
+        # 只有 LPL 那一处**名次会翻**才是。
+        a0, a1 = cn(r0, ordinal=True), cn(r1, ordinal=True)   # 序数写「第二」不是「第两」
+        s2 = '客户资产 y/y 剔并购（还原口径）后 LPL '
+        s2 += (f'从第{a0}掉到第{a1}、与 {order2[r1 - 2]} 换位。' if r1 > r0
+               else f'仍居第{a1}。')
+    else:
+        # 早年的月份 y/y 根本凑不齐（Schwab 2018-05 起、LPL 2018-07 起、HOOD 2023-04 起，
+        # 各自要满 12 个月才有分母）。那时这一句改说「谁还进不了这个横比」——
+        # 这仍是「能不能比」，比硬凑一个两家的名次表有用。
+        young = [NAME[t] for t in ('schw', 'lpla', 'ibkr', 'hood')
+                 if t in HAS and NAME[t] not in yy]
+        if young and yy:
+            s2 = (f'客户资产 y/y 这个月只有{cn(len(yy))}家算得出，{"、".join(young)} '
+                  f'的 12 个月前分母还缺，横比先看水平值。')
+        elif len(order) >= 2:
+            # 还原口径算不出来（缺 LPL 的分母）时，只报能报的两端，不写半句还原
+            s2 = f'客户资产 y/y 里 {order[0]} 居首、{order[-1]} 垫底。'
+
+    # ── R2 基数护栏：有机增速上月落在全样本底部，本月的环比要对着它读 ──────
+    # 这里刻意不报环比（本页规矩：流量类不算环比百分比，比率类的 m/m 用 pp 且已在
+    # Exhibit 1 里印过），只报**排名** —— 排名才是「环比看着猛」的解释。
+    # 「跌到 / 回升」这类方向词一律不写：它们描述的是上上月→上月、上月→本月的走向，
+    # 而句子里给的是名次，两者下个月未必同向（一家升一家跌时「同时跌到」就是假话）。
+    ORG = [(t, f'{t}_org') for t in ('schw', 'lpla')
+           if t in HAS and f'{t}_org' in df.columns and np.isfinite(df[f'{t}_org'].loc[latest])]
+    rows = []
+    for t, c in ORG:
+        a = df[c].values
+        n = fin(a)
+        be = B.base_effect(a, i)
+        if be['prev_rank'] is None or be['rank'] is None or n < 2:
+            continue                       # 上月缺值：这一家不进句子，而不是让整页失败
+        rows.append((NAME[t], n, be['prev_rank'], be['rank']))
+    s3 = ''
+    if rows:
+        # 「第 65/96」把名次与样本长度绑成一个自足的词 —— 各家序列长度不同，
+        # 光给名次没法比。名次与年化与否无关（同一条序列同乘 12），故省掉「年化」两个字。
+        #
+        # 排法从「公司名一串、上月名次一串、本月名次一串」改成**一家一段**：原来的
+        # 「Schwab、LPL … 上月同落全样本倒数第 7、4，本月仍只第 65/96、77/94」要读者
+        # 在三串并列之间来回 zip 才知道哪个数属于谁，是全段最难读的一句。
+        # 两个月都用同向的「第 x/n」（不再上月说倒数、本月说正数）：一句话里换一次
+        # 方向，读者就得先判断这个名次是从哪头数起。
+        #
+        # 句尾那个 all() 算出来的「仍只」一并去掉：一个词同时替两家下结论，
+        # 一升一降的月份必然对其中一家失真，而「第 65/96」本身已经把高低说清楚了。
+        s3 = ('基数：有机增速（推导值）的全样本名次，'
+              + '；'.join(f'{nm} 上月第 {prv}/{n}、本月第 {cur}/{n}'
+                          for nm, n, prv, cur in rows) + '。')
+
+    # ── 口径背离（R1 + R4）：绝对额与归一化占比同月一个到顶、一个到底 ─────
+    # 「创新高 / 却 / 最低」全部挂在当月名次上。绝对额未必每月都在最前、占比也未必
+    # 每月都在最后，任何一个写死的方向词都会在某个月与它自己引用的数字打架。
+    cash, ast = df['ibkr_cash'].values, df['ibkr_assets'].values
+    cpct = df['ibkr_cash_pct'].values
+    s4 = ''
+    if i >= 12 and B.need(cash[i], cash[i - 12], ast[i], ast[i - 12], cpct[i]):
+        pu = B.per_unit(cash, ast, i, scale=100.0)
+        n_c, n_p = fin(cash), fin(cpct)
+        r_hi, r_lo = B.rank_of(cash, i), B.rank_of(-cpct, i)
+        # T3：绝对额若几乎只增不减，「N 个月最高」每月都成立，是噪音不是信息
+        mono = B.is_monotonic(cash)
+        top = f'创 {n_c} 个月新高' if (r_hi == 1 and not mono) else f'排{B.top_pct(r_hi, n_c)}'
+        # 两条回溯长度相同才叫「同期」：那才准确说出「同一段历史里一个到顶、一个到底」
+        bot = (('落到同期最低' if (r_hi == 1 and n_c == n_p and not mono)
+                else f'落到 {n_p} 个月最低')
+               if r_lo == 1 else f'在倒数{B.top_pct(r_lo, n_p)}')
+        diverge = not mono and r_hi / n_c <= 1 / 3 and r_lo / n_p <= 1 / 3
+        s4 = f'IBKR 现金绝对额{top}、占比{"却" if diverge else "则"}{bot}'
+        # R4：只报两个增速之商，不做「一半分子一半分母」的比例拆分（那在数学上就是错的）
+        if B.need(pu.get('yoy'), pu.get('num_yoy'), pu.get('den_yoy')):
+            # 落点按**两个增速的大小关系**分支，不是只按分子的正负。
+            # 原来写的是「分子涨就叫摊薄」：历史重放里 113 个可算月份中有 22 个
+            # （2022 全年、2020-03/04 等）分母同比是负的，占比其实在升，句子却紧挨着
+            # 「现金 +12.7% ÷ 资产 -18.9%」印出「摊薄非撤资」—— 定性词与它自己引用的
+            # 两个数字打架。摊薄的定义就是分母跑得比分子快，判据只能是 den > num。
+            n_yy, d_yy = pu['num_yoy'], pu['den_yoy']
+            land = ('分子自己在缩' if n_yy <= 0 else
+                    '摊薄非撤资' if d_yy > n_yy else '分子跑赢分母')
+            s4 += (f'（推导值：现金 {B.pct(n_yy)} ÷ 资产 {B.pct(d_yy)}，'
+                   f'<b>{land}</b>）')
+        s4 += '。'
+        # 这里曾经再接一句 LPL 的现金占比（「亦为全样本最低，降幅 X% 来自 Commonwealth
+        # 并表当月」）。撤掉的理由见本函数 docstring 的「分寸」：同一个指标换第二家讲
+        # 是逐家展开，读者拿到的是第二个例子而不是第二个层次。
+        # **要写回来就得连着还原一起写回来**：LPL 的占比分母被并表机械摊薄，
+        # 极值断言必须先用 acq_roll12() 剔掉滚动 12 个月的 Acquired NNA 再判，
+        # 还原后不成立就不许写「最低」。
+
+    # ── R1 的横截面变体：「谁在峰值」受各家披露起点长短左右 ──────────────
+    MG = [(NAME[t], f'{t}_mgn_pct') for t in ('schw', 'ibkr', 'hood')
+          if t in HAS and f'{t}_mgn_pct' in df.columns and np.isfinite(df[f'{t}_mgn_pct'].loc[latest])]
+    pk = B.peak_scan(MO, [(nm, df[c].values) for nm, c in MG], i)
+    ln = {nm: fin(df[c].values) for nm, c in MG}
+    at, off = pk['at_peak'], pk['off_peak']
+    # 分母用**真扫过的条数**，不是 len(MG)：被 skip_monotonic 剔掉的那条既不在 at_peak
+    # 也不在 off_peak，拿 len(MG) 当分母会让「三条里只有一条」的三与实际扫描数对不上。
+    n_scan = len(at) + len(off)
+    # 被剔掉的必须点名。否则某家一旦越过 is_monotonic 的 0.9 阈值（Schwab 实测 0.875，
+    # 只差 0.025），它会静悄悄从扫描里消失，而句子仍在替它下结论。
+    skip = f'（{"、".join(pk["skipped"])} 几乎只增不减，未入扫描）' if pk['skipped'] else ''
+    s5 = ''
+    if at and off:
+        nm_at = min(at, key=lambda x: ln[x])           # 历史最短的那条：「在峰值」最不值钱
+        ref, refm = max(off, key=lambda x: ln[x[0]])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）'
+              f'{B.quant(len(at), n_scan, "条")}在自身峰值：{nm_at} 仅 {ln[nm_at]} 个月，'
+              f'{ref} 的 {ln[ref]} 个月峰值在 {refm}{skip}。')
+    elif off and n_scan == 1:
+        # 只剩一条时不写「一条里无一条」：那句话读起来像模板没拼好
+        ref, refm = off[0]
+        s5 = (f'融资余额占比（推导值）本月只有 {ref} 一条有数{skip}，'
+              f'它也不在自身峰值 —— 峰值停在 {refm}。')
+    elif off:
+        ref, refm = max(off, key=lambda x: ln[x[0]])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）里无一条在自身峰值{skip}，'
+              f'历史最长的 {ref} 峰值停在 {refm}。')
+    elif at:
+        nm_at = min(at, key=lambda x: ln[x])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）本月全部在自身峰值{skip}，'
+              f'但最短的 {nm_at} 只有 {ln[nm_at]} 个月历史 —— 长短不同不是同一件事。')
+
+    return B.render([s1, s2, s3, s4, s5])
+
+
+BRIEF = compose_brief(df, LATEST)
+
 payload = {
     'ticker': 'wealth',
     'tracker': 'Wealth & Brokerage Cross-Section',
@@ -1194,6 +1479,9 @@ payload = {
                  f'（短板 {LAG}）· 版式沿用 Goldman Sachs GIR 的 monthly-metrics 体例 · '
                  '仅图表，无观点'),
     'headline': headline,
+    # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+    # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+    'brief': BRIEF,
     'hub_line': (f'共同最新月 {mlab(LATEST)}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）· '
                  f'{len(HAS)} 家 · {len(ex)} 张图'),
     'source': SRC,

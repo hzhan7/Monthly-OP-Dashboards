@@ -44,10 +44,12 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
 
+import brief as B
 import payload_guard
 import pctile
 
@@ -952,6 +954,257 @@ notes = [
     '比坐标轴多给一位小数，可直接与公司披露逐条核对。',
 ]
 
+# ────────────────────────── 顶部数据总结（brief）──────────────────────────
+def compose_brief(df, nd, bk_nd, brk_sweep):
+    """HOOD 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R5 标注 /
+    R6 有效位），那边只算事实，句子在这里拼 —— 措辞是口径的一部分，属于各家自己。
+    一行 `headline` 与 Exhibit 1 给的是**读数**，这里只写图表本身讲不出来的三件事：
+    基数效应、口径背离、所处区间；两边印过的数字一个都不复述。
+
+    每个数字都当场从序列算，**没有一处硬编码**：排名、峰值停在哪个月、「已 N 个月没回去」、
+    多几天少几天，下个月重跑全部自己会变。
+
+    ═══ HOOD 独有，别家不能照抄 ═══
+      · **同一个月里有两套日历，而且方向可以相反**：股票/期权走 `eqopt_trading_days`
+        （含半日，故有 .5），加密 7×24 走 `crypto_trading_days`（= 日历日）。本月股票多一天、
+        加密少一天，R3 的修正一条往下压、一条往上抬。别家只有一套日历，照抄必然把方向搞混，
+        所以「多/少」两处措辞由 `dday` 的符号现算，不写死；表面与日均**两个数直接摆出来**
+        （样板 ibkr 就是「期权表面跌 6.7%、日均实跌 11.0%」），不写「读高 X pp」——
+        后者要读者自己做一次减法才拿得到真正该用的那个数。
+      · **vol_\\* 与 adv_\\* 两套口径都在同一张表里**：`vol_*` 是当月合计、`adv_*` 是公司
+        自己已经日均化的。R3 只能喂 `vol_*`；把 `adv_*` 再除一次交易日会造出一个根本不存在
+        的修正。这条只管**喂进去的是哪一列**，不写进正文 —— 「表内 ADV 已日均化、别再除
+        一次」是写给构建者的规则备忘，读者用不上。
+      · **总资产恒等式的残差**：HOOD 同时披露资产存量与净流入，市值变动只能由
+        `tpa.diff() − nd` 反解，是**推导值**（R5 必须标）。别家没有净流入这一列，
+        做不了「资产环比转跌 ≠ 客户在撤」这个拆分。
+      · **增量里混着三笔并购**：Bitstamp（进加密成交量）、TradePMR（进净流入）、
+        WonderFi（进净流入与客户数）。所以「净流入创新高」必须先说清是不是外延，
+        「加密同比转正」要拆成并购来的 Bitstamp 与原生 App 两个口径 —— 后者本月与合计反向。
+        跨不跨断点一律用 `spans()` 现算，断点滚出窗口后这半句自己会消失。
+      · **现金两行是互通的**：High-Yield Cash 改版把逾 $6bn 从 sweep 挪到 deposits，
+        单看任一行的同比都是改版的产物，只有两者合计（推导值）跨得过断点。
+      · **峰值扫描的篮子要过两道筛，不是一道**：`peak_scan` 自带的 `is_monotonic` 只看
+        环比方向（diff ≥ 0 的比例），能挡住 `funded_customers`，却挡不住 `margin_book`
+        —— 后者上下波动、diff 比例只有 0.87 过不了 0.90 那道门，可它近两年有 20/24 个月
+        都 ≥ 自身滚动 36 个月的最大值，「又创新高」四个月里三个多月都成立，同样是噪音。
+        所以这里额外过一道 `pctile.is_dead`（只读引用，与汇总表分位留空**同一条口径**）：
+        Exhibit 1 那一格留空、brief 却说它创新高，是同一张页面自相矛盾。
+
+    ═══ 分寸：与 build/ibkr.py 的 compose_brief() 并排读 ═══
+    那一版是用户逐句验收过的标准，既是**上限也是下限**：四句、一句一个意思、~300 字
+    （`B.render` 护栏 230-380）。本页照它的四个层次排 —— 规模（旗舰读数 + 峰值扫描）/
+    增量归属（净流入与市值变动）/ 日历 / 口径背离。样板每一句都是「读数 + 它在历史里的
+    位置」，所以四句里的比较都成对给数，不留光秃秃的名次或光秃秃的变化率。
+
+    砍掉的是**同一件事印两遍**和写给构建者的备忘：
+      · 日历差「原样进收入图」那半句 —— 讲的是页面机制，不是本月读数；
+      · 剔除列的逐个点名 —— 早期月份能点到八条、光这半句 44 字，讲的还是筛选口径，
+        改成只报条数（篮子多大、剩几条在比，读者要的是这个；名字在 Exhibit 1 里，
+        那一格本来就留空）；
+      · 「已 N 个月没回去」（＝本月与刚印出的峰值月之差，读者自己能减）；
+      · 市值变动残差的历史名次（净流入已经给过一个全样本名次）；
+      · Bitstamp 占比（Exhibit 25 画的就是这一条）。
+    留下的一个字都不能省：「（推导值＝资产变动−净流入）」「（该月并入 WonderFi，口径
+    不同）」「（推导值，同比 …）」这类**口径标注** —— 它们才是这一段存在的理由。
+
+    后两处砍掉的细节留成**补丁**（`s1_long` / `s2_long`）：任何一句因缺值整句不写、总长
+    掉到 250 字以下时自动补回。否则「缺一个读数 → 该句不写」会变成「整页当月发不出去」，
+    正好走到 `B.need()` 想避免的反面。
+    """
+    M = [str(p) for p in df.index]
+    i = len(M) - 1
+    A = lambda c: np.asarray(df[c].values, float)
+    # 金额一处定义：负号用 U+2212（与页面其余处一致），符号由数值现定，不写死。
+    # 四舍五入后为 0 时不带符号 —— 「−$0.0bn」是格式化产物不是数据（brief.py 的
+    # num()/pct() 用的是同一条规矩），夹在一片两位数金额里会让读者停下来猜它是不是缺失值。
+    def bn(v, sign=False):
+        s = '' if abs(v) < 0.05 else ('−' if v < 0 else ('+' if sign else ''))
+        return f'{s}${abs(v):,.1f}bn'
+
+    # ── 第一层 规模：R1 峰值扫描。量、融资、资产、生息四类混在一个篮子里扫，
+    #    谁在峰值上由数据说了算。（样板 ibkr 的第一句也是规模 + 它在历史里的位置。）
+    dats = A('dats_equity_mn') + A('dats_options_mn') + A('dats_crypto_mn')
+    basket = [('股票ADV', A('adv_equity_usdbn')), ('期权ADV', A('adv_options_mn')),
+              ('事件合约ADV', A('adv_event_mn')), ('总DATs', dats),
+              ('融资余额', A('margin_book_usdbn')), ('加密ADV', A('adv_crypto_usdmn')),
+              ('总平台资产', A('total_platform_assets_usdbn')),
+              ('Cash sweep', A('cash_sweep_usdbn')),
+              ('证券出借收入', A('seclend_total_usdmn')),
+              ('入金客户', A('funded_customers_mn'))]
+    # 两道筛：`is_dead`（与汇总表分位留空同一条口径，逮住 margin book 这种上下波动
+    # 但常年贴着自身高位的列）+ `peak_scan` 自带的 `is_monotonic`（逮住入金客户）。
+    # 只用后一道，就会出现「Exhibit 1 那格留空、brief 却说它创新高」的同页矛盾。
+    dead = {nm for nm, a in basket
+            if pctile.is_dead([float(v) if np.isfinite(v) else None for v in a])}
+    pk = B.peak_scan(M, [(nm, a) for nm, a in basket if nm not in dead], i)
+    n_at, n_off = len(pk['at_peak']), len(pk['off_peak'])
+    n_tot = n_at + n_off
+    # 样板的第一句是「当月读数 + 它在历史里的位置 + 相对表述」，三样都有。原来这里只有
+    # 相对表述（几条里几条创新高），一个读数都没有，读者要翻回一行数据条才知道规模多大。
+    # 旗舰读数取总平台资产：它是本页的规模基数，也是下一句「资产环比转跌」的主语。
+    # 名次现算，不写死 —— 它并不是每月都在最高位（本月就排第 2）。
+    tpa_s = A('total_platform_assets_usdbn')
+    lead = []
+    if B.need(tpa_s[i]):
+        r = B.rank_of(tpa_s, i)
+        # 这一条取整到 $bn（R6：几百亿的量级给到小数位没有信息，还会与一行数据条上的
+        # $369bn 对不上，读者会以为是两个数）。市值变动那种个位数金额仍给一位小数。
+        lead.append(f'{df.index[i].month}月末总平台资产${B.num(tpa_s[i], 0)}bn'
+                    + ('为全样本最高' if r == 1 else f'排全样本第{r}'))
+    scan = scan_long = ''
+    if n_tot:
+        # 三处都得能承受「全在峰值上」与「一条都不在」两种极端：名单要有上界（超过 5 条只列
+        # 前 5 条加「等」），空名单要换句式。不然某个月这一句会把 render 的字数护栏撑爆，
+        # 或者 min() 在空的 off_peak 上抛 ValueError —— 两种都是整页当月发不出去。
+        # 「只有/有/多达」交给 B.quant 按占比现算：写死「只有」而 N 是算出来的，
+        # 全线创新高的月份就会印出「八条里只有八条」，把普涨写成稀缺。
+        at_txt = '、'.join(pk['at_peak'][:5]) + ('等' if n_at > 5 else '')
+        head = f'{B.quant(n_at, n_tot, "条")}创新高（{at_txt}）' if n_at else '没有一条创新高'
+        # 被两道筛剔掉的**只报条数，不逐个点名**：名字要占到 44 字（早期月份能点到八条），
+        # 而它讲的是筛选口径不是本月读数；名字在 Exhibit 1 里，那一格本来就留空。
+        # 条数不能省：它交代了篮子原本多大、现在拿几条在比，否则「两条存量指标里…」
+        # 会读成数据缺失。措辞取两道筛都成立的那个交集（单调列贴自身最大值、死列贴
+        # 滚动窗口端点，都是「贴顶」），写「单调只增」会冤枉后者。
+        skipped = [nm for nm, _ in basket if nm in dead or nm in pk['skipped']]
+        skip_txt = f'；另{B.cn(len(skipped))}条常年贴顶不计入' if skipped else ''
+        tail = tail_long = '，没有一条落在峰值以外'
+        if pk['off_peak']:
+            # 「已 N 个月没回去」只在总长不够时才补：N 就是本月与刚印出来的峰值月之差，
+            # 读者自己能减，正常月里属同一个数印两遍。
+            old_nm, old_k = min(pk['off_peak'], key=lambda t: t[1])
+            tail = f'，最久的{old_nm}峰值停在{old_k}'
+            tail_long = tail + f'、已{i - M.index(old_k)}个月没回去'
+        scan = f'{B.cn(n_tot)}条存量指标里{head}{tail}{skip_txt}'
+        scan_long = f'{B.cn(n_tot)}条存量指标里{head}{tail_long}{skip_txt}'
+    elif pk['skipped'] or dead:
+        # 篮子被两道筛清空的月份（早期几乎每条都还在单调爬坡）：这一句照样要成立，
+        # 不能整句消失 —— 否则总长掉到 render 的下限以下，整页当月发不出去。
+        scan = scan_long = (f'{B.cn(len(basket))}条存量指标全部常年贴着自身极值，'
+                            f'本月峰值扫描没有可比对象')
+    # 读数与扫描各自可能不存在，句子仍要成立：两半都空才整句不写。
+    s1 = '，'.join(lead + [scan] if scan else lead)
+    s1_long = '，'.join(lead + [scan_long] if scan_long else lead)
+    s1, s1_long = (s1 + '。' if s1 else ''), (s1_long + '。' if s1_long else '')
+
+    # ── 第二层 增量归属：恒等式残差 资产变动 − 净流入 = 市值变动（推导值，R5）。
+    #    净流入的名次跨不跨并购断点现算。
+    ndv, mg = np.asarray(nd.values, float), A('market_gains_usdbn')
+    d_tpa = float(A('tpa_change_usdbn')[i])
+    s2 = s2_long = ''
+    if i >= 1 and B.need(ndv[i], mg[i], d_tpa):
+        be = B.base_effect(ndv, i)
+        # 读数 + 它在历史里的位置一起给（样板每一句都是这么写的）：只说「为全样本最高」
+        # 是个没有读数的名次，读者要翻回一行数据条才知道最高是多少。
+        nd_rank = '为全样本最高' if be['rank'] == 1 else f'排全样本第{be["rank"]}'
+        xs = [lab for p, lab in bk_nd if spans(p, df.index[i - 1], df.index[i])]
+        xs_txt = f'（该月并入{"、".join(xs)}，口径不同）' if xs else ''
+        # 三种月份都要说得通：资产跌而流入正（本月）、资产涨但市值在拖、资产涨且市值在推。
+        # 判据是 tpa 的环比方向与残差的符号，一律现算 —— 把「资产环比转跌」写死，
+        # 下个月资产回升时这一句就是一句假话，而没有任何自动化会发现。
+        # 残差的历史名次（原来的「为全样本第 N 大负贡献」）砍掉了：净流入那半句已经给了
+        # 一个全样本名次，残差再给一个是同一类信息的第二遍，而「推导值＝资产变动−净流入」
+        # 这个口径注解砍不得（R5 + 它是这一句能不能被读者自己验算的全部依据）。
+        # 「不是客户在撤」还得看净流入本身的符号：净流入转负的月份资产跌就**真的**有
+        # 客户在撤，这句写死就是把坏消息读成好消息。三个符号（tpa 环比、残差、净流入）
+        # 定四种说法，一个都不能预设。
+        pos = ndv[i] > 0
+        if mg[i] < 0:
+            opening = ('资产环比转跌不是客户在撤' if pos and d_tpa < 0
+                       else '资产环比是净流入顶上去的' if pos else '资产在跌、客户也在撤')
+            s2 = (f'{opening}：净流入{bn(ndv[i])}{nd_rank}{xs_txt}，'
+                  f'同期市值变动<b>{bn(mg[i])}</b>（推导值＝资产变动−净流入）')
+            s2_more = f'，为第{B.rank_of(-mg, i)}大负贡献'
+        else:
+            s2 = (f'{"资产的增量不全是客户给的" if pos else "资产靠市值撑着、客户在净撤出"}：'
+                  f'净流入{bn(ndv[i])}{nd_rank}{xs_txt}，'
+                  f'{"其余来自" if pos else "同期"}市值变动<b>{bn(mg[i], sign=True)}</b>'
+                  f'（推导值＝资产变动−净流入）')
+            s2_more = f'，为第{B.rank_of(mg, i)}大正贡献'
+        s2, s2_long = s2 + '。', s2 + s2_more + '。'
+
+    # ── 第三层 日历：R3 日历护栏。喂进去的必须是**当月合计**的 vol_*，不是已经日均化的 adv_*。
+    tde, tdc = A('eqopt_trading_days'), A('crypto_trading_days')
+    ce = B.calendar_split(A('vol_equity_usdbn'), tde, i)
+    cc = B.calendar_split(A('vol_crypto_usdbn'), tdc, i)
+    s3 = ''
+    # 两条腿分开处理：某个月只有一条日历/一条成交量缺读数时，`calendar_split` 只把那一条
+    # 判成 None，另一条照样成立。要求两条同时可用会让整句消失，而整句消失会把总长压到
+    # render 的下限以下 —— 一句解读的缺值，代价变成整页当月发不出去。
+    legs = [('股票', '交易日', ce), ('加密', '日历日', cc)]
+    have = [(nm, u, c) for nm, u, c in legs if c]
+    if have:
+        # 「方向相反」是本月的事实，不是这一页的常设结论：两条日历同向、只动一条、
+        # 两条都没动的月份都会出现，全都得说得通，措辞按 dday 的符号现算。
+        dtxt = lambda d: '持平' if d == 0 else ('多' if d > 0 else '少') + f'{abs(d):g}天'
+        # |gap| 小于 0.05pp 就当没有日历差 —— 否则会印出一个由格式化造出来的假修正。
+        sg = lambda c: 0 if abs(c['gap_pp']) < 0.05 else 1
+        day_txt = '、'.join(f'{nm}{u}{"比上月" if k == 0 else ""}{dtxt(c["dday"])}'
+                           for k, (nm, u, c) in enumerate(have))
+        # 表面与日均两个数直接摆出来（样板：「期权表面跌 6.7%、日均实跌 11.0%」），
+        # 不写「读高 X pp」：那要读者自己做一次减法才拿得到真正该用的那个数，而本月
+        # 加密就是个现成的例子 —— 表面 +33.6%、日均 +38.1%，pp 差写法两个数一个都不给。
+        # 没动日历的那条只印一个数：raw 与 per_day 相等时印两遍是假的对比。
+        pair = lambda nm, c: (f'{nm}表面{B.pct(c["raw"])}、日均{B.pct(c["per_day"])}'
+                              if sg(c) else f'{nm}{B.pct(c["raw"])}')
+        nums = '，'.join(pair(nm, c) for nm, u, c in have)
+        if any(sg(c) for nm, u, c in have):
+            s3 = f'{day_txt}：{nums}。'
+        else:
+            # 两条都没动（或只剩一条腿且没动）：这一句仍要成立，措辞换成「不必修正」。
+            s3 = f'{day_txt}，合计额不必做日历修正：{nums}。'
+
+    # ── 口径背离：加密的增量是外延还是内生；现金两行被改版对挪，只有合计可比。
+    # Bitstamp 占比取派生列（Exhibit 25 画的同一条），不在这里再除一遍 —— 口径只能有一处
+    # 定义。它在这一句里只当**开关**（并购并进来了没有）用，占比本身不印：Exhibit 25 已经
+    # 画了它，再写一遍就是复述式摘要。
+    app, tot = A('adv_crypto_app_usdmn'), A('adv_crypto_usdmn')
+    bs_share = A('crypto_bitstamp_share')[i]
+    sw, dep = A('cash_sweep_usdbn'), A('cash_and_deposits_usdbn')
+    # 序列开头不足 12 个月时退到环比，标签一起换掉：直接写 a[i-12] 会被 numpy 的负索引
+    # 悄悄绕到序列末尾，印出一个由回绕算出来的假同比，而且不报错。
+    lag = 12 if i >= 12 else 1
+    lab = '同比' if lag == 12 else '环比'
+    parts = []
+    if i >= 1 and B.need(app[i], app[i - lag], tot[i], tot[i - lag], bs_share) \
+            and app[i - lag] and tot[i - lag]:
+        app_g, tot_g = app[i] / app[i - lag] - 1, tot[i] / tot[i - lag] - 1
+        # Bitstamp 占比（57.6%）本身没写进来：Exhibit 25 画的就是这一条，写进 brief 是
+        # 复述图上已有的数。brief 该给的是图上没有的那半句 —— 原生 App 与合计反向。
+        # 并购之前 Bitstamp 占 0，那几个月 app ≡ tot，「弱于/强于合计」是拿一条序列
+        # 和它自己比，必须换句式。
+        peer = '并购后的合计' if bs_share >= 0.05 else '合计'
+        div = (f'与{peer}反向' if (app_g < 0) != (tot_g < 0)
+               else f'弱于{peer}' if app_g < tot_g else f'强于{peer}')
+        # 变化率后面挂上读数本身：样板每一处比较都是「读数 + 变化」成对给的，
+        # 只给一个 -13.9% 读者无从判断这条腿有多大分量（它是页面上唯一的原生口径）。
+        parts.append(f'加密原生 App ADV ${B.num(app[i], 0)}mn/日、{lab}{B.pct(app_g)}、{div}'
+                     if bs_share >= 0.05 else
+                     f'加密还全部是原生 App（Bitstamp 未并入），ADV ${B.num(app[i], 0)}mn/日、'
+                     f'{lab}{B.pct(app_g)}')
+    if i >= 1 and B.need(sw[i], dep[i], sw[i - lag], dep[i - lag]) and (sw[i - lag] + dep[i - lag]):
+        rec = ('被 High-Yield Cash 改版对挪' if spans(brk_sweep, df.index[i - lag], df.index[i])
+               else '口径互通')
+        parts.append(f'现金两行{rec}，只有合计（推导值{bn(sw[i] + dep[i])}，{lab}'
+                     f'{B.pct((sw[i] + dep[i]) / (sw[i - lag] + dep[i - lag]) - 1)}）可比')
+    # 原来这句以「两处背离：」起头 —— 五个字的套话，而且「两」是写死的：某一处因缺值
+    # 不写时它就是假话。直接删掉，两处背离本来就并列在句子里，读者不需要先被数一遍。
+    s4 = '；'.join(parts) + '。' if parts else ''
+
+    # ── 组装：规模 / 增量归属 / 日历 / 口径背离，与样板 ibkr 的四层同序。
+    #    上面每一句都可能因缺值整句不写（`B.need` 的正确用法），但 render 的字数下限是
+    #    硬的：少一句就可能掉到 230 以下、整页当月发不出去 —— 那正是 need() 要避免的
+    #    结果。所以砍掉的两处细节留成**补丁**：正常月不用，某句真的消失时再补回来。
+    #    补的是早已算好的事实，不是凑字数的套话。
+    body = [s1, s2, s3, s4]
+    for k, longer in ((0, s1_long), (1, s2_long)):
+        if longer and len(re.sub(r'<[^>]+>', '', ''.join(body))) < 250:
+            body[k] = longer
+    return B.render(body)
+
+
 # ────────────────────────── payload ──────────────────────────
 _tpa_yoy = float(tpa.iloc[-1] / tpa.iloc[-13] - 1)
 _tpa_mom = mom_of(tpa)
@@ -1001,6 +1254,7 @@ payload = {
                 f'{q.index[0]} – {LAST_Q}（{len(q)} 个季度） · '
                 f'版式沿用 Goldman Sachs GIR「HOOD Monthly」，含 GS 版没有的收入桥样本外检验',
     'headline': headline,
+    'brief': compose_brief(df, nd, BK_ND, BRK_SWEEP),
     'hub_line': f'总平台资产 ${tpa.iloc[-1]:,.0f}bn（{pp_txt(_tpa_yoy)} y/y）·'
                 f'净流入 ${nd.iloc[-1]:,.1f}bn · 入金客户 {_fc:,.1f}mn',
     'source': SRC,

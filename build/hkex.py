@@ -21,10 +21,12 @@
 import datetime
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
 
+import brief as B
 import payload_guard
 import pctile
 
@@ -270,6 +272,261 @@ def mom(a):
 
 # 原先这里有个 avg_prior12()，给 gs_bar 的 12 个月均线用。本页六张 lvl_bar 图已按原 deck
 # 改画次轴 y/y（见 yoy_rhs），均线不再出现，函数随之删除 —— 留着会让下一个人以为还有图在用。
+
+
+def _plain_len(sentences):
+    """句子列表的去标签字数 —— 与 `brief.render()` 的字数口径逐字符一致（含 h4 标题）。"""
+    return len(re.sub(r'<[^>]+>', '', B.TITLE + ''.join(s for s in sentences if s)))
+
+
+def _liang(txt):
+    """量词前的「2」在中文里写「两」，不写「二」。
+
+    `brief.cn()` 给的是序数形式（一二三…），共享规则库是只读的，所以在本页的展示层改：
+    「二条主序列」「多披露二个月」都不是中文。只碰这两个组合，别的「二」（月份、名次
+    都是阿拉伯数字）碰不到。
+    """
+    return txt.replace('二条', '两条').replace('二个月', '两个月')
+
+
+def compose_brief(df, LATEST, NEWEST):
+    """HKEX 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R4 单位恒等 /
+    R5 标注 / R6 有效位），那边只算事实，句子在这里拼 —— 措辞是口径的一部分，属于各家自己。
+    职责与 `headline` 互补：那一行给读数，这一段给「读数该怎么读」，所以**刻意不复述**
+    headline 与 Exhibit 1 已经印过的水平值、m/m、y/y，只讲排名／峰值位置／背离／口径错位。
+    每个数字都当场从序列算出，没有一处硬编码：排名、「N 个月最低」、峰值月份、倍数、
+    「多披露一个月」的那个月份，下月重跑都会自己变。
+
+    ═══ 分寸以 build/ibkr.py 的 compose_brief() 为准（2026-08 定）═══
+    那一版是逐句验收过的样板：**四句话四个层次，每句一个意思**。本页把它对到
+    规模（峰值扫描）／基数（ADT 上月名次）／分母（期间倍数 + 换手率恒等式）／口径
+    （南向断点、各列截止月错位）—— 口径占两句，所以是五句，这是上限。
+    第一版在这里写成了七句：「成交创纪录≠规模创纪录」与后面的换手率恒等式讲的是
+    同一件事（分子创新高、分母自己在动），期间倍数又单独占一句再说第三遍，
+    读起来像研究报告摘要而不是导读。合并成一句「分母」之后三层只讲一次。
+
+    ═══ HKEX 独有，别家不能照抄 ═══
+      · **R3（日历护栏）在这一页整条不适用**：HKEX 披露的 `adt_hkdbn` 与
+        `derivatives_adv_contracts` 本来就是 ADT / ADV（**已经日均化**），再除一次交易日
+        会造出一个根本不存在的修正。同理 R4 的 regime_ratio 在别家要先把成交量除交易日，
+        这里**不能除** —— 两条序列进去时已经是「每日」口径。
+      · **换手率是本页唯一能把「量」与「存量」接起来的推导值**（ADT × 252 ÷ 市值，
+        252 是惯例年化交易日数、非当年实际），故正文必带「（推导值）」。ADT 创新高而
+        换手率没有，差额只能是市值这个分母 —— 这个对照是 HKEX 特有的，别家没有
+        「同一个分子配一个会自己涨跌的分母」的结构。写法走 R4 的单位恒等（`per_unit`）：
+        只报**两个增速之商**（换手率同比 ≡ ADT 同比 ÷ 市值同比），不做「多少来自分子、
+        多少来自分母」的比例拆分 —— 那个拆法在数学上就是错的。
+      · **南向 ADT 的排名不能用全样本**：中间整段停发过，所以「最近 36 个观测」不是
+        三年窗口（Exhibit 1 的 3Y %ile 对它留空正是这个理由）。句子里报的是**当场从
+        观测索引算出的缺口长度**与「凑满 36 个观测要回溯到哪个月」，不报「跨 N 年」——
+        `(末月 − 首月) // 12` 的地板除会把 7.42 年写成「7 年」，而且与 Exhibit 1 表注
+        的「最近 36 个观测横跨六年多」并列在同一页上，读者会以为其中一个算错了。
+        排名改在 `tail_contiguous()` 取出的**恢复披露后连续段**里算，与 Exhibit 5
+        「缺口不用直线连」是同一条口径。
+      · **各列截止月不一样**：HKEX 是分列到货的（当前是 IPO 募资 / 衍生品 ADV / 南向
+        跑在现货前面，但**哪几列领先每个月都不一样**），而汇总表与 headline 一律锁死在
+        核心量齐备的那个月。多出来的月份只出现在核对表里，本段专门把它点出来。
+        所以「有没有错位」与「IPO 是不是领先的那一列」必须**分两级判**：合成一个守卫时，
+        IPO 不领先而别的列领先的月份会落到 else，印出与事实相反的「各列截止月一致」。
+    """
+    M = [str(p) for p in df.loc[:LATEST].index]
+    i, n = len(M) - 1, len(M)
+    d = df.loc[:LATEST]
+    adt, dv = d['adt_hkdbn'].values, d['deriv_adv_k'].values
+    mc, vel = d['mktcap_hkdtn'].values, d['velocity'].values
+    # 南向不取 .values：它有真实缺口，下面一律走 dropna() 后的 ser / tail_contiguous(seg)。
+
+    # ── R1：峰值扫描。四条主序列都不是单调列（T3），故走 skip_monotonic 默认值；
+    #    真有一条变成只增不减时它会被自动剔除，句中的「N 条」也随之减一。
+    ADT_LAB, VEL_LAB = '现货ADT', '换手率'
+    pk = B.peak_scan(M, [(ADT_LAB, adt), ('衍生品ADV', dv), ('市值', mc), (VEL_LAB, vel)], i)
+    grp = {}
+    for nm, k in pk['off_peak']:
+        grp.setdefault(k, []).append(nm)
+    # 组内（同一个峰值月的几条序列）用「、」，组间用「；」。两级都用「、」的话，三组以上
+    # 会串成「A停在M1、B、C停在M2」，B 看上去像个没有归属的裸项，读者判不出它归哪个月。
+    off_txt = '；'.join(f'{"、".join(v)}停在{k}' for k, v in grp.items())
+    at = pk['at_peak']
+    tot = len(at) + len(pk['off_peak'])
+    # 「只有」必须由算出来的占比决定：写死它，某个月 at_peak 变成全部时就会印出
+    # 「一条主序列里只有现货ADT创新高」这种把全线新高说成稀缺的句子。故走 B.quant。
+    #    tot == 0（序列开头几个月里四条全被 is_monotonic 判为只增不减而剔除）时整句不写：
+    #    B.cn(0) 返回 '0'，硬拼会印出「0条主序列本月一个新高都没有」。
+    #    全中与全不中各走一条自己的分支：B.quant 在 k == n 时给「多达」，而「四条里多达
+    #    四条」和它要防的「四条里只有四条」是同一种别扭，全线新高就该直说「全部」。
+    s1 = ''
+    if at and len(at) == tot:
+        s1 = f'{B.cn(tot)}条主序列本月全部创{n}个月新高'
+    elif at:
+        s1 = (f'{B.cn(tot)}条主序列{B.quant(len(at), tot, "条")}创{n}个月新高'
+              f'（<b>{"、".join(at)}</b>）')
+    elif tot:
+        s1 = f'{B.cn(tot)}条主序列本月一个新高都没有'
+    if s1:
+        s1 += (f'，{"其余" if at else "各自"}峰值：{off_txt}' if off_txt else '') + '。'
+    # ── R2：基数护栏。本页最常见的误读是把「从高位再上一档」当成低基数反弹，所以报的是
+    #    **上月自己的名次**。但这个结论有条件：上月名次掉出前四分之一时，环比里就真有
+    #    基数成分，那时必须反过来说 —— 一句写死的「不是低基数反弹」在低位月是假话。
+    #    主语必须写出来（`现货ADT上月…`）：省略主语时，承前省略会让读者把这个名次挂到
+    #    上一句最后一个名词（市值）上，而「不是低基数反弹」套到市值上正好读反。
+    #    判据用**纯四分位**（rank×4 ≤ n），不留 `max(2, …)` 那个下限：n=90 时两者都取
+    #    第 22 名、结论一字不差，但样本只有两三个月时那个下限会把「上月是全样本最低」
+    #    也算成前四分位，于是印出「不是低基数反弹」——正好读反。
+    be = B.base_effect(adt, i)
+    if be['mm'] is not None:
+        top = be['prev_rank'] * 4 <= n
+        # 名次后面补分位（走 B.top_pct，向上取整）：光看「排第 5」判不出这是高位还是中段，
+        # 而「前 6%」正是后半句那个四分位判定的可核对形式，读者能自己验。
+        # 两处不补：上月就是全样本最高（「第 1（前 1%）」是废话）；样本不足 12 个月 ——
+        # 序列开头 n=2 时「排第 2（前 100%）」是个纯噪音的百分数，重放里真会印出来。
+        prev = ('本就是全样本最高月' if be['prev_is_max'] else
+                f'排第{be["prev_rank"]}'
+                + (f'（{B.top_pct(be["prev_rank"], n)}）' if n >= 12 else ''))
+        if be['mm'] > 0:
+            judge = '不是低基数反弹' if top else '这个环比含低基数成分'
+        else:
+            judge = '是从高位往下' if top else '低位再下一档'
+        s1 += f'{ADT_LAB}上月{prev}，<b>{judge}</b>。'
+
+    # ── 分母（R4）：期间均值对期间均值 + 单位恒等，合成一句。
+    #    原先这里是三句：「成交创纪录≠规模创纪录（市值比换手率峰值月高 X%）」、
+    #    「市值为 N 个月最低、同比为正而环比在跌」、「2019 年均→近 13 个月：ADT 3.0 倍、
+    #    市值 1.4 倍」。三句讲的是同一件事——分子在创纪录、分母自己也在动——只是换了
+    #    三种度量（相对峰值月 / 相对上月与去年 / 相对起点年）。样板（build/ibkr.py）
+    #    的对应位置是**一句**：期间倍数 + 户均值的恒等式 + 一句短落点。照它合成一句。
+    #
+    #    期间倍数：ADT 进去时已是日均口径，**不再除交易日**（R3 在本页不成立）。
+    #    送进去的与印出来的必须是同一组列，否则 `down` 里会冒出一个正文没给过倍数的名字。
+    #    换手率不送进 regime_ratio：它按定义就是 ADT ÷ 市值，第三个倍数是前两个的商。
+    rg = B.regime_ratio(M, [('ADT', adt), ('市值', mc)], i)
+    r = dict(rg['ratios'])
+    head = (f'{rg["y0"]}年均→近{len(rg["win_idx"])}个月均值 ADT {r["ADT"]:.1f}倍、'
+            f'市值{r["市值"]:.1f}倍'
+            + (f'（{"、".join(rg["down"])}低于起点）' if rg['down'] else '')) if len(r) == 2 else ''
+
+    #    恒等式：换手率同比 ≡ (1+ADT 同比)/(1+市值 同比) − 1，只报两个增速之商。
+    #    scale 与 df['velocity'] 同式（×252÷1000×100），这样 pu['series'] 与图上那条线
+    #    逐点相等；读数与名次仍一律取 `vel`（图与汇总表用的就是它），一个数只有一个来源。
+    pu = B.per_unit(adt, mc, i, scale=252 / 1000 * 100)
+    body = ''
+    if B.need(vel[i]):
+        rk = B.rank_of(vel, i)
+        pos = f'为{n}个月最高' if rk == 1 else f'排{n}个月第{rk}'
+        # 「没跟着 ADT 创新高」是定性词，必须由两条序列各自在不在峰值上决定：写死它，
+        # ADT 本身不在峰值的月份就会凭空多出一个对照（本仓已经栽过一次的那类 bug）。
+        cmp_v = ('、与ADT同步见顶' if VEL_LAB in at else '、没跟着ADT创新高') if ADT_LAB in at else ''
+        body = f'{VEL_LAB}（推导值）<b>{vel[i]:.1f}%</b>{pos}{cmp_v}'
+        if B.need(pu.get('yoy'), pu.get('num_yoy'), pu.get('den_yoy')):
+            # 落点必须同时看**商的方向**与**两个增速各自的正负**。上一版照搬了 regime 版
+            # 的「ga ≥ gb → 两端同步扩张」，而 regime 的两个倍数恒为正、同比不是：
+            # 重放到 2023-01（ADT +8.8%、市值 −7.5%）就印出「两端同步扩张」，而市值在缩。
+            # 商在 ±10% 以内不给方向词——那点差异说不出谁跑赢谁。
+            if abs(pu['yoy']) < 0.10:
+                verdict = '两端大体同步'
+            elif pu['yoy'] > 0:
+                verdict = ('放大在周转不在规模' if pu['den_yoy'] > 0 else
+                           ('成交在涨而规模在缩，两头都在抬它' if pu['num_yoy'] > 0 else
+                            '成交自己也在跌，抬它的是缩水的分母'))
+            else:
+                verdict = ('规模跑在成交前面' if pu['num_yoy'] > 0 else
+                           ('成交在跌而规模还在涨' if pu['den_yoy'] > 0 else
+                            '两端同步收缩、成交跌得更多'))
+            body += (f'，同比{B.pct(pu["yoy"])}是 ADT {B.pct(pu["num_yoy"])}'
+                     f'除以市值{B.pct(pu["den_yoy"])}的商，{verdict}')
+    s2 = ('分母：' + '；'.join(x for x in (head, body) if x) + '。') if (head or body) else ''
+
+    # ── 南向的口径断点。
+    #    这里原先还有一句「三条成交量序列里只有 X 环比走低」，已整句删除，两个理由：
+    #      1) 它是**复述 headline**。抬头那一行已经逐条印出 ADT / 南向 / 衍生品 ADV 的
+    #         m/m，谁在往下走一眼可见；本段的职责是「读数该怎么读」，不是把 m/m 再数一遍
+    #         （brief.py 模块 docstring 明令禁止复述式摘要）。
+    #      2) 它的写法本身有错且不可救：`(mm or 0) < 0` 把「本月没读数」折成 0、当作
+    #         「没下跌」，于是南向停发的月份会印出「三条一致向上」，紧接着下一句又说
+    #         「南向本月未披露」——同一段自相矛盾，而南向 2022-01 起真停发过 42 个月。
+    #         条数「三条」也是写死的中文数字，不随实际有读数的序列数变化。
+    #    删掉即同时解决两件事；下面这段本来就按 seg / ser 的实际可得性分支，不折缺值。
+    # 「恢复披露后」「中间整段停发」这两句只在序列**真的有过缺口**时才成立：把它写死，
+    # 回放到停发发生之前的月份就会印出一段假历史（连续段 == 全部观测时无缺口可言）。
+    #  「本月未披露」与「本月有读数但连续段还排不出名次」是两回事，必须分开判：
+    #  合成一个 `len(seg) >= 3 and 末月对得上` 的守卫，会让序列开头只有一两个观测的月份
+    #  落到 else，印出「南向本月未披露」——而那些月份南向明明发了数。
+    ser = d['southbound_adt_hkdbn'].dropna()
+    seg = tail_contiguous(d['southbound_adt_hkdbn'])
+    gapped = len(seg) < len(ser)
+    have = bool(len(ser)) and str(ser.index[-1]) == M[i]
+    if have and len(seg) >= 3:
+        rk = B.rank_of(seg.values, len(seg) - 1)
+        if gapped:
+            idx = list(ser.index)
+            # 缺口长度与「凑满 36 个观测要回溯到哪个月」都当场算。不写「跨 N 年」：
+            # 地板除会低估跨度，且与 Exhibit 1 表注的「最近 36 个观测」并列会互相打架。
+            hole = max((idx[j] - idx[j - 1]).n - 1 for j in range(1, len(idx)))
+            why = (f'36个观测要回溯到{idx[-36]}、非三年窗口' if len(idx) >= 36
+                   else f'全部只有{len(idx)}个观测、凑不满三年窗口')
+            s3 = (f'南向名次只算恢复披露后的{len(seg)}个连续月（第{rk}）：'
+                  f'停发{hole}个月，{why}，3Y 分位留空。')
+        else:
+            s3 = f'南向在{len(ser)}个已披露月里排第{rk}，逐月连续、无缺口。'
+    elif have:
+        s3 = f'南向本月有读数，但只有{len(ser)}个已披露月，排不出名次，3Y 分位一并留空。'
+    else:
+        s3 = '南向本月未披露，它与占比两行留空' + (
+            '：该序列整段停发过，缺口一律断开不连线，也不给 3Y 分位。' if gapped else '，缺口不连线。')
+
+    # ── 口径错位：汇总表锁在核心量齐备的月份，另有几列已多披露一个月。
+    #    只数**公司披露的原始列**（load() 的 need），不数 df 上派生出来的 deriv_adv_k /
+    #    velocity / implied_* —— 派生列跟着原始列一起有值，会把「三列」数成「四列」。
+    #    **两级判断**：先判「有没有错位」，再判「IPO 是不是那条领先的列」。合成一个守卫
+    #    会在「IPO 不领先但别的列领先」时落到 else，印出与事实相反的「各列截止月一致」——
+    #    HKEX 本来就是分列到货，这一句正是全页唯一在讲口径错位的句子。
+    DISCLOSED = ('adt_hkdbn', 'mktcap_hkdtn', 'new_listings', 'ipo_funds_hkdbn',
+                 'derivatives_adv_contracts', 'southbound_adt_hkdbn')
+    CN_COL = {'adt_hkdbn': '现货ADT', 'mktcap_hkdtn': '市值', 'new_listings': '新股数',
+              'ipo_funds_hkdbn': 'IPO', 'derivatives_adv_contracts': '衍生品',
+              'southbound_adt_hkdbn': '南向'}
+    lead = [c for c in DISCLOSED if df[c].loc[LATEST + 1:].notna().any()]
+    if not lead or NEWEST <= LATEST:
+        s4 = f'本月各列截止月一致（同为{M[i]}），抬头、汇总表与各图口径没有错位。'
+    else:
+        ahead = B.cn(max((df[c].dropna().index[-1] - LATEST).n for c in lead))
+        s4 = (f'汇总表锁在核心量齐备的{M[i]}，'
+              f'{"、".join(CN_COL[c] for c in lead)}多披露{ahead}个月')
+        ipo = df['ipo_funds_hkdbn'].dropna()
+        if 'ipo_funds_hkdbn' in lead and len(ipo) and str(ipo.index[-1]) == str(NEWEST):
+            rk = B.rank_of(ipo.values, len(ipo) - 1)
+            extra = (f'为{len(ipo)}个已披露月最高' if rk == 1 else
+                     f'排{len(ipo)}个已披露月的第{rk}')
+            s4 += f'——{NEWEST} 募资{extra}，Exhibit 1 看不到。'
+        else:
+            s4 += '，Exhibit 1 看不到。'
+
+    # ── 下界护栏。上面每一句都可能因为「这个月没有这件事」而整句不写（缺值月、序列开头
+    #    不足 12 个月、各列没有错位的月份），历史重放里最短的月份只剩一百多字，会撞上
+    #    render 的下界、整页构建失败 —— 那正是 B.need 要避免的失效模式，只不过发生在
+    #    整段的层面。补进去的不是注水，是**永远成立且读者确实需要的口径说明**：
+    #    数据密的月份被结论句挤掉，数据稀的月份正好有位置放。顺序按重要性，够了就停。
+    #    阈值是**含标题**的去标签字数（`_plain_len` 比 render 看到的多 7 个字），所以 245
+    #    对应 render 的 238，比 230 的下界留 8 个字余量。原来写的 260 太高：历史重放里
+    #    58/91 个月本来五句就够长，却因为差几个字被塞进第六句，撞上「最多五句」那条分寸。
+    #    余量不能再压——每条 fill 有 40 字上下，补一条就跳一大截，宁可留 8 个字空转。
+    FILL_UNTIL = 245
+    fill = []
+    if n < 36:
+        fill.append(f'注意样本只有{n}个月：上面的排名与「{n}个月新高」参照的就是这{n}个月，'
+                    f'不是长历史口径。')
+    fill += [
+        f'{VEL_LAB}是推导值：ADT×252÷市值，252 为惯例年化交易日数、不是当年实际交易日。',
+        'ADT 与衍生品ADV 公司披露的就是日均值，本页不再按交易日折算，再折一次是假修正。',
+        '市值取月末时点而 ADT 是全月日均，两者不同期，换手率只能当代理读。',
+    ]
+    out = [s1, s2, s3, s4]
+    for note in fill:
+        if _plain_len(out) >= FILL_UNTIL:
+            break
+        out.append(note)
+    return B.render([_liang(s) for s in out])
 
 
 def main():
@@ -931,6 +1188,9 @@ def main():
                     f'覆盖 {mlab(adt_long.index[0])} → {mlab(NEWEST)}（核心量指标至 {mlab(LATEST)}）· '
                     f'版式沿用 Goldman Sachs GIR 的 HKEX exhibit 体例 · 仅图，无观点',
         'headline': headline,
+        # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+        # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+        'brief': compose_brief(df, LATEST, NEWEST),
         'hub_line': f'ADT HK${h_adt[-1]:,.0f}bn/日（{pctf(yoy(h_adt))} y/y）'
                     + (f'· 衍生品 ADV {h_dv[-1]:,.0f}k 张/日' if h_dv is not None else ''),
         'source': SRC,
