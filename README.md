@@ -16,10 +16,16 @@
 ```
 
 `/cost/` 与 `/ibkr/` 原先是两个独立仓库（costco-monthly-sales / ibkr-monthly-metrics），
-**已整体并入本仓，那两个仓库将被删除**。两家的数据源没有变，但解析管道的**位置**变了：
-原先分别借用 `/COST月度销售` 与 `/IBKR月度指标` 两个 skill 的代码，那两个 skill 已删除，
-代码逐字搬进本仓（COST 在 `fetch/cost_release.py`），真值 CSV 也已落到 `series/`。
+**已整体并入本仓；那两个仓库连同它们的 Pages 站点已于 2026-08-06 从 GitHub 删除。**
+两家的数据源没有变，但解析管道的**位置**变了：原先分别借用 `/COST月度销售` 与
+`/IBKR月度指标` 两个 skill 的代码，那两个 skill 也已删除，代码逐字搬进本仓
+（COST 在 `fetch/cost_release.py`，IBKR 在 `fetch/ibkr_source.py`），真值 CSV 落到 `series/`。
 本仓现在自包含 —— 不依赖那两个旧仓、也不依赖 `~/.claude` 下的任何文件，页面上不留指向它们的链接。
+
+搬迁的验收标准是**逐字节**而不是「看起来一样」：把两个 skill 移走后重跑生成器，
+`data/cost.js` 与 `data/ibkr.js` 与搬迁前 0 字节不同（连首行构建日期都相同）。
+旧仓的 mirror 备份在 `~/Backups/deleted-repos-2026-08-06/`，
+两个 skill 的代码在 `~/.claude/skills` 的 git 历史里。
 
 ## 目录结构
 
