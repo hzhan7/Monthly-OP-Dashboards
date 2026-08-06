@@ -23,8 +23,6 @@ exhibit 逐张移植成 payload 对象，写出 data/axp.js。图的顺序、编
 
 用法：python3 build/axp.py
 """
-import datetime
-import json
 import os
 import re
 

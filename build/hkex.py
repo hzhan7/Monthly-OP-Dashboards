@@ -18,7 +18,6 @@
 
 用法: python3 build/hkex.py
 """
-import datetime
 import json
 import os
 import re

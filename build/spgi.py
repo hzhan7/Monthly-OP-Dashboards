@@ -35,8 +35,6 @@ Exhibit 2 / 3 的右轴曾经画成「Prior 12mo Avg.」水平虚线（引擎当
 y/y 之后，两张图一律回到 deck 的 lvl_bar 原型：金色 y/y 折线，不画均线。
 """
 import csv
-import datetime
-import json
 import os
 
 import numpy as np

@@ -32,8 +32,6 @@
 
 用法: python3 build/exchanges.py     （可重复跑，除首行日期外逐字节相同）
 """
-import datetime
-import json
 import os
 import sys
 

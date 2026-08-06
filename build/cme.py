@@ -20,8 +20,6 @@
 幂等：payload 里不放构建日期（只写文件首行注释），不用随机数，窗口一律从数据
       最新月倒推 —— 同一份 CSV 重复跑，输出逐字节相同（除首行）。
 """
-import datetime
-import json
 import os
 
 import numpy as np

@@ -40,8 +40,6 @@ gsx 函数 → 网页 kind 的对应：
 判据是口径，口径只能有一处定义。本页原先那份 pctile36 的「≥90% 月环比不降」代理拦不住
 margin book（近 24 个月里 18 个月钉 100）这类「上下波动但分位常年顶格」的行。
 """
-import datetime
-import json
 import os
 import re
 

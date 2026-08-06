@@ -20,9 +20,7 @@ data/schw.js 里的一个 exhibit 对象。图序、编号、标题文案、图�
 所有数值与格式化都在这里算完，页面不做任何计算。构建日期只写文件首行注释，
 不进 payload —— 进了 payload，monthly_run 的「data 有没有实质变化」检查会永久失效。
 """
-import datetime
 import inspect
-import json
 import os
 import re
 

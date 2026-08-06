@@ -21,8 +21,6 @@ CSV 列义：_r = reported（报告口径）, _a = adjusted（核心口径，剔
 依赖：pandas、numpy
 用法：python3 build/cost.py
 """
-import datetime
-import json
 import os
 
 import numpy as np

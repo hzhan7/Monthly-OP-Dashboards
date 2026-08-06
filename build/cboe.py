@@ -24,8 +24,6 @@ series/cboe.csv，页面不做任何计算。
 
 用法: python3 build/cboe.py     （可重复跑，除首行日期外逐字节相同）
 """
-import datetime
-import json
 import os
 import re
 

@@ -30,7 +30,6 @@ Deck（build/build_tsm.py）对齐记录 —— 这一轮补回三处「deck 有
 
 用法：python3 build/tsm.py
 """
-import datetime
 import json
 import os
 

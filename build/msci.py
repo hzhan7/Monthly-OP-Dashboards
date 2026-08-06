@@ -19,8 +19,6 @@ window.DASH 的一个 exhibit 对象，写出 data/msci.js。图序、编号、�
       不用随机数、不依赖当前时间决定内容 —— 重复跑除首行外逐字节相同。
 """
 import csv
-import datetime
-import json
 import os
 import re
 
