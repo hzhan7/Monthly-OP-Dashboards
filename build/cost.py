@@ -31,23 +31,13 @@ import pandas as pd
 import brief as B                  # 顶部 brief 的共享规则库（R1-R6），只算事实不出文字
 import payload_guard
 import pctile                      # 3Y %ile 的唯一实现，本文件不再自己写分位判据
+import repo                        # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES_DIR = os.path.join(ROOT, 'series')
 SERIES = os.path.join(SERIES_DIR, 'cost.csv')
 OUT = os.path.join(ROOT, 'data', 'cost.js')
-
-
-def _source_dates():
-    """按路径加载仓库根的 source_dates.py：`python3 build/cost.py` 跑起来时
-    sys.path 上只有 build/，裸 import 会 ModuleNotFoundError。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # 与 PDF 一致的窗口起点
@@ -846,7 +836,7 @@ def main():
     # 抬头那半句「官方发布于 X」：查的是**台账里 LATEST 这个月**的发布日，不是「最近一条」——
     # 拿别的月份的发布日安到本月数据上，页面照样理直气壮地印出来。
     # 查不到就把整个字段省掉（不能写 None、不能写空串：assets/page.js 判的是字段在不在）。
-    src_date = _source_dates().lookup(SERIES_DIR, 'cost', str(LATEST))
+    src_date = repo.source_date('cost', str(LATEST))
     if src_date:
         payload['source_date'] = src_date
 

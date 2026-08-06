@@ -33,6 +33,7 @@ import pandas as pd
 import brief as B       # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
 import payload_guard
 import pctile           # 汇总表 3Y %ile 的唯一实现，不在本文件里另写一套
+import repo             # 仓库定位 + 发布日台账入口
 
 D = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(D)
@@ -134,16 +135,8 @@ def mlab(p):
 
 
 def source_day(month):
-    """series/source_dates.csv 里 lpla 这个月的官方发布日；没有就返回 None。
-
-    不能裸 import source_dates：本文件是 `python3 build/lpla.py` 跑的，sys.path 上只有 build/。
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.lookup(SERIES, 'lpla', str(month))
+    """series/source_dates.csv 里 lpla 这个月的官方发布日；没有就返回 None。"""
+    return repo.source_date('lpla', str(month))
 
 
 def load():

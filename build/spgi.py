@@ -36,7 +36,6 @@ y/y 之后，两张图一律回到 deck 的 lvl_bar 原型：金色 y/y 折线�
 """
 import csv
 import datetime
-import importlib.util
 import json
 import os
 
@@ -45,22 +44,13 @@ import numpy as np
 import brief as B
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES_DIR = os.path.join(ROOT, 'series')
 SERIES = os.path.join(SERIES_DIR, 'spgi_clean.csv')
 OUT = os.path.join(ROOT, 'data', 'spgi.js')
-
-
-def _source_dates():
-    """按路径加载仓库根的 source_dates.py（发布日台账）。
-    `python3 build/spgi.py` 跑起来时 sys.path 上只有 build/，裸 import 必挂。"""
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 SRC = 'Source: S&P Global monthly metrics xlsx; format after Goldman Sachs GIR'
@@ -887,7 +877,7 @@ payload = {
 # 渲染端判的是字段在不在（assets/page.js 的 `D.source_date ? …`），写 None 会印出 "None"。
 # 按月份查而不是取台账里最新的一条：cache/ 里可能躺着比 data_through 更新的一期文件，
 # 那会把新一期的发布日安到旧月份的数据上。
-_pub = _source_dates().lookup(SERIES_DIR, 'spgi', LATEST)
+_pub = repo.source_date('spgi', LATEST)
 if _pub:
     payload['source_date'] = _pub
 

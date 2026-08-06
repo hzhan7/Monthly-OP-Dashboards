@@ -49,6 +49,7 @@ import numpy as np
 import brief as B
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -321,12 +322,7 @@ def main():
     # 会让抬头那半句静默消失。下面两条回落保留着，用于台账还没有记录的历史月份。
     source_date = None
     try:
-        import importlib.util
-        _spec = importlib.util.spec_from_file_location(
-            'source_dates', os.path.join(ROOT, 'source_dates.py'))
-        _sd = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_sd)
-        source_date = _sd.lookup(os.path.join(ROOT, 'series'), 'ibkr', target)
+        source_date = repo.source_date('ibkr', target)
     except Exception:
         pass
     if not source_date:

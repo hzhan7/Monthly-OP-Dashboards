@@ -29,6 +29,7 @@ import pandas as pd
 import brief as B
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -36,20 +37,6 @@ SERIES = os.path.join(ROOT, 'series')
 
 TICKER = 'hkex'
 SRC = 'Source: HKEX Monthly Market Highlights; format after Goldman Sachs GIR'
-
-
-def source_dates():
-    """按路径加载仓库根的 source_dates.py（发布日台账）。
-
-    不能裸 import：本文件是 `python3 build/hkex.py` 跑的，sys.path 上只有 build/，
-    仓库根不在上面。
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ────────────────────────────── 读数据 ──────────────────────────────
@@ -1208,7 +1195,7 @@ def main():
     # {through_label}」，两句必须说同一个月，否则读者会把领先一个月的衍生品/南向那一档的
     # 发布日读成本页整页的发布日。查不到就**整个字段不写**：渲染端判的是字段在不在，
     # 给 None 或空串会印出「官方发布于 None」。
-    src_date = source_dates().lookup(SERIES, TICKER, str(LATEST))
+    src_date = repo.source_date(TICKER, str(LATEST))
     if src_date:
         payload['source_date'] = src_date
 

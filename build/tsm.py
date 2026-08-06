@@ -40,6 +40,7 @@ import pandas as pd
 import brief as B      # 页顶 brief 的规则库（R1-R6），只算事实、不出文字；句子在本文件里拼
 import payload_guard
 import pctile          # 汇总表 3Y %ile 的唯一实现，各页不再各写各的（见该模块 docstring）
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -64,17 +65,10 @@ def mlab(p):
 def source_date(month):
     """该月营收公告的官方发布日（抬头「官方发布于 …」那半句），查不到返回 None。
 
-    台账模块在仓库根，而 `python3 build/tsm.py` 的 sys.path 上只有 build/，
-    所以按路径加载（见 source_dates.py 的 load()）。
     读不到不算构建失败：这半句缺席只是少一条信息，为它把整页判挂不划算。
     """
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'source_dates', os.path.join(ROOT, 'source_dates.py'))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.lookup(SERIES, 'tsm', month)
+        return repo.source_date('tsm', month)
     except Exception as e:
         print(f'[tsm][warn] 读 series/source_dates.csv 失败，本次不写 source_date：{e!r}')
         return None
