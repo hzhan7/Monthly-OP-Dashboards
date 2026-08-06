@@ -56,6 +56,19 @@ h1 { margin: 0 0 6px; font-size: 25px; font-weight: 700; letter-spacing: -0.015e
 .headline { margin: 0 0 24px; padding: 11px 14px; background: #f7f9fc;
   border-left: 3px solid var(--navy); font-size: 13px; color: var(--ink-2); }
 
+/* ── 数据总结：刻意与 .headline 长得不一样 ──
+   数据条是 border-left 的窄条（读数），这一段是 border-top 的宽块（解读）。
+   两块若共用一种视觉，读者会以为是同一类内容而跳过第二块。 */
+.brief { margin: -6px 0 26px; padding: 14px 18px 15px;
+  border: 1px solid var(--rule); border-top: 2.5px solid var(--navy); }
+.brief h4 { margin: 0 0 8px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--navy); }
+/* 不用 text-align: justify —— 中文没有词间空格，两端对齐只能靠拉字距，
+   实测末两行会被抻出肉眼可见的空隙。 */
+.brief p { margin: 0; font-size: 13.5px; line-height: 1.78; color: var(--ink-2); }
+.brief b { color: var(--ink); font-weight: 700; }
+.brief[hidden] { display: none; }
+
 /* ── exhibit 网格 ── */
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 30px; }
 .grid.full { grid-template-columns: 1fr; }
