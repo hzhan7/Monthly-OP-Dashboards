@@ -57,6 +57,11 @@ TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
 # 横截面页没有自己的数据源，等成员都更新完之后再生成
 CROSS = ['exchanges', 'wealth']
 
+# 下载闸门比 roster 的 LAG 提前几天开（见 not_due 的 docstring）。
+# 3 天是照实测发布日反推的：LAG 是给红点用的、刻意给宽，减 3 天之后各家的开闸日
+# 正好落在实测发布日当天或前一天（cost LAG 7 → 第 4 天开闸，实测 8/5 发布 = 第 4 天）。
+EARLY = 3
+
 
 def sh(cmd, cwd=HERE, check=True):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
@@ -183,8 +188,26 @@ def not_due(t):
 
     有了这个判断，本脚本可以每天跑而不是挑几天跑：12 家的披露日从次月 1 号散到 20 号，
     要覆盖全部窗口就得天天跑；但天天把 12 个源全下一遍纯属浪费（也给对方站点添堵）。
-    所以先用本地已有的 data_through 对照 DUE 表，够新的直接跳过，一个字节都不下。
+    所以先用本地已有的 data_through 对照 LAG 表，够新的直接跳过，一个字节都不下。
     --force 会绕过它（改了图表代码后要全量重建）。
+
+    ## 这道闸门与首页红点用的**不是**同一个阈值，别再合并回去
+
+    两者共用 LAG 表，但方向相反，所以偏置必须相反：
+
+    · **红点**要宽容 —— 早一天变红就是假警报，而每季度假一次的警报，人很快就学会
+      无视它。所以红点是 `LAG + GRACE`（宽限 5 天）。
+    · **下载闸门**要提前 —— 早开闸一天只多一个 HTTP 请求（源还没发就是 NOCHANGE，
+      各家 fetch 都能干净返回）；晚开闸一天就是公开页面挂着旧数据一天。
+      所以这里是 `LAG - EARLY`。
+
+    这两个偏置原本都写成 `+ GRACE`，代价是实测量出来的：Costco 2026-08-05 就发了
+    7 月数据，闸门却要等到 8-13 才开（月末 8-01 + LAG 7 + GRACE 5），公开页整整
+    8 天挂着 6 月数据 —— 而 LAG 表本身就是按红点口径「宁可给宽一点」定的，再叠一层
+    宽限等于把误差加了两次。
+
+    `max(0, ...)` 是下界：LAG 小于 EARLY 的几家（cme/ibkr 都是 2）不能因此在候选月
+    还没结束时就去下载，最早也要等到次月 1 号。
     """
     r = load(os.path.join(HERE, 'build', 'roster.py'), 'roster_due')
     lag = r.LAG.get(t)
@@ -198,8 +221,9 @@ def not_due(t):
     through = json.loads(txt[txt.index('{'):txt.rindex('}') + 1]).get('data_through')
     if not through:
         return False
-    # 与首页红点同一套规则（LAG = 该月结束后第几天发布，季末月单独给值）：
-    # 从上个日历月往回找第一个「已过发布期 + 宽限」的月，那就是今天本该有的月份。
+    # 共用 roster 的 LAG 表（= 该月结束后第几天发布，季末月单独给值），但偏置取 -EARLY
+    # 而不是红点的 +GRACE（理由见上）。从本月往回找第一个「已开闸」的候选月，
+    # 那就是今天本该已经有的月份。
     today = datetime.date.today()
     for k in range(6):
         n = today.year * 12 + today.month - 1 - k      # 候选月的下个月（k=0 即本月）
@@ -207,7 +231,7 @@ def not_due(t):
         end = datetime.date(y, m, 1)                   # 候选月月末 + 1 天
         cy, cm = (y, m - 1) if m > 1 else (y - 1, 12)  # 候选月本身
         days = lag[1] if cm % 3 == 0 else lag[0]
-        if today >= end + datetime.timedelta(days=days + r.GRACE):
+        if today >= end + datetime.timedelta(days=max(0, days - EARLY)):
             return through >= f'{cy}-{cm:02d}'
     return False
 
