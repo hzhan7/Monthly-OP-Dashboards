@@ -25,6 +25,7 @@ import os
 import re
 
 import brief as B    # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
 
@@ -48,12 +49,6 @@ def mi(ym):
 
 def ym(i):
     return f'{i // 12:04d}-{i % 12 + 1:02d}'
-
-
-def mlab(s):
-    """'2026-06' → 'Jun-26'（同 gsx.mlab 的 %b-%y）。"""
-    y, m = s.split('-')
-    return f'{MON[int(m) - 1]}-{y[2:]}'
 
 
 def qof(s):

@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B    # 页顶 ~300 字数据总结的规则库（只算事实，句子在本文件拼）
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
 import repo          # 仓库定位 + 发布日台账入口
@@ -88,9 +89,6 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-06') → 'Jun-26'。"""
-    return f'{MONTHS[p.month - 1]}-{p.year % 100:02d}'
 
 
 def zh(p):

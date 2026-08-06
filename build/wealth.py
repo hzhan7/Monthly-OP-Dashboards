@@ -50,6 +50,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
 import repo                         # 仓库定位 + 发布日台账入口
@@ -334,8 +335,6 @@ N_TABLE = next(_seq)                                  # 页尾核对表
 
 
 # ────────────────────────────── 格式化零件 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def comma(v, d=0):

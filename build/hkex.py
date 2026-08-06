@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 import repo            # 仓库定位 + 发布日台账入口
@@ -40,8 +41,6 @@ SRC = 'Source: HKEX Monthly Market Highlights; format after Goldman Sachs GIR'
 
 
 # ────────────────────────────── 读数据 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def qlab(q):

@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B      # 页顶 brief 的规则库（R1-R6），只算事实、不出文字；句子在本文件里拼
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile          # 汇总表 3Y %ile 的唯一实现，各页不再各写各的（见该模块 docstring）
 import repo            # 仓库定位 + 发布日台账入口
@@ -55,11 +56,6 @@ ASSUMP = ('Assumption: NT$ converted at the month average NTD/USD rate — an ap
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 CN_MONTH = None
-
-
-def mlab(p):
-    """与 gsx.mlab 同：'Jun-26'。"""
-    return p.strftime('%b-%y')
 
 
 def source_date(month):

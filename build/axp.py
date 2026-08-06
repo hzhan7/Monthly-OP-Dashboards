@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 
@@ -142,8 +143,6 @@ need(tfull, ['days_in_period', 'ann_default_rate_pct', 'ann_recovery_rate_pct',
 
 
 # ────────────────────────────── 小工具 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def xl(idx):

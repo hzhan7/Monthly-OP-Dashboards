@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B       # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile           # 汇总表 3Y %ile 的唯一实现，不在本文件里另写一套
 import repo             # 仓库定位 + 发布日台账入口
@@ -130,8 +131,6 @@ def brk_pack(idx, n=None):
 
 
 # ────────────────────────────── 读数 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def source_day(month):

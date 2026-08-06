@@ -42,6 +42,7 @@ import os
 import numpy as np
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 import repo            # 仓库定位 + 发布日台账入口
@@ -78,12 +79,6 @@ def mkey(s):
     """'2026-06' → 整数月序，方便做相邻/同比检查。"""
     y, m = s.split('-')
     return int(y) * 12 + int(m) - 1
-
-
-def mlab(s):
-    """'2026-06' → 'Jun-26'（与 gsx.mlab 的 %b-%y 一致）。"""
-    y, m = s.split('-')
-    return f'{MON[int(m) - 1]}-{y[2:]}'
 
 
 def load():

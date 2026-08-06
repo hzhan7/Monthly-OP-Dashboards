@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 import repo            # 仓库定位 + 发布日台账入口
@@ -80,11 +81,6 @@ HEAT_YEARS = 10  # 热力矩阵：照搬原 deck 的 n_years=10
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 ZH_MONTH = '一二三四五六七八九十十一十二'
-
-
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-07') → 'Jul-26'。"""
-    return f'{MONTHS[p.month - 1]}-{p.year % 100:02d}'
 
 
 def qlab(q):

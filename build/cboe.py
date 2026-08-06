@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 import repo            # 仓库定位 + 发布日台账入口
@@ -78,9 +79,6 @@ BRIEF_LINES = [
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-06') → 'Jun-26'。"""
-    return p.strftime('%b-%y')
 
 
 def nz(v, dec):

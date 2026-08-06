@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
 import repo            # 仓库定位 + 发布日台账入口
@@ -159,8 +160,6 @@ df['implied_txn_rev_usdmn'] = imp.sum(axis=1, min_count=1)
 
 
 # ────────────────────────── 小零件 ──────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def L(a):
