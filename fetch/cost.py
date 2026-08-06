@@ -34,6 +34,8 @@ skill 删除后镜像的上游没了，历史内容原样成为真值，逐字�
 import csv
 import importlib.util
 import os
+import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -66,6 +68,87 @@ def _release():
     spec.loader.exec_module(mod)
     _MOD = mod
     return mod
+
+
+_SD = None
+
+
+def _source_dates():
+    """加载仓库根的 source_dates.py（各家发布日的台账）。同 _release 的理由：
+    本模块被 spec_from_file_location 加载时，sys.path 上既没有 fetch/ 也没有仓库根。"""
+    global _SD
+    if _SD is not None:
+        return _SD
+    p = os.path.join(ROOT, 'source_dates.py')
+    if not os.path.exists(p):
+        raise CostFetchError(f'找不到发布日台账模块: {p}')
+    spec = importlib.util.spec_from_file_location('source_dates', p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _SD = mod
+    return mod
+
+
+# 稿子自己印的发布时刻。取 <time itemprop="datePublished"> 的**渲染文本**
+# （"August 05, 2026 16:15 ET"），不取它 datetime 属性里的 UTC（2026-08-05T20:15:00Z）：
+# Costco 是美东盘后发稿，本期两者恰好同日，但只要哪一期晚过 20:00 ET，UTC 就跨到次日，
+# 抬头那句「官方发布于」会比稿子自己印的日期整整晚一天。
+# 正则里硬要 "ET" 后缀：万一 GNW 哪天换成别的时区渲染，宁可这里匹配不上、这半句缺席，
+# 也不要把一个不是 ET 的时刻当 ET 读。
+_TIME_RE = re.compile(r'itemprop="datePublished"[^>]*>\s*<time[^>]*>\s*'
+                      r'([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})[^<]*?\bET\b')
+# 正文电头 "ISSAQUAH, Wash., Aug.  05, 2026  (GLOBE NEWSWIRE) --"，只当交叉核对用。
+# 地名段里允许逗号（"ISSAQUAH, Wash.,"），否则只截得到最后一节 "Wash., Aug. 05, 2026"；
+# 长度封在 40 字符，免得非贪婪失败后一路回溯把上一段正文吞进 evidence。
+_DATELINE_RE = re.compile(r'([A-Z][A-Za-z.,\' ]{0,40}?,\s*([A-Za-z]+)\.?\s+(\d{1,2}),\s*(\d{4}))'
+                          r'\s*\(GLOBE NEWSWIRE\)')
+
+
+def _month_num(name):
+    """'Aug' / 'Aug.' / 'Sept' / 'March' → 1-12；认不出返回 None（AP 缩写与全称混用）。"""
+    n = name.strip('.').lower()
+    if len(n) < 3:
+        return None
+    for i, full in enumerate(_release().MONTHS):
+        if full.lower().startswith(n):
+            return i + 1
+    return None
+
+
+def _release_date(html, url):
+    """从新闻稿本身读出发布日，返回 (YYYY-MM-DD, evidence)；读不出返回 (None, None)。
+
+    电头必须**从 articleBody 容器往后**找第一条：整页底部还嵌着上两期稿子的电头
+    （本期页面里就有 "July 08" 与 "June 03" 两条 featured news），全页搜第一个匹配
+    今天碰巧是对的，GNW 改一次版面顺序就会串到上一期的发布日上，而串期后的日期
+    看上去完全正常，没人会发现。
+
+    两处对不上就返回 None：那说明页面结构已经变了，这种时候猜哪个对没有意义。
+    """
+    m = _TIME_RE.search(html)
+    if not m:
+        print('WARN: 新闻稿里没找到 <time itemprop="datePublished"> 的 ET 文本，本月不记发布日',
+              file=sys.stderr)
+        return None, None
+    mo = _month_num(m.group(1))
+    if not mo:
+        print(f'WARN: 发布日月份名认不出 {m.group(1)!r}，本月不记发布日', file=sys.stderr)
+        return None, None
+    date = f'{m.group(3)}-{mo:02d}-{int(m.group(2)):02d}'
+
+    i = html.find('itemprop="articleBody"')
+    dl = _DATELINE_RE.search(html[i:]) if i >= 0 else None
+    dl_mo = _month_num(dl.group(2)) if dl else None
+    if not dl_mo or f'{dl.group(4)}-{dl_mo:02d}-{int(dl.group(3)):02d}' != date:
+        print(f'WARN: 正文电头与 datePublished 对不上（电头 {dl.group(1) if dl else "未找到"!r}，'
+              f'datePublished {date}），本月不记发布日', file=sys.stderr)
+        return None, None
+
+    shown = re.sub(r'\s+', ' ', m.group(0).rsplit('>', 1)[-1]).strip()
+    dateline = re.sub(r'\s+', ' ', dl.group(1)).strip()
+    return date, (f'GlobeNewswire 稿 {url.rsplit("/", 1)[-1]} 的 '
+                  f'<time itemprop="datePublished"> 渲染文本 "{shown}"；'
+                  f'正文电头 "{dateline} (GLOBE NEWSWIRE)" 一致')
 
 
 def _csv(series_dir=None):
@@ -168,7 +251,8 @@ def update(series_dir, cache_dir=None):
         if not url:
             break                                  # 还没发，正常结束
         try:
-            rec, ym = mu.parse_release(mu.curl(url))
+            html = mu.curl(url)                    # 留住整页：发布日也要从这份 HTML 里读
+            rec, ym = mu.parse_release(html)
         except Exception as e:
             raise CostFetchError(f'解析 {key} 失败 ({url}): {e}') from e
         got = f'{ym[0]}-{ym[1]:02d}'
@@ -187,6 +271,13 @@ def update(series_dir, cache_dir=None):
         added.append(key)
         have.add(key)
         last = key
+        # 发布日记在 CSV 那一行**确实写出去之后**：台账是给「已入库的那个月」用的，
+        # 记在失败路径上就会出现「页面说官方 X 日发布，而那个月的数据根本不在图上」。
+        sdate, ev = _release_date(html, url)
+        if sdate:
+            _source_dates().record(series_dir or SERIES, 'cost', key, sdate, ev)
+        # 读不出来不抛：数据本身已经落库，重跑走不到这里，抛异常只会把一次成功的摄入
+        # 记成失败；缺的只是抬头那半句话，页面会自动省掉。_release_date 已经打过 WARN。
 
     return added
 

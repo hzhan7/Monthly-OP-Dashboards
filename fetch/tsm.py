@@ -36,12 +36,27 @@
    只有最新一期、没有历史，所以只拿来验证「官方最新月是哪个月 + 金额对不对」。
    MOPS 公开资讯观测站是同一份数据的网页版，需要 POST + 会话，无人值守下不如 OpenAPI 干净，故不用。
 
+4) 公告日（source_dates.csv 的 tsm 行）
+   TSMC 新闻中心 https://pr.tsmc.com/english/latest-news 上每月一条
+   「TSMC <Month> <Year> Revenue Report」，正文第一句就是电头
+   「HSINCHU, Taiwan, R.O.C. – July 13, 2026 -」，页面另有 "Issued on: 2026/07/13"。
+   **这是本模块能拿到的唯一一处「官方自己说的发布日」**，所以发布日走这里，不走下面这些：
+     · xlsx 的 dcterms:modified 与 IR 页 JSON-LD 的 dateModified —— 那是文件/页面被改动的
+       时间戳，不是公告日，且 IR 页每被编辑一次就会往后跳；
+     · TWSE OpenAPI 的「出表日期」—— 那是证交所生成这份全市场汇总档的日期
+       （2026-06 那期是 1150717 = 2026-07-17，比公告晚了 4 天）；
+     · 「次月 10 日」这条法规节奏 —— 见下，它只是上限，实际日子每月不同，推算必错。
+
 ────────────────────────────────────────────────────────────────────────
 发布节奏
 ────────────────────────────────────────────────────────────────────────
 · 台湾《证券交易法》要求上市公司于**次月 10 日前**公告上月营收。
   TSMC 惯例是 10 日当天（遇假日提前）盘后发布，同日更新 IR 页与 xlsx。
   → 调度建议：每月 10-14 日每天跑一次；10 日之前跑必然拿到上个月的旧数，不是故障。
+  → 但「10 日」只是上限，**不能拿来推算发布日**：实测新闻稿电头
+     2026-03→04/10、2026-04→05/08（10 日是周日，提前）、2026-05→06/10、
+     2026-06→07/13（10 日是周五却压到下周一）。四个月里两个不在 10 日，
+     所以 fetch_release_date() 每次都去新闻稿现读，不做任何外推。
 · 美联储 H.10 每周一更新（含上周日度值），月度平均在次月第 1 个营业日即可算全，
   所以汇率永远不会拖累营收：营收 M 月的数在 M+1 月 10 日才有，那时 M 月汇率早已齐。
 · TWSE OpenAPI 的「资料年月」是 ROC 年 + 月（11506 = 2026-06），换算要 +1911。
@@ -75,6 +90,7 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import html as _html
 import json
 import os
 import re
@@ -83,12 +99,22 @@ import time
 import urllib.error
 import urllib.request
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
 # ── 常量 ────────────────────────────────────────────────────────────────
 IR_PAGE = 'https://investor.tsmc.com/english/monthly-revenue'
 IR_ORIGIN = 'https://investor.tsmc.com'
 H10_TAIWAN = 'https://www.federalreserve.gov/releases/h10/hist/dat00_ta.htm'
 TWSE_API = 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L'
 TWSE_CODE = '2330'
+
+# 公告日的唯一出处，见模块头「数据源 4」
+PR_ORIGIN = 'https://pr.tsmc.com'
+PR_LATEST = PR_ORIGIN + '/english/latest-news'
+PR_ARCHIVE = PR_ORIGIN + '/english/news-archives'
+MONTH_EN = ('January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December')
 
 # WAF 认这个；见口径坑 1
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
@@ -255,6 +281,153 @@ def _twse_check(cache_dir):
     return None
 
 
+# ── 源 4：新闻稿电头 = 官方公告日 ────────────────────────────────────────
+# 电头里的破折号在不同月份分别出现过 ASCII '-' 与 U+2013，把整段连字符/破折号区间一并吃掉。
+_DASH = r'[-‐-―]'
+_MON_RE = '|'.join(MONTH_EN)
+
+
+def _text_of(fragment):
+    """HTML 片段 → 纯文本（含 &nbsp; 与不换行空格的归一）。"""
+    t = _html.unescape(re.sub(r'<[^>]+>', ' ', fragment))
+    return re.sub(r'[\s ]+', ' ', t).strip()
+
+
+def _pr_listing(url, cache_dir, cache_name):
+    """press center 列表页 → [(标题, 'YYYY-MM-DD', 详情页 URL)]。
+
+    列表里那个 field_issue_date 就是页面上显示的 "Issued on"，是公司自己标的发布日；
+    这里先拿它做定位与兜底，真正入库的日期以详情页正文电头为准。
+    """
+    html = _get(url, timeout=90).decode('utf-8', 'replace')
+    _cache_write(cache_dir, cache_name, html)
+    out = []
+    for blk in re.split(r'(?=<article )', html):
+        if not re.match(r'<article[^>]*data-history-node-id="\d+"', blk):
+            continue
+        href = re.search(r'href="(/[a-z]+/news/\d+)"', blk)
+        day = re.search(r'field--name-field-issue-date[\s\S]{0,400}?'
+                        r'<time datetime="(\d{4}-\d{2}-\d{2})', blk)
+        title = re.search(r'article-title"><span[^>]*>([^<]+)<', blk)
+        if href and day and title:
+            out.append((_text_of(title.group(1)), day.group(1), PR_ORIGIN + href.group(1)))
+    return out
+
+
+def pr_index(cache_dir):
+    """两张列表页合起来的新闻索引。任一页取不到只告警，不阻塞主流程。
+
+    latest-news 只挂最近十来条（够覆盖当月），news-archives 从它断掉的地方往回排；
+    两张都扫，是为了「某个月晚了一两个月才补摄入」时那条公告仍找得到。
+    """
+    out = []
+    for url, name in ((PR_LATEST, 'tsm_pr_latest_news.html'),
+                      (PR_ARCHIVE, 'tsm_pr_news_archives.html')):
+        try:
+            out += _pr_listing(url, cache_dir, name)
+        except Exception as e:
+            print('[tsm][warn] 读 %s 失败，公告日可能查不到：%r' % (url, e))
+    return out
+
+
+def fetch_release_date(month, cache_dir, expect_ntd_mn=None, index=None):
+    """该月营收公告的官方发布日 → ('YYYY-MM-DD', evidence)；查不到返回 None。
+
+    日期只从公司自己写出来的字符串里取，两处（优先级从高到低）：
+      1. 详情页正文电头 "HSINCHU, Taiwan, R.O.C. – July 13, 2026 -"
+      2. 同页 "Issued on:" 的 field_issue_date
+    两者对不上时以电头为准（正文是公司的正式表述，issue_date 是 CMS 字段），
+    但两个日期都写进 evidence，让人一眼看见分歧。
+
+    expect_ntd_mn 给了就再核一次稿子里的金额：标题匹配已经锁定了月份，
+    金额再对上才能排除「xlsx 与新闻稿说的不是同一个数」。对不上宁可不记。
+    """
+    y, mo = int(month[:4]), int(month[5:])
+    want = ('tsmc %s %d revenue report' % (MONTH_EN[mo - 1], y)).lower()
+    if index is None:
+        index = pr_index(cache_dir)
+    hit = [it for it in index if it[0].lower() == want]
+    if not hit:
+        return None
+    title, issued, link = hit[0]
+
+    html = _get(link, timeout=90, referer=PR_LATEST).decode('utf-8', 'replace')
+    _cache_write(cache_dir, 'tsm_pr_%s.html' % month, html)
+    body = re.search(r'field--name-body[^>]*field__item">([\s\S]*?)</div>', html)
+    text = _text_of(body.group(1)) if body else ''
+
+    dl = re.search(r'(%s)\s+(\d{1,2}),\s*(\d{4})\s*%s\s*TSMC\s*\(TWSE' % (_MON_RE, _DASH), text)
+    if dl:
+        date = '%s-%02d-%02d' % (dl.group(3), MONTH_EN.index(dl.group(1)) + 1, int(dl.group(2)))
+        # evidence 里放整条电头（"HSINCHU, Taiwan, R.O.C. – July 13, 2026"），
+        # 光写个日期等于让下一个人重新找一遍。
+        lead = text[:dl.end(3)]
+        ev = '新闻稿「%s」(%s) 正文电头 "%s"' % (
+            title, link, lead if len(lead) <= 120 else '…' + lead[-80:])
+        ev += '；同页 Issued on %s' % issued if date == issued else \
+              '；⚠ 同页 Issued on 写的是 %s，以电头为准' % issued
+    else:
+        # 正文版式变了也不至于全丢：Issued on 同样是公司标注的发布日，只是不如电头正式。
+        date = issued
+        ev = '新闻稿「%s」(%s) 页面 "Issued on: %s"（正文电头未匹配上，版式可能变了）' % (
+            title, link, issued)
+
+    if expect_ntd_mn is not None:
+        am = re.search(r'revenue for\s+%s\s+%d\s+was approximately NT\$\s*([\d,]+(?:\.\d+)?)\s*billion'
+                       % (MONTH_EN[mo - 1], y), text, re.I)
+        if not am:
+            print('[tsm][warn] %s 新闻稿里没匹配到金额句，跳过金额核对（措辞可能变了）' % month)
+        else:
+            said = float(am.group(1).replace(',', ''))
+            if abs(said - expect_ntd_mn / 1000.0) > 0.02:      # 稿子取到 NT$bn 两位小数
+                print('[tsm][warn] %s 新闻稿 NT$%.2fbn 与 xlsx NT$%.2fbn 对不上，'
+                      '不记发布日（先查是哪一边错了）' % (month, said, expect_ntd_mn / 1000.0))
+                return None
+            ev += '；稿内 NT$%.2fbn 与 xlsx 一致' % said
+    return date, ev
+
+
+def _load_ledger():
+    """按路径加载仓库根的 source_dates.py —— 本模块被 monthly_run 以
+    spec_from_file_location 加载，那时 sys.path 上既没有 fetch/ 也没有仓库根。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _record_source_dates(series_dir, cache_dir, rev_src, months):
+    """把这些月份的官方公告日记进 series/source_dates.csv。
+
+    **只在数据确实写进 series 之后调用**：台账断言的是「官方哪天发的这个月」，
+    数据还没入库就记，等于给一个页面上根本不存在的月份背书。
+    抓不到就跳过并告警，绝不退化成构建日/文件时间 —— 页面会自动省掉
+    「官方发布于」那半句，缺半句远好过印一个看不出是假的日期。
+    整段失败也不往外抛：营收与汇率此刻已经落盘，为一句抬头把整次摄入判失败不划算。
+    """
+    if not months:
+        return
+    try:
+        ledger = _load_ledger()
+        index = pr_index(cache_dir)
+    except Exception as e:
+        print('[tsm][warn] 公告日索引取不到，本次不记发布日：%r' % e)
+        return
+    for m in months:
+        try:
+            got = fetch_release_date(m, cache_dir, rev_src.get(m), index=index)
+            if not got:
+                print('[tsm][warn] press center 上没有 %s 的 Revenue Report，本月不记发布日' % m)
+                continue
+            date, ev = got
+            ledger.record(series_dir, 'tsm', m, date, ev)
+            print('[tsm] source_date %s ← %s' % (m, date))
+        except Exception as e:
+            print('[tsm][warn] %s 的公告日记录失败（不影响本次数据摄入）：%r' % (m, e))
+
+
 # ── CSV 读写 ────────────────────────────────────────────────────────────
 def _read_csv(path):
     with open(path, newline='', encoding='utf-8') as f:
@@ -367,6 +540,19 @@ def update(series_dir, cache_dir):
     if new_fx_rows:
         _append_rows(fx_path, fx_fields, new_fx_rows)
 
+    # 公告日在这里记：上面两个 append 已经返回，这些月份确实在 series 里了。
+    # 除了本次新增的月份，还补记「最新月在台账里缺着」的情况 —— 台账是后加的，
+    # 早于它入库的月份不会有记录，而幂等重跑时 new_rev_months 是空的，
+    # 不带这一句就永远补不上（页面也就永远少那半句）。
+    latest_rev = max(all_rev)
+    todo = set(new_rev_months)
+    try:
+        if _load_ledger().lookup(series_dir, 'tsm', latest_rev) is None:
+            todo.add(latest_rev)
+    except Exception as e:
+        print('[tsm][warn] 台账读取失败，只尝试本次新增月份的公告日：%r' % e)
+    _record_source_dates(series_dir, cache_dir, rev_src, sorted(todo))
+
     _guidance_reminder(series_dir, max(all_rev))
 
     print('[tsm] xlsx=%s' % xlsx_url)
@@ -398,10 +584,16 @@ def _guidance_reminder(series_dir, latest_rev_month):
 
 if __name__ == '__main__':
     import sys
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sd = os.path.join(root, 'series')
-    cd = os.path.join(root, 'cache')
+    sd = os.path.join(ROOT, 'series')
+    cd = os.path.join(ROOT, 'cache')
     if len(sys.argv) > 1 and sys.argv[1] == 'latest':
         print(latest_month(cd))
+    elif len(sys.argv) > 2 and sys.argv[1] == 'pubdate':
+        # 单独查某个月的公告日（只读，不写台账），用于核对 evidence。
+        # 金额从已入库的 series 里取，好让这条调试路径跟真实路径走同样的核对。
+        mth = sys.argv[2]
+        _, _rows = _read_csv(os.path.join(sd, REV_CSV))
+        _exp = next((float(r['revenue_ntd_mn']) for r in _rows if r['month'] == mth), None)
+        print(fetch_release_date(mth, cd, _exp))
     else:
         print(update(sd, cd))

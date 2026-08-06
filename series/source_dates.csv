@@ -1,0 +1,17 @@
+ticker,month,source_date,evidence
+cboe,2026-06,2026-07-06,"June-2026-Monthly-Volume-Statistics-Xlsx-.xlsx 工作表 ""2026"" 第 2 行 A 列 ""Updated on July 6, 2026"""
+cboe,2026-07,2026-08-05,"July-2026-Monthly-Volume-Statistics-Xlsx-.xlsx 工作表 ""2026"" 第 2 行 A 列 ""Updated on August 5, 2026"""
+cme,2026-07,2026-08-03,"cme_monthly_volume.xlsx（官方文件名 cme_group_adv-rpc-oi_trend_Jul26 incl cash markets.xlsx）的 HTTP Last-Modified ""Mon, 03 Aug 2026 21:47:51 GMT""，与工作簿 docProps/core.xml 的 dcterms:modified 2026-08-03T20:53:17Z 互证，换算到芝加哥时间同为 2026-08-03"
+cost,2026-07,2026-08-05,"GlobeNewswire 稿 costco-wholesale-corporation-reports-july-sales-results.html 的 <time itemprop=""datePublished""> 渲染文本 ""August 05, 2026 16:15 ET""；正文电头 ""ISSAQUAH, Wash., Aug. 05, 2026 (GLOBE NEWSWIRE)"" 一致"
+hkex,2026-06,2026-07-07,"xlsx 直链 HTTP Last-Modified: Tue, 07 Jul 2026 10:24:47 GMT（= 2026-07-07 18:24 HKT）；工作簿 docProps/core.xml dcterms:modified=2026-07-07T10:24:36Z 同日，互为印证。HKEX 的工作簿与落地页都不写发布日，落地页只写数据月 ""Updated to …"""
+hood,2026-05,2026-06-09,"IR 静态文件「Robinhood Markets, Inc. May 2026 Monthly Metrics.xlsx」的 HTTP Last-Modified: Tue, 09 Jun 2026 16:19:38 GMT（取 GMT 日历日）"
+hood,2026-06,2026-07-29,"IR 静态文件「Q2'26 Earnings Supplement.xlsx」的 HTTP Last-Modified: Wed, 29 Jul 2026 15:56:23 GMT（取 GMT 日历日）"
+ibkr,2026-04,2026-05-01,"新闻稿 pr_202604.pdf 电头 ""May 1, 2026"""
+ibkr,2026-05,2026-06-01,"新闻稿 pr_202605.pdf 电头 ""GREENWICH, CT, June 1, 2026"""
+ibkr,2026-06,2026-07-01,"新闻稿 pr_202606.pdf 电头 ""July 1, 2026"""
+ibkr,2026-07,2026-08-03,"新闻稿 pr_202607.pdf 电头 ""August 3, 2026"""
+lpla,2026-05,2026-06-16,"新闻稿 lpla_pr_2026-05.pdf 电头 ""SAN DIEGO – June 16, 2026 –"""
+schw,2026-05,2026-06-12,"schw_may2026_press_release.pdf 首页 News Release 日期 ""June 12, 2026"""
+schw,2026-06,2026-07-21,"schwab_q2_2026_earnings_release.pdf 第 1 页电头 ""WESTLAKE, Texas, July 21, 2026"""
+spgi,2026-06,2026-07-15,S&P Global Ratings!A22 'Published on 7/15/2026'; S&P Dow Jones Indices!A22 'Published on 7/15/2026'（源文件 S-P-Global-Monthly-Metrics-as-of-June-2026-Published-7-15-2026.xlsx）
+tsm,2026-06,2026-07-13,"新闻稿「TSMC June 2026 Revenue Report」(https://pr.tsmc.com/english/news/3323) 正文电头 ""HSINCHU, Taiwan, R.O.C. – July 13, 2026""；同页 Issued on 2026-07-13；稿内 NT$442.68bn 与 xlsx 一致"

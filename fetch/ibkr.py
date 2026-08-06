@@ -171,7 +171,39 @@ def update(series_dir, cache_dir=None):
         except Exception as e:
             print(f'[ibkr] {newest} 新闻稿暂时下不到（佣金图会少一个月）: {e}')
 
+    _record_source_date(newest, pr)
     return added
+
+
+# 电头形如 "GREENWICH, CT, August 3, 2026 —"。build/ibkr.py 也解析同一处，
+# 但那边是**当场解析**：cache/ 是 gitignore 的，缓存一清那行就没了；更糟的是缓存里
+# 躺着的可能是比 data_through 更新的一期稿子，当场解析会把新一期的发布日安到旧月份上。
+# 所以这里在摄入时按月份钉进 series/source_dates.csv，build 只做查表。
+_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+           'August', 'September', 'October', 'November', 'December']
+
+
+def _record_source_date(month, pr_path):
+    """把该月新闻稿的电头日期记进台账。失败一律吞掉 —— 抬头少半句话，
+    不值得让整个 IBKR 更新失败（数据本身已经写进 series 了）。"""
+    if not os.path.exists(pr_path) or os.path.getsize(pr_path) < 5000:
+        return
+    try:
+        import re
+        import fitz
+        txt = fitz.open(pr_path)[0].get_text()
+        m = re.search(r'\b(' + '|'.join(_MONTHS) + r')\s+(\d{1,2}),\s*(20\d{2})\s*[—–-]', txt)
+        if not m:
+            return
+        d = f'{m.group(3)}-{_MONTHS.index(m.group(1)) + 1:02d}-{int(m.group(2)):02d}'
+        spec = importlib.util.spec_from_file_location(
+            'source_dates', os.path.join(os.path.dirname(HERE), 'source_dates.py'))
+        sd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sd)
+        sd.record(os.path.join(os.path.dirname(HERE), 'series'), 'ibkr', month, d,
+                  f'新闻稿 {os.path.basename(pr_path)} 电头 "{m.group(0).rstrip(" —–-")}"')
+    except Exception as e:
+        print(f'[ibkr] {month} 发布日没记上（抬头会省掉那半句）: {e}')
 
 
 if __name__ == '__main__':

@@ -132,6 +132,19 @@ def mlab(p):
     return p.strftime('%b-%y')
 
 
+def source_day(month):
+    """series/source_dates.csv 里 lpla 这个月的官方发布日；没有就返回 None。
+
+    不能裸 import source_dates：本文件是 `python3 build/lpla.py` 跑的，sys.path 上只有 build/。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.lookup(SERIES, 'lpla', str(month))
+
+
 def load():
     df = pd.read_csv(os.path.join(SERIES, 'lpla.csv'))
     df['month'] = pd.PeriodIndex(df['month'], freq='M')
@@ -1040,6 +1053,12 @@ def main():
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                    '仅供个人研究，不构成投资建议'),
     }
+
+    # 官方发布日：查到才写这个字段。写 None 或空串都会让抬头印出「官方发布于 」这半句空话——
+    # assets/page.js 判的是字段在不在，不是值真不真。
+    src_day = source_day(LATEST)
+    if src_day:
+        payload['source_date'] = src_day
 
     path = os.path.join(ROOT, 'data', 'lpla.js')
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。

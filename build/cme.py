@@ -21,6 +21,7 @@
       最新月倒推 —— 同一份 CSV 重复跑，输出逐字节相同（除首行）。
 """
 import datetime
+import importlib.util
 import json
 import os
 
@@ -34,6 +35,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 OUT = os.path.join(ROOT, 'data', 'cme.js')
+
+# 发布日台账在仓库根，不在 build/ —— `python3 build/cme.py` 时 sys.path 上只有 build/，
+# 裸 import 找不到，只能按路径加载。
+_sd_spec = importlib.util.spec_from_file_location(
+    'source_dates', os.path.join(ROOT, 'source_dates.py'))
+source_dates = importlib.util.module_from_spec(_sd_spec)
+_sd_spec.loader.exec_module(source_dates)
 
 SRC = 'Source: CME Group monthly volume reports; format after Goldman Sachs GIR / Barclays'
 
@@ -667,6 +675,14 @@ payload = {
     'footer': 'CME Group (CME) · monthly volume reports · charts only, no commentary · '
               'personal research use',
 }
+
+# 抬头右侧那半句「官方发布于 X」是关于外部世界的事实断言，只能取台账里记下的、
+# 由源头自己给出的日期（CME 这家是 xlsx 的 Last-Modified 与工作簿保存时间戳互证，
+# 见 fetch/cme.py 的 _publish_date）。台账里没有就**整个字段不写** ——
+# 页面判的是字段在不在，塞 None 会把那半句变成「官方发布于 None」。
+_SOURCE_DATE = source_dates.lookup(SERIES, 'cme', str(CUR))
+if _SOURCE_DATE:
+    payload['source_date'] = _SOURCE_DATE
 
 
 def main():

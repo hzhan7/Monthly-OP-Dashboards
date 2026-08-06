@@ -25,6 +25,13 @@
   Last-Modified 为 2026-08-03，即次月第 1 个工作日）。
   建议调度：每月 3 日起每天跑一次，直到 latest_month() 前进为止。
 
+  **工作簿里没有自述发布日**（找过：'Latest Month Summary' 的表头只写
+  "Summary as of July 2026" —— 那是数据月；全部 1,936 条 sharedStrings 里唯一的
+  完整日期是 "As of September 19, 2022, daily totals exclude Event Contracts" 这条
+  口径脚注；批注、docProps/custom.xml 也都没有）。Cboe 那种 "Updated on August 5, 2026"
+  在 CME 这里不存在，别再找了。所以发布日只能取上面那个 Last-Modified，
+  再拿工作簿自己的保存时间戳对齐 —— 细节见 _publish_date()。
+
 ────────────────────────────────────────────────────────────────────────────
 口径坑（这些是踩过才知道的，不要「优化」掉）
 ────────────────────────────────────────────────────────────────────────────
@@ -88,9 +95,12 @@
 from __future__ import annotations
 
 import datetime as _dt
+import email.utils
 import os
 import re
 import urllib.request
+import zipfile
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -105,6 +115,11 @@ _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 
 SHEET_ADV = 'F&O ADV-RPC'
 SHEET_OI = 'F&O OI by Asset Class'
+
+# 发布是 CME 的动作，「哪天发的」要按 CME 自己的日历算。实测两条时间证据都落在
+# 芝加哥时间下午（2026-08-03 16:47 / 15:53 CDT），此刻按 UTC 取日期碰巧也对，
+# 但只要哪期晚发两小时就会跨过 UTC 零点 —— 那时错的是日期本身，而且毫无迹象。
+_TZ = ZoneInfo('America/Chicago')
 
 # xlsx 行标签 → series/cme.csv 列名。
 # 注意 xlsx 用 'Equities'，CSV 列名用 equity；'Pit' 对应 openoutcry。
@@ -170,8 +185,12 @@ def download(cache_dir, max_age_hours=6.0):
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, CACHE_NAME)
     meta = path + '.name'
+    lm_meta = path + '.lastmod'
 
-    if os.path.exists(path) and max_age_hours is not None:
+    # 缓存命中还额外要求 .lastmod 在：它是发布日的证据（见 _publish_date），
+    # 和 xlsx 本体来自同一个响应。缺了它就重下一次 —— 否则命中缓存的那几次跑
+    # 取不到发布日，页面抬头那半句会时有时无，而这种「有时对」最难被发现。
+    if os.path.exists(path) and max_age_hours is not None and os.path.exists(lm_meta):
         age = (_dt.datetime.now().timestamp() - os.path.getmtime(path)) / 3600.0
         if age < max_age_hours:
             name = ''
@@ -189,6 +208,7 @@ def download(cache_dir, max_age_hours=6.0):
         with urllib.request.urlopen(req, timeout=120) as r:
             ctype = (r.headers.get('Content-Type') or '').lower()
             disp = r.headers.get('Content-Disposition') or ''
+            lastmod = r.headers.get('Last-Modified') or ''
             blob = r.read()
     except Exception as e:                                    # noqa: BLE001
         raise FetchError(f'CME IR xlsx 下载失败: {SRC_URL} -> {e!r}') from e
@@ -210,6 +230,10 @@ def download(cache_dir, max_age_hours=6.0):
         f.write(blob)
     with open(meta, 'w', encoding='utf-8') as f:
         f.write(name)
+    # 原样存这一行响应头（不是解析后的日期）：日后有人怀疑某个发布日，
+    # 要能拿到源头当时说的原话，而不是我们转述的结果。
+    with open(lm_meta, 'w', encoding='utf-8') as f:
+        f.write(lastmod)
     return path, name
 
 
@@ -367,6 +391,127 @@ def parse(xlsx_path):
     return df
 
 
+# ── 发布日 ──────────────────────────────────────────────────────────────────
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+
+    不能裸 import：本模块被 monthly_run 用 spec_from_file_location 加载，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(root, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _wb_saved_at(xlsx_path):
+    """工作簿自己的保存时间戳 —— docProps/core.xml 的 dcterms:modified，原文与 UTC 时间。
+
+    这是 CME 的人（core.xml 里 lastModifiedBy 那位）按下保存时 Excel 写进文件的，
+    随文件走、和我们的下载行为无关，所以能当作独立于 HTTP 头的第二条证据。
+    """
+    try:
+        with zipfile.ZipFile(xlsx_path) as z:
+            core = z.read('docProps/core.xml').decode('utf-8', 'replace')
+    except Exception:                                          # noqa: BLE001
+        return None, None
+    m = re.search(r'<dcterms:modified[^>]*>([^<]+)</dcterms:modified>', core)
+    if not m:
+        return None, None
+    raw = m.group(1).strip()
+    try:
+        d = _dt.datetime.strptime(raw, '%Y-%m-%dT%H:%M:%SZ')
+    except ValueError:
+        return None, raw
+    return d.replace(tzinfo=_dt.timezone.utc), raw
+
+
+def _publish_date(cache_dir, xlsx_path, name):
+    """这一期 xlsx 的发布日 ('YYYY-MM-DD', 出处文字)；判不准返回 (None, 原因)。
+
+    工作簿里没有任何自述发布日（找过哪些地方见模块 docstring 的「发布节奏」节），
+    所以退到本模块 docstring 从一开始就当作实测发布日的那个字段：HTTP Last-Modified。
+
+    但单凭一个响应头不敢往页面上印 —— CDN 迁移、重新上传同一份文件都会把它推后，
+    而推后之后它看上去和真发布日一模一样。所以要工作簿自己的保存时间戳来对齐：
+    一条来自 CME 的 Excel、一条来自 IR 服务器，两条独立证据同一天才采信。
+    实测 2026-07 那期是 20:53:17Z 保存、21:47:51Z 上线，差 54 分钟，同一天。
+    对不上就返回 None 让抬头缺半句 —— 缺席远好过印一个看不出来是假的日期。
+    """
+    lm_meta = os.path.join(cache_dir, CACHE_NAME + '.lastmod')
+    if not os.path.exists(lm_meta):
+        return None, '没有 .lastmod 旁证文件（该文件由 download() 与 xlsx 一起落盘）'
+    with open(lm_meta, encoding='utf-8') as f:
+        lm_raw = f.read().strip()
+    if not lm_raw:
+        return None, '响应里没有 Last-Modified 头'
+    try:
+        http_at = email.utils.parsedate_to_datetime(lm_raw)
+    except (TypeError, ValueError):
+        return None, f'Last-Modified 读不懂: {lm_raw!r}'
+    if http_at.tzinfo is None:                     # RFC 7231 要求带 GMT，缺了就按 UTC 读
+        http_at = http_at.replace(tzinfo=_dt.timezone.utc)
+
+    saved_at, saved_raw = _wb_saved_at(xlsx_path)
+    if saved_at is None:
+        return None, f'工作簿 docProps/core.xml 里取不到 dcterms:modified（原文 {saved_raw!r}）'
+
+    d_http = http_at.astimezone(_TZ).date()
+    d_saved = saved_at.astimezone(_TZ).date()
+    if d_http != d_saved:
+        return None, (f'两条证据不在同一天：Last-Modified {d_http}、'
+                      f'工作簿保存 {d_saved}（芝加哥时间）')
+
+    return d_http.strftime('%Y-%m-%d'), (
+        f'{CACHE_NAME}（官方文件名 {name or "未给出"}）的 HTTP Last-Modified "{lm_raw}"，'
+        f'与工作簿 docProps/core.xml 的 dcterms:modified {saved_raw} 互证，'
+        f'换算到芝加哥时间同为 {d_http}')
+
+
+def _name_month(name):
+    """从官方文件名里的 'Jul26' 取出 'YYYY-MM'；认不出返回 None。
+
+    只用来做发布日归属的校验（见 _record_publish_date），不参与取数 ——
+    表内数据才是最新月的真值（见模块 docstring）。
+    """
+    m = re.search(r'_([A-Z][a-z]{2})(\d{2})(?![0-9])', name or '')
+    if not m:
+        return None
+    try:
+        mon = _dt.datetime.strptime(m.group(1), '%b').month
+    except ValueError:
+        return None
+    return f'20{m.group(2)}-{mon:02d}'
+
+
+def _record_publish_date(series_dir, cache_dir, xlsx_path, name, added, latest):
+    """把这一期的发布日记进台账 —— 只记这个文件自己那一期（latest），且它确实刚落库。
+
+    xlsx 是「一份文件滚动覆盖全历史」的形态：它的 Last-Modified 只证明**最新那个月**
+    是这天发的。补历史时一次 update 可能追进好几个月，若给每个新月都盖上同一个日期，
+    台账上就会长出「2026-05 的数据 2026-08-03 才发布」这种看着挺像真的假话 ——
+    record() 的护栏只拦「发布日早于数据月」，拦不住晚三个月。
+
+    再加一道文件名校验：官方文件名里的月份（Jul26）与表内最新完整月对不上时，
+    说明这份文件已经是更新一期、而我们最新能收全的还是上一个月（例如 OI 晚上线），
+    那么这个发布日属于文件里那个更新的月份，安到 latest 头上就是串月。
+    """
+    if latest not in added:
+        return
+    nm = _name_month(name)
+    if nm and nm != latest:
+        print(f'  发布日未记：官方文件名月份 {nm} 与表内最新完整月 {latest} 不一致')
+        return
+    day, evidence = _publish_date(cache_dir, xlsx_path, name)
+    if not day:
+        print(f'  发布日未记（{latest}）：{evidence}')
+        return
+    _source_dates().record(series_dir, 'cme', latest, day, evidence)
+
+
 # ── 对外接口 ────────────────────────────────────────────────────────────────
 def latest_month(cache_dir) -> str | None:
     """官方源当前最新完整月 "YYYY-MM"。抓不到 / 解析不出 -> 抛 FetchError。"""
@@ -417,7 +562,7 @@ def update(series_dir, cache_dir) -> list:
     （实测会把 35879.42523809524 写成 35879.425238），等于悄悄改了历史数据，
     而且 git diff 会变成整文件全改。行级插入保证已有行逐字节不动。
     """
-    path, _ = download(cache_dir)
+    path, name = download(cache_dir)
     src = parse(path)
     csv_path, cur, eol = _read_series(series_dir)
 
@@ -459,6 +604,10 @@ def update(series_dir, cache_dir) -> list:
         out += eol
     with open(csv_path, 'w', encoding='utf-8', newline='') as f:
         f.write(out)
+
+    # 台账只在数据真的写进 series/cme.csv 之后才作证 —— 上面任何一步抛了，
+    # 台账上就不该多出一行说「这个月官方发过了」。
+    _record_publish_date(series_dir, cache_dir, path, name, set(new), str(src.index[-1]))
     return list(new)
 
 

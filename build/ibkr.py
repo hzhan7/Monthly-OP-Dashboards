@@ -254,16 +254,27 @@ def main():
             raise SystemExit(f'新闻稿缓存缺失或损坏 {p}（删掉它再跑 fetch/ibkr.py）')
         COMM[w] = br.parse_pr(p)
 
-    # 数据源发布日：优先取目标月新闻稿的电头日期（"GREENWICH, CT, August 3, 2026 —"），
-    # 取不到再退回历史指标 PDF 的 creationDate；两者都拿不到就整个字段省略。
+    # 数据源发布日：先查台账 series/source_dates.csv（fetch/ibkr.py 摄入该月时按月份钉进去的）。
+    # 台账优先于当场解析，因为 cache/ 是 gitignore 的、随时可以清 —— 清掉之后当场解析
+    # 会让抬头那半句静默消失。下面两条回落保留着，用于台账还没有记录的历史月份。
     source_date = None
     try:
-        prt = fitz.open(os.path.join(CACHE, f'pr_{target.replace("-", "")}.pdf'))[0].get_text()
-        mdl = re.search(r'\b(' + '|'.join(MONTHS) + r')\s+(\d{1,2}),\s*(20\d{2})\s*[—–-]', prt)
-        if mdl:
-            source_date = f'{mdl.group(3)}-{MONTHS.index(mdl.group(1)) + 1:02d}-{int(mdl.group(2)):02d}'
+        import importlib.util
+        _spec = importlib.util.spec_from_file_location(
+            'source_dates', os.path.join(ROOT, 'source_dates.py'))
+        _sd = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_sd)
+        source_date = _sd.lookup(os.path.join(ROOT, 'series'), 'ibkr', target)
     except Exception:
         pass
+    if not source_date:
+        try:
+            prt = fitz.open(os.path.join(CACHE, f'pr_{target.replace("-", "")}.pdf'))[0].get_text()
+            mdl = re.search(r'\b(' + '|'.join(MONTHS) + r')\s+(\d{1,2}),\s*(20\d{2})\s*[—–-]', prt)
+            if mdl:
+                source_date = f'{mdl.group(3)}-{MONTHS.index(mdl.group(1)) + 1:02d}-{int(mdl.group(2)):02d}'
+        except Exception:
+            pass
     if not source_date:
         cd = (doc.metadata or {}).get('creationDate') or ''
         m = re.match(r'D:(\d{4})(\d{2})(\d{2})', cd)

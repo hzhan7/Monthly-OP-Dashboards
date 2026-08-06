@@ -60,6 +60,25 @@ def mlab(p):
     return p.strftime('%b-%y')
 
 
+def source_date(month):
+    """该月营收公告的官方发布日（抬头「官方发布于 …」那半句），查不到返回 None。
+
+    台账模块在仓库根，而 `python3 build/tsm.py` 的 sys.path 上只有 build/，
+    所以按路径加载（见 source_dates.py 的 load()）。
+    读不到不算构建失败：这半句缺席只是少一条信息，为它把整页判挂不划算。
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'source_dates', os.path.join(ROOT, 'source_dates.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.lookup(SERIES, 'tsm', month)
+    except Exception as e:
+        print(f'[tsm][warn] 读 series/source_dates.csv 失败，本次不写 source_date：{e!r}')
+        return None
+
+
 def num(v, nd=6):
     """写进 payload 的数值：非有限一律 None，有限的统一定点舍入，保证幂等。"""
     if v is None:
@@ -726,6 +745,12 @@ def main():
                    '与 <code>build/build_tsm.py</code>（PDF 版）同源 · '
                    '仅供个人研究，不构成投资建议'),
     }
+
+    # 抬头的「官方发布于 …」：查得到才加这个字段，查不到整个字段省掉 ——
+    # 渲染端（assets/page.js）判的是字段在不在，写 None 会印出「官方发布于 None」。
+    sdate = source_date(str(cur))
+    if sdate:
+        payload['source_date'] = sdate
 
     # 上线前的自检：payload 里不许有 NaN / Infinity（json.dump 会写成裸字面量，
     # 浏览器 JSON 解析不了；而 window.DASH = 是 JS 求值，NaN 会被静默吞进图里）。

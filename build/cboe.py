@@ -48,6 +48,17 @@ HEAT_YEARS = 10     # 原 deck 的 heat_matrix n_years
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py —— 本文件是 `python3 build/cboe.py` 跑的，
+    sys.path 上只有 build/，裸 import 会 ModuleNotFoundError。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def mlab(p):
     """与 gsx.mlab 一致：Period('2026-06') → 'Jun-26'。"""
     return p.strftime('%b-%y')
@@ -761,6 +772,14 @@ def main():
         f'rolling average published on a one-month lag, so blank RPC cells are not a data gap. '
         f'3Y %ile = 当月读数在最近 36 个月中的分位（口径见下方「汇总表读法」）。'
     )
+
+    # 抬头右侧「官方发布于 X」。台账按月钉死（fetch 入库时从 xlsx 的 "Updated on …" 记下），
+    # 所以只查 LATEST 这一个月：cache/ 里可能躺着比 LATEST 更新的一期，现解析会把新一期的
+    # 发布日安到旧月份的数据上。查不到就**整个字段不写** —— 渲染端判的是字段在不在，
+    # 给它 None 或空串会印出一句没有内容的断言。
+    src_day = _source_dates().lookup(os.path.join(ROOT, 'series'), 'cboe', str(LATEST))
+    if src_day:
+        payload['source_date'] = src_day
 
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(OUT, payload, 'cboe')

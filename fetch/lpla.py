@@ -26,6 +26,14 @@
 季末月（3/6/9/12）**没有**自己的新闻稿，它随下一个月的 Historical File 一起出来，
 所以 6 月数据要等 7 月报（≈8 月 20 日）——季末月天然比常规月晚一个发布周期。
 
+上面这串日期不是推算出来的，逐个来自新闻稿自己的电头
+"SAN DIEGO – June 16, 2026 – LPL Financial Holdings Inc. … today released its monthly
+activity report for May 2026."。发布日经 record() 落进 series/source_dates.csv，
+页面抬头「官方发布于 X」读的就是它（见 release_date()）。
+**Historical File 本身没有发布日**——它只写 "As of May 31, 2026"（数据截止日，不是发布日），
+PDF 元数据里的 CreationDate 是 Workiva 的排版时间（2026-05 那期是 6/12，比实际发布早 4 天），
+两者都不能当发布日用，所以发布日一律去同期新闻稿的电头取。
+
 ═══ 口径坑（踩过的，别再踩） ═══
 1) **series/lpla.csv 的 nna_* 三列是 "Total NNA"，含并购导入，不是 "Organic NNA"。**
    官方同页并排给三组：Organic NNA / Acquired NNA / Total NNA。
@@ -355,6 +363,116 @@ def source_month(path):
     return '%s-%02d' % (m.group(2), _MON_FULL[m.group(1).lower()])
 
 
+# ────────────────────────── 发布日 ──────────────────────────
+# 电头两种写法都出现过：主锚点是城市，备用锚点是紧跟在日期后面的公司名——
+# 官方哪天从 SAN DIEGO 搬走，第二条还能接住；两条都不中就抛，不猜。
+_DATELINE = (
+    re.compile(r'SAN\s+DIEGO\s*,?\s*[–—-]\s*([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})'),
+    re.compile(r'\b([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})\s*[–—-]\s*LPL\s+Financial'),
+)
+
+
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+
+    不能裸 import：本模块被 monthly_run 用 spec_from_file_location 加载，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(root, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def release_period(month):
+    """数据月 month **第一次被官方发出来**是在哪一期月报里，返回 'YYYY-MM'。
+
+    常规月就是它自己那一期。季末月（3/6/9/12）没有独立新闻稿，它是随下一期的
+    Historical File 一起首发的（见"发布节奏"），所以 6 月数据的发布日 = 7 月那期的日期。
+    照着"6 月数据就查 6 月那期"去记会有两个后果：6 月那期根本不存在，
+    真找到个近似的又会把发布日记早整整一个月。
+    """
+    y, mo = int(month[:4]), int(month[5:7])
+    if mo % 3 == 0:
+        y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+    return '%04d-%02d' % (y, mo)
+
+
+def _fetch_release(cache_dir, period):
+    """下某一期的**月度新闻稿**（不是 Historical File）到 cache，返回本地路径。
+
+    两个文件挂在索引页同一组条目里、只差标题尾巴，所以复用 _index_entries，
+    不为发布日另起一条抓取通道。
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    idx_path = os.path.join(cache_dir, 'lpla_monthly_results_index.html')
+    entries = {}
+    if os.path.exists(idx_path):
+        try:
+            with open(idx_path) as f:
+                entries = dict(_index_entries(f.read(), want='monthly'))
+        except (SourceError, OSError):
+            entries = {}                  # 缓存里躺着的可能是半截文件，重爬即可
+    if period not in entries:             # 缓存的索引页也可能是上一轮的，缺这一期就重爬
+        html_text = _get(INDEX_URL).decode('utf-8', 'replace')
+        with open(idx_path, 'w') as f:
+            f.write(html_text)
+        entries = dict(_index_entries(html_text, want='monthly'))
+    if period not in entries:
+        raise SourceError('索引页里没有 %s 那期月度新闻稿；若 %s 是季末月，那它本来就没有'
+                          % (period, period))
+    blob = _get(entries[period])
+    if not blob.startswith(b'%PDF'):
+        raise SourceError('%s 拿回来的不是 PDF（前 16 字节 %r）' % (entries[period], blob[:16]))
+    path = os.path.join(cache_dir, 'lpla_pr_%s.pdf' % period)
+    with open(path, 'wb') as f:
+        f.write(blob)
+    return path
+
+
+def release_date(cache_dir, month):
+    """数据月 month 的官方发布日，返回 ('YYYY-MM-DD', 出处文字)。
+
+    唯一取值处是新闻稿电头那句 "SAN DIEGO – June 16, 2026 –"，即官方自己写的发布日。
+    取不到就抛——页面抬头少半句远好过印一个看不出是假的日期，所以这里没有任何
+    "退回今天 / 退回文件 mtime / 按上期节奏推算"的兜底。
+    """
+    period = release_period(month)
+    path = _fetch_release(cache_dir, period)
+    text = _pdf_text(path)
+
+    # 先确认这份稿子报的确实是 period 那个月：索引页标题是人工录入的，理论上会挂错文件，
+    # 而挂错的后果是把 A 月的发布日安到 B 月头上，页面照样理直气壮地印出来。
+    m = re.search(r'Monthly Activity\s+for\s+([A-Za-z]+)\s+(\d{4})', text, re.I)
+    if not m or m.group(1).lower() not in _MON_FULL:
+        raise ParseError('新闻稿里读不出 "Monthly Activity for <Month> <Year>"：' + path)
+    said = '%s-%02d' % (m.group(2), _MON_FULL[m.group(1).lower()])
+    if said != period:
+        raise ParseError('索引页 %s 那期挂的是 %s 的新闻稿（%s）' % (period, said, path))
+
+    for pat in _DATELINE:
+        d = pat.search(text)
+        if d:
+            break
+    else:
+        raise ParseError('新闻稿电头里读不出 "<城市> – <Month> <D>, <Year> –"：' + path)
+    mon = _MON_FULL.get(d.group(1).lower())
+    if not mon:
+        raise ParseError('电头月份 %r 不认识：%s' % (d.group(1), path))
+    day = '%s-%02d-%02d' % (d.group(3), mon, int(d.group(2)))
+    if day[:7] < period:
+        # 发布日早于它自己报的那个月 = 匹配到了正文里别的日期（脚注常有 "as of June 30, 2025"）
+        raise ParseError('电头日期 %s 早于该期月份 %s，多半匹配错了：%s' % (day, period, path))
+
+    ev = '新闻稿 %s 电头 "%s –"' % (os.path.basename(path), d.group(0))
+    if period != month:
+        ev = '%s 是季末月、无独立月报，数据随 %s 那期首发；%s' % (month, period, ev)
+    return day, ev
+
+
 # ────────────────────────── CSV 读写 ──────────────────────────
 
 def _read_series(csv_path):
@@ -464,6 +582,19 @@ def update(series_dir, cache_dir, revise=False, verbose=True):
     os.replace(tmp, csv_path)
     if verbose:
         print('[lpla] 新增 %d 个月：%s' % (len(new_months), ', '.join(new_months)))
+
+    # 发布日只对**真的落进 series 的月份**作证，所以放在 os.replace 之后：
+    # 解析炸了或写盘没成时，台账上不该多出一行说"这个月官方发过了"。
+    # 抓不到发布日不影响数据入库——那是主任务，日期是附加事实，所以这里吞掉异常只告警。
+    for mth in new_months:
+        try:
+            day, ev = release_date(cache_dir, mth)
+            _source_dates().record(series_dir, 'lpla', mth, day, ev)
+            if verbose:
+                print('[lpla] %s 发布日 %s（%s）' % (mth, day, ev))
+        except (SourceError, ParseError, ValueError, OSError) as e:
+            if verbose:
+                print('[lpla] %s 的发布日没拿到，页面抬头会少「官方发布于」半句：%s' % (mth, e))
     return new_months
 
 

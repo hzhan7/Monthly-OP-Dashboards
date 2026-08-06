@@ -34,6 +34,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 
+
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py —— 本文件是 `python3 build/schw.py` 跑的，
+    sys.path 上只有 build/，裸 import 会 ModuleNotFoundError。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 SRC = 'Source: Schwab Monthly Activity Reports and quarterly reports'
 QNOTE = ('Quarter-end months (Mar/Jun/Sep/Dec) have no standalone monthly report; '
          'those values come from the quarterly release')
@@ -981,6 +993,13 @@ payload = {
     'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                '仅供个人研究，不构成投资建议'),
 }
+
+# 抬头的「官方发布于 …」：按 data_through 那个月去台账里查（fetch/schw.py 摄入时记的，
+# 来自新闻稿电头）。查不到就整个字段不写 —— 渲染端判的是字段在不在，写 None 或空串
+# 会让页面印出「官方发布于 」这么半句。
+_src_date = _source_dates().lookup(SERIES, 'schw', str(LATEST))
+if _src_date:
+    payload['source_date'] = _src_date
 
 
 def main():

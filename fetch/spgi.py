@@ -23,8 +23,16 @@ investor.spglobal.com 和 s29.q4cdn.com 都挂在 Cloudflare 后面。实测：
 
 ════════ 发布节奏 ════════
 每月 15 日前后发布上一个月的数据（如 6 月数据 → 7/15 发布）；
-季末月份的那一份会推迟到季报日随季报一起发（如 2025-12 的数据 2026-02-10 才发，
-2025-06 的 2025-07-31 发）。工作簿右下角 "Published on M/D/YYYY" 是权威发布日。
+季末月份的那一份**有时**会推迟到季报日随季报一起发，但这条规律并不稳。
+工作簿右下角 "Published on M/D/YYYY" 是权威发布日，逐季实测（都是季末月）：
+
+    2025-06 → 2025-07-31（月末后第 31 天）
+    2025-12 → 2026-02-10（月末后第 41 天）
+    2026-06 → 2026-07-15（月末后第 14 天）← 和常规月一样快，没等季报
+
+跨度 27 天。所以**别按「季末月一定晚」来设下载闸门**：monthly_run.py 的
+EARLY_BY['spgi'] 照最早的第 13-14 天开闸，宁可空跑几周也不能漏掉快的那一季
+（roster 的 LAG[1]=46 照最慢的定，那是给红点用的，两者刻意不同）。
 
 ⚠️ feed 的一个结构性坑：月度 xlsx 不是独立条目，而是**挂在当季那条 Quarterly 记录下面
 的附件**，季内每发一版就把上一版换掉。所以 feed 任何时刻只能看到「最新的那一份」，
@@ -55,6 +63,7 @@ investor.spglobal.com 和 s29.q4cdn.com 都挂在 Cloudflare 后面。实测：
 ════════ 对外接口 ════════
     latest_month(cache_dir) -> "YYYY-MM" | None
     update(series_dir, cache_dir) -> ["YYYY-MM", ...]   # 新增的月份，幂等
+    published_on(xlsx_path) -> ("YYYY-MM-DD", 出处) | (None, None)
 
 依赖：openpyxl（读 xlsx）。其余全是标准库，刻意不引 pandas —— 本模块的输出要和
 历史 CSV 逐字节一致，pandas 的浮点格式化会自作主张。
@@ -73,6 +82,9 @@ import urllib.request
 import openpyxl
 
 # ---------------------------------------------------------------- 常量
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 
 Q4_API_KEY = 'BF185719B0464B3CB809D23926182246'
 Q4_FEED = ('https://investor.spglobal.com/feed/FinancialReport.svc/'
@@ -96,6 +108,9 @@ COLS_CLEAN = ['month', 'spdji_adv_mn', 'spdji_adv_yoy', 'billed_issuance_yoy',
               'adv_derived', 'billed_issuance_index']
 
 _MM_RE = re.compile(r'monthly-metrics-as-of-([a-z]+)-(\d{4})', re.I)
+# 工作簿正文下方那行 "Published on 7/15/2026"。日期是美式 M/D/YYYY —— 文件名里的
+# "-Published-7-15-2026" 与它同源同序，两处对得上就说明这个读法没错。
+_PUB_RE = re.compile(r'Published\s+on\s+(\d{1,2})/(\d{1,2})/(20\d{2})', re.I)
 
 
 class SpgiFetchError(RuntimeError):
@@ -120,6 +135,20 @@ def _fmt15(x):
 def _repr(x):
     """spgi_clean.csv 的数值写法：Python 原生 repr，保留全部浮点位。"""
     return repr(float(x))
+
+
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+
+    不能裸 import：本模块是被 monthly_run 用 spec_from_file_location 加载的，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _http_get(url, timeout=120):
@@ -348,6 +377,45 @@ def parse(xlsx_path):
     return data
 
 
+def published_on(xlsx_path):
+    """工作簿自述的发布日，返回 ("YYYY-MM-DD", 出处描述)；没写就 (None, None)。
+
+    两个 sheet 的正文下方各有一行 "Published on 7/15/2026"（当前版式落在 A22）。
+    这是**源头自己说的**发布日，页面抬头「官方发布于」只认这一种来源 ——
+    文件 mtime 是我们下载它的时间，构建日更是与官方无关，都不能顶替。
+
+    整表扫字符串而不是钉死 A22：那行的行号跟在 Definition/Source 两段文字后面，
+    官方改一次措辞就会上下浮动，钉死单元格的失败方式是**静默读到 None**。
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+    try:
+        hits = {}
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if not isinstance(cell.value, str):
+                        continue
+                    hit = _PUB_RE.search(cell.value)
+                    if hit:
+                        iso = '%s-%02d-%02d' % (hit.group(3), int(hit.group(1)),
+                                                int(hit.group(2)))
+                        hits.setdefault(iso, []).append(
+                            '%s!%s %r' % (ws.title, cell.coordinate, cell.value.strip()))
+    finally:
+        wb.close()
+    if not hits:
+        return None, None
+    # 两个 sheet 的页脚本该同期刷新。真不一致时取最晚的那个：整份工作簿是一次发布事件，
+    # 更可能是官方漏刷了其中一张的页脚，而不是它真的早发了一版。但这属于官方版式异常，
+    # 必须吵出来让人看一眼。
+    iso = max(hits)
+    if len(hits) > 1:
+        sys.stderr.write('[spgi] ⚠ 工作簿里的 Published on 有多个日期（%s），取最晚的 %s；'
+                         '请人工确认官方是不是漏刷了某个 sheet 的页脚\n'
+                         % (', '.join(sorted(hits)), iso))
+    return iso, '; '.join(hits[iso])
+
+
 NEED = ('billed_yoy', 'adv', 'adv_yoy')
 
 
@@ -517,6 +585,32 @@ def update(series_dir, cache_dir):
         _append_csv(raw_path, new_raw)
     if new_clean:
         _append_csv(clean_path, new_clean)
+
+    # ── 发布日入台账（页面抬头「官方发布于」的唯一来源）────────────────────────
+    # 只记 as-of 那一个月：xlsx 是全年重发，同一份文件里更早的月份是历次旧版各自发的，
+    # 把本期的 "Published on" 安到它们头上，等于给旧月份印一个偏晚的假日期。
+    # 补历史月份的发布日只能各自去找当期那份 xlsx（见 _guess_cdn_urls）。
+    #
+    # 条件是「as-of 月确实躺在两个 CSV 里」而不是「本轮新增了它」：数据落库与台账落库
+    # 是两件事，某次跑只成了前一件（xlsx 页脚缺行、台账写失败）时，该月再也进不了
+    # added 分支，那半句话就永久缺席。每次跑都对 as-of 月重申一遍，record 同键覆盖。
+    asof_key = _ym(asof)
+    if asof_key in added or (asof_key in have_raw and asof_key in clean_by_month):
+        pub, where = published_on(path)
+        if pub:
+            try:
+                _source_dates().record(series_dir, 'spgi', asof_key, pub,
+                                       '%s（源文件 %s）' % (where, os.path.basename(url)))
+            except Exception as exc:                        # noqa: BLE001
+                # 台账写不进去不该把已经落库的月份回滚成 FAIL —— 数值是对的，
+                # 代价只是页面抬头少半句话。响一声，让人回头补。
+                sys.stderr.write('[spgi] ⚠ %s 发布日 %s 写台账失败：%s\n'
+                                 % (asof_key, pub, exc))
+        else:
+            sys.stderr.write('[spgi] ⚠ %s 的 xlsx 里找不到 "Published on M/D/YYYY"，'
+                             '本页不印「官方发布于」——宁可缺这半句，也不拿下载时间冒充\n'
+                             % asof_key)
+
     if added:
         sys.stderr.write('[spgi] 新增 %d 个月：%s（源 %s）\n'
                          % (len(added), ', '.join(added), url))

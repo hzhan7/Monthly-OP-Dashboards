@@ -8,11 +8,15 @@
     月报附表   https://content.schwab.com/web/retail/public/about-schwab/excels/
                schw_<mon><yyyy>_table.xlsx        例：schw_may2026_table.xlsx
     月报正文   https://content.schwab.com/web/retail/public/about-schwab/
-               schw_<mon><yyyy>_press_release.pdf （本模块不用，留档参考）
+               schw_<mon><yyyy>_press_release.pdf （数值不从这里取，只取电头日期，见下）
     季报附表   https://content.schwab.com/web/retail/public/about-schwab/excels/
                schw_q<n>_<yyyy>_earnings_tables.xlsx  例：schw_q2_2026_earnings_tables.xlsx
+    季报正文   https://content.schwab.com/web/retail/public/about-schwab/
+               schwab_q<n>_<yyyy>_earnings_release.pdf（同上，只取电头日期）
 
 <mon> 是小写三字母英文月份缩写（jan…dec），<yyyy> 四位年。
+注意两份 PDF 的**文件名前缀不一样**：月报是 schw_、季报是 schwab_（xlsx 两个都是 schw_）。
+照着 xlsx 的写法推季报 PDF 的名字必 404，这不是笔误，是官方自己就不一致。
 
 —— 为什么不用别的源 ——
 · www.aboutschwab.com（IR 站正文页）在 Akamai 后面，会按 TLS/HTTP2 指纹拦截：
@@ -32,6 +36,24 @@
     (b) 下一个月报附表的 13 个月滚动表 —— 例如 jul2026 月报的表里会带上 jun2026，
         但要等到 8 月中，比 (a) 慢一个月。
   所以「季末月漏掉」这个坑的正确解法不是特判某几个月，而是：**两个源都抓，取并集**。
+
+========================== 官方发布日（source_dates）==========================
+页面抬头「官方发布于 X」要的是**源头自己说出来的那一天**，所以只认新闻稿正文的电头：
+
+    月报 PDF 第 1 页  "WESTLAKE, Texas, June 12, 2026 – The Charles Schwab Corporation
+                      released its Monthly Activity Report today."   → 2026-05 发布于 6/12
+    季报 PDF 第 1 页  "WESTLAKE, Texas, July 21, 2026 – The Charles Schwab Corporation
+                      reported net income for the second quarter…"   → 2026-06 发布于 7/21
+                      （季末月的数值来自季报，所以它的发布日就是季报的发布日）
+
+**不能用 HTTP Last-Modified**：实测 q2_2026 那份 PDF 的 Last-Modified 是 7/20 17:11 GMT，
+而电头写的是 7/21 —— 官方前一天晚上先把文件挂上 CDN、次日盘前才对外发布。
+用 Last-Modified 会系统性地早一天，而早一天的日期看上去完全正常，没人会发现。
+mtime、下载日、构建日同理，一律不用。
+
+只有当某个月是从**它自己那期**报告里读到时才记发布日。同一个月也会出现在后续几期的
+13 个月滚动表里，那些文件的电头是后来那期的日子，不是这个月首次公布的日子；
+分不清就宁可让这半句话缺席（见仓库根 source_dates.py 的 docstring）。
 
 ================================ 口径坑 ================================
 1. **单位在两种文件里不一样**，这是最容易静默算错的地方：
@@ -107,6 +129,9 @@ import openpyxl
 CDN = 'https://content.schwab.com/web/retail/public/about-schwab'
 MONTHLY_URL = CDN + '/excels/schw_{mon}{year}_table.xlsx'
 QUARTER_URL = CDN + '/excels/schw_q{q}_{year}_earnings_tables.xlsx'
+# 新闻稿正文：只为取电头日期。前缀 schw_ / schwab_ 不一致是官方的，别按 xlsx 的写法改。
+PR_MONTHLY_URL = CDN + '/schw_{mon}{year}_press_release.pdf'
+PR_QUARTER_URL = CDN + '/schwab_q{q}_{year}_earnings_release.pdf'
 IR_PAGE = 'https://www.aboutschwab.com/financial-reports'
 
 # CDN 只看 UA，给个普通 Chrome UA 就放行；不带 UA 或带 Python-urllib 会 403。
@@ -115,6 +140,14 @@ _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 
 _MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
         'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+_MON_FULL = ['January', 'February', 'March', 'April', 'May', 'June',
+             'July', 'August', 'September', 'October', 'November', 'December']
+
+# 新闻稿电头。锚在 "WESTLAKE, Texas," 上而不是只找「月 日, 年」——正文里还有一大堆日期
+# （"as of May 31, 2026"、脚注里的往期口径变更日），只匹配日期格式会抓到其中任意一个。
+_DATELINE = re.compile(
+    r'WESTLAKE,\s*Texas,\s*(' + '|'.join(_MON_FULL) + r')\s+(\d{1,2}),\s*(20\d{2})',
+    re.IGNORECASE)
 
 SERIES = 'schw.csv'
 COLS = ['core_nna_usdbn', 'total_client_assets_usdbn',
@@ -172,12 +205,16 @@ def _get(url: str, timeout: int = 60) -> bytes | None:
         raise FetchError(f'{type(e).__name__} on {url}: {e}') from e
 
 
-def _download(url: str, cache_dir: str, reuse: bool = True) -> str | None:
+def _download(url: str, cache_dir: str, reuse: bool = True,
+              magic: bytes = b'PK') -> str | None:
     """下载到 cache/，返回本地路径；404 返回 None。
 
     reuse=True 时复用已落盘的文件。老月份的附表官方从不重发（已核对 apr/may 两期 12 个
     重叠月逐值相同），复用是安全的；但**最近两个月的文件可能被官方重新上传更正**，
     所以调用方对新文件传 reuse=False，强制重取。
+
+    magic 是文件头的前几个字节：xlsx 是 zip 所以 b'PK'，新闻稿 PDF 是 b'%PDF'。
+    要判它是因为 CDN 偶尔用 200 返回一张「找不到页面」的 HTML，长度够大、内容全错。
     """
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, url.rsplit('/', 1)[-1])
@@ -186,11 +223,46 @@ def _download(url: str, cache_dir: str, reuse: bool = True) -> str | None:
     blob = _get(url)
     if blob is None:
         return None
-    if len(blob) < 10_000 or blob[:2] != b'PK':   # xlsx 是 zip，PK 开头
-        raise FetchError(f'{url} 返回的不是 xlsx（{len(blob)} bytes）')
+    if len(blob) < 10_000 or not blob.startswith(magic):
+        raise FetchError(f'{url} 返回的不是 {magic.decode()} 文件（{len(blob)} bytes）')
     with open(path, 'wb') as f:
         f.write(blob)
     return path
+
+
+def release_date(kind: str, report_ym: tuple[int, int], cache_dir: str):
+    """某一期报告的官方发布日 → ('YYYY-MM-DD', 出处描述)；拿不到返回 (None, 原因)。
+
+    发布日只从新闻稿正文第 1 页的电头读（见模块 docstring 的「官方发布日」一节）。
+    PDF 一律 reuse：电头是印在正文里的，官方就算把文件重新上传一遍也不会改那一行，
+    所以这里不像 xlsx 那样对新月份强制重取。
+    """
+    y, m = report_ym
+    if kind == 'monthly':
+        url = PR_MONTHLY_URL.format(mon=_MON[m - 1], year=y)
+    else:
+        url = PR_QUARTER_URL.format(q=(m - 1) // 3 + 1, year=y)
+    name = url.rsplit('/', 1)[-1]
+
+    path = _download(url, cache_dir, magic=b'%PDF')
+    if path is None:
+        return None, f'{name} 在 CDN 上是 404'
+    try:
+        import fitz                       # 延迟 import：同 openpyxl 的处理，缺它只该让
+    except ImportError:                   # 发布日缺席，不该把整家的数据摄入一起拖挂
+        return None, 'pymupdf(fitz) 未安装，读不了新闻稿 PDF'
+    try:
+        # 先把换行/不间断空格压成单空格：PDF 抽出来的电头经常被折行成两段，
+        # 不压的话正则里的 \s+ 也救不了「Texas,\nJuly」中间夹的软连字符之类。
+        txt = re.sub(r'\s+', ' ', fitz.open(path)[0].get_text().replace('\xa0', ' '))
+    except Exception as e:
+        return None, f'{name} 第 1 页读不出文本：{type(e).__name__}'
+    hit = _DATELINE.search(txt)
+    if not hit:
+        return None, f'{name} 第 1 页找不到 "WESTLAKE, Texas, <月> <日>, <年>" 电头'
+    mon = _MON_FULL.index(hit.group(1).capitalize()) + 1
+    return (f'{int(hit.group(3)):04d}-{mon:02d}-{int(hit.group(2)):02d}',
+            f'{name} 第 1 页电头 "{hit.group(0)}"')
 
 
 def _ir_page_links(cache_dir: str) -> list[str]:
@@ -363,6 +435,10 @@ def _candidates(back: int = 8):
 
 
 RESTATEMENTS: list = []      # 上一次 _collect 发现的跨源/跨期数值打架，供调用方审计
+# 上一次 _collect 里每个月的数值最终由哪份文件说了算：{(y,m): (kind, 报告月)}。
+# update() 靠它判断这个月是「自己那期报告」发的还是从后续滚动表里补来的 —— 只有前者
+# 才有资格把那期的电头日期当成这个月的发布日。
+ORIGIN: dict = {}
 
 
 def _collect(cache_dir: str, back: int = 8) -> dict:
@@ -373,7 +449,8 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
     覆盖时如果新旧值不等，说明官方重述了，记进 RESTATEMENTS 让人看得见，不静默吞掉。
     """
     merged: dict[tuple[int, int], dict] = {}
-    origin: dict[tuple[int, int], str] = {}
+    origin = ORIGIN
+    origin.clear()
     RESTATEMENTS.clear()
     got = False
     for kind, url, ym in _candidates(back):
@@ -383,7 +460,7 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
             continue
         got = True
         for m_ym, vals in parse_table(path, ym).items():
-            prev_rank = _SOURCE_RANK.get(origin.get(m_ym), -1)
+            prev_rank = _SOURCE_RANK.get(origin.get(m_ym, (None,))[0], -1)
             slot = merged.setdefault(m_ym, {})
             for c, v in vals.items():
                 if c in slot:
@@ -393,9 +470,9 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
                         continue                       # 先写者胜
                 slot[c] = v
             if _SOURCE_RANK[kind] > prev_rank:
-                origin[m_ym] = kind
+                origin[m_ym] = (kind, ym)
             else:
-                origin.setdefault(m_ym, kind)
+                origin.setdefault(m_ym, (kind, ym))
     if not got:
         links = _ir_page_links(cache_dir)
         raise FetchError(
@@ -425,6 +502,43 @@ def _fmt(col: str, v) -> str:
     return s
 
 
+def _record_source_dates(series_dir, added: list, cache_dir) -> None:
+    """给刚写进 series 的月份记下官方发布日。**只在数据确实落盘之后调**。
+
+    这里一律不抛：发布日只影响页面抬头那半句话，抓不到就让它缺席（source_dates.py 的
+    docstring 讲了为什么缺席好过瞎猜），把整月数据的摄入连坐掉是本末倒置。
+    但每一次拿不到都要在 stdout 上说清楚是哪一期、卡在哪 —— 静默才是不能接受的。
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(root, 'source_dates.py'))
+    sd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sd)
+
+    for ym in added:
+        key = f'{ym[0]:04d}-{ym[1]:02d}'
+        kind, report_ym = ORIGIN.get(ym, (None, None))
+        if report_ym != ym:
+            # 这个月是从后面某一期的 13 个月滚动表里补来的（季末月缺季报时会走到这），
+            # 那期的电头是它自己的发布日，套到这个月上就是编造。
+            print(f'  [source_date] {key} 跳过：数值来自 {kind} {report_ym} 那一期的滚动表，'
+                  f'不是这个月自己的报告')
+            continue
+        try:
+            date, why = release_date(kind, report_ym, cache_dir)
+        except FetchError as e:
+            date, why = None, str(e)
+        if not date:
+            print(f'  [source_date] {key} 未记录：{why}')
+            continue
+        try:
+            sd.record(series_dir, 'schw', key, date, why)
+            print(f'  [source_date] {key} → {date}（{why}）')
+        except ValueError as e:      # record 的三道护栏拦下来了，说明解析取错了东西
+            print(f'  [source_date] {key} 拒收 {date}：{e}')
+
+
 def update(series_dir, cache_dir) -> list:
     """把新月份追加进 series/schw.csv，返回新增月份 ["YYYY-MM", ...]。
 
@@ -449,7 +563,7 @@ def update(series_dir, cache_dir) -> list:
         if missing:
             raise FetchError(f'{key} 解析结果缺列 {missing}，拒绝写入（不写 NaN）')
         body.append([key] + [_fmt(c, vals.get(c)) for c in COLS])
-        added.append(key)
+        added.append(ym)
 
     if not added:
         return []
@@ -460,7 +574,9 @@ def update(series_dir, cache_dir) -> list:
         w.writerow(header)
         w.writerows(body)
     os.replace(tmp, path)
-    return added
+
+    _record_source_dates(series_dir, added, cache_dir)
+    return [f'{y:04d}-{m:02d}' for y, m in added]
 
 
 if __name__ == '__main__':

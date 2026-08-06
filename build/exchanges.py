@@ -46,6 +46,19 @@ import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正�
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
+
+
+def load_source_dates():
+    """按路径加载仓库根的 source_dates.py（官方发布日台账）。
+
+    不能裸 import：`python3 build/exchanges.py` 跑起来时 sys.path 上只有 build/。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 OUT = os.path.join(ROOT, 'data', 'exchanges.js')
 
 TICKER = 'exchanges'
@@ -690,6 +703,14 @@ _lag_txt = '、'.join(f'{d}（{mlab(latest_each[k])}）'
                      for k, d, _, _, _ in HEAD if latest_each[k] == LATEST)
 _all_txt = ' · '.join(f'{d} 更新至 {mlab(latest_each[k])}' for k, d, _, _, _ in HEAD)
 
+# 官方发布日：横截面页取**成员里最晚**的那一个 —— 这一页要三家都发齐才成立，
+# 所以「它什么时候可用」等于最后到的那一家。查的是共同最新月 LATEST，不是各家自己的
+# 最新月：CME/Cboe 可能已经到 7 月了，但这页画的是 6 月，标 7 月的发布日就是张冠李戴。
+# 有任何一家查不到就整体省略（latest_of 的语义）—— 拿部分成员算 max 必然偏早，
+# 而偏早的日期看上去完全正常，没人会发现。
+SOURCE_DATE = load_source_dates().latest_of(
+    SERIES, [k for k, *_ in HEAD], {k: LATEST for k, *_ in HEAD})
+
 payload = {
     'ticker': TICKER,
     'tracker': 'Exchange Group Cross-Section — CME / Cboe / HKEX',
@@ -728,6 +749,8 @@ payload = {
                  '三家成交量单位不可相加，本页只做同比与指数化比较 · '
                  'charts only, no commentary · personal research use'),
 }
+if SOURCE_DATE:
+    payload['source_date'] = SOURCE_DATE          # 查不到就整个字段省掉，渲染端判的是存在性
 
 
 def main():

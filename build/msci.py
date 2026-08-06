@@ -677,6 +677,16 @@ def main():
         'notes': notes,
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                    '仅供个人研究，不构成投资建议'),
+        # 这一页没有 source_date，而且**永远不会有**：MSCI 的 AUM 页是一张「活页面」，
+        # 每月悄悄改表，页面正文、meta、Drupal 设置、RSS、email-alerts、download-library、
+        # sitemap 全查过，没有任何自述发布日；也不为此发新闻稿。唯一的机器时间戳
+        # HTTP Last-Modified 是边缘渲染时刻不是数据时刻（见 fetch/msci.py docstring）。
+        # 季报 8-K 的 Table 7 虽然有确定申报日，但一年只覆盖 4 个季末月、口径只有整数十亿的
+        # 季末值（本页画的月均它证明不了），而且多半晚于 IR 页实际上线的日子 ——
+        # 拿它当发布日就是一个看不出来是假的、系统性偏晚的日期。所以宁可明说没有。
+        # 若哪天 MSCI 在页面上加了 "Updated" 行：_download() 每天都存快照
+        # cache/msci_aum_YYYYMMDD.html，到时候解析很容易补上。
+        'source_date_note': '官方未标注发布日',
     }
 
     out = os.path.join(ROOT, 'data', 'msci.js')

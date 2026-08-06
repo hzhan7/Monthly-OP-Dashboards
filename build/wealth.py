@@ -56,6 +56,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 
+
+def load_source_dates():
+    """按路径加载仓库根的 source_dates.py（官方发布日台账）。
+
+    不能裸 import：`python3 build/wealth.py` 跑起来时 sys.path 上只有 build/。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 SRC = ('Source: company monthly disclosures (Schwab Monthly Activity Report, '
        'LPL monthly activity report, IBKR brokerage metrics, Robinhood monthly operating data)')
 
@@ -1198,6 +1211,16 @@ payload = {
                + ' · 数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                  '仅供个人研究，不构成投资建议'),
 }
+
+# 官方发布日：取**实际入选本页的成员**里最晚的那一个 —— 本页统一截到共同最新月，
+# 所以「这一页什么时候成立」等于最后发布那一家的日子（当前是 LPL，每月中旬才发）。
+# 查的是 LATEST 这个共同月而不是各家自己的最新月，否则会把某家更新月份的发布日
+# 安到本页画的旧月份上。用 HAS 而不是 MEMBERS：还没就绪的成员根本没画进来，
+# 把它算进 max 会让日期凭空推后。任何一家查不到就整个字段省略。
+SOURCE_DATE = load_source_dates().latest_of(
+    SERIES, sorted(HAS), {t: LATEST for t in HAS})
+if SOURCE_DATE:
+    payload['source_date'] = SOURCE_DATE
 
 
 def main():

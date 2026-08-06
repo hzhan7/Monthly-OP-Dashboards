@@ -12,7 +12,8 @@
      data_through 'YYYY-MM'          数据月份。页面的新鲜度信号绑它，不绑构建日期
      through_label/subtitle/headline 抬头右侧、副标题、一行数据条
      source                          图脚的 Source 行，所有 exhibit 共用
-     source_date?  stale_source?     官方发布日；沿用了本地过期缓存时打红标
+     source_date?  source_date_note? 官方发布日；源头不标发布日时改印 note 说明原因
+     stale_source?                   沿用了本地过期缓存时打红标
      xlabels / xlabels_long          短窗口与长历史的 x 轴标签，exhibit 用 x:'long' 选后者
      summary {title,heads,rows,note} Exhibit 1 汇总表。数字**已在 Python 里格式化成字符串**，
                                      连同 *_cls 颜色类一起传过来 —— 格式化规则（pp/bp、
@@ -55,8 +56,13 @@
 
   document.title = D.tracker;
   set('tracker', D.tracker);
+  /* 官方发布日。有就印日期；没有但生成器给了 source_date_note，就印那句话 ——
+     「这一页为什么没有发布日」本身是信息，静默省掉只会让人以为是坏了
+     （首页节奏标签踩过同一个坑：标着「次月中下旬」却停在两个月前，看的人只能判断成故障）。
+     两者都没有才真的什么都不印。 */
   el('meta').innerHTML = '个人研究用 · 数据截至 ' + D.through_label +
-    (D.source_date ? ' · 官方发布于 ' + D.source_date : '') +
+    (D.source_date ? ' · 官方发布于 ' + D.source_date
+                   : (D.source_date_note ? ' · ' + D.source_date_note : '')) +
     (D.stale_source ? '<span class="chip">官网下载失败，本次沿用本地缓存</span>' : '');
   set('h1', D.title);
   set('sub', D.subtitle);

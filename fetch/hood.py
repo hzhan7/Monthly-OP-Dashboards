@@ -55,6 +55,8 @@ investors.robinhood.com → robinhood.gcs-web.com → Akamai。Akamai 按 **TLS 
 5. 季末月的数据源是 Earnings Supplement，独立月度文件根本没有那一格 —— 因此
    latest_month() 判断「最新月」时不能只认文件名里带 'Monthly Metrics' 的。
 """
+import email.utils
+import importlib.util
 import os
 import re
 import subprocess
@@ -66,6 +68,8 @@ import pandas as pd
 
 INDEX_URL = 'https://investors.robinhood.com/financials/monthly-metrics/default.aspx'
 BASE = 'https://investors.robinhood.com'
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 # ── 月度表：(章节, 行标签) → 列名。章节是必须的，光凭标签会拿错行。──
@@ -168,6 +172,90 @@ def fetch_bytes(url):
     raise RuntimeError(
         'HOOD IR 三条通道全部失败（Akamai 按 TLS 指纹拦截，普通 urllib/curl 必定超时）。\n  '
         + '\n  '.join(errs))
+
+
+# ═══════════════════════ 发布日：HTTP Last-Modified ═══════════════════════
+# 本文件开头「发布节奏」里那一串实测日期就是这么量出来的。HOOD 的官方文件**没有任何
+# 自述发布日**：xlsx 内嵌的 dcterms 是 Workiva 的作者时间戳（作者是公司财务，不是挂网
+# 动作），索引页上只有 Jan…Dec 的锚文本，没有日期；月度数据又不走 8-K，EDGAR 上没有
+# 申报日可用。静态文件的 Last-Modified 是唯一能观测到的「官方把它挂上去」的时刻。
+# 日历日一律取 header 原样的 GMT 日，不折算美东 —— 与上面那串实测值同口径。
+# （两者只在 00:00–05:00 GMT 之间上传时差一天，2026-01 那期就是这种情形。）
+
+def _lm_via_curl_cffi(url):
+    from curl_cffi import requests as cr
+    r = cr.head(url, impersonate='chrome', timeout=60,
+                headers={'Accept-Language': 'en-US,en;q=0.9'})
+    r.raise_for_status()
+    return r.headers.get('last-modified')
+
+
+def _lm_via_nscurl(url):
+    out = subprocess.run(['/usr/bin/nscurl', '-I', '-D', '-', '-o', os.devnull, url],
+                         check=True, capture_output=True, timeout=120, text=True).stdout
+    m = re.search(r'(?im)^last-modified:\s*(.+)$', out)
+    return m.group(1).strip() if m else None
+
+
+def last_modified(url):
+    """→ (原始 header 字符串, 'YYYY-MM-DD')；任一通道都拿不到就 (None, None)。
+
+    通道顺序与 fetch_bytes 一致（HEAD 一样过 Akamai）。取不到不抛异常 —— 这条信息
+    只决定页面抬头上的半句话，不该把已经落盘的月度数据连累成一次失败的摄入。
+    """
+    for fn in (_lm_via_curl_cffi, _lm_via_nscurl):
+        try:
+            raw = fn(url)
+        except Exception:                          # noqa: BLE001 —— 换下一条通道
+            continue
+        if not raw:
+            continue
+        try:
+            return raw, email.utils.parsedate_to_datetime(raw).strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
+_SD = None
+
+
+def _source_dates():
+    """加载仓库根的 source_dates.py。不能裸 import：本模块被 monthly_run.py 用
+    spec_from_file_location 加载，那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    与 fetch/cost.py 的 _release() 同规则。"""
+    global _SD
+    if _SD is None:
+        p = os.path.join(ROOT, 'source_dates.py')
+        spec = importlib.util.spec_from_file_location('source_dates', p)
+        _SD = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_SD)
+    return _SD
+
+
+def _record_source_dates(series_dir, files, added):
+    """把新增月份的发布日记进 series/source_dates.csv。
+
+    只对**索引页上属于那个月的那一格**取 Last-Modified：一个月的数据不可能在该月结束前
+    挂出来，所以那一格的文件就是这个月数据第一次公开的载体。不能拿 update() 实际下载的
+    文件顶替 —— Earnings Supplement 带全历史，用它的日期去盖前面几个月，会把 07/29
+    安到 04 月的数据上。
+    """
+    by_period = {str(e['period']): e for e in files}
+    for mon in added:
+        e = by_period.get(str(mon))
+        if not e:
+            continue
+        raw, day = last_modified(e['url'])
+        if not day:
+            print(f'  [source_date] {mon}: 拿不到 Last-Modified，跳过（页面抬头会省掉那半句）')
+            continue
+        try:
+            _source_dates().record(
+                series_dir, 'hood', mon, day,
+                f'IR 静态文件「{e["title"]}」的 HTTP Last-Modified: {raw}（取 GMT 日历日）')
+        except Exception as ex:                    # noqa: BLE001 —— 数据已落盘，不能回滚
+            print(f'  [source_date] {mon}: 写台账失败 {type(ex).__name__}: {ex}')
 
 
 # ═══════════════════════ 索引页解析 ═══════════════════════
@@ -407,6 +495,9 @@ def update(series_dir, cache_dir):
     added = _append(mcsv, rows_m)
     if rows_q:
         _append(qcsv, rows_q)
+    # 记发布日放在这里而不是下载之后：_append 跳过已有期次，added 才是「这一趟真的写进
+    # series 的月份」。挂在下载后会给那些根本没入库的月份也记上一笔。
+    _record_source_dates(series_dir, files, added)
     return added
 
 

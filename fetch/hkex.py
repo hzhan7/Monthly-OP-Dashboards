@@ -27,6 +27,18 @@
     ⇒ 定时任务排在**次月 10 日之后**跑最稳；10 号之前跑很可能扑空，
       这不是故障，latest_month() 会如实返回上上个月。
 
+═══ 发布日（页面抬头「官方发布于」那半句）═══
+    HKEX **哪儿都不写发布日**：工作簿里没有 "Updated on …" 之类的字符串（整表扫过），
+    落地页那条链接只写 "(Updated to Jun 2026)" —— 那是数据月，不是发布日；
+    也没有配套的新闻稿。所以本家只能用上面那张表的口径：**xlsx 直链的 HTTP
+    Last-Modified**，它本来就是本模块记录发布节奏的实测依据。
+    另有一条独立佐证写在文件肚子里：工作簿 docProps/core.xml 的 dcterms:modified
+    （HKEX 自己的 Excel 存盘时刻，Company = "Hong Kong Exchanges and Clearing"）。
+    2026-06 档两者相差 11 秒（存盘 07-07 10:24:36Z、上线 07-07 10:24:47 GMT），
+    说明存盘即上传，用 Last-Modified 当发布日是站得住的。
+    ⇒ 只在**首次摄入某个月**时记一笔（见 update()），事后不覆盖：HKEX 会原地重传，
+      重传会把 Last-Modified 推后，拿它盖掉当初那次真发布的日期就是把事实改错。
+
 ═══ 口径坑（都是真踩过的，不是想象的）═══
 1. 表是**横排**的：第 1 列是指标名，第 2 列起每列一个月（2018-01 起，逐月累加，不滚动）。
    行号会因为 HKEX 新上产品而整体下移（例如 2025-11 新增 Hang Seng Biotech Index Futures），
@@ -69,11 +81,13 @@
 
 import csv
 import datetime as _dt
+import email.utils
 import io
 import os
 import re
 import urllib.error
 import urllib.request
+import zipfile
 
 # ── 常量 ──────────────────────────────────────────────────────────────────
 LANDING_URLS = (
@@ -91,6 +105,10 @@ _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 _HEADERS = {'User-Agent': _UA, 'Accept-Language': 'en-US,en;q=0.9'}
 
 _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+# 发布方在香港，发布日按它自己的日历算。实测最近 10 档的上线时刻落在 09:43–19:32 HKT
+# （01:43–11:32 GMT），换不换时区都是同一天 —— 转成港时只是把口径写明确，不是为了改日期。
+_HK = _dt.timezone(_dt.timedelta(hours=8))
 
 SHEET = 'Monthly Data'
 
@@ -119,10 +137,14 @@ class HkexFetchError(RuntimeError):
 
 
 # ── 网络 ──────────────────────────────────────────────────────────────────
-def _get(url, timeout=90):
+def _get(url, timeout=90, want_headers=False):
+    """want_headers=True 时连响应头一起给出去 —— 发布日只能从 Last-Modified 拿
+    （HKEX 的文件与页面都不写发布日，见模块 docstring），而响应头一旦出了这个
+    with 块就没了，事后补一次 HEAD 拿到的可能已经是下一次重传的时刻。"""
     req = urllib.request.Request(url, headers=_HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        blob = r.read()
+        return (blob, r.headers.get('Last-Modified')) if want_headers else blob
 
 
 def _discover_url():
@@ -173,7 +195,7 @@ def _probe_direct(max_back=6):
 
 
 def _download(cache_dir):
-    """把最新一档 xlsx 落到 cache_dir，返回 (本地路径, 文件名声明的月份)。
+    """把最新一档 xlsx 落到 cache_dir，返回 (本地路径, 文件名声明的月份, Last-Modified 原文)。
 
     每次都重新下载：文件才 ~160KB，而 HKEX 会**原地重传**同名文件
     （2026-02 档的 Last-Modified 就晚到了 3/17），缓存命中反而会漏掉重述。
@@ -184,13 +206,100 @@ def _download(cache_dir):
     except HkexFetchError as e:
         url, claimed = _probe_direct()
         print('[hkex] 落地页发现失败(%s)，改用直链倒推：%s' % (e, url))
-    blob = _get(url)
+    blob, last_modified = _get(url, want_headers=True)
     if not blob.startswith(b'PK'):                   # xlsx 必须是 zip；返回 HTML 说明被挡或路径错
         raise HkexFetchError('下载到的不是 xlsx（前 16 字节 %r），URL=%s' % (blob[:16], url))
     path = os.path.join(cache_dir, 'hkex_monthly_highlights_%s.xlsx' % claimed)
     with open(path, 'wb') as f:
         f.write(blob)
-    return path, claimed
+    return path, claimed, last_modified
+
+
+# ── 发布日 ────────────────────────────────────────────────────────────────
+_SAVED_RE = re.compile(rb'<dcterms:modified[^>]*>'
+                       rb'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})Z?</dcterms:modified>')
+
+
+def _doc_saved_at(xlsx_path):
+    """工作簿自己记的最后存盘时刻（docProps/core.xml 的 dcterms:modified，UTC）。
+
+    这是 HKEX 那台 Excel 写进文件肚子里的时间戳，不是我们下载的时间，也不受 CDN 影响，
+    所以它能给 Last-Modified 当独立佐证。取不到就 None —— 它只是佐证，不该让抓取失败。
+    """
+    try:
+        with zipfile.ZipFile(xlsx_path) as z:
+            hit = _SAVED_RE.search(z.read('docProps/core.xml'))
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
+    if not hit:
+        return None
+    return _dt.datetime.strptime(hit.group(1).decode() + ' ' + hit.group(2).decode(),
+                                 '%Y-%m-%d %H:%M:%S').replace(tzinfo=_dt.timezone.utc)
+
+
+def _published_on(xlsx_path, last_modified):
+    """这一档 xlsx 的发布日，返回 ("YYYY-MM-DD", 出处描述)；判断不出来就 (None, None)。
+
+    HKEX 不写发布日（工作簿、落地页都只写数据月），所以这里用的是 HTTP Last-Modified ——
+    本模块 docstring 的「发布节奏」表一直就是按它记的。出处描述里把原始头和佐证都写全，
+    将来有人怀疑某个日期，不用重新做一遍考古。
+    """
+    saved = _doc_saved_at(xlsx_path)
+    online = None
+    if last_modified:
+        try:
+            online = email.utils.parsedate_to_datetime(last_modified)
+        except (TypeError, ValueError):
+            online = None
+    # 头缺失时退回工作簿存盘时刻：存盘早于上线，宁可偏早也不编一个。
+    ref, src = (online, 'online') if online else (saved, 'saved')
+    if ref is None:
+        return None, None
+    iso = ref.astimezone(_HK).date().isoformat()
+
+    if src == 'online':
+        ev = ('xlsx 直链 HTTP Last-Modified: %s（= %s HKT）'
+              % (last_modified, online.astimezone(_HK).strftime('%Y-%m-%d %H:%M')))
+        if saved:
+            same = saved.astimezone(_HK).date().isoformat() == iso
+            ev += ('；工作簿 docProps/core.xml dcterms:modified=%s %s'
+                   % (saved.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                      '同日，互为印证' if same else '不同日（疑似原地重传），以上线时刻为准'))
+    else:
+        ev = ('响应无 Last-Modified，退回工作簿 docProps/core.xml dcterms:modified=%s（= %s HKT）'
+              % (saved.strftime('%Y-%m-%dT%H:%M:%SZ'), saved.astimezone(_HK).strftime('%Y-%m-%d %H:%M')))
+    return iso, ev + '。HKEX 的工作簿与落地页都不写发布日，落地页只写数据月 "Updated to …"'
+
+
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+
+    不能裸 import：本模块是被 monthly_run 用 spec_from_file_location 加载的，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(root, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _record_source_date(series_dir, month, xlsx_path, last_modified):
+    """把该月的发布日记进台账。失败只告警，不抛。
+
+    调用点在 series 落盘之后：数据已经进库了，再为「抬头那半句话」把整月抓取判成失败，
+    赔本。写不进去的后果是页面少半句，不是数据错。
+    """
+    iso, ev = _published_on(xlsx_path, last_modified)
+    if not iso:
+        print('[hkex] %s 拿不到发布日（无 Last-Modified 也无 docProps 时间戳），台账留空' % month)
+        return
+    try:
+        _source_dates().record(series_dir, 'hkex', month, iso, ev)
+    except Exception as e:                          # noqa: BLE001
+        print('[hkex] 发布日台账没写成（%r），series 数据不受影响' % (e,))
 
 
 # ── 解析 ──────────────────────────────────────────────────────────────────
@@ -319,7 +428,7 @@ def latest_month(cache_dir):
     以**表里最后一个 ADT 非空的月**为准，而不是信文件名：
     HKEX 有时先把下个月的列开出来再填数，信文件名会得到一个空壳月。
     """
-    path, claimed = _download(cache_dir)
+    path, claimed, _ = _download(cache_dir)
     data = _parse(path)
     filled = sorted(m for m, v in data.items() if v['adt_hkdbn'] is not None)
     if not filled:
@@ -341,12 +450,15 @@ def update(series_dir, cache_dir, allow_restate=False):
     重复跑第二遍返回 []。
 
     任何一个 COLUMNS 里的列在官方源里取不到值 → 抛异常，绝不写 NaN/空。
+
+    序列落盘之后，顺手把这一档带来的那个最新月的发布日记进 series/source_dates.csv
+    （页面抬头「官方发布于」用它），细节见下面那段注释与模块 docstring 的「发布日」节。
     """
     csv_path = os.path.join(series_dir, 'hkex.csv')
     if not os.path.exists(csv_path):
         raise HkexFetchError('找不到 %s；本模块只负责增量，不负责从零建序列' % csv_path)
 
-    path, _ = _download(cache_dir)
+    path, _, last_modified = _download(cache_dir)
     data = _parse(path)
 
     raw = open(csv_path, 'rb').read().decode('utf-8')
@@ -434,6 +546,16 @@ def update(series_dir, cache_dir, allow_restate=False):
     with open(tmp, 'wb') as f:
         f.write(out.encode('utf-8'))
     os.replace(tmp, csv_path)           # 原子替换，中途挂掉不会留半截文件
+
+    # ── 发布日台账：只给「这一档 xlsx 自己带来的那个最新月」记一笔 ──
+    # 文件里同时躺着 2018 年以来的全部历史，而这一档的上线时刻只能证明**最新月**是这天发的；
+    # 本轮顺带补空的旧月是更早那些档发的，把今天的日期安到它们头上就是造假。
+    # 也只在该月**首次入库**时记（in added）：HKEX 会原地重传，重传后的 Last-Modified
+    # 更晚，事后覆盖等于把当初那次真发布的日期改错。
+    src_months = [mth for mth, v in data.items() if v['adt_hkdbn'] is not None]
+    src_last = max(src_months, key=month_key) if src_months else None
+    if src_last and src_last in added:
+        _record_source_date(series_dir, src_last, path, last_modified)
 
     if filled_cells:
         print('[hkex] 补空 %d 格：%s' % (len(filled_cells), filled_cells[:12]))

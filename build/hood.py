@@ -41,6 +41,7 @@ gsx 函数 → 网页 kind 的对应：
 margin book（近 24 个月里 18 个月钉 100）这类「上下波动但分位常年顶格」的行。
 """
 import datetime
+import importlib.util
 import json
 import os
 
@@ -52,6 +53,18 @@ import pctile
 
 D = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(D)
+
+
+def _source_dates():
+    """加载仓库根的 source_dates.py。`python3 build/hood.py` 时 sys.path 上只有 build/，
+    裸 import 会 ModuleNotFoundError。"""
+    p = os.path.join(ROOT, 'source_dates.py')
+    spec = importlib.util.spec_from_file_location('source_dates', p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 SRC = 'Source: Robinhood monthly metrics and quarterly reports'
 
 # ────────────────────────── 读数据（只从 series/ 读）──────────────────────────
@@ -1000,6 +1013,12 @@ payload = {
     'footer': '仅供个人研究，不构成投资建议 · 数值全部来自 Robinhood 官方月度指标与季度报告，'
               '推导值（费率、隐含收入、有机增速、市值变动）已在图注中标明假设',
 }
+
+# 抬头那半句「官方发布于 …」。台账里没有这个月就**整个字段不写**：page.js 判的是字段
+# 存不存在，写 None 会渲染成 "官方发布于 None"。查不到时抬头少半句，页面照常成立。
+_sdate = _source_dates().lookup(os.path.join(ROOT, 'series'), 'hood', str(LATEST))
+if _sdate:
+    payload['source_date'] = _sdate
 
 out = os.path.join(ROOT, 'data', 'hood.js')
 # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。

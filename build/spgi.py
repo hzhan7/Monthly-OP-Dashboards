@@ -36,6 +36,7 @@ y/y 之后，两张图一律回到 deck 的 lvl_bar 原型：金色 y/y 折线�
 """
 import csv
 import datetime
+import importlib.util
 import json
 import os
 
@@ -44,8 +45,20 @@ import pctile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SERIES = os.path.join(ROOT, 'series', 'spgi_clean.csv')
+SERIES_DIR = os.path.join(ROOT, 'series')
+SERIES = os.path.join(SERIES_DIR, 'spgi_clean.csv')
 OUT = os.path.join(ROOT, 'data', 'spgi.js')
+
+
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+    `python3 build/spgi.py` 跑起来时 sys.path 上只有 build/，裸 import 必挂。"""
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 
 SRC = 'Source: S&P Global monthly metrics xlsx; format after Goldman Sachs GIR'
 DNOTE = ('2024 ADV values are back-calculated from the 2025 level and the officially '
@@ -649,6 +662,15 @@ payload = {
                '仅供个人研究，不构成投资建议 · '
                'Billed issuance 指数与 2024 年 ADV 为推导值，已在对应图注标注'),
 }
+
+# 抬头那行「官方发布于」——取台账里 data_through 这个月的发布日，源头是 xlsx 页脚
+# 自述的 "Published on M/D/YYYY"（fetch/spgi.py 摄入时记的）。查不到就**整个字段省掉**：
+# 渲染端判的是字段在不在（assets/page.js 的 `D.source_date ? …`），写 None 会印出 "None"。
+# 按月份查而不是取台账里最新的一条：cache/ 里可能躺着比 data_through 更新的一期文件，
+# 那会把新一期的发布日安到旧月份的数据上。
+_pub = _source_dates().lookup(SERIES_DIR, 'spgi', LATEST)
+if _pub:
+    payload['source_date'] = _pub
 
 
 def main():

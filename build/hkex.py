@@ -36,6 +36,20 @@ TICKER = 'hkex'
 SRC = 'Source: HKEX Monthly Market Highlights; format after Goldman Sachs GIR'
 
 
+def source_dates():
+    """按路径加载仓库根的 source_dates.py（发布日台账）。
+
+    不能裸 import：本文件是 `python3 build/hkex.py` 跑的，sys.path 上只有 build/，
+    仓库根不在上面。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(ROOT, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # ────────────────────────────── 读数据 ──────────────────────────────
 def mlab(p):
     return p.strftime('%b-%y')
@@ -929,6 +943,14 @@ def main():
         'footer': '数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                   '仅供个人研究，不构成投资建议 · 所有推导值均已在图注中标注 Implied 与假设',
     }
+
+    # 抬头「官方发布于 …」：查的是 LATEST，不是 NEWEST —— 抬头另半句写的是「数据截至
+    # {through_label}」，两句必须说同一个月，否则读者会把领先一个月的衍生品/南向那一档的
+    # 发布日读成本页整页的发布日。查不到就**整个字段不写**：渲染端判的是字段在不在，
+    # 给 None 或空串会印出「官方发布于 None」。
+    src_date = source_dates().lookup(SERIES, TICKER, str(LATEST))
+    if src_date:
+        payload['source_date'] = src_date
 
     # 兜底：json.dump 对 float('nan') 会写出**字面 NaN** —— 那不是合法 JSON，
     # 但 Python 的 json.loads 与浏览器的 window.DASH = 都照单全收，于是坏 payload

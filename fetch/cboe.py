@@ -22,7 +22,9 @@ cdn.cboe.com 与 www.cboe.com 都不拦 urllib / curl（无 Cloudflare / Perimet
   2026-01 数据 → 2026-02-04 发布
   2026-05 数据 → 2026-06-03 发布
   2026-06 数据 → 2026-07-06 发布（7/3 因 7/4 落在周六而休市）
-xlsx 内 A2 单元格写着 "Updated on <date>"，是判断这一期新鲜度的权威字段。
+xlsx 内 A2 单元格写着 "Updated on <date>"，是判断这一期新鲜度的权威字段；
+它同时也是页面抬头「官方发布于」那半句的唯一合法来源，入库时记进
+series/source_dates.csv（见 _record_source_dates）。
 
 ━━ 口径坑（按踩坑概率排序）━━
 1. **RPC 滞后一个月，而且是三个月滚动平均**。同一份文件里，ADV 填到本月，
@@ -119,6 +121,7 @@ _SECTION_ANCHORS = [S_ADV, 'Market Share by Business Segment', S_RPC, S_IDX,
 
 _MONTH_HDR = re.compile(r'^[A-Z][a-z]{2}-\d{2}$')
 _QTR_HDR = re.compile(r'^([1-4])Q(\d{2})$')
+_UPDATED_ON = re.compile(r'^Updated\s+on\s+(.+?)\s*$', re.I)
 _XLSX_LINK = re.compile(
     r'https://cdn\.cboe\.com/resources/investor_relations/revenue_per_contract/'
     r'([A-Z][a-z]+)-(\d{4})-Monthly-Volume-Statistics-Xlsx-\.xlsx')
@@ -356,6 +359,78 @@ def _validate(data):
     return newest
 
 
+# ── 发布日 ───────────────────────────────────────────────────────────────
+def _source_dates():
+    """按路径加载仓库根的 source_dates.py。
+
+    不能裸 import：本模块被 monthly_run 用 spec_from_file_location 加载，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根。
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        'source_dates', os.path.join(root, 'source_dates.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _updated_on(path):
+    """取这一期工作簿**自己写的**发布日，返回 ('YYYY-MM-DD', 出处文字)；取不到返回 (None, None)。
+
+    页面抬头「官方发布于 X」是一句关于外部世界的事实断言，只能由源头自己说出口 ——
+    这里就是年份 sheet 的 A2「Updated on August 5, 2026」（模块 docstring 里
+    称它为「判断这一期新鲜度的权威字段」）。构建日、文件 mtime、按「次月第 3 个交易日」
+    推算出来的那天，看上去都一样体面，但都是我们编的，一律不许顶替。
+
+    月名两种写法都真实出现过 —— 2026-07 那期是 'August 5, 2026'，2026-03 那期是
+    'Apr 6, 2026' —— 所以 %B / %b 都要试。官方哪天换成别的格式，宁可返回 None
+    让这半句缺席，也不要猜。
+    """
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            # 只扫表头区：正文里若有别的 "Updated on" 字样（脚注之类）不该抢答
+            for r in range(1, min(6, ws.max_row) + 1):
+                raw = _norm(ws.cell(r, 1).value)
+                m = _UPDATED_ON.match(raw)
+                if not m:
+                    continue
+                for fmt in ('%B %d, %Y', '%b %d, %Y'):
+                    try:
+                        d = datetime.strptime(m.group(1), fmt)
+                    except ValueError:
+                        continue
+                    return d.strftime('%Y-%m-%d'), (
+                        '%s 工作表 "%s" 第 %d 行 A 列 "%s"'
+                        % (os.path.basename(path), sn, r, raw))
+                return None, None       # 认得出这行、读不懂日期 → 宁缺勿猜
+    finally:
+        wb.close()
+    return None, None
+
+
+def _record_source_dates(series_dir, pub, ingested):
+    """把各期自述的发布日记进 series/source_dates.csv。
+
+    pub: {'YYYY-MM': (xlsx 路径, 该期自述发布日, 出处文字)}；ingested: 已在 CSV 里的月份集合。
+
+    只对已经真的落进 series/cboe.csv 的月份作证 —— 解析炸了、写盘没成，台账上就不该
+    多出一行说「这个月官方发过了」。
+    已有记录一律不覆盖：官方明说会重述（口径坑 5），重述版工作簿的 Updated on 是改稿日
+    不是首发日，覆盖会把「7 月数据 8/5 发布」悄悄改成某个更晚的日子，而页面照印不误。
+    """
+    sd = _source_dates()
+    for mon in sorted(pub):
+        _path, day, evidence = pub[mon]
+        if mon not in ingested or not day:
+            continue
+        if sd.lookup(series_dir, 'cboe', mon):
+            continue
+        sd.record(series_dir, 'cboe', mon, day, evidence)
+
+
 # ── 对外接口 ─────────────────────────────────────────────────────────────
 def latest_month(cache_dir):
     """官方源当前最新月 'YYYY-MM'（以 ADV 口径为准，RPC 比它再滞后一个月）。
@@ -397,6 +472,11 @@ def update(series_dir, cache_dir):
     data = parse_workbook(path)
     newest = _validate(data)
 
+    # 一期文件只为**它自己的最新月**的发布日作证。同一张表里更早的那些月是更早那几期
+    # 发出来的，这份文件的 Updated on 与它们无关 —— 顺手给它们都盖上这个日期，
+    # 等于凭空发明「4 月的数据是 8 月 5 日发的」。
+    pub = {newest: (path,) + _updated_on(path)}
+
     have = {r[0]: r for r in body}
 
     # 跨年那一期只带上一年的 sheet（口径坑 6）：若 CSV 末月与本期之间还有窟窿，
@@ -410,7 +490,8 @@ def update(series_dir, cache_dir):
                                   month_name=datetime(y, mm, 1).strftime('%B'),
                                   year=y)
             more = parse_workbook(extra)
-            _validate(more)
+            more_newest = _validate(more)
+            pub.setdefault(more_newest, (extra,) + _updated_on(extra))
             for k, v in more.items():
                 data.setdefault(k, v)
 
@@ -440,6 +521,9 @@ def update(series_dir, cache_dir):
         w = csv.writer(f, lineterminator='\n')
         w.writerow(header)
         w.writerows(body)
+
+    # 记发布日放在落盘之后：写盘失败就没有「这个月官方发过了」这条断言。
+    _record_source_dates(series_dir, pub, set(have))
     return sorted(added)
 
 

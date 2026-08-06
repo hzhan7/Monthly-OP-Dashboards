@@ -32,7 +32,8 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 | `headline` | ✓ | 一行数据条。正负号交给 f-string 的 `+` 标志，别写死字面量（负值会印成 `+-0.6%`） |
 | `hub_line` | | 首页卡片上的短摘要（≤60 字）。不给则截取 `headline` 前 110 字 |
 | `source` | ✓ | 所有 exhibit 共用的 `Source:` 行 |
-| `source_date` | | 官方发布日，显示在抬头右侧 |
+| `source_date` | | 官方发布日 `YYYY-MM-DD`，显示在抬头右侧。**必须是源头自己写出来的日期**（文件里的 "Published on"、新闻稿电头、SEC filingDate，或该家 fetch docstring 已认定为发布日的 HTTP `Last-Modified`）。构建日、文件 mtime、下载时刻一律不行 —— 那是一句关于外部世界的事实断言，编不得。台账在 `series/source_dates.csv`，由 `fetch/<t>.py` 摄入该月时按月份钉进去、`build/<t>.py` 查表；**不要在 build 里当场从 `cache/` 解析**（cache 是 gitignore 的，清掉后这半句会静默消失，且缓存里可能躺着比 `data_through` 更新的一期文件，当场解析会把新一期的发布日安到旧月份上）。横截面页用 `latest_of()` 取成员里最晚的那个，缺任何一个成员就整体省略 |
+| `source_date_note` | | 源头**根本不标**发布日时，改印这句话（如 MSCI 的「官方未标注发布日」）。只在 `source_date` 缺席时渲染。用于「这是那个源的固有属性」，**不要**用来搪塞「台账这个月还没记上」那种临时缺口 —— 后者应当留白并等它自愈 |
 | `stale_source` | | `True` 时抬头打红标「官网下载失败，本次沿用本地缓存」。**目前没有任何生成器会产生它** —— 现有的 fetch 模块下载失败一律抛异常，那家整个跳过、`data_through` 原地不动，由首页红点报警。渲染分支保留着，但在有 fetch 真走「降级到旧缓存」这条路之前，不要在生成器里设它 |
 | `xlabels` | ✓ | 短窗口 x 轴标签数组 |
 | `xlabels_long` | | 长历史 x 轴标签数组；exhibit 写 `x: 'long'` 时用它 |
