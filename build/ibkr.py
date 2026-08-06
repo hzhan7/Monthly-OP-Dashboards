@@ -785,7 +785,7 @@ def main():
             '本页图表版式模仿 Goldman Sachs GIR exhibit 风格，仅为视觉版式，不含其研究观点或数据。'
             '仅供个人研究，不构成投资建议。',
         ],
-        'footer': ('数据与算法源自 <code>/IBKR月度指标</code> skill 的解析管道 · '
+        'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                    '数值以 IBKR 官网原始披露为准。每张图右上角可切换「表格」视图逐条核对。'),
     }
     if source_date:

@@ -599,7 +599,7 @@ def main():
         'exhibits': ex,
         'table': table,
         'notes': NOTES,
-        'footer': ('数据与算法源自 <code>/COST月度销售</code> skill 的解析管道 · '
+        'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                    '数值以 Costco 官网原始披露为准 · '
                    '每张图右上角可切换「表格」视图逐条核对 · '
                    '仅供个人研究，不构成投资建议'),

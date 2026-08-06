@@ -53,7 +53,8 @@ lxml==6.1.1
 
 # pymupdf (import 名 fitz) —— IBKR 的历史指标 PDF：fetch/ibkr.py:68、build/ibkr.py:162，
 #   HKEX 的费率 PDF：fetch/rates_hkex.py:129（这个是模块顶层 import，没装直接 ImportError），
-#   以及 ~/.claude/skills/IBKR月度指标/build_report.py（本仓库 build/ibkr.py 复用它）。
+#   以及 fetch/ibkr_source.py（下载与解析管道，build/ibkr.py 也复用它）——
+#   那份代码原先在 ~/.claude/skills/IBKR月度指标/build_report.py 里，skill 已删除、代码已搬进本仓。
 pymupdf==1.28.0
 
 # pdfplumber —— 只有 fetch/lpla.py:204 用（LPL 的月度 PDF 新闻稿），延迟 import 带明确报错。

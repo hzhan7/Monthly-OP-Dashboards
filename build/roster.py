@@ -109,7 +109,9 @@ def main():
         'groups': groups,
         # 不要在这里链回 costco-monthly-sales / ibkr-monthly-metrics 两个旧仓：
         # 它们的内容已整体并入本仓，旧仓会被删除，链过去就是 404。
-        'footer': ('数据与算法源自本机 <code>monthly-op-charts</code> 项目与各 skill 的解析管道 · '
+        # 项目名写全称 monthly-op-dashboards（旧稿写成 monthly-op-charts，是笔误）；
+        # 也不再提「各 skill 的解析管道」—— 解析全部在本仓 fetch/ 下，那两个 skill 已删除。
+        'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                    '每张图右上角可切「表格」视图逐条核对原值 · '
                    '仅供个人研究，不构成投资建议'),
     }
