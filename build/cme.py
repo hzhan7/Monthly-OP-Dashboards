@@ -20,29 +20,22 @@
 幂等：payload 里不放构建日期（只写文件首行注释），不用随机数，窗口一律从数据
       最新月倒推 —— 同一份 CSV 重复跑，输出逐字节相同（除首行）。
 """
-import datetime
-import importlib.util
-import json
 import os
 
 import numpy as np
 import pandas as pd
 
 import brief as B
+import feerates          # series/fee_rates.csv 的共享读取层（整表读一次）
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 OUT = os.path.join(ROOT, 'data', 'cme.js')
-
-# 发布日台账在仓库根，不在 build/ —— `python3 build/cme.py` 时 sys.path 上只有 build/，
-# 裸 import 找不到，只能按路径加载。
-_sd_spec = importlib.util.spec_from_file_location(
-    'source_dates', os.path.join(ROOT, 'source_dates.py'))
-source_dates = importlib.util.module_from_spec(_sd_spec)
-_sd_spec.loader.exec_module(source_dates)
 
 SRC = 'Source: CME Group monthly volume reports; format after Goldman Sachs GIR / Barclays'
 
@@ -87,11 +80,6 @@ HEAT_YEARS = 10  # 热力矩阵：照搬原 deck 的 n_years=10
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 ZH_MONTH = '一二三四五六七八九十十一十二'
-
-
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-07') → 'Jul-26'。"""
-    return f'{MONTHS[p.month - 1]}-{p.year % 100:02d}'
 
 
 def qlab(q):
@@ -156,26 +144,19 @@ def load():
 
 
 def rpc_quarterly(metrics):
-    """从 series/fee_rates.csv 取 CME 的季度 RPC（$/张）。"""
-    d = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
-    d = d[d['company'] == 'CME']
+    """从 series/fee_rates.csv 取 CME 的季度 RPC（$/张）。
+
+    单位在这里是**断言**而不是换算：本页把 RPC 直接乘上「百万张」得到 $mn，
+    这个算术只有在费率是 $/张 时才成立。表里换成别的单位就该整页失败，
+    不能挑一个用 —— 所以这一条留在本文件，没有塞进 feerates 的通用参数里。
+    """
     out = {}
     for key, metric in metrics:
-        s = d[d['metric'] == metric]
-        if not len(s):
-            raise SystemExit(f'fee_rates.csv 里没有 CME/{metric}')
-        u = set(s['unit'].dropna())
-        if u != {'USD_per_contract'}:
+        u = feerates.unit('CME', metric)
+        if u != 'USD_per_contract':
             raise SystemExit(f'CME/{metric} 单位不是 USD_per_contract：{u}')
-        q = pd.PeriodIndex(s['period'].str.replace('-', ''), freq='Q')
-        out[key] = pd.Series(s['value'].astype(float).values, index=q).sort_index()
+        out[key] = feerates.series('CME', metric)
     return out
-
-
-def to_monthly(rate_q, month_index):
-    """季度费率 → 月度：当季各月用该季费率；最新季之后沿用最后一个已知值（同 bridge.to_monthly）。"""
-    q = pd.PeriodIndex(month_index).asfreq('Q')
-    return pd.Series([rate_q.get(qq, np.nan) for qq in q], index=month_index, dtype=float).ffill()
 
 
 # ══════════════════════════ 2. 派生序列（照抄原 deck 的算法）══════════════════════════
@@ -195,7 +176,7 @@ df['rates_share'] = df['adv_rates_kcontracts'] / adv * 100
 RPC = rpc_quarterly([('total', 'rpc_total'), ('rates', 'rpc_interest_rates'),
                      ('equity', 'rpc_equity_indexes'), ('energy', 'rpc_energy'),
                      ('metals', 'rpc_metals')])
-rpc_m = to_monthly(RPC['total'], df.index)
+rpc_m = feerates.to_monthly(RPC['total'], df.index)
 df['implied_txn_rev_usdmn'] = df['total_vol_mn'] * rpc_m    # 百万张 x $/张 = $mn
 RPC_Q, RPC_V = RPC['total'].index[-1], float(RPC['total'].iloc[-1])
 
@@ -866,7 +847,7 @@ payload = {
 # 由源头自己给出的日期（CME 这家是 xlsx 的 Last-Modified 与工作簿保存时间戳互证，
 # 见 fetch/cme.py 的 _publish_date）。台账里没有就**整个字段不写** ——
 # 页面判的是字段在不在，塞 None 会把那半句变成「官方发布于 None」。
-_SOURCE_DATE = source_dates.lookup(SERIES, 'cme', str(CUR))
+_SOURCE_DATE = repo.source_date('cme', str(CUR))
 if _SOURCE_DATE:
     payload['source_date'] = _SOURCE_DATE
 

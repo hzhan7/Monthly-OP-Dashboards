@@ -22,8 +22,6 @@
 
 幂等：payload 里不写构建日期（只写首行注释），不使用随机数，窗口一律从数据最新月倒推。
 """
-import datetime
-import json
 import math
 import os
 
@@ -31,8 +29,11 @@ import numpy as np
 import pandas as pd
 
 import brief as B       # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
+import feerates         # series/fee_rates.csv 的共享读取层（整表读一次）
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile           # 汇总表 3Y %ile 的唯一实现，不在本文件里另写一套
+import repo             # 仓库定位 + 发布日台账入口
 
 D = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(D)
@@ -129,21 +130,11 @@ def brk_pack(idx, n=None):
 
 
 # ────────────────────────────── 读数 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def source_day(month):
-    """series/source_dates.csv 里 lpla 这个月的官方发布日；没有就返回 None。
-
-    不能裸 import source_dates：本文件是 `python3 build/lpla.py` 跑的，sys.path 上只有 build/。
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.lookup(SERIES, 'lpla', str(month))
+    """series/source_dates.csv 里 lpla 这个月的官方发布日；没有就返回 None。"""
+    return repo.source_date('lpla', str(month))
 
 
 def load():
@@ -167,19 +158,16 @@ def load():
 
 
 def rate_series(metric, to=None):
-    """series/fee_rates.csv 里 LPLA 的季度序列，索引 PeriodIndex(freq='Q')。"""
-    d = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
-    d = d[(d['company'] == 'LPLA') & (d['metric'] == metric)].copy()
-    if not len(d):
-        raise SystemExit(f'fee_rates.csv 里没有 LPLA/{metric}')
-    d['q'] = pd.PeriodIndex(d['period'].str.replace('-', '', regex=False), freq='Q')
-    out = d.set_index('q')['value'].astype(float).sort_index()
+    """series/fee_rates.csv 里 LPLA 的季度序列，索引 PeriodIndex(freq='Q')。
+
+    `to=` 是**换算**（几种单位都接受、按下面这张表折算），不是断言也不是纯缩放 ——
+    与 CME 的「单位必须是 USD_per_contract」、SCHW/HKEX 的 scale= 是三种不同语义，
+    所以三家各自留在自己文件里，没有合并成 feerates 的一个万能参数。
+    """
+    out = feerates.series('LPLA', metric)
     if to:
-        units = set(d['unit'].dropna())
-        if len(units) != 1:
-            raise SystemExit(f'LPLA/{metric} 单位不唯一: {units}')
         scale = {('USD_k', 'mn'): 1e-3, ('USD_mn', 'mn'): 1.0, ('USD_bn', 'mn'): 1e3}
-        u = units.pop()
+        u = feerates.unit('LPLA', metric)
         if (u, to) not in scale:
             raise SystemExit(f'LPLA/{metric} 单位 {u} 无法换算到 {to}')
         out = out * scale[(u, to)]

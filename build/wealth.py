@@ -41,8 +41,6 @@
 数据源：series/{schw,lpla,ibkr,hood}.csv，均由各家自己的 fetch 模块维护，本脚本只读不写。
 所有数值与格式化都在这里算完，页面不做任何计算。构建日期只写文件首行注释，不进 payload。
 """
-import datetime
-import json
 import os
 import sys
 
@@ -50,25 +48,15 @@ import numpy as np
 import pandas as pd
 
 import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
+import repo                         # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 
-
-def load_source_dates():
-    """按路径加载仓库根的 source_dates.py（官方发布日台账）。
-
-    不能裸 import：`python3 build/wealth.py` 跑起来时 sys.path 上只有 build/。
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 SRC = ('Source: company monthly disclosures (Schwab Monthly Activity Report, '
        'LPL monthly activity report, IBKR brokerage metrics, Robinhood monthly operating data)')
@@ -345,8 +333,6 @@ N_TABLE = next(_seq)                                  # 页尾核对表
 
 
 # ────────────────────────────── 格式化零件 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def comma(v, d=0):
@@ -1505,8 +1491,7 @@ payload = {
 # 查的是 LATEST 这个共同月而不是各家自己的最新月，否则会把某家更新月份的发布日
 # 安到本页画的旧月份上。用 HAS 而不是 MEMBERS：还没就绪的成员根本没画进来，
 # 把它算进 max 会让日期凭空推后。任何一家查不到就整个字段省略。
-SOURCE_DATE = load_source_dates().latest_of(
-    SERIES, sorted(HAS), {t: LATEST for t in HAS})
+SOURCE_DATE = repo.latest_source_date(sorted(HAS), {t: LATEST for t in HAS})
 if SOURCE_DATE:
     payload['source_date'] = SOURCE_DATE
 

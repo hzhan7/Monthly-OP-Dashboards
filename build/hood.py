@@ -40,9 +40,6 @@ gsx 函数 → 网页 kind 的对应：
 判据是口径，口径只能有一处定义。本页原先那份 pctile36 的「≥90% 月环比不降」代理拦不住
 margin book（近 24 个月里 18 个月钉 100）这类「上下波动但分位常年顶格」的行。
 """
-import datetime
-import importlib.util
-import json
 import os
 import re
 
@@ -50,21 +47,13 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 D = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(D)
-
-
-def _source_dates():
-    """加载仓库根的 source_dates.py。`python3 build/hood.py` 时 sys.path 上只有 build/，
-    裸 import 会 ModuleNotFoundError。"""
-    p = os.path.join(ROOT, 'source_dates.py')
-    spec = importlib.util.spec_from_file_location('source_dates', p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 SRC = 'Source: Robinhood monthly metrics and quarterly reports'
@@ -169,8 +158,6 @@ df['implied_txn_rev_usdmn'] = imp.sum(axis=1, min_count=1)
 
 
 # ────────────────────────── 小零件 ──────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def L(a):
@@ -1270,7 +1257,7 @@ payload = {
 
 # 抬头那半句「官方发布于 …」。台账里没有这个月就**整个字段不写**：page.js 判的是字段
 # 存不存在，写 None 会渲染成 "官方发布于 None"。查不到时抬头少半句，页面照常成立。
-_sdate = _source_dates().lookup(os.path.join(ROOT, 'series'), 'hood', str(LATEST))
+_sdate = repo.source_date('hood', str(LATEST))
 if _sdate:
     payload['source_date'] = _sdate
 

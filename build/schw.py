@@ -20,9 +20,7 @@ data/schw.js 里的一个 exhibit 对象。图序、编号、标题文案、图�
 所有数值与格式化都在这里算完，页面不做任何计算。构建日期只写文件首行注释，
 不进 payload —— 进了 payload，monthly_run 的「data 有没有实质变化」检查会永久失效。
 """
-import datetime
 import inspect
-import json
 import os
 import re
 
@@ -30,23 +28,15 @@ import numpy as np
 import pandas as pd
 
 import brief as B     # 页顶 ~300 字总结的共享规则库（R1-R6），只算事实不出文字
+import feerates       # series/fee_rates.csv 的共享读取层（整表读一次）
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile          # 汇总表 3Y %ile 的唯一实现，各页不再各写各的（见该模块 docstring）
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
-
-
-def _source_dates():
-    """按路径加载仓库根的 source_dates.py —— 本文件是 `python3 build/schw.py` 跑的，
-    sys.path 上只有 build/，裸 import 会 ModuleNotFoundError。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 SRC = 'Source: Schwab Monthly Activity Reports and quarterly reports'
@@ -133,16 +123,13 @@ assert_monthly(avgm.index, 'series/schw_avg_margin.csv')   # Exhibit 10 同样�
 # Schwab 月报既不披露客户现金也不披露生息资产，唯一能当代理的是客户资产；
 # 但生息资产/客户资产的比值在单边下行（趋势，不是噪音），把它当常数会造出假精度。
 # 所以这里不搭桥，改把这个比值本身画出来 —— 它本身就是 NII 增长受限的原因。
-_rates = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
-_rates = _rates[_rates['company'] == 'SCHW'].copy()
-_rates['q'] = pd.PeriodIndex(_rates['period'].str.replace('-', '', regex=False), freq='Q')
-
-
 def rate_series(metric, scale=1.0):
-    d = _rates[_rates['metric'] == metric]
-    if not len(d):
-        raise SystemExit(f'fee_rates.csv 里没有 SCHW/{metric}')
-    return d.set_index('q')['value'].astype(float).sort_index() * scale
+    """series/fee_rates.csv 里 SCHW 的某个季度参数，索引 PeriodIndex(freq='Q')。
+
+    scale 是纯量纲缩放（与 CSV 的 unit 列无关），留在本页：它是本页各图自己的
+    单位选择，不是这张表的属性。
+    """
+    return feerates.series('SCHW', metric) * scale
 
 
 _iea = rate_series('avg_interest_earning_assets', 1e-3)      # USD_mn → $bn
@@ -173,8 +160,6 @@ _FEE_STALE = _FEE_LAG >= 2
 
 
 # ────────────────────────────── 格式化零件 ──────────────────────────────
-def mlab(p):
-    return p.strftime('%b-%y')
 
 
 def qlab(q):
@@ -1297,7 +1282,7 @@ payload = {
 # 抬头的「官方发布于 …」：按 data_through 那个月去台账里查（fetch/schw.py 摄入时记的，
 # 来自新闻稿电头）。查不到就整个字段不写 —— 渲染端判的是字段在不在，写 None 或空串
 # 会让页面印出「官方发布于 」这么半句。
-_src_date = _source_dates().lookup(SERIES, 'schw', str(LATEST))
+_src_date = repo.source_date('schw', str(LATEST))
 if _src_date:
     payload['source_date'] = _src_date
 

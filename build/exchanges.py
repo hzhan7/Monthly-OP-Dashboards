@@ -32,8 +32,6 @@
 
 用法: python3 build/exchanges.py     （可重复跑，除首行日期外逐字节相同）
 """
-import datetime
-import json
 import os
 import sys
 
@@ -41,25 +39,16 @@ import numpy as np
 import pandas as pd
 
 import brief as B    # 页顶 ~300 字数据总结的规则库（只算事实，句子在本文件拼）
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
+import repo          # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SERIES = os.path.join(ROOT, 'series')
 
 
-def load_source_dates():
-    """按路径加载仓库根的 source_dates.py（官方发布日台账）。
-
-    不能裸 import：`python3 build/exchanges.py` 跑起来时 sys.path 上只有 build/。
-    """
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 OUT = os.path.join(ROOT, 'data', 'exchanges.js')
 
 TICKER = 'exchanges'
@@ -98,9 +87,6 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-06') → 'Jun-26'。"""
-    return f'{MONTHS[p.month - 1]}-{p.year % 100:02d}'
 
 
 def zh(p):
@@ -915,8 +901,8 @@ _all_txt = ' · '.join(f'{d} 更新至 {mlab(latest_each[k])}' for k, d, _, _, _
 # 最新月：CME/Cboe 可能已经到 7 月了，但这页画的是 6 月，标 7 月的发布日就是张冠李戴。
 # 有任何一家查不到就整体省略（latest_of 的语义）—— 拿部分成员算 max 必然偏早，
 # 而偏早的日期看上去完全正常，没人会发现。
-SOURCE_DATE = load_source_dates().latest_of(
-    SERIES, [k for k, *_ in HEAD], {k: LATEST for k, *_ in HEAD})
+SOURCE_DATE = repo.latest_source_date(
+    [k for k, *_ in HEAD], {k: LATEST for k, *_ in HEAD})
 
 payload = {
     'ticker': TICKER,

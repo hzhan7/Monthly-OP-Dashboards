@@ -24,8 +24,6 @@ series/cboe.csv，页面不做任何计算。
 
 用法: python3 build/cboe.py     （可重复跑，除首行日期外逐字节相同）
 """
-import datetime
-import json
 import os
 import re
 
@@ -33,8 +31,10 @@ import numpy as np
 import pandas as pd
 
 import brief as B
+from monthlab import mlab   # x 轴月份标签 Jul-26 的唯一实现
 import payload_guard
 import pctile
+import repo            # 仓库定位 + 发布日台账入口
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -77,20 +77,6 @@ BRIEF_LINES = [
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
-def _source_dates():
-    """按路径加载仓库根的 source_dates.py —— 本文件是 `python3 build/cboe.py` 跑的，
-    sys.path 上只有 build/，裸 import 会 ModuleNotFoundError。"""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        'source_dates', os.path.join(ROOT, 'source_dates.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def mlab(p):
-    """与 gsx.mlab 一致：Period('2026-06') → 'Jun-26'。"""
-    return p.strftime('%b-%y')
 
 
 def nz(v, dec):
@@ -1127,7 +1113,7 @@ def main():
     # 所以只查 LATEST 这一个月：cache/ 里可能躺着比 LATEST 更新的一期，现解析会把新一期的
     # 发布日安到旧月份的数据上。查不到就**整个字段不写** —— 渲染端判的是字段在不在，
     # 给它 None 或空串会印出一句没有内容的断言。
-    src_day = _source_dates().lookup(os.path.join(ROOT, 'series'), 'cboe', str(LATEST))
+    src_day = repo.source_date('cboe', str(LATEST))
     if src_day:
         payload['source_date'] = src_day
 
