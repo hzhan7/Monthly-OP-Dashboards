@@ -52,14 +52,17 @@ GRACE = 5          # 到期后再宽限几天才判红
 META = {
     'cost': ('COST', 'Costco', '零售月结束后首个周三'),
     'ibkr': ('IBKR', 'Interactive Brokers', '次月首个美股交易日'),
-    'schw': ('SCHW', 'Charles Schwab', '次月 12-14 日'),
-    'lpla': ('LPLA', 'LPL Financial', '次月中下旬'),
-    'hood': ('HOOD', 'Robinhood', '次月约 10 日'),
+    # 这四家季末月（3/6/9/12）没有独立月报，节奏另算 —— 标签里必须写出来。
+    # 不写的话，页面显示「次月中下旬」而 LPLA 停在两个月前，看的人只会以为是坏了
+    # （实际发生过：用户看到「LPLA 还是 5 月」来问是不是没更新）。
+    'schw': ('SCHW', 'Charles Schwab', '次月 12-14 日；季末月随当季季报'),
+    'lpla': ('LPLA', 'LPL Financial', '次月 16-21 日；季末月随下一个月的月报，再晚一个月'),
+    'hood': ('HOOD', 'Robinhood', '次月 9-13 日；季末月随当季财报'),
     'cme': ('CME', 'CME Group', '次月第 1-2 个工作日'),
     'cboe': ('CBOE', 'Cboe Global Markets', '次月第 3 个工作日'),
     'hkex': ('HKEX', '香港交易所 0388', '次月上旬'),
     'msci': ('MSCI', 'MSCI Inc.', '次月中旬'),
-    'spgi': ('SPGI', 'S&P Global', '次月约 15 日'),
+    'spgi': ('SPGI', 'S&P Global', '次月约 15 日；季末月随当季季报'),
     'axp': ('AXP', 'American Express', '次月约 15 日（8-K）'),
     'tsm': ('TSM', 'TSMC 2330.TW', '次月 10 日前'),
     'exchanges': ('交易所组', 'CME / Cboe / HKEX', '成员齐了才生成'),
