@@ -1036,7 +1036,7 @@ class Page:
             'n': n, 'kind': 'grouped_bars',
             'fmt': 'pp1' if ratio else 'pct1', 'yfmt': 'pp0' if ratio else 'pct0',
             'xlabels': xl, 'bar_labels': False,
-            'title': f'{c["zh"]}：同比',
+            'title': f'{c["zh"]}：单月同比',
             'ylab': 'pp y/y' if ratio else '% y/y',
             'groups': [{'name': ('同比（百分点）' if ratio else '同比 y/y'),
                         'color': 'NAVY', 'values': LN(yv)}],

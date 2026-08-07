@@ -229,33 +229,114 @@ def _span_txt():
     return '、'.join(bits)
 
 
+# ── build/yoy.py 的单例加载器 ──────────────────────────────────────────────
+# 本文件里有四处要问 yoy（近零基数判定、次轴会不会画出来、口径实测证据 ×2）。
+# 原先每处各 `exec_module` 一遍，import 期把同一个模块跑了十几次；更要紧的是
+# **口径只能有一份实现**这条规矩在读法上也该成立：全文件只有这一个入口拿得到 yoy。
+# 读不到一律返回 None，调用方退回不含数字的定性说法 —— spec 的 import 期绝不抛异常。
+_YOY_UNSET = object()
+_YOY_MOD = _YOY_UNSET
+
+
+def _yoy():
+    global _YOY_MOD
+    if _YOY_MOD is _YOY_UNSET:
+        try:
+            import importlib.util
+            sp = importlib.util.spec_from_file_location(
+                '_yoy_for_spec', os.path.join(_ROOT, 'build', 'yoy.py'))
+            m = importlib.util.module_from_spec(sp)
+            sp.loader.exec_module(m)
+            _YOY_MOD = m
+        except Exception:
+            _YOY_MOD = None
+    return _YOY_MOD
+
+
+def _series(col):
+    """一列 → pandas.Series（index = 月份）。pandas 缺席或整列为空返回 None。"""
+    try:
+        import pandas as pd
+        s = pd.Series([_num(r, col) for r in _ROWS],
+                      index=[r['month'] for r in _ROWS], dtype='float64')
+        return s if s.notna().any() else None
+    except Exception:
+        return None
+
+
+# 底座给一列画出来的窗口：最后 25 个月（build/single.py WIN_LONG），
+# **右端是该列自己最后一个有值的月**（`ex_single` 用 `self.last_month(c)`），
+# 不是本页数据月 —— 慢腿的图右端比头条早两三周，用错窗口报出来的实测是图外的事。
+_WIN_LONG = 25
+
+
+def _drawn_window(col):
+    idx = [r['month'] for r in _ROWS]
+    got = [r['month'] for r in _ROWS if _num(r, col) is not None]
+    if not got:
+        return None
+    i = idx.index(got[-1])
+    return idx[max(0, i - _WIN_LONG + 1): i + 1]
+
+
 # ── 近零基数列：判据与实现都在 build/yoy.py，本文件只报结果 ────────────────
 # CONTRACT §6.1 第 6 条：近零基数的序列不画同比、画水平值。
 # 本页的落实方式是**排版**而不是开关：这些列一律放进 2–5 列同单位的组，
 # 底座对多列桶画 lines（只有水平值、没有次轴同比），于是那条会跳到几百个百分点的
 # 同比线根本不会被画出来。下面这个函数只负责把「哪几列」现算出来写进图注。
+#
+# ⚠️ 2026-08-07 修正：`win` 必须给**图上真正画出来的那 25 个月**，原先漏了这个参数。
+# `yoy.near_zero_base` 的 docstring 明写：「有几个月不可读」只能数图上画出来的那些月 ——
+# 一条 2010 年近零、现在早已正常的序列，拿全历史计数就会永远背着这个标签，那是制造噪声。
+# 漏参数的实际后果（本页实测）：Tradeweb 互换/掉期期权 <1Y、美国投资级·全电子、
+# 美国高收益·全电子三列被判成近零基数（它们的近零月全在 2017–2019，窗口内占比 0.0%），
+# 而主板新上市家数（合计）反过来被漏掉（全历史 7.2% < 1/12，窗口内 16.0%）。
+# 页注据此对着 Tradeweb <1Y ADV 本月「604 vs 391 → +54.4%」喊「这是分母的故事」，
+# 那是一句实打实的假话。改后命中 8 条，全部落在一级市场那条腿上。
 def _near_zero_cols(cols):
-    try:
-        import pandas as pd
-        import importlib.util
-        sp = importlib.util.spec_from_file_location(
-            '_yoy_for_spec', os.path.join(_ROOT, 'build', 'yoy.py'))
-        yoy = importlib.util.module_from_spec(sp)
-        sp.loader.exec_module(yoy)
-    except Exception:
+    yoy = _yoy()
+    if yoy is None:
         return None
     out = []
     for c in cols:
         try:
-            s = pd.Series([_num(r, c) for r in _ROWS],
-                          index=[r['month'] for r in _ROWS], dtype='float64')
-            if not s.notna().any():
+            s = _series(c)
+            if s is None:
                 continue
-            if yoy.near_zero_base(s)['flag']:
+            if yoy.near_zero_base(s, win=_drawn_window(c))['flag']:
                 out.append(c)
         except Exception:
             continue
     return out
+
+
+def _near_zero_now(col):
+    """本页数据月那一格的 y/y，**基期**是不是近零 —— 汇总表里到底哪几格不能照读。
+
+    与 `_near_zero_cols()` 判的不是同一件事，混起来就会写出假话：
+      · `_near_zero_cols()` 判的是**整条序列**该不该画同比线（§6.1 第 6 条，
+        按窗口内「近零基数月」的占比 ≥ 1/12）；
+      · 这个函数判的是**这一格**：本月的基期（去年同月）到底有没有小到读不动。
+    一条序列完全可以整体命中而本月基期正常 —— 主板增发募资额本月基期 408 GBP mn，
+    汇总表印的 −95.2% 是一个可读的数。对着它喊「这是分母的故事」，页注就在骗人。
+
+    返回 dict（now / cut / base / scale）或 None（读不到就不报）。
+    """
+    yoy = _yoy()
+    s = _series(col)
+    if yoy is None or s is None or not _THROUGH:
+        return None
+    try:
+        nz = yoy.near_zero_base(s, win=_drawn_window(col))
+        yago = '%04d-%02d' % (int(_THROUGH[:4]) - 1, int(_THROUGH[5:7]))
+        row = _row_at(yago)
+        b = _num(row, col) if row else None
+        if b is None or not (nz['cut'] == nz['cut']):
+            return None
+        return {'now': abs(b) < nz['cut'], 'cut': nz['cut'],
+                'base': b, 'scale': nz['scale']}
+    except Exception:
+        return None
 
 
 def _mom_drawn(col, ratio=False):
@@ -274,18 +355,12 @@ def _mom_drawn(col, ratio=False):
     vals = [_num(r, col) for r in _ROWS]
     if sum(1 for v in vals if v is not None) < 13:
         return False
-    try:
-        import numpy as np
-        import pandas as pd
-        import importlib.util
-        sp = importlib.util.spec_from_file_location(
-            '_yoy_for_spec', os.path.join(_ROOT, 'build', 'yoy.py'))
-        yoy = importlib.util.module_from_spec(sp)
-        sp.loader.exec_module(yoy)
-    except Exception:
+    yoy = _yoy()
+    s = _series(col)
+    if yoy is None or s is None:
         return True
     try:
-        s = pd.Series(vals, index=[r['month'] for r in _ROWS], dtype='float64')
+        import numpy as np
         y = yoy.mom_yoy(s, yoy.RATIO if ratio else yoy.FLOW)
         if not ratio:
             scale = float(np.nanmedian(np.abs(s.values.astype(float))))
@@ -297,7 +372,122 @@ def _mom_drawn(col, ratio=False):
         return True
 
 
-def _mom_tag(col, why, ratio=False):
+def _fin(v):
+    """有限的 float，否则 None。用来把 yoy 回来的 nan 挡在字符串格式化之外。"""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float('inf'), float('-inf')) else None
+
+
+def _mom_evidence(col, ratio=False):
+    """本序列自己实测的两种同比口径差异 —— CONTRACT §6.1 第 2 条后半要的那份证据。
+
+    第 2 条明写：理由「请用 `yoy.describe(yoy.caliber_diff(s, kind, win))` 生成 ——
+    它拿**这条序列自己**实测，不引别家的例子」。这里就是那一步，两个参数都不能马虎：
+
+      · `kind` 必须与图上那条金线一致。比率列走 RATIO（百分点差），其余走 FLOW（%）。
+        写错的代价是报出来的标准差与读者看到的线不是一回事。
+      · `win` 必须是**图上真正画出来的那 25 个月**（`_drawn_window`），不是全历史。
+        `yoy.caliber_diff` 的 docstring 明写：全历史算出来的「符号相反的月份占比」
+        会逼近 100%（任何一条几十年的序列总找得到一个相反的月），那个数没有信息量；
+        而且慢腿的图右端比本页数据月早两三周，用错窗口报的是图外的事。
+
+    读不到 build/yoy.py 或 pandas 返回 None，调用方退回不含数字的定性说法。
+    """
+    yoy = _yoy()
+    s = _series(col)
+    if yoy is None or s is None:
+        return None
+    try:
+        win = _drawn_window(col)
+        d = yoy.caliber_diff(s, yoy.RATIO if ratio else yoy.FLOW, win=win)
+        d['_win'] = win
+        return d
+    except Exception:
+        return None
+
+
+def _ev_short(col, ratio=False, ttm_meaningless=False):
+    """组名（= 图标题）里那半句实测：短，但必须是**数字**，不是形容词。
+
+    `ttm_meaningless=True` 用于「滚动口径在算术上就不指代任何量」的列（换算率）：
+    那种列的 σ_ttm 底座照样算得出来，但把它印出来等于给一个不存在的东西报精度，
+    所以这里**故意不报**，只报单月侧，并把不报的理由写出来。
+    """
+    d = _mom_evidence(col, ratio)
+    if not d:
+        return ''
+    win = d.get('_win') or []
+    span = ('近 %d 个月' % len(win)) if win else '窗口内'
+    sm, st = _fin(d.get('std_mom')), _fin(d.get('std_ttm'))
+    if ratio:
+        return ('；本序列%s实测单月同比逐月标准差 %.1fpp，滚动口径对比率非法、没有可比数'
+                % (span, sm)) if sm is not None else ''
+    if ttm_meaningless:
+        return ('；本序列%s实测单月同比逐月标准差 %.1fpp，滚动口径不报数：'
+                '把 12 个月的换算率加起来不指代任何量' % (span, sm)) if sm is not None else ''
+    floor = getattr(_yoy(), 'MIN_DIAG_MONTHS', 12)
+    if (d.get('n') or 0) < floor:
+        return ('；本序列实测两种口径都有值的月份只有 %d 个（< %d），量不出差异'
+                % (d.get('n') or 0, floor))
+    if sm is None or st is None:
+        return ''
+    return ('；本序列%s实测单月同比逐月标准差 %.1fpp、12 个月滚动 %.1fpp，符号相反 %d 个月'
+            % (span, sm, st, d.get('opposite_n') or 0))
+
+
+def _ev_long(col, ratio=False, ttm_meaningless=False):
+    """页尾口径说明里那一整段实测 —— 与 Exhibit 59/60 图注里底座那段同一套统计量。
+
+    为什么落在页尾而不是图注：`gs_bar` 的 `note` 整段由 build/single.py 的
+    `ex_single()` 拼装，spec 侧一个字都插不进去（`COL_KEYS` 与 `groups` 的允许键里
+    都没有 note 这一项）。页尾的「口径与方法说明」是本文件够得到的、离图最近的位置。
+    **这是本轮的已知妥协，不是等价物**：要让这段真的落进图注，必须改底座。
+    """
+    d = _mom_evidence(col, ratio)
+    if not d:
+        return '（读不到 series/lseg.csv 或 build/yoy.py，本轮报不出实测数。）'
+    win = d.get('_win') or []
+    span = ('%s–%s 共 %d 个月' % (win[0], win[-1], len(win))) if win else '图上窗口'
+    sm, st = _fin(d.get('std_mom')), _fin(d.get('std_ttm'))
+    n = d.get('n') or 0
+    if ratio:
+        return ('实测（%s）：单月同比逐月标准差 <b>%s pp</b>、相邻月跳变中位 %s pp。'
+                '<b>没有滚动侧的数可比，这本身就是理由</b> —— %s'
+                % (span,
+                   '—' if sm is None else '%.2f' % sm,
+                   '—' if _fin(d.get('medjump_mom')) is None else '%.2f' % d['medjump_mom'],
+                   d.get('reason') or '比率不做滚动合计也不做滚动均值。'))
+    floor = getattr(_yoy(), 'MIN_DIAG_MONTHS', 12)
+    if n < floor:
+        return ('实测（%s）：两种口径都有值的月份只有 <b>%d</b> 个（< %d），'
+                '<b>量不出差异 —— 这正是「滚动口径在这条序列上还不存在」的证据</b>。'
+                % (span, n, floor))
+    head = ('实测（%s，其中 %d 个月两种口径都有值）：单月同比逐月标准差 <b>%s pp</b>，'
+            % (span, n, '—' if sm is None else '%.1f' % sm))
+    if ttm_meaningless:
+        return (head + '滚动侧<b>故意不报</b>：把 12 个月的换算率加起来不指代任何量，'
+                       '给它报一个标准差等于给不存在的东西报精度。'
+                       '这条序列的合法口径只有点对点，所以这里没有「两种口径可选」这回事。')
+    tail = ('12 个月滚动 <b>%s pp</b>（放大 %s 倍）；相邻月跳变中位 %s pp vs %s pp。'
+            % ('—' if st is None else '%.1f' % st,
+               '—' if _fin(d.get('std_ratio')) is None else '%.2f' % d['std_ratio'],
+               '—' if _fin(d.get('medjump_mom')) is None else '%.1f' % d['medjump_mom'],
+               '—' if _fin(d.get('medjump_ttm')) is None else '%.1f' % d['medjump_ttm']))
+    if d.get('opposite_n'):
+        tail += ('两者<b>符号相反</b>的月份有 %d 个（占 %.0f%%）。'
+                 % (d['opposite_n'], 100 * (d.get('opposite_share') or 0)))
+    else:
+        tail += '窗口内没有符号相反的月份。'
+    g = d.get('worst_gap')
+    if g:
+        tail += '差得最远的是 %s：单月 %+.1f%% 而滚动 %+.1f%%。' % (g[0], g[1], g[2])
+    return head + tail
+
+
+def _mom_tag(col, why, ratio=False, ttm_meaningless=False):
     """组名后缀：声明单月口径**并给出理由**（CONTRACT §6.1 第 2 条的前后两半）。
 
     第 2 条要求「标题里写明单月」**并且**「在图注说明为什么这里该用单月」。
@@ -313,12 +503,43 @@ def _mom_tag(col, why, ratio=False):
       · 该序列的滚动口径根本不存在（LCH 只有 24 期，滚动同比只剩 1 个点）；
       · 命题本身就是「一个月之内会怎样」（交易日数、月报自印的换算率）。
     给不出这三类理由的流量列，本文件的处理是**不让它单列成桶**（见一级市场
-    增发笔数那一组），而不是硬编一个理由。
+    增发笔数那一组、以及 Tradeweb 其他政府债那一组），而不是硬编一个理由。
+
+    2026-08-07 补上第 2 条的**后半句里那半句**：理由不能只是定性的一句话，
+    §6.1 第 2 条要求「用 `yoy.describe(yoy.caliber_diff(s, kind, win))` 生成 ——
+    它拿这条序列自己实测」。所以 `_ev_short()` 现算的实测数跟着理由一起进标题，
+    完整段落进页尾 `_NOTE_MOM_WHY`。一个数都不写死：换个月、换条数据全跟着变。
     """
     if not _mom_drawn(col, ratio):
         return ''
     what = '单月同比，百分点差' if ratio else '单月同比'
-    return '（次轴：%s —— %s）' % (what, why)
+    return '（次轴：%s —— %s%s）' % (what, why,
+                                    _ev_short(col, ratio, ttm_meaningless))
+
+
+def _median_drawn(col):
+    """该列在**图上那 25 个月**里的中位数。页注要报的量级对比取这个数，不写死。
+
+    用画出来的窗口而不是全历史：拿来说事的是「这两条线放同一根轴上会不会把小的压平」，
+    那是读者眼前这 25 个月的事，不是 2017 年的事。
+    """
+    win = set(_drawn_window(col) or [])
+    v = sorted(x for x in (_num(r, col) for r in _ROWS if r.get('month') in win)
+               if x is not None)
+    if not v:
+        return None
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def _scale_gap_txt(col_a, col_b):
+    """「近 25 个月中位 A vs B，差 N 倍」—— 两列量级差多少，现算。"""
+    a, b = _median_drawn(col_a), _median_drawn(col_b)
+    if not a or not b:
+        return '两列的中位量级读不到（缺 CSV）'
+    hi, lo = (a, b) if abs(a) >= abs(b) else (b, a)
+    return ('近 %d 个月中位 %s vs %s，差 %.1f 倍'
+            % (_WIN_LONG, ('%.1f' % a), ('%.1f' % b), abs(hi) / abs(lo)))
 
 
 def _n_obs(col):
@@ -448,7 +669,8 @@ GROUPS = [
     # 而不是 €m 那一栏（€m 栏 = £m 栏 × 本列，取数腿逐格验证过）。
     {'zh': 'LSE 月报自印的 GBP/EUR 换算率'
            + _mom_tag('gbp_eur_rate',
-                      '换算率不是流量，12 个月加总不指代任何东西，只能点对点比'), 'cols': [
+                      '换算率不是流量，12 个月加总不指代任何东西，只能点对点比',
+                      ttm_meaningless=True), 'cols': [
         {'col': 'gbp_eur_rate', 'zh': '月报自印 GBP/EUR 换算率',
          'unit': 'EUR per GBP', 'fmt': 'f3'},
     ]},
@@ -574,25 +796,31 @@ GROUPS = [
          'unit': 'USD bn/day', 'fmt': 'f0c'},
     ]},
 
-    {'zh': 'Tradeweb 利率现金分项 ADV', 'cols': [
+    # ⚠️ 2026-08-07 拆成两组，理由是**口径**不是排版。原来是「美国国债 / 按揭 /
+    # 欧洲国债」一组 + 「其他政府债」单列一组，而单列成桶 ⇒ 底座画 gs_bar ⇒
+    # 次轴写死是**单月**同比。其他政府债有 115 期、滚动口径完全算得出来，
+    # 按 CONTRACT §6.1 第 1 条默认就该用滚动；第 2 条又要求用单月必须给出**口径上的**
+    # 理由，而它给不出（不是比率、历史不短、命题也不是「一个月之内会怎样」）——
+    # 原先标题上写的「留单月供逐月核对」是**用途**理由，不在第 2 条允许的两类里。
+    # 与其在标题上硬编一个站不住的理由，不如让它不再单列成桶（同 Main Market /
+    # AIM 增发笔数那一组的处置）：欧洲国债与其他政府债同单位（USD bn/day）、
+    # 近 25 个月中位 58.4 vs 11.4（差 5.1 倍，远在本文件「差 20 倍才拆组」之内），
+    # 并成一个桶后底座改画 lines —— 只有水平值、没有次轴同比。
+    # 于是这一页上不再出现一条无法辩护的单月同比线，而滚动口径那张（页尾 ttm_yoy）
+    # 仍然在，趋势判断看它。
+    # 美国国债 / 按揭（近 25 个月中位各 240.2）与它们差 21 倍，所以留在自己那一组。
+    {'zh': 'Tradeweb 利率现金分项 ADV·美国国债与按揭', 'cols': [
         {'col': 'tradeweb_adv_us_govt_bonds_usd_bn', 'zh': 'Tradeweb 美国国债 ADV',
          'unit': 'USD bn/day', 'fmt': 'f1'},
         {'col': 'tradeweb_adv_mortgages_usd_bn', 'zh': 'Tradeweb 按揭 ADV',
          'unit': 'USD bn/day', 'fmt': 'f1'},
-        {'col': 'tradeweb_adv_eu_govt_bonds_usd_bn', 'zh': 'Tradeweb 欧洲国债 ADV',
-         'unit': 'USD bn/day', 'fmt': 'f1'},
     ]},
 
-    # 其他政府债（日加澳新 / covered / 超主权 / 机构）峰值只有美国国债的 5%，
-    # 放进上一组会贴着横轴，所以单列成图。
-    # ⚠️ 单列成桶 ⇒ 底座画 gs_bar ⇒ 次轴写死是**单月**同比，而本列有 115 期、
-    # 滚动口径完全算得出来 —— 按 CONTRACT §6.1 第 1 条流量的默认口径就该是滚动。
-    # 本文件的处置：在 `ttm_yoy` 里给这一列补一张滚动同比图（页尾），
-    # 这张保留单月次轴只作逐月核对，两张图的口径由底座在页尾统一点名。
-    {'zh': 'Tradeweb 其他政府债 ADV'
-           + _mom_tag('tradeweb_adv_other_govt_bonds_usd_bn',
-                      '默认的滚动口径已另出一图在本页末尾，这张的次轴留单月供逐月核对'),
+    {'zh': 'Tradeweb 利率现金分项 ADV·欧洲国债与其他政府债'
+           '（同单位合图：避免其他政府债单列成柱图而被迫画一条辩护不了的单月同比）',
      'cols': [
+        {'col': 'tradeweb_adv_eu_govt_bonds_usd_bn', 'zh': 'Tradeweb 欧洲国债 ADV',
+         'unit': 'USD bn/day', 'fmt': 'f1'},
         {'col': 'tradeweb_adv_other_govt_bonds_usd_bn', 'zh': 'Tradeweb 其他政府债 ADV',
          'unit': 'USD bn/day', 'fmt': 'f1'},
     ]},
@@ -765,6 +993,37 @@ def _flow_charted():
 SLOW_COLS = sorted(c for c in _charted() if COLUMN_LEG.get(c) not in (None, 'tradeweb'))
 
 _NEAR_ZERO = _near_zero_cols(_flow_charted())
+
+
+# ── 近零基数列在**汇总表里**的标记 ────────────────────────────────────────
+# 起因（2026-08-07 渲染核查）：CONTRACT §6.1 第 6 条「近零基数不画同比」在**图上**
+# 落实了（这些列全在多列桶里，画的是 lines，没有次轴同比），但 Exhibit 1 汇总表照印
+# y/y —— 最刺眼的是主板新上市募资额「本月 0、去年同月 2 GBP mn」印成 −100.0%。
+#
+# 这不是页面自相矛盾：CONTRACT §6.2 把「汇总表的 m/m 与 y/y 两列」明确列为豁免
+# （那是运营核对表，读者拿它逐格对公司披露，把格子留空反而对不上账），而底座
+# `summary()` 的留空判据也只有两条（去年同月为 0、两期异号），不含近零基数。
+# 但「不矛盾」不等于「读者读得到」：那条解释在页尾第 14 条，而 −100.0% 在页面顶部。
+#
+# 本轮的处置是**把警告搬到读数旁边**：给命中列的 `zh` 加一个 †。
+# 为什么只能这么做 —— 让汇总表真的印「—」要改 build/single.py 的 `summary()`
+# （单元格在那里算完，`COL_KEYS` 里没有任何逐列开关），底座不在本轮允许修改的范围。
+# `zh` 是 spec 侧够得到的、离那一格最近的字符串，而且它会同时出现在汇总表行标签、
+# 该列所在图的序列名与末尾核对表表头上 —— 三处同一个标记，只解释一次。
+# 命中列由 CSV 现算，不写死：某列不再近零基数，†自己就掉了。
+NEAR_ZERO_MARK = '†'
+
+
+def _mark_near_zero():
+    if not _NEAR_ZERO:
+        return
+    hit = set(_NEAR_ZERO)
+    for c in HEADLINE + [c for g in GROUPS for c in g['cols']]:
+        if c['col'] in hit and not c['zh'].endswith(NEAR_ZERO_MARK):
+            c['zh'] += NEAR_ZERO_MARK
+
+
+_mark_near_zero()
 
 
 # ── 币种构成：从各列自己声明的 unit 串现算，不写死 ────────────────────────────
@@ -1002,6 +1261,17 @@ def _summary_yy(col, month):
     return ((a / b - 1) * 100, a, b)
 
 
+def _esc(s):
+    """列名进页注前转义。
+
+    `notes` 走 innerHTML，而本页有一列的中文名里带尖括号
+    （<code>Tradeweb 互换/掉期期权 &lt;1Y ADV</code>）。浏览器对 `&lt;1` 这种
+    「尖括号后面不是字母」的情形会当普通字符处理，所以今天没出事 —— 但那是靠
+    解析器的容错，不是靠我们写对。列名是数据派生的，下一列叫什么我们说了不算。
+    """
+    return (str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+
+
 def _fmt_like(v, fmt):
     """按该列自己的 `fmt` 把数字排版 —— 页注里报的绝对值必须与汇总表印的<b>逐字一致</b>。
 
@@ -1026,31 +1296,48 @@ def _fmt_like(v, fmt):
 
 def _near_zero_note():
     if _NEAR_ZERO is None:
-        return ('<b>近零基数的列：图上不画同比，汇总表的 y/y 列照印。</b>'
+        return ('<b>行名带 † 的是近零基数列：图上不画同比，汇总表的 y/y 列照印。</b>'
+                '（本次构建读不到 series/lseg.csv 或 build/yoy.py，命中列表算不出来，'
+                '所以这一版没有 † 标记，也报不出具体列名。）'
                 '一级市场的新上市家数与募资额有大量取 0 的月份，同比读的已经不是量在变'
                 '而是分母在变，所以图上只画水平值；而汇总表的 m/m 与 y/y 两列按 '
                 'CONTRACT §6.2 是<b>豁免</b>的（那是运营核对表，读者拿它逐格对公司披露），'
                 '底座不会替这些列把格子压空 —— 读那几行的 y/y 之前先看绝对值。')
-    names = '、'.join(_META.get(c, {}).get('zh', c) for c in _NEAR_ZERO)
-    printed = []
+    names = '、'.join(_esc(_META.get(c, {}).get('zh', c)) for c in _NEAR_ZERO)
+    bad, ok = [], []          # 本月基期近零的 / 本月基期正常的（都指汇总表 y/y 那一格）
     for c in _NEAR_ZERO:
         got = _summary_yy(c, _THROUGH)
         if got is None:
             continue
         y, a, b = got
         m = _META.get(c, {})
-        printed.append((abs(y), m.get('zh', c), y,
-                        _fmt_like(a, m.get('fmt', '')),
-                        _fmt_like(b, m.get('fmt', '')), m.get('unit', '')))
-    printed.sort(reverse=True)
-    worst = '；'.join(
-        '<b>%s %+.1f%%</b>（本月 %s、去年同月 %s %s）' % (zh, y, a, b, u)
-        for _, zh, y, a, b, u in printed[:3])
+        nz = _near_zero_now(c)
+        # 与底座 summary() 的印法对齐：正好是 0 的那一格不带正负号（那里做的是
+        # `txt.lstrip('+-')`）。差一个加号，读者就会以为页注与表里是两个数。
+        ytxt = '%+.1f%%' % y
+        if ytxt.lstrip('+-') in ('0.0%', '0%'):
+            ytxt = ytxt.lstrip('+-')
+        item = ('<b>%s %s</b>（本月 %s、去年同月 %s %s）'
+                % (_esc(m.get('zh', c)), ytxt,
+                   _fmt_like(a, m.get('fmt', '')),
+                   _fmt_like(b, m.get('fmt', '')), m.get('unit', '')))
+        (bad if (nz and nz['now']) else ok).append((abs(y), item))
+    bad.sort(reverse=True)
+    ok.sort(reverse=True)
+    n_print = len(bad) + len(ok)
     return (
-        '<b>近零基数的列：<u>图上</u>不画同比（CONTRACT §6.1 第 6 条），'
-        '<u>汇总表</u>的 y/y 列照印（CONTRACT §6.2 豁免）—— 两套口径，不是打架。</b>'
-        '判据与实现都在 <code>build/yoy.py</code> 的 <code>near_zero_base()</code>：'
-        '基期绝对值小于本序列中位数 15% 的月份算「近零基数月」，占比 ≥ 1/12 就别画同比。'
+        '<b>行名带 %s 的列：<u>图上</u>不画同比（CONTRACT §6.1 第 6 条），'
+        '<u>汇总表</u>的 y/y 列照印（CONTRACT §6.2 豁免）—— 两套口径，不是打架，'
+        '但两处必须分开读。</b>' % NEAR_ZERO_MARK
+        + '<b>%s 出现在三个地方</b>：汇总表（Exhibit 1）的行标签、该列所在图的序列名、'
+        '末尾核对表的表头 —— 同一个标记，只解释这一次。'
+        '标记由 CSV 现算不写死：某列不再近零基数，%s 自己就掉了。' % (NEAR_ZERO_MARK,
+                                                                    NEAR_ZERO_MARK)
+        + '判据与实现都在 <code>build/yoy.py</code> 的 <code>near_zero_base()</code>：'
+        '基期绝对值小于本序列|值|中位数 15% 的月份算「近零基数月」，'
+        '<b>在图上画出来的那 25 个月里</b>占比 ≥ 1/12 → 整条序列别画同比。'
+        '（窗口这一步很要紧：拿全历史计数会让一条 2018 年近零、现在早已正常的序列'
+        '永远背着这个标签 —— 本页上一版正是漏了它，把三条 Tradeweb 列错标成近零基数。）'
         '本页 import 期实测命中 <b>' + str(len(_NEAR_ZERO)) + '</b> 条：'
         + (names or '（无）') + '。'
         '<b>图上怎么落实</b>：靠<b>排版</b>而不是开关 —— 把它们放进 2–5 列同单位的组，'
@@ -1061,14 +1348,25 @@ def _near_zero_note():
         '读者拿它逐格对公司披露，把格子留空反而对不上账；'
         '底座 <code>summary()</code> 的留空判据也只有两条'
         '（去年同月为 0、或两期异号），<b>不含近零基数</b>。'
-        + ('⚠️ 所以本月这 %d 条里%s在汇总表 y/y 列印出了读数，'
-           '幅度最大的是：%s。这类读数是<b>分母的故事</b>不是量的故事 —— '
-           '读这几行时一律回到「本月 / 上月 / 去年同月」三列的绝对值上判断，'
-           '不要把它们与页上其余同比放在一起比高低。'
+        '⚠️ 想让汇总表真的印「—」得改 <code>build/single.py</code> 的 '
+        '<code>summary()</code>（单元格在那里算完，逐列开关在 <code>COL_KEYS</code> 里'
+        '没有位置），<b>本轮没有改底座</b>，所以这里能做的只有把警告搬到读数旁边。'
+        + ('本月这 %d 条%s在汇总表 y/y 列印出了读数，'
+           '<b>但这 %d 格不是同一回事，必须分开看</b>：'
            % (len(_NEAR_ZERO),
-              '<b>全部</b>' if len(printed) == len(_NEAR_ZERO) else '有 %d 条' % len(printed),
-              worst) if printed else
+              '全部' if n_print == len(_NEAR_ZERO) else '里有 %d 条' % n_print, n_print)
+           if n_print else
            '本月这几条在汇总表 y/y 列全部为空（去年同月为 0 或两期异号），无需额外提防。')
+        + ('<b>⚠️ 基期本身就落在近零区、这一格<u>不能</u>照读的有 %d 条</b>：%s。'
+           '这种读数是<b>分母的故事</b>不是量的故事，一律回到「本月 / 上月 / 去年同月」'
+           '三列的绝对值上判断，别与页上其余同比比高低。'
+           % (len(bad), '；'.join(t for _, t in bad)) if bad else '')
+        + ('<b>另外 %d 条本月的基期<u>没有</u>触发近零判据</b>'
+           '（|去年同月| ≥ 本序列|值|中位数 × 0.15），那几格的百分比不是分母造成的：%s。'
+           '带 %s 说的是「<b>这条序列</b>不适合画同比线」，不是「<b>这一格</b>一定不能看」。'
+           '⚠️ 判据没触发也不等于这个百分比有多少信息量：家数是按「家」计的小整数，'
+           '一家之差就是几十个百分点 —— 读它们仍以三列绝对值为准。'
+           % (len(ok), '；'.join(t for _, t in ok), NEAR_ZERO_MARK) if ok else '')
         + '它们仍然逐月留在末尾核对表里。'
     )
 
@@ -1108,18 +1406,20 @@ _NOTE_TTM_ORDERBOOK = (
 )
 
 _NOTE_TTM_OTHER_GOVT = (
-    '<b>这张是本轮为「其他政府债 ADV」补上的<u>默认</u>口径图。</b>'
-    '本列有 %s 期，滚动同比完全算得出来，按 CONTRACT §6.1 第 1 条流量的默认口径'
-    '就该是滚动 —— 而它在前面那张单列柱图里只拿得到单月次轴'
-    '（底座对单列桶写死画单月同比，spec 侧改不了）。'
-    '两张并存不是重复：<b>看趋势用这一张，逐月核对用那一张</b>，'
-    '页尾的同比口径说明会把两张各自点名。'
+    '<b>这张是「其他政府债 ADV」<u>唯一</u>的同比图，口径是 CONTRACT §6.1 第 1 条的默认。</b>'
+    '本列有 ' + str(_n_obs('tradeweb_adv_other_govt_bonds_usd_bn')
+                    or '（读不到 CSV，期数未知）') + ' 期，'
+    '滚动同比完全算得出来。上一轮它同时还有一张单列柱图、次轴画单月同比'
+    '（底座对单列桶写死画单月，spec 侧改不了），而那张图给不出第 2 条允许的口径理由；'
+    '本轮把该列并进「欧洲国债与其他政府债」那一组（同单位，'
+    + _scale_gap_txt('tradeweb_adv_eu_govt_bonds_usd_bn',
+                     'tradeweb_adv_other_govt_bonds_usd_bn') +
+    '），底座改画折线，那条辩护不了的单月同比线<b>已经从页面上消失</b>，只剩这一张。'
     '⚠️ 本列是<b>日均</b>（ADV），而本页没有这个口径的交易日权重列，'
     '所以滚动合计是把 12 个日均<b>等权</b>相加。这不是将就：CONTRACT §6.3 明写'
     '「日均序列不要乘回交易日」—— 同比是比值，分子分母同权，交易日在比值里直接约掉，'
     '乘回去只多引进一条序列的误差；何况 Tradeweb 那列加权天数是<b>集团级</b>的，'
     '不是这一个分项自己的天数，拿它去还原本列会引进一个方向未知的偏差。'
-    % (_n_obs('tradeweb_adv_other_govt_bonds_usd_bn') or '（读不到 CSV，期数未知）')
 )
 
 
@@ -1172,51 +1472,119 @@ def _slow_truth_note():
 
 
 _NOTE_AXIS_SCALE = (
-    '<b>⚠️ 纵轴标题里的「（千）」「（百万）」是<u>缩放倍数</u>，不是单位本身 —— '
-    '主板总市值那三张图最容易读错。</b>'
-    '数值太宽时底座会把整条序列除掉一个 10 的幂，并在纵轴标题后面追加这个后缀。'
-    '主板总市值的原始单位是 <code>GBP mn</code>（英镑<b>百万</b>），再按百万缩放之后，'
-    '纵轴印出来是「GBP mn（百万）」，意思是「百万个英镑百万」= <b>英镑万亿</b>：'
-    '图上那根约 4.2 的柱读作 <b>£4.2 万亿</b>，不是 420 万英镑。'
-    '<b>这个后缀由 build/single.py 拼装，本页 spec 改不到</b> —— spec 能改的只有 '
+    '<b>⚠️ 纵轴标题里的「（千）」「（百万）」是<u>缩放倍数</u>，不是单位本身。'
+    '本页有两族轴标题会<u>自己缠上自己</u>，读之前先看这一条。</b>'
+    '数值太宽时底座（<code>build/chartscale.py</code>）会把整条序列除掉一个 10 的幂，'
+    '并在纵轴标题后面追加这个中文后缀。追加是<b>字符串拼接</b>，不认识单位串里已经有的'
+    '量级词，于是原始单位本身带量级词（<code>mn</code>）的那几张就缠住了：'
+    '<b>① 「GBP mn（百万）」= 百万个英镑百万 = <u>英镑万亿</u></b>'
+    '（主板总市值合计 / UK / Intl 三张月末存量柱图）：图上那根约 4.2 的柱读作 '
+    '<b>£4.2 万亿</b>，不是 420 万英镑。'
+    '<b>② 「GBP mn/month（千）」= 千个英镑百万每月 = <u>英镑十亿/月</u></b>'
+    '（LSE 与 Turquoise 订单簿成交额那张三线图，以及页尾「LSE 主板订单簿成交额：'
+    '水平值与 12 个月滚动同比」那张）：图上约 147 读作 <b>£1,470 亿/月</b>。'
+    '对照组：轴标题写「trades（百万）」「trade sides/month（千）」的那几张<b>不缠</b>，'
+    '因为 <code>trades</code> 本身不含量级词，「百万笔」就是字面意思。'
+    '<b>这个后缀由 build/chartscale.py 拼装，本页 spec 改不到</b> —— spec 能改的只有 '
     '<code>unit</code> 串本身，而把它改成 GBP tn 会连汇总表与末尾核对表一起改掉，'
-    '而那两张表的用途正是按<b>官方原始单位</b>逐格对账，不能换单位。'
-    '<b>要根治得改底座（让缩放后缀直接写成 tn / bn），本轮没改。</b>'
+    '那两张表的用途正是按<b>官方原始单位</b>（factsheet 印的就是 £m）逐格对账，不能换单位；'
+    '用 <code>scale</code> 键把整列换算成万亿同样会落到那两张表上，一样不行。'
+    '<b>要根治得改底座：让缩放后缀不做字符串拼接，而是把单位串里的量级词整体升一档'
+    '（GBP mn × 1e6 → GBP tn、GBP mn/month × 1e3 → GBP bn/month），'
+    '认不出量级词时才退回现在的中文后缀。本轮没有改底座，所以这条缺口仍在页面上。</b>'
     '汇总表与末尾核对表不受缩放影响，仍是官方原始量级。'
 )
 
-_NOTE_MOM_WHY = (
-    '<b>用了单月同比的图，逐张写明理由（CONTRACT §6.1 第 2 条后半）。</b>'
-    '第 2 条要求「标题里写明单月」<b>并且</b>「在图注说明为什么这里该用单月」。'
-    '本页单列柱图的图注整段由底座拼装、spec 一个字插不进去，'
-    '所以理由写在<b>标题</b>里（组名会原样印进图标题），并在这里逐张列一遍：'
-    '① <b>两张头条同比图</b>（Tradeweb 月成交额 / Tradeweb ADV 的「：同比」，Exhibit 4 与 '
-    'Exhibit 5）画的是<b>单月同比</b>。理由是分工：同一列的默认滚动口径本页已经有了 —— '
-    '页尾那张「Tradeweb 全公司成交额：水平值与 12 个月滚动同比」就是它，趋势判断看那张；'
-    '这两张的用途是逐月核对当月读数，与页顶数据条、汇总表 y/y 列同口径。'
-    '<b>⚠️ 已知缺口：这两张的标题只写「：同比」、没写「单月」，它们自己的图注也没写理由。</b>'
-    '那两段字符串由 <code>build/single.py</code> 的 <code>ex_yoy()</code> 生成，'
-    '而头条列在 spec 里只有 col / zh / unit / fmt 四个允许键 —— 本页改不到，'
-    '要补必须动底座。在补上之前，这两张图的口径以本条与页尾的口径说明为准。'
-    '② <b>两张成交份额</b>（LSE 英国 Lit、Turquoise 泛欧）：比率不做滚动合计也不做滚动均值'
-    '（§6.1 第 5 条），单月的<b>百分点差</b>是它唯一合法的口径。'
-    '③ <b>GBP/EUR 换算率</b>：换算常数不是流量，把 12 个月的汇率加起来不指代任何东西。'
-    '④ <b>Tradeweb 集团加权交易日数</b>：命题本身就是「这个月比去年同月多开几天」，'
-    '滚动窗口正好把要看的东西抹平（§6.1 第 2 条举的 <code>cme</code> Ex3 是同一类）。'
-    '⑤ <b>LCH ForexClear 两张</b>：这条腿的历史被官方滚动窗口卡住，'
-    '短于滚动同比连成线所需的长度（期数现算，写在各图标题里）。'
-    '⑥ <b>Tradeweb 其他政府债 ADV</b>：这一列有 %s 期、滚动口径算得出来，'
-    '所以本轮<b>另补了一张滚动同比图</b>放在页尾，单月那张只留作逐月核对。'
-    '⑦ <b>一级市场的增发笔数</b>（主板 %s 期 / AIM %s 期）原先各自单列成柱图、'
-    '因而被迫画单月同比，而它们给不出口径上的理由（既不是比率、历史也不短、'
-    '命题也不是「一个月之内会怎样」）—— 本轮把两列并成同单位的一张折线图，'
-    '页面上不再出现那两条无法辩护的单月同比线。'
-    '<b>存量列的次轴同比不在本条范围内</b>：那是点对点同比，'
-    '按 §6.1 第 4 条本来就是存量的默认口径，不需要辩护。'
-    % (_n_obs('tradeweb_adv_other_govt_bonds_usd_bn') or '？',
-       _n_obs('mm_further_issues_count') or '？',
-       _n_obs('aim_further_issues_count') or '？')
-)
+def _mom_why_note():
+    """页尾那条「用了单月同比的图，逐张写明理由 + 本序列实测」。
+
+    为什么写成函数而不是常量：每一段里的数都由 `_ev_long()` 现算，
+    一个都不写死 —— 换个月、换条数据，页面上的辩护跟着变；理由站不住了要能自己露出来。
+    字符串一律用拼接不用 `%` 格式化：`_ev_long()` 回来的正文里带百分号。
+    """
+    return (
+        '<b>用了单月同比的图，逐张写明理由<u>并附本序列实测</u>'
+        '（CONTRACT §6.1 第 2 条后半）。</b>'
+        '第 2 条要求「标题里写明单月」<b>并且</b>「在图注说明为什么这里该用单月」，'
+        '而且理由要用 <code>yoy.describe(yoy.caliber_diff(s, kind, win))</code> 生成 ——'
+        '拿<b>这条序列自己</b>实测，不引别家的例子。'
+        '<b>⚠️ 本页够不到图注</b>：单列柱图（<code>gs_bar</code>）与头条同比图'
+        '（<code>grouped_bars</code>）的 <code>note</code> 整段由 '
+        '<code>build/single.py</code> 的 <code>ex_single()</code> / <code>ex_yoy()</code> '
+        '拼装，spec 侧一个字都插不进去（<code>COL_KEYS</code> 与 <code>groups</code> 的'
+        '允许键里都没有 note 这一项）。所以理由与一句话实测写进<b>标题</b>'
+        '（组名会原样印进图标题），完整实测段落列在下面。'
+        '<b>这是妥协不是等价物：要让实测段真的落进每张图自己的图注，必须改底座。</b>'
+        '实测口径与 Exhibit 59 / 60 图注里底座那段完全一致 —— 同一套统计量、'
+        '同样先取两种口径的交集再比、窗口都是图上真正画出来的那 25 个月。'
+
+        '① <b>两张头条同比图</b>（Tradeweb 月成交额 / Tradeweb ADV 的「：同比」）'
+        '画的是<b>单月同比</b>。用途是逐月核对当月读数，与页顶数据条、汇总表 y/y 列同口径；'
+        '同一列的默认滚动口径本页也有 —— 页尾「Tradeweb 全公司成交额：水平值与 12 个月'
+        '滚动同比」那张，趋势判断看它。'
+        '月成交额：' + _ev_long('tradeweb_volume_total_usd_tn') +
+        'ADV：' + _ev_long('tradeweb_adv_total_usd_bn') +
+        '<b>⚠️ 已知缺口（本轮没修）：这两张的标题只写「：同比」、没写 §6.1 第 2 条'
+        '要求的「单月」，它们自己的图注也没有上面这两段实测。</b>'
+        '标题与图注都由 <code>build/single.py</code> 的 <code>ex_yoy()</code> 写死'
+        '（<code>title = f\'{c["zh"]}：同比\'</code>），而头条列在 spec 里只有 '
+        'col / zh / unit / fmt 四个允许键 —— 把「单月」塞进 <code>zh</code> 能改到标题，'
+        '但同一个 <code>zh</code> 还会印到页顶数据条、汇总表行标签、末尾核对表表头，'
+        '以及 Exhibit 2/3（全历史）与两张季节性图的标题上，那五处写「单月」全是错的。'
+        '所以本轮<b>不改</b>，缺口留在这里明写：要补必须动 <code>ex_yoy()</code>。'
+        '在补上之前，这两张图的口径以本条与页尾的口径说明为准。'
+
+        '② <b>两张成交份额</b>（LSE 英国 Lit、Turquoise 泛欧）：比率不做滚动合计也不做'
+        '滚动均值（§6.1 第 5 条），单月的<b>百分点差</b>是它唯一合法的口径 ——'
+        '没有第二种口径可比，这本身就是理由。'
+        'LSE 英国 Lit：' + _ev_long('lse_lit_uk_share_pct', ratio=True) +
+        'Turquoise 泛欧：' + _ev_long('turquoise_paneuropean_share_pct', ratio=True) +
+
+        '③ <b>GBP/EUR 换算率</b>：换算常数不是流量，把 12 个月的汇率加起来不指代任何东西。'
+        + _ev_long('gbp_eur_rate', ttm_meaningless=True) +
+
+        '④ <b>Tradeweb 集团加权交易日数</b>：命题本身就是「这个月比去年同月多开几天」，'
+        '滚动窗口正好把要看的东西抹平（§6.1 第 2 条举的 <code>cme</code> Ex3 是同一类）。'
+        '下面这组数就是「抹平」的量化 —— 滚动侧的标准差与相邻月跳变小到接近于说'
+        '「什么都没发生」，而要看的正是被它抹掉的那部分：'
+        + _ev_long('tradeweb_trading_days_blended') +
+
+        '⑤ <b>LCH ForexClear 两张</b>：这条腿的历史被官方滚动窗口卡住'
+        '（月度 CSV 末行原文 Row Count: 24），短于滚动同比连成线所需的长度。'
+        '名义额：' + _ev_long('forexclear_notional_registered_usd_tn') +
+        '笔数：' + _ev_long('forexclear_trades_registered_count') +
+        '注意这一条会<b>自己过期</b>：期数一够（滚动同比连成线要 '
+        + str(_TTM_LINE) + ' 期），'
+        '标题里那句理由会自动换成一句自曝的话（见 <code>_short_hist_why</code>）——'
+        '理由跟着数据走，不写死。'
+
+        '⑥ <b>Tradeweb 其他政府债 ADV：本轮把这条单月同比线<u>撤掉了</u>。</b>'
+        '它有 ' + str(_n_obs('tradeweb_adv_other_govt_bonds_usd_bn') or '？') + ' 期、'
+        '滚动口径完全算得出来，上一轮标题上给的理由是「留单月供逐月核对」—— 那是<b>用途</b>'
+        '理由，不在第 2 条允许的两类（命题就是一个月之内 / 滚动口径根本不存在）里。'
+        '本轮把它并进「欧洲国债与其他政府债」那一组（同单位，'
+        + _scale_gap_txt('tradeweb_adv_eu_govt_bonds_usd_bn',
+                         'tradeweb_adv_other_govt_bonds_usd_bn') +
+        '），底座改画折线 —— 只有水平值、没有次轴同比；同比只剩页尾那张滚动图。'
+        '撤掉不损失什么，这一列的单月口径本来也没有比滚动更稳 —— '
+        + _ev_long('tradeweb_adv_other_govt_bonds_usd_bn') +
+
+        '⑦ <b>一级市场的增发笔数</b>（主板 ' + str(_n_obs('mm_further_issues_count') or '？')
+        + ' 期 / AIM ' + str(_n_obs('aim_further_issues_count') or '？') + ' 期）'
+        '原先各自单列成柱图、因而被迫画单月同比，而它们给不出口径上的理由 ——'
+        '上一轮已把两列并成同单位的一张折线图，页面上不再出现那两条线。'
+
+        '⑧ <b>LCH RepoClear 的两列清算边数</b>目前只有 12 期，底座算不出任何一个月的同比，'
+        '<code>gs_bar</code> 自己退成了不带次轴的 <code>bars_labeled</code>，'
+        '所以它们的组名里<b>没有</b>「次轴：单月同比」那句声明 ——'
+        '声明由 <code>_mom_drawn()</code> 按数据现判，不写死，避免在页面上印一句假话。'
+
+        '<b>存量列的次轴同比不在本条范围内</b>：那是点对点同比，'
+        '按 §6.1 第 4 条本来就是存量的默认口径，不需要辩护。'
+    )
+
+
+_NOTE_MOM_WHY = _mom_why_note()
 
 
 SPEC = {

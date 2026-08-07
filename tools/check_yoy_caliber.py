@@ -77,6 +77,58 @@ SIGN_DEADBAND_PP = 0.5
 # 图型豁免（CONTRACT.md §6）：逐格波动就是题眼的图，不适用「默认滚动」。
 EXEMPT_KINDS = {'heat_matrix', 'seasonality', 'qtr_bar', 'bridge_bar', 'range_band'}
 
+# ── 结构性守卫：判据读得到哪些字段 ──────────────────────────────────────────
+# 2026-08-07 修的那个盲区就死在这里：`yoy_series()` 只认六个字段，`grouped_bars`
+# 的 `groups[]` 一个都没读过。整张图**静悄悄地**不进任何一条规则 —— 输出里既不报
+# 违规，也不报「我没看」，看上去和「这页很干净」一模一样。
+#
+# 所以现在反过来做：不再维护「我会读哪些字段」，而是每张图逐字段问一句「你长得像
+# 不像一条数据序列」，凡是像、而 `yoy_series()` 又没碰过的，**当成判据的缺陷报出来**。
+# 下一次有人加一种 kind、带一个新字段名，判据会当场喊，而不是再瞎三个月。
+_META_KEYS = {
+    'n', 'kind', 'title', 'fmt', 'yfmt', 'label_fmt', 'ylab', 'ylab2', 'note',
+    'src_extra', 'x', 'xlabels', 'xlabels_long', 'xstep', 'xrot', 'full', 'height',
+    'legend', 'annot', 'zero_line', 'ycap', 'yfloor', 'cap_note', 'break_at',
+    'break_label', 'bar_marks', 'mark_note', 'bar_labels', 'rows', 'cols', 'names',
+    'row_head', 'row_lab_w', 'cell_h', 'reverse', 'highlight', 'avg12', 'avg_label',
+    'yoy_txt', 'mom_txt', 'markers', 'zero_base', 'end_label', 'ovals_at_bottom',
+    'net_color', 'actual_color', 'partial_months', 'qtr_months', 'qtd', 'qtd_at',
+    'caliber', 'caliber_src', 'color',
+}
+
+# `yoy_series()` 声称自己读过的字段。两者对不上就是判据的盲区。
+SCANNED_FIELDS = {'yoy', 'line', 'bar', 'series', 'stacks', 'values',
+                  'groups', 'net', 'base', 'actual', 'lo', 'hi', 'matrix'}
+
+
+def data_like_keys(ex):
+    """这个 exhibit 上「长得像一条数据序列」的字段名（不看白名单，看形状）。
+
+    三种形状算数：裸数值列表、`{'values': [...]}`、`[{'values': [...]}, ...]`；
+    外加 `matrix` 的二维表。`xlabels` / `break_at` / `rows` 这些排版字段先按名字排除
+    —— 它们也是列表，但不承载被判的量。
+    """
+    def numeric_list(v):
+        return (isinstance(v, list) and len(v) >= MIN_MATCH_PTS
+                and any(isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in v))
+
+    out = set()
+    for k, v in (ex or {}).items():
+        if k in _META_KEYS:
+            continue
+        if numeric_list(v):
+            out.add(k)
+        elif isinstance(v, dict) and isinstance(v.get('values'), list):
+            out.add(k)
+        elif (isinstance(v, list) and v
+              and all(isinstance(x, dict) and isinstance(x.get('values'), list)
+                      for x in v)):
+            out.add(k)
+        elif isinstance(v, list) and v and all(isinstance(x, list) for x in v):
+            out.add(k)                      # heat_matrix 的 matrix[][]
+    return out
+
 # ── 文字识别 ────────────────────────────────────────────────────────────────
 # 「这条序列是不是同比」只看**结构位**（名字 / 轴标题 / 图题 / 图例 / 数值格式），
 # 不看 note —— note 里提一句「同比」不代表这条线是同比，那样会把一堆水平值图
@@ -165,7 +217,14 @@ def build_index(root):
                 continue
             k = (os.path.basename(f), c)
             keys.append(k)
+            # `classify()` 的最后一行是 `return STOCK  # 拿不准判存量`。对生成器那是
+            # 安全的默认（少画一条线），但在**判据**里方向正好相反：kind==STOCK 会让
+            # legal_mom 成立，把 R1/R4 整条关掉 —— 一个「我不知道」被当成了「它合法」。
+            # 所以这里记下这次分类到底是**正则命中**还是**兜底猜的**，好把后者单列出来。
+            classified = bool(Y._RATIO_PAT.search(c) or Y._NEW_FLOW_PAT.search(c)
+                              or Y._STOCK_PAT.search(c) or Y._FLOW_PAT.search(c))
             meta[k] = {'kind': Y.classify(c),
+                       'kind_fallback': not classified,
                        'strong_stock': bool(Y._STOCK_PAT.search(c))
                                        and not Y._NEW_FLOW_PAT.search(c),
                        'unambiguous_stock': bool(_STOCK_UNAMBIGUOUS.search(c))}
@@ -190,7 +249,7 @@ def identify(values, months, idx):
              and np.isfinite(float(v))]
     out = {'caliber': None, 'col': None, 'csv': None, 'kind': None, 'err': None,
            'n': len(pairs), 'ambiguous': False, 'strong_stock': False,
-           'unambiguous_stock': False, 'alts': []}
+           'unambiguous_stock': False, 'kind_fallback': False, 'alts': []}
     if len(pairs) < MIN_MATCH_PTS:
         return out
     ms = [m for m, _ in pairs]
@@ -238,37 +297,110 @@ def page_months(payload, ex):
     return [lab2month(x) for x in xl]
 
 
+def heat_series(ex):
+    """`heat_matrix` 的 `matrix[][]` 摊平成「序列 + 它自己的月份轴」。
+
+    两种排版都在用，必须分开处理 —— 认错一种就会把值和月份错位对齐：
+
+      A. **列是月标签**（`cols=['Jul-24', …]`，行是不同标的，如 exchanges-eu Ex13）
+         → 一行一条序列，月份取自 `cols`。
+      B. **行是年、列是月名**（`rows=['2017', …]`, `cols=['Jan', …]`，如 cme Ex18）
+         → 整张矩阵在日历上本来就是一条连续序列，摊平成一条（最多 120 个点，
+            比逐行 12 个点更容易在回源里认出口径）。
+
+    两种都不是（季度矩阵 exchanges-apac Ex7 的 `cols=['3Q20', …]`）→ 返回空。
+    这是**真的读不出月份**，与「没写代码去读」是两件事，census 里分开记。
+    """
+    mat = ex.get('matrix')
+    if not isinstance(mat, list) or not mat:
+        return []
+    rows = ex.get('rows') or []
+    cols = ex.get('cols') or list(_MON)          # 缺省 Jan..Dec（hkex Ex17 就没给）
+
+    col_m = [lab2month(c) for c in cols]
+    if any(col_m):                                # 排版 A
+        out = []
+        for i, r in enumerate(mat):
+            if isinstance(r, list) and len(r) >= MIN_MATCH_PTS:
+                nm = str(rows[i]) if i < len(rows) else f'row{i}'
+                out.append((nm, list(r), col_m))
+        return out
+
+    idx = [_MON.get(str(c).strip()[:3].title()) for c in cols]   # 排版 B
+    if not cols or not all(idx):
+        return []
+    flat_m, flat_v = [], []
+    for i, r in enumerate(mat):
+        y = str(rows[i]).strip() if i < len(rows) else ''
+        if not re.fullmatch(r'\d{4}', y) or not isinstance(r, list):
+            return []
+        for j, v in enumerate(r[:len(idx)]):
+            flat_m.append(f'{y}-{idx[j]:02d}')
+            flat_v.append(v)
+    return [(str(ex.get('legend') or ''), flat_v, flat_m)] if len(flat_v) >= MIN_MATCH_PTS else []
+
+
 def yoy_series(ex):
     """从一个 exhibit 里挑出「画的是同比」的那些序列。
 
     只认结构位上的证据（序列名 / 该序列所在轴的轴标题 / 图题 / 图例 / yfmt），
     因为「有没有在文字里声明口径」是被检查项，不能拿来当识别依据。
+
+    返回的每条可带 `months` —— 该序列**自己的**月份轴（目前只有 `heat_matrix` 需要，
+    它不吃 `xlabels`，月份藏在 `rows`×`cols` 里）。不给就用页/图的 `xlabels`。
     """
     title, ylab, ylab2 = ex.get('title', ''), ex.get('ylab', ''), ex.get('ylab2', '')
     found = []
 
-    def take(obj, where, axis_lab):
+    def take(obj, where, axis_lab, name_hint=None, months=None, force=False):
+        # 裸列表形态（range_band 的 lo/hi/actual 是 `[…]` 而不是 `{values: […]}`）
+        if isinstance(obj, list):
+            obj = {'values': obj}
         if not isinstance(obj, dict):
             return
         vals = obj.get('values')
         if not isinstance(vals, list) or len(vals) < MIN_MATCH_PTS:
             return
-        sig = _txt(obj.get('name'), obj.get('legend'), axis_lab, obj.get('yfmt'))
-        # 次轴序列（yoy / line）默认继承 ylab2；只有主轴序列才需要图题来判定
-        if _IS_YOY.search(sig) or (not obj.get('name') and _IS_YOY.search(_txt(title, axis_lab))):
-            found.append({'where': where, 'name': obj.get('name') or ex.get('legend') or '',
-                          'values': vals, 'yfmt': obj.get('yfmt')})
+        nm = obj.get('name') or name_hint or ''
+        sig = _txt(nm, obj.get('legend'), axis_lab, obj.get('yfmt'))
+        # 次轴序列（yoy / line）默认继承 ylab2；只有主轴序列才需要图题来判定。
+        # force=True 只给 heat_matrix 用：那种图的口径写在图级签名上，行标签是标的名
+        # （'Euronext'）或年份（'2017'），拿行标签去搜「同比」永远搜不到。
+        if force or _IS_YOY.search(sig) or (not nm and _IS_YOY.search(_txt(title, axis_lab))):
+            found.append({'where': where, 'name': nm or ex.get('legend') or '',
+                          'values': vals, 'yfmt': obj.get('yfmt'), 'months': months})
 
     take(ex.get('yoy'), 'yoy', ylab2)                    # gs_bar 的次轴金线
-    take(ex.get('line'), 'line', ylab2 or ylab)          # bar_line_dual / stacked_dual
+    take(ex.get('line'), 'line', ylab2 or ylab)          # bar_line_dual / stacked_dual / grouped_bars 的误差线
     take(ex.get('bar'), 'bar', ylab)
     for i, s in enumerate(ex.get('series') or []):
         take(s, f'series[{i}]', ylab)
     for i, s in enumerate(ex.get('stacks') or []):
         take(s, f'stacks[{i}]', ylab)
+
+    # ── 以下五类曾经一条都没读过（2026-08-07 补）────────────────────────────
+    # grouped_bars 的并排柱。**这一类不在豁免名单里**，所以补上之后是真的会进
+    # R1/R3/R4 —— 全站 38 张 grouped_bars 里有一批标题就写着「：同比」。
+    for i, g in enumerate(ex.get('groups') or []):
+        take(g, f'groups[{i}]', ylab)
+
+    take(ex.get('net'), 'net', ylab)                     # bridge_bar 的净额菱形
+    take(ex.get('base'), 'base', ylab)                   # seasonality 的同月常态灰柱
+    take(ex.get('actual'), 'actual', ylab,               # seasonality 蓝柱 / range_band 菱形
+         name_hint=(ex.get('names') or {}).get('actual'))
+    for f in ('lo', 'hi'):                               # range_band 的区间上下缘
+        take(ex.get(f), f, ylab, name_hint=(ex.get('names') or {}).get(f))
+
+    # heat_matrix：一整张图只有一个口径，语义写在图题/图例上而不是行标签上
+    # （行标签是标的名 'Euronext'、或年份 '2017'），所以这里查的是**图级**签名。
+    if _IS_YOY.search(_txt(ex.get('legend'), title, ylab)):
+        for nm, vals, mm in heat_series(ex):
+            take({'name': nm, 'values': vals}, 'matrix', ylab,
+                 name_hint=nm or ex.get('legend'), months=mm, force=True)
+
     if isinstance(ex.get('values'), list) and _IS_YOY.search(_txt(title, ylab, ex.get('legend'))):
         found.append({'where': 'values', 'name': ex.get('legend') or '',
-                      'values': ex['values'], 'yfmt': ex.get('yfmt')})
+                      'values': ex['values'], 'yfmt': ex.get('yfmt'), 'months': None})
     return found
 
 
@@ -293,7 +425,7 @@ def check_page(path, idx):
 
 
 def check_payload(payload, page, idx):
-    findings, items = [], []
+    findings, items, census = [], [], []
 
     for ex in payload.get('exhibits') or []:
         n, kind_, title = ex.get('n'), ex.get('kind'), ex.get('title', '')
@@ -302,9 +434,19 @@ def check_payload(payload, page, idx):
         # 这张图是不是存量图 —— 用**页面自己写的**标记判，不是靠列名正则猜
         says_stock = bool(_STOCK_TXT.search(_txt(title, ex.get('ylab'), ex.get('legend'))))
 
-        for s in yoy_series(ex):
+        found = yoy_series(ex)
+        # 逐张图记账，**与「找到几条同比序列」无关**。老版本只在找到序列时才记，
+        # 于是「豁免图型 N 条」统计的是「豁免图里被读到的序列数」而不是豁免图数量；
+        # 一张图一条都没读到时，它在输出里彻底不存在 —— 失明长得和干净一模一样。
+        census.append({'page': page, 'n': n, 'kind': kind_, 'title': title,
+                       'exempt': exempt, 'n_series': len(found),
+                       'blind': sorted(data_like_keys(ex) - SCANNED_FIELDS)})
+
+        for s in found:
             d = declarations(ex, s)
-            m = identify(s['values'], months, idx)
+            # heat_matrix 的月份藏在 rows×cols 里，不在 xlabels 上，所以序列可自带月份轴
+            ms = s.get('months') or months
+            m = identify(s['values'], ms, idx)
             is_stock = says_stock or m['kind'] == Y.STOCK or m['unambiguous_stock']
             is_ratio = m['kind'] == Y.RATIO or m.get('pp')
             # 「单月是这条序列唯一合法的口径」—— 存量（点对点）与比率（百分点差）。
@@ -312,10 +454,26 @@ def check_payload(payload, page, idx):
             # 实测这一条挡掉 4 个误报：ice Ex12/15 的 RPC、sgx Ex9 换手率、
             # axp Ex8 excess spread —— 它们的滚动同比在数学上根本不存在。
             legal_mom = is_stock or is_ratio
+            # 这条豁免是**猜**出来的吗 —— 存量身份既没有列名正则支持、页面也没自称
+            # 存量，只是 classify() 的兜底返回了 STOCK。这种豁免会静默关掉 R1/R4，
+            # 与「判据读不到这个字段」是同一类失明，所以也要在输出里露头。
+            weak_exempt = bool(legal_mom and m['caliber'] == 'mom' and not is_ratio
+                               and m.get('kind_fallback') and not says_stock
+                               and not m['unambiguous_stock'] and not m['strong_stock'])
+            # 只有「拿掉这条豁免就真会响一条规则」的才值得人工看 —— 其余那些图早就
+            # 在标题里写了单月，豁免与否结果一样，列出来只是噪声。
+            hidden = ''
+            if weak_exempt:
+                if not (d['roll_anywhere'] or d['mom_anywhere']) and sign_flips(m, ms):
+                    hidden = 'R1'
+                elif not d['mom_in_title']:
+                    hidden = 'R4'
+            it_hidden = hidden
             it = {'page': page, 'n': n, 'chart_kind': kind_, 'title': title,
                   'where': s['where'], 'name': s['name'], 'exempt': exempt,
                   'says_stock': says_stock, 'is_stock': is_stock,
                   'is_ratio': is_ratio, 'legal_mom': legal_mom,
+                  'weak_exempt': weak_exempt, 'hidden_rule': it_hidden,
                   'declared': d, 'match': {k: v for k, v in m.items() if k != 'alts'},
                   'alts': m.get('alts', [])}
             items.append(it)
@@ -352,7 +510,7 @@ def check_payload(payload, page, idx):
             # （asx Ex26 月末未平仓名义额、enx Ex34 挂牌基金只数 —— 标题自己就写着
             # 「存量，期末口径」）。
             if m['caliber'] == 'mom' and not legal_mom and not declared_any:
-                flips = sign_flips(m, months)
+                flips = sign_flips(m, ms)
                 if flips:
                     ex_txt = '；'.join(f'{mm} 单月 {a:+.1f}% vs 滚动 {b:+.1f}%'
                                       for mm, a, b in flips[:3])
@@ -377,7 +535,7 @@ def check_payload(payload, page, idx):
                            'CONTRACT.md §6：要用单月同比必须在标题里写明。')))
 
     findings += check_page_mix(payload, page, items)
-    return findings, items
+    return findings, items, census
 
 
 def sign_flips(m, months):
@@ -503,7 +661,7 @@ def selftest(idx):
     ok = True
     for want, payload in cases:
         payload = dict(payload, xlabels=payload['exhibits'][0]['xlabels'])
-        f, _ = check_payload(payload, '_selftest', idx)
+        f, _, _ = check_payload(payload, '_selftest', idx)
         rules = [x['rule'] for x in f]
         hit = want in rules
         ok &= hit
@@ -535,16 +693,17 @@ def main():
         want = set(a.page)
         paths = [p for p in paths if os.path.basename(p)[:-3] in want]
 
-    allf, alli = [], []
+    allf, alli, allc = [], [], []
     for p in paths:
         try:
-            f, i = check_page(p, _IDX)
+            f, i, c = check_page(p, _IDX)
         except Exception as e:                    # 一页坏掉不该拖垮整次扫描
             allf.append(dict(lvl='🟡', rule='R0_page_unreadable', page=os.path.basename(p),
                              n=None, title='', msg=f'读不出来：{type(e).__name__}: {e}'))
             continue
         allf += f
         alli += i
+        allc += c
 
     red = [x for x in allf if x['lvl'] == '🔴']
     yel = [x for x in allf if x['lvl'] == '🟡']
@@ -553,12 +712,53 @@ def main():
     print('=' * 86)
     print('同比口径判据 —— data/*.js 快照')
     print('=' * 86)
-    print(f'页 {len(paths)} 张；同比序列 {len(alli)} 条（豁免图型 '
-          f'{len(alli) - len(live)} 条：{"/".join(sorted(EXEMPT_KINDS))}）')
+
+    # ── 图数量的账，按 exhibit 记（不是按「读到了几条序列」记）─────────────────
+    # 这三行是 2026-08-07 补的。老版本只有「同比序列 N 条（豁免 M 条）」一行，
+    # 而 M 是**豁免图里被读到的序列数** —— 一张图一条都没读到时它就凭空消失了，
+    # 于是「判据没读」被印成了「豁免 0 条」。现在豁免 / 读到 / 没读到分三栏印。
+    ex_all, ex_ex = len(allc), [c for c in allc if c['exempt']]
+    ex_ex_read = [c for c in ex_ex if c['n_series']]
+    ex_kinds = {}
+    for c in ex_ex:
+        ex_kinds.setdefault(c['kind'], [0, 0])
+        ex_kinds[c['kind']][0] += 1
+        ex_kinds[c['kind']][1] += bool(c['n_series'])
+    blind = [c for c in allc if c['blind']]
+    print(f'页 {len(paths)} 张；exhibit {ex_all} 张，其中豁免图型 {len(ex_ex)} 张'
+          f'（{" / ".join(f"{k} {v[0]}" for k, v in sorted(ex_kinds.items()))}）')
+    print(f'  └ 豁免图里读出同比序列的 {len(ex_ex_read)} 张、'
+          f'一条也读不出的 {len(ex_ex) - len(ex_ex_read)} 张'
+          f'（横轴不是月，回源无从对齐 —— 与「判据不认识这个字段」不是一回事）')
+    print(f'同比序列 {len(alli)} 条（豁免图型 {len(alli) - len(live)} 条，只计数不判规则）')
     print(f'口径回源确定 {len(det)} 条'
           f'（滚动 {sum(1 for x in det if x["match"]["caliber"] == "ttm")} / '
           f'单月 {sum(1 for x in det if x["match"]["caliber"] == "mom")}）；'
           f'未确定 {len(live) - len(det)} 条 —— 派生量 / 跨源合成，判据不下结论')
+    if blind:
+        print(f'\n⚠ 判据读不到的数据字段 {len(blind)} 张图 —— **这是判据自己的缺陷，'
+              f'不是页面的问题**，先补 yoy_series() 再看下面的结论：')
+        for c in blind[:20]:
+            print(f'    {c["page"]} Ex{c["n"]}（{c["kind"]}）未扫描字段 {c["blind"]} '
+                  f'— {c["title"][:48]}')
+    else:
+        print('判据未扫描到的数据字段：0 —— 每张图上长得像数据序列的字段都进过 yoy_series()')
+
+    # 「因为判据猜它是存量而被关掉 R1/R4」的单月同比。不计入 🔴/🟡（判据自己拿不准
+    # 就不该硬判），但必须印出来 —— 否则它和「这张图合规」在输出上又长得一样了。
+    weak = [x for x in live if x.get('weak_exempt')]
+    hid = [x for x in weak if x.get('hidden_rule')]
+    if weak:
+        print(f'\n⚠ 单月同比被「判据猜它是存量」挡掉 R1/R4 的 {len(weak)} 条 —— '
+              f'yoy.classify() 对这些列名四条正则一条都没命中，走的是最后一行的兜底 '
+              f'`return STOCK`。对生成器那是安全默认，在判据里方向相反：'
+              f'一个「我不知道」被当成了「它合法」。')
+        print(f'  其中 {len(hid)} 条一旦确认是流量就会当场变成违规'
+              f'（其余 {len(weak) - len(hid)} 条标题里已写明单月，豁免与否结果一样）：')
+        for x in hid:
+            print(f'    [{x["hidden_rule"]}?] {x["page"]} Ex{x["n"]} {x["where"]}'
+                  f'「{x["name"]}」回源 {x["match"]["csv"]}:{x["match"]["col"]}'
+                  f' — {x["title"][:44]}')
     print(f'🔴 {len(red)}   🟡 {len(yel)}')
     if not red:
         # 「今天没报错」与「规则坏了」在输出上长得一样，必须能分开。
@@ -586,7 +786,11 @@ def main():
 
     payload = {'summary': {'pages': len(paths), 'series': len(alli),
                            'exempt': len(alli) - len(live), 'determined': len(det),
+                           'exhibits': ex_all, 'exhibits_exempt': len(ex_ex),
+                           'exhibits_exempt_read': len(ex_ex_read),
+                           'exhibits_unscanned_fields': len(blind),
                            'red': len(red), 'yellow': len(yel)},
+               'census': allc,
                'params': {'MATCH_TOL_PP': MATCH_TOL_PP, 'MIN_MATCH_PTS': MIN_MATCH_PTS,
                           'SIGN_DEADBAND_PP': SIGN_DEADBAND_PP,
                           'EXEMPT_KINDS': sorted(EXEMPT_KINDS)},

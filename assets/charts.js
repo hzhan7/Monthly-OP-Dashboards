@@ -220,8 +220,32 @@
      语义上就是任务说的「某一轴超过 40% 的量程落在无数据区」。 */
   var ALIGN_WASTE_MAX = 0.38;
 
-  /* Catmull-Rom 平滑，端点外推方式与 build_report.py 的 smooth() 相同 */
-  function smooth(vals, n) {
+  /* Catmull-Rom 平滑，端点外推方式与 build_report.py 的 smooth() 相同。
+
+     ── bnd（可选，{lo, hi}）：插值曲线不得越过的上下界 ──────────────────────
+     样条只保证过点，不保证过点之间不出界：尖峰后回落时三次段会冲过下一个数据点，
+     谷底之后那一段又带着谷底那个陡负切线出发，于是**曲线**被画到数据从未到过的地方。
+     yfloor/ycap 只钳数据点（见 polyline），钳不住插值出来的这段，所以非负序列会被
+     画到零线以下、截轴图会把线甩出画布（实测 17 张图，最深的 LSEG Ex15 到 −112.9 GBP mn，
+     ASX Ex20 到 −12,135，LPLA Ex7 反向冲到 ycap=35 之上的 211）。
+
+     做法（三选一里挑的第三条，理由写在这里，免得以后有人以为是随手写的）：
+       (a) 整体换单调保形插值（PCHIP / Fritsch–Carlson）——「数据的局部极值处切线归零」
+           能根治，但那条规则对**每一个**局部极值都生效，月度数据几乎每隔一两个月就有
+           一个极值，等于全站 307 条平滑曲线的形状一起变。修一张图代价是改 28 页观感，
+           不划算。
+       (b) 对插值结果逐点 clamp 到 [min,max] —— 改动最小，但曲线会在界上压出一段平直线，
+           读者会把那段当成「连着几个月都停在最低点」的真实数据。把一个可见的错画成一个
+           看不出来的错，更糟。
+       (c) 只在**越界的那一段**上按比例压小两端切线（λ∈[0,1] 二分求最大可行值），
+           λ=0 退化成两点之间的直线弦，必然在界内，所以一定有解；λ 记在**节点**上、
+           左右两段共享，曲线仍是 C1 的（不会在数据点上折出尖角）。
+     取 (c)。关键性质：**先按原式算一遍，界内就原样返回**（下面那个 early return），
+     所以不出界的曲线连一次浮点运算的差别都没有 —— 全站 307 条里 290 条走这条路径，
+     实测 path 的 d 属性逐字节相同。视觉回归比修得漂亮重要，这是本文件被 28 个页面
+     共用的代价。
+     ────────────────────────────────────────────────────────────────────── */
+  function smooth(vals, n, bnd) {
     n = n || 24;
     var N = vals.length, X = [-1], Y = [vals[0] - (vals[1] - vals[0])], i, j, t, ox = [], oy = [];
     for (i = 0; i < N; i++) { X.push(i); Y.push(vals[i]); }
@@ -238,6 +262,74 @@
       }
     }
     ox.push(X[X.length - 2]); oy.push(Y[Y.length - 2]);
+    if (!bnd) return { x: ox, y: oy };
+
+    var lo = bnd.lo != null ? bnd.lo : -Infinity, hi = bnd.hi != null ? bnd.hi : Infinity;
+    /* 容差按**数据自身的量级**取，不能按 [lo,hi] 取：单边定界时另一边是 Infinity，
+       用界宽算出来的 EPS 就是 Infinity，于是「有没有越界」永远判成没有。 */
+    var vmn = Infinity, vmx = -Infinity;
+    for (i = 0; i < N; i++) { if (vals[i] < vmn) vmn = vals[i]; if (vals[i] > vmx) vmx = vals[i]; }
+    var EPS = ((vmx - vmn) || Math.abs(vmx) || 1) * 1e-9;
+    var okAll = true;
+    for (i = 0; i < oy.length; i++)
+      if (!(oy[i] >= lo - EPS && oy[i] <= hi + EPS)) { okAll = false; break; }
+    if (okAll) return { x: ox, y: oy };       // ← 不出界的曲线在这里原样返回，下面一行都不跑
+
+    /* 均匀节点上的 Catmull-Rom 等价于切线 m[k] = (Y[k+2]-Y[k])/2 的三次 Hermite；
+       x 方向的 cr() 在等距节点上恒等于 k+t（代进去二次、三次项系数都是 0）。 */
+    var m = [], k, pass;
+    for (k = 0; k < N; k++) m.push((Y[k + 2] - Y[k]) / 2);
+    function hval(kk, tt, m0, m1) {
+      var p0 = Y[kk + 1], p1 = Y[kk + 2], t2 = tt * tt, t3 = t2 * tt;
+      return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + tt) * m0 +
+             (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
+    }
+    /* 只检查真正画出来的那 n 个采样点：路径是折线段连起来的，采样点在界内 ⇒ 画出来的
+       线也在界内。t=0 是数据点本身（调用方保证已在界内），不用查。
+       这里**不留容差**（上面那道筛才留）：留了的话「谷底 ≥ 0」就只能说成
+       「谷底 ≥ −1e-6」，报出去的数字自己就先破了功。λ=0 的直弦是两端点的凸组合，
+       恒在界内，所以严格判据也一定有解。 */
+    function segOK(kk, m0, m1) {
+      for (var q = 1; q < n; q++) {
+        var v = hval(kk, q / n, m0, m1);
+        if (!(v >= lo && v <= hi)) return false;
+      }
+      return true;
+    }
+    /* 二分：a 恒为已验证可行的下界（λ=0 是直弦，必可行），b 恒为不可行，返回 a。
+       不假设可行域连通 —— 返回值一定是实测通过 segOK 的那个 λ。 */
+    function segScale(kk, m0, m1) {
+      if (segOK(kk, m0, m1)) return 1;
+      var a = 0, b = 1, c;
+      for (var it = 0; it < 24; it++) {
+        c = (a + b) / 2;
+        if (segOK(kk, c * m0, c * m1)) a = c; else b = c;
+      }
+      return a;
+    }
+    var lam = [];
+    for (k = 0; k < N; k++) lam.push(1);
+    /* 节点共享 λ ⇒ 压一个节点会同时改左右两段，故要迭代到不再有段越界。
+       每轮只会让 λ 变小，且 λ=0 全局可行，所以必然收敛；4 轮是实测够用的上限，
+       不够也不要紧——出循环后每段还会各自兜一次底。 */
+    for (pass = 0; pass < 4; pass++) {
+      var moved = false;
+      for (k = 0; k < N - 1; k++) {
+        var s = segScale(k, lam[k] * m[k], lam[k + 1] * m[k + 1]);
+        if (s < 1 - 1e-9) { lam[k] *= s; lam[k + 1] *= s; moved = true; }
+      }
+      if (!moved) break;
+    }
+    ox = []; oy = [];
+    for (k = 0; k < N - 1; k++) {
+      var a0 = lam[k] * m[k], a1 = lam[k + 1] * m[k + 1];
+      /* 兜底：迭代没收干净时对这一段单独再压一次。只有这种情况会在节点上破 C1
+         （曲线仍精确过点，只是左右斜率不同），代价远小于让线跑出画布。 */
+      var s2 = segScale(k, a0, a1);
+      if (s2 < 1) { a0 *= s2; a1 *= s2; }
+      for (j = 0; j < n; j++) { t = j / n; ox.push(k + t); oy.push(hval(k, t, a0, a1)); }
+    }
+    ox.push(N - 1); oy.push(vals[N - 1]);
     return { x: ox, y: oy };
   }
 
@@ -817,7 +909,30 @@
         });
       }
       if (doSmooth) {
-        var sm = smooth(vs);
+        /* ── 平滑曲线的上下界（见 smooth() 头部的长注释）──
+           两条来源，都只是把**已经对数据点生效的规矩**同样加到插值曲线上：
+             1) 非负序列不得画到零线以下。窗口里全部 ≥ 0 的量（家数、募资额、份额%）
+                被样条甩到负数，是画出了一个数据里根本不存在的值 —— 与「截轴不删点」
+                同一条底线：图上只能出现真值。
+             2) 显式给了 yfloor / ycap 的图，曲线与数据点同受那条边界约束。上面那段
+                map() 只钳了点，曲线照样能穿过去（LPLA Ex7 的线冲到 ycap=35 之上的
+                211，直接画进标题区）。
+           序列里有 null / NaN 时一律不设界：那种情况下样条本来就产出 NaN（既有行为），
+           不在这次改动的范围里，宁可保持原样也不要顺手改出第二处差异。 */
+        var blo = -Infinity, bhi = Infinity, bfin = true, bmn = Infinity, bi;
+        for (bi = 0; bi < vs.length; bi++) {
+          if (!isNum(vs[bi])) { bfin = false; break; }
+          if (vs[bi] < bmn) bmn = vs[bi];
+        }
+        if (bfin && vs.length > 1) {
+          if (bmn >= 0) blo = 0;
+          if (yfn === Y) {                       // 截轴只作用于左轴，与上面的 map() 一致
+            if (ex.yfloor != null && y0 > blo) blo = y0;
+            if (ex.ycap != null) bhi = y1;
+          }
+        }
+        var sm = smooth(vs, 24,
+          (blo > -Infinity || bhi < Infinity) ? { lo: blo, hi: bhi } : null);
         for (i = 0; i < sm.x.length; i++)
           d += (i ? 'L' : 'M') + (M.l + band * (sm.x[i] + 0.5)).toFixed(2) + ' ' + yfn(sm.y[i]).toFixed(2);
       } else {
