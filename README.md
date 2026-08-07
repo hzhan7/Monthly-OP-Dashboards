@@ -31,18 +31,24 @@
 
 ```
 index.html          总览页
-<ticker>/index.html 14 个页面外壳 —— 里面没有任何公司专属内容，由 build/make_shells.py 生成
+<ticker>/index.html 27 个页面外壳 —— 里面没有任何公司专属内容
+                    既有 14 个由 build/make_shells.py 生成；新增 13 个（5 张横截面 +
+                    build/specs/ 下每一家）由 build/make_shells12.py 生成
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
-assets/page.js      通用页面渲染器，12 家共用一份
+assets/page.js      通用页面渲染器，全部页面共用一份（导航分行读 roster 的 row）
 assets/style.css    版式
 series/*.csv        历史序列（唯一真值，入库）[注]
 fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
+fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
+build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（9 家新交易所走这条）
+build/specs/<t>.py  一家一份配置（见 docs/SINGLE_SPEC.md）
 build/CONTRACT.md   payload 数据契约（写生成器前先读它）
-build/roster.py     生成 data/roster.js（总览页与导航的目录）
+build/roster.py     生成 data/roster.js（总览页与导航的目录，含各家披露节奏 LAG）
 data/<t>.js         生成物，页面直接 <script src> 加载
 cache/              下载来的原始文件（gitignore）
 monthly_run.py      月度入口（cron 跑的就是它）
+docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉一家」
 ```
 
 **[注] 个别 `series/*.csv` 只被 `fetch/` 读回当台账，不进 build —— 「没有 build 读它」
@@ -55,7 +61,10 @@ monthly_run.py      月度入口（cron 跑的就是它）
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 12 家。
+**入口是 `monthly_run.py`**，一条 cron 管 21 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
+**每天跑一次**：21 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
+省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
+各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`。
 
 ```bash
 python3 monthly_run.py                 # 正常：逐家检查，有新数据才 commit + push

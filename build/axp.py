@@ -30,6 +30,7 @@ import os
 import numpy as np
 import pandas as pd
 
+import axisfmt
 import payload_guard
 import pctile
 
@@ -190,6 +191,41 @@ def tail_contiguous(s):
     return s.iloc[start:]
 
 
+def pp_unit(y_vals):
+    """比率序列的同比该用 pp 还是 bp —— 由**刻度印不印得出来**决定，不靠手感。
+
+    返回 (倍数, 单位字, 次轴格式器)：`(1.0, 'pp', 'pp1')` 或 `(100.0, 'bp', 'f0')`。
+
+    为什么这件事必须在生成端解决、而不是交给 build/axisfmt.py：
+    引擎的格式器表（assets/charts.js:88）里 pp 只有 `pp0` / `pp1` 两档，**没有 pp2**；
+    axisfmt 只能在同族里往上升小数位，升到 pp1 就到顶，再细的步长它救不了。
+    实测 Exhibit 8 的同比落在 −0.97pp ~ +1.14pp，引擎算出的步长是 **0.25pp**，
+    `toFixed(1)` 把这列刻度印成 −1.0 / −0.8 / −0.5 / −0.2 / +0.0 / +0.2 / +0.5 / +0.8 /
+    +1.0 / +1.2 —— 网格线是等距的，标签的差却在 0.2 与 0.3 之间来回跳，
+    读者按标签量线会系统性偏半档（visual_qa 实测像素-数值比偏 33.3%，判 🔴）。
+    不这么做的两条替代路都更差：改 assets/charts.js 要把 27 张已验收的页全部重验；
+    放着不管就是发布一张刻度写着错值的图。
+
+    换成 bp（×100）之后同一批刻度变成 −100 / −75 / … / +125，`f0` 一位不差地印得出来。
+    这也正是本仓的单位规矩（占比变化 |v| < 1pp 用 bp）——本图窗口内多数月份的同比
+    绝对值不到 1pp，抬头那行印的本来就是 bp（「Trust 超额利差 …（+86bp y/y）」），
+    换过来之后轴与抬头终于说的是同一种单位。
+
+    判据直接借 axisfmt 的 `_need_dec`，不另写一份：同一件事各写各的判据，
+    正是同一条序列在两处得出相反结论的根因。
+    ⚠️ 这里量的是**对齐零点之前**的刻度。引擎在两轴零点对齐时只会把量程往外扩
+    （步长只会变粗、不会更细），所以这个判据是保守方向的：最坏情况是本来 pp 也够用
+    却换成了 bp —— 那不是错误，只是选了本仓更偏好的那个单位。
+    """
+    vals = [float(v) for v in y_vals if v is not None and np.isfinite(v)]
+    if not vals:
+        return 1.0, 'pp', 'pp1'
+    tk = axisfmt.ticks(min(vals + [0.0]), max(vals), 9)
+    if axisfmt._need_dec(tk, tk[0], tk[-1]) <= 1:      # pp1 印得出来就不动
+        return 1.0, 'pp', 'pp1'
+    return 100.0, 'bp', 'f0'
+
+
 def gs_bar_ex(n, ttl, s_full, *, win, yfmt, fmt, ylab, pct_series=False,
               legend='Monthly', ylab2=None, yoy_yfmt=None, no_yoy=False,
               note=None, src_extra=None):
@@ -223,6 +259,12 @@ def gs_bar_ex(n, ttl, s_full, *, win, yfmt, fmt, ylab, pct_series=False,
     if no_yoy:
         # Prior 12mo Avg. = 最新月之前的 12 个月均值（与 cboe.prior12 同口径）
         ex['avg12'] = round(float(np.nanmean(np.asarray(d.values, float)[-13:-1])), 6)
+    elif pct_series and yoy_yfmt is None:
+        # 比率序列的同比：单位（pp / bp）由 pp_unit() 按「刻度印不印得出来」定，见该函数。
+        mult, unit, yfm = pp_unit(y.values)
+        ex['ylab2'] = ylab2 or f'y/y ({unit})'
+        ex['yoy'] = {'name': f'y/y ({unit}, RHS)', 'color': 'GOLD', 'yfmt': yfm,
+                     'values': L(y.values * mult)}
     else:
         ex['ylab2'] = ylab2 or ('y/y (pp)' if pct_series else '% y/y')
         ex['yoy'] = {'name': ('y/y (pp, RHS)' if pct_series else 'y/y (RHS)'), 'color': 'GOLD',
@@ -600,6 +642,10 @@ ex.append(gs_bar_ex(
 # ══ 板块 B：Lending Trust 月度 10-D（PDF Exhibit 9-12；Exhibit 8 的汇总表已并入上表）══
 _es_w = trust['excess_spread_pct'].dropna().iloc[-25:]
 _es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-25:].dropna()
+# 图注里的同比读数必须跟次轴用同一个单位，所以走的是同一个 pp_unit()（同一份判据、
+# 同一批输入 → 同一个答案）。写死「pp」的话，哪个月轴切到 bp 图注就开始自相矛盾。
+_ES_MULT, _ES_UNIT, _ = pp_unit(_es_y.values)
+_es_d = 0 if _ES_UNIT == 'bp' else 2
 ex.append(gs_bar_ex(
     8, SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
     win=25, yfmt='pct1', fmt='pct1', ylab='%', pct_series=True,
@@ -608,8 +654,9 @@ ex.append(gs_bar_ex(
          f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 '
          f'{(_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22) * 100:.0f}%，看上去一样高 ——'
          f'<b>水平请读柱顶数值，变化请读次轴那条金色同比线</b>'
-         f'（窗口内 {_es_y.min():+.2f}pp ~ {_es_y.max():+.2f}pp，'
-         f'当期 {_es_y.iloc[-1]:+.2f}pp）。'
+         f'（窗口内 {_es_y.min() * _ES_MULT:+.{_es_d}f}{_ES_UNIT} ~ '
+         f'{_es_y.max() * _ES_MULT:+.{_es_d}f}{_ES_UNIT}，'
+         f'当期 {_es_y.iloc[-1] * _ES_MULT:+.{_es_d}f}{_ES_UNIT}）。'
          f'本图左右轴零点不同高（引擎已在绘图区左上角标出）：柱全为正而同比跨零，'
          f'强行把两个零点拉到同一高度会把左轴一路扩到 −25% 左右，四成画布是空的。',
     src_extra=TRUST_SRC + '.  Portfolio yield less charge-offs, servicing and note coupon — '
@@ -864,7 +911,11 @@ payload = {
     'xlabels': [mlab(p) for p in TB_WIN],
     'xlabels_long': xl(old.index),
     'summary': summary,
-    'exhibits': ex,
+    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+    # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
+    # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
+    'exhibits': axisfmt.fix_all(ex),
     'table': table,
     'notes': NOTES,
     'footer': FOOTER,

@@ -1,0 +1,61 @@
+<meta charset="utf-8">
+<title>qa-scale-one</title>
+<body>
+<pre id="out">loading</pre>
+<script>
+/* 「同一根轴上量级差把小的那条压成贴地线」这类缺陷的机器判据（docs/VISUAL_QA.md §3.G）。
+   ?page=exchanges-na&ex=11,17 —— 对指定 exhibit 报：左轴刻度阶梯、每条折线的
+   bbox 高度占绘图区高度的比例。占比就是「这条线还剩多少垂直分辨率」，
+   修前修后各跑一次即可给出实测证据，不用靠眼睛看截图。 */
+var Q = location.search;
+var P = (Q.match(/page=([\w-]+)/) || [])[1] || 'exchanges-na';
+var WANT = ((Q.match(/ex=([\d,]+)/) || [])[1] || '').split(',').filter(Boolean);
+var lines = [];
+function ttlOf(svg) {
+  var host = svg.closest('.card') || svg.parentElement;
+  var t = host ? (host.querySelector('h3') || {}).textContent : '';
+  return (t || '').trim();
+}
+function scan(doc) {
+  var svgs = doc.querySelectorAll('svg');
+  for (var c = 0; c < svgs.length; c++) {
+    var svg = svgs[c], ttl = ttlOf(svg);
+    var num = (ttl.match(/Exhibit (\d+)/) || [])[1];
+    if (WANT.length && WANT.indexOf(num) < 0) continue;
+    lines.push('── Exhibit ' + num + '  ' + ttl.slice(0, 90));
+    // 左轴刻度：右对齐、9px 的文字就是刻度标签（charts.js txt(..., anchor:'end', size:9)）
+    var ticks = [];
+    svg.querySelectorAll('text').forEach(function (t) {
+      if (t.getAttribute('text-anchor') === 'end' && t.getAttribute('font-size') === '9' &&
+          !(t.getAttribute('transform') || '').length) ticks.push(t.textContent);
+    });
+    lines.push('   左轴刻度: ' + ticks.join(' │ '));
+    // 绘图区高度：最长的那条水平网格线所在的 <line> 组的上下跨度
+    var gy = [];
+    svg.querySelectorAll('line').forEach(function (l) {
+      if (Math.abs(+l.getAttribute('y1') - +l.getAttribute('y2')) < 0.01) gy.push(+l.getAttribute('y1'));
+    });
+    var ph = gy.length > 1 ? Math.max.apply(null, gy) - Math.min.apply(null, gy) : 0;
+    lines.push('   网格线上下跨度 ph≈' + ph.toFixed(1) + 'px');
+    svg.querySelectorAll('path').forEach(function (p) {
+      var st = p.getAttribute('stroke');
+      if (!st || st === 'none') return;
+      var b; try { b = p.getBBox(); } catch (e) { return; }
+      if (!b || b.width < 20) return;
+      lines.push('   折线 stroke=' + st + '  bbox 高 ' + b.height.toFixed(1) + 'px  = ' +
+                 (ph ? (b.height / ph * 100).toFixed(1) : '?') + '% 的绘图区高');
+    });
+  }
+}
+var f = document.createElement('iframe');
+f.style.width = '1440px'; f.style.height = '900px';
+f.src = '/' + P + '/';
+f.onload = function () {
+  setTimeout(function () {
+    try { scan(f.contentDocument); } catch (e) { lines.push('ERR ' + e); }
+    document.getElementById('out').textContent = P + '\n' + lines.join('\n');
+  }, 2500);
+};
+document.body.appendChild(f);
+</script>
+</body>

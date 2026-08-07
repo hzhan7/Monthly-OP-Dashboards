@@ -33,6 +33,7 @@ import pandas as pd
 
 import payload_guard
 import pctile
+import yoy as YOY                       # 同比口径的唯一实现，见 build/yoy.py 的模块头
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -45,6 +46,11 @@ WIN_LONG = 25       # 原 deck 的 lvl_bar / multi_line 窗口
 WIN_SHORT = 13      # 原 deck 的 stack_share 窗口
 WIN_QTR = 14        # 原 deck 的 qtr_bar 窗口（季度数）
 HEAT_YEARS = 10     # 原 deck 的 heat_matrix n_years
+
+# 13/14 是后加的两张（收入的量费分解、TTM 量），一律**追加在末尾**，原 deck 那 11 张图的
+# 编号一个都没动；核对表因此由 13 顺延到 15 —— 它本来就排在所有图之后，号跟着走才不会
+# 出现「12、15、13、14」这种读者以为漏图的序列。全文引用一律走这三个常量，不写字面量。
+EX_DECOMP, EX_TTMVOL, EX_TABLE = 13, 14, 15
 
 
 # ────────────────────────────── 通用零件 ──────────────────────────────
@@ -121,30 +127,81 @@ def prior12(v):
     return float(np.nanmean(v[-13:-1]))
 
 
-def yoy_line(s_full, win):
-    """逐月同比（%），窗口对齐到 win，供 gs_bar 的次轴 y/y 折线用。
+# ══════════════════ 同比口径：次轴一律画 12 个月滚动合计同比 ══════════════════
+# 单月同比 = 本月 ÷ 去年同月 − 1，它把「去年那**一个**月碰巧是什么样」整个塞进分母。
+# 去年同月若是异常低点，今年一个平淡的月份也能印出三位数增速；反过来同理。后果不是
+# 「噪声大一点」，而是**方向会反**：同一条序列的单月同比与它的 12 个月滚动合计同比
+# 经常符号相反，图上讲的是反的故事，而读者从图上完全看不出来。本页的实测数字由
+# caliber_stats() 现算（见 notes 的口径条与各图图注），一个都没有写死。
+#
+# 因此本页所有 gs_bar 的次轴金色折线改画「12 个月滚动合计同比」：
+#     最近 12 个月合计 ÷ 上一个 12 个月合计 − 1
+# 实现上取滚动**均值**再相比 —— 窗口固定 12 个月，除以 12 是同一个常数，所以
+# 「滚动均值同比」与「滚动合计同比」逐点严格相等；用均值的好处是对 ADV / ADNV 这类
+# 日均值源列单位不变（仍是「千张/日」「EUR bn/日」），读者不必在脑子里换算。
+#
+# 交易日加权：**做不到，也不需要**。Cboe 的月度披露里没有交易日数这一列（cme.csv 有，
+# cboe.csv 没有），所以「乘交易日再滚动」这条路在本页根本没有数据；而 12 个月窗口里
+# 交易日效应本来就基本自抵（CME 页上实测两种口径的滚动同比最大只差零点几个百分点）。
+# 这里明写出来，是为了防止下一个人以为漏了一步。
+ROLL = 12
 
-    口径逐行照抄 gsx.lvl_bar（build/gsx.py:285-296）：
-      · 基数 |b| < 中位绝对值 × 0.15 → 放弃（小基数会把同比放大成几百个百分点）
-      · 两期异号 → 放弃（负转正的「同比」没有意义）
+
+def roll_mean(s):
+    """12 个月滚动均值（TTM 水平值用）。窗口不满 12 个月一律 NaN —— 不做 min_periods
+    降级：用 3 个月凑出来的「滚动值」和满窗的值不可比，画在同一条线上就是静默造假。
+
+    与 YOY.ttm() 只差一个常数 12。这里用均值而不是合计，是因为本页所有源列都是
+    **日均值**（ADV / ADNV / 收入每日），除以 12 之后单位不变，读者不必换算；
+    两者的同比逐点严格相等。
+    """
+    return pd.Series(s).rolling(ROLL, min_periods=ROLL).mean()
+
+
+def roll_yoy(s):
+    """12 个月滚动合计同比（%），**流量序列专用**。委托给 build/yoy.py。
+
+    前 23 个点必然 NaN：12 个月填窗 + 12 个月比较。
+    本页 gs_bar 画的四条序列（美国期权 ADV、隐含收入/日、CFE 期货 ADV、欧股 ADNV）
+    全是流量，所以本文件没有存量分支；真要加存量图（如未平仓合约），
+    口径应当是点对点同比 YOY.mom_yoy(s, YOY.STOCK)，见 build/yoy.py 的模块头。
+    """
+    return YOY.ttm_yoy(pd.Series(s), YOY.FLOW)
+
+
+def caliber_stats(s, kind=YOY.FLOW):
+    """单月同比 vs 12 个月滚动合计同比的实测对比（图注引用的数字全由此现算）。
+
+    只做键名适配：真正的统计（样本对齐、相邻月跳变、符号相反的月份）全部走
+    build/yoy.py 的 caliber_diff —— 那是全站唯一实现，各页各写一份正是同一条序列
+    在两页被判定相反的原因。样本对齐这一步尤其不能自己重写：滚动同比比单月同比少
+    12 个月历史，不取交集就会把「样本不同」读成「口径不同」。
+    """
+    d = YOY.caliber_diff(pd.Series(s), kind)
+    opp = pd.DataFrame([{'m': m, 'r': r} for _, m, r in d['opposite']],
+                       index=[p for p, _, _ in d['opposite']])
+    return {'n': d['n'], 'first': d['months'][0], 'last': d['months'][-1],
+            'sd_m': d['std_mom'], 'sd_r': d['std_ttm'],
+            'jump_m': d['maxjump_mom'][0], 'jump_m_at': d['maxjump_mom'][2],
+            'jump_r': d['maxjump_ttm'][0] if d['maxjump_ttm'] else float('nan'),
+            'n_opp': d['opposite_n'], 'opp': opp}
+
+
+def yoy_line(s_full, win):
+    """次轴折线：**12 个月滚动合计同比**（原为单月同比，理由见上方 ROLL 那一段）。
+
     引擎不替这一步做判断（engine_kinds.md §8 明写「口径判断由 Python 侧完成」），
     所以放弃的期一律写 null，图上断开、表格视图里是「—」。
     """
-    v = np.asarray(s_full.values, float)
-    scale = float(np.nanmedian(np.abs(v))) or 1.0
-    out = np.full(len(v), np.nan)
-    for i in range(12, len(v)):
-        a, b = v[i], v[i - 12]
-        if not (np.isfinite(a) and np.isfinite(b)):
-            continue
-        if abs(b) < 0.15 * scale or a * b < 0:
-            continue
-        out[i] = (a / b - 1) * 100
-    return pd.Series(out, index=s_full.index).reindex(win).values
+    return roll_yoy(s_full).reindex(win).values
 
 
-def yoy_rhs(s_full, win, name='y/y (RHS)'):
-    """gs_bar 的次轴 y/y 折线 payload（给了它引擎就不画 12 个月均线）。"""
+def yoy_rhs(s_full, win, name='12M rolling y/y (RHS)'):
+    """gs_bar 的次轴 y/y 折线 payload（给了它引擎就不画 12 个月均线）。
+
+    2026-08 改口径：折线由单月同比改为 12 个月滚动合计同比，图例名一并改掉 ——
+    只改数不改名，读者会拿一条已被平滑过的线当单月同比读，那比不改更糟。
+    """
     return {'name': name, 'color': 'GOLD', 'yfmt': 'pct0', 'values': L(yoy_line(s_full, win))}
 
 
@@ -293,6 +350,21 @@ def main():
     def col(name, win):
         return df[name].reindex(win).values.astype(float)
 
+    # ── 同比口径的实测：数字全部现算，一个都不写死（见上方 ROLL 那一段的理由）──
+    CALIB = caliber_stats(df['adv_us_options_kcontracts'])      # 美国期权 ADV：全页的口径样本
+    # 每张改口径的图都要自己说清新口径与理由；完整实测放在 notes 里，这里给一句压缩版。
+    YOY_CAL = (f'<b>次轴 = 12 个月滚动合计同比</b>（最近 12 个月合计 ÷ 上一个 12 个月合计 − 1），'
+               f'不是单月同比。理由是本页自己的实测：美国期权 ADV 的单月同比在 {CALIB["n"]} 个'
+               f'可比月里有 {CALIB["n_opp"]} 个月（{CALIB["n_opp"] / CALIB["n"] * 100:.0f}%）'
+               f'与滚动口径<b>符号相反</b>，相邻月最大跳变 {CALIB["jump_m"]:.0f}pp'
+               f'（滚动口径 {CALIB["jump_r"]:.0f}pp）。折线要等 24 个月才有第一个点'
+               f'（12 个月填窗 + 12 个月比较），窗口左端因此可能没有线。')
+
+    def ttm(v, s):
+        """图注里的 TTM 同比读数：取该序列在月份 v 上的滚动同比（缺失给 '—'）。"""
+        x = roll_yoy(s).get(v, np.nan)
+        return pctf(x / 100.0) if np.isfinite(x) else '—'
+
     ex = []
 
     # ── Exhibit 2：Total U.S. options ADV（gsx.lvl_bar → gs_bar）──
@@ -301,13 +373,18 @@ def main():
     ex.append({
         'n': 2, 'kind': 'gs_bar', 'fmt': 'f1', 'xlabels': XL25,
         'title': 'Total U.S. options ADV',
-        'ylab': 'mn contracts / day', 'ylab2': '% y/y', 'legend': 'Monthly',
+        'ylab': 'mn contracts / day', 'ylab2': '% y/y, 12M roll.', 'legend': 'Monthly',
         'values': L(adv),
         'yoy': yoy_rhs(df['adv_us_options_mn'], W25),
-        'note': f'近 {WIN_LONG} 个月窗口，与原 deck 一致。金色折线 = 次轴同比'
-                f'（与原 deck 相同；原来这里画的是 12 个月滚动均线，那只是把柱子再平滑'
-                f'一遍、不带新信息）。{mlab(LATEST)} {comma(adv[-1], 1)} mn/日，'
-                f'同比 {pctf(yoy(adv_all))}、环比 {pp(mom(adv_all))}。',
+        # 原句写的是「金色折线 = 次轴同比，与原 deck 相同」。改口径之后那句不成立：
+        # deck 画的是单月同比，本页画 12 个月滚动合计同比。图注若还说「与 deck 相同」，
+        # 读者会按 deck 的口径去读一条已经不同的线。
+        'note': f'近 {WIN_LONG} 个月窗口，与原 deck 一致。次轴金色折线是同比而不是 12 个月'
+                f'滚动均线（均线只是把柱子再平滑一遍、不带新信息），这一点与 deck 一致；'
+                f'但<b>口径与 deck 有意不同</b> —— deck 画单月同比，本页画 12 个月滚动'
+                f'合计同比。{mlab(LATEST)} {comma(adv[-1], 1)} mn/日，'
+                f'TTM 同比 {ttm(LATEST, df["adv_us_options_mn"])}'
+                f'（单月同比 {pctf(yoy(adv_all))}、环比 {pp(mom(adv_all))}）。' + YOY_CAL,
     })
 
     # ── Exhibit 3：Revenue per contract by book（gsx.multi_line → lines_endlabels）──
@@ -347,7 +424,7 @@ def main():
         # 表格视图会自动回到 usd2（charts.js 的 PRECISE 映射），两位小数一点即得。
         'n': 4, 'kind': 'gs_bar', 'fmt': 'usd1', 'xlabels': XL25R,
         'title': 'Implied options transaction revenue per day',
-        'ylab': '$mn / day', 'ylab2': '% y/y', 'legend': 'Monthly',
+        'ylab': '$mn / day', 'ylab2': '% y/y, 12M roll.', 'legend': 'Monthly',
         'values': L(rev),
         'yoy': yoy_rhs(df['opt_rev_day_usdmn'], W25R),
         'src_extra': 'Current-month ADV x three-month rolling RPC. Cboe is the only name in '
@@ -357,10 +434,12 @@ def main():
         'note': f'<b>推导值，非公司披露。</b>= 当月美国期权 ADV（k 张/日）× 同月三个月滚动 RPC'
                 f'（$/张）÷ 1,000 → $mn/日。假设：RPC 的三个月滚动口径可以直接套在单月成交量上；'
                 f'因 RPC 已被平滑，本图的月度波动主要来自量而不是价。'
-                f'{mlab(LATEST_RPC)} 为 {comma(rev[-1], 2, "$")}mn/日，同比 {pctf(yoy(rev_all))}、'
-                f'环比 {pp(mom(rev_all))}。金色折线 = 次轴同比（同原 deck）。'
+                f'{mlab(LATEST_RPC)} 为 {comma(rev[-1], 2, "$")}mn/日，'
+                f'TTM 同比 {ttm(LATEST_RPC, df["opt_rev_day_usdmn"])}'
+                f'（单月同比 {pctf(yoy(rev_all))}、环比 {pp(mom(rev_all))}）。'
                 f'柱顶标签取 1 位小数（{WIN_LONG} 根柱塞进半栏，'
-                f'2 位小数会压字），点右上角「表格」可看 2 位小数。',
+                f'2 位小数会压字），点右上角「表格」可看 2 位小数。'
+                f'这条收入线的量与价各贡献多少，见 Exhibit {EX_DECOMP} 的分解。' + YOY_CAL,
     })
 
     # ── Exhibit 5：U.S. options mix（gsx.stack_share → stacked_dual）──
@@ -484,11 +563,20 @@ def main():
     if n_in_last < 3:
         exq['partial_months'] = n_in_last
         exq['src_extra'] = ('Latest bar is quarter-to-date and not comparable to full quarters')
-    exq['note'] = (f'柱为季内**月度 ADV 的均值**（不是季度合计）—— ADV 本身已是「每日」口径，'
+    # notes 走 innerHTML，markdown 的 ** ** 不会被渲染，只会原样印出四个星号（见本文件
+    # 第 696 行同一条注释）—— 强调一律用 <b>。
+    exq['note'] = (f'柱为季内<b>月度 ADV 的均值</b>（不是季度合计）—— ADV 本身已是「每日」口径，'
                    f'加总没有意义。y/y 与上年同季比。'
                    f'最新季 {qi[-1]} 已含 {n_in_last} 个月'
                    + ('（完整季）' if n_in_last >= 3 else '，为季度至今、与完整季不可比')
-                   + f'，{qv[-1]:.1f} mn/日，同比 {qyoy[-1]:+.0f}%。')
+                   + f'，{qv[-1]:.1f} mn/日，同比 {qyoy[-1]:+.0f}%。'
+                   # 季度柱的右轴是本页的**第三种**同比口径。柱是季度的，线就必须与柱同期，
+                   # 改成 12 个月滚动会让线与柱指的不是同一段时间 —— 那比口径不统一更糟。
+                   + f'<b>右轴的同比口径与其余各图不同</b>：这里是「本季 3 个月 vs 上年同季 3 个月」，'
+                     f'既不是单月同比、也不是各 gs_bar 次轴的 12 个月滚动合计同比。'
+                     f'柱是季度口径，线只能与柱同期，否则线讲的是另一段时间。'
+                     f'三个月已经压掉一部分单月毛刺，但仍比 12 个月滚动口径敏感得多，'
+                     f'跨图比高低没有意义。')
     ex.append(exq)
 
     # ── Exhibit 9a/9b：Non-options franchises（gsx.multi_line → 拆成两张单序列图）──
@@ -526,8 +614,18 @@ def main():
                     f'序列（同一个 {WIN_LONG} 个月窗口），不再重画。'
                     f'{XL25[0]} {comma(vv[0], 2 if ff == "f2" else 1)} → '
                     f'{XL25[-1]} {comma(vv[-1], 2 if ff == "f2" else 1)}（{unit}），'
-                    f'同比 {pctf(yoy(df[cname].values.astype(float)))}、'
-                    f'环比 {pp(mom(df[cname].values.astype(float)))}。',
+                    f'TTM 同比 {ttm(LATEST, df[cname])}'
+                    f'（单月同比 {pctf(yoy(df[cname].values.astype(float)))}、'
+                    f'环比 {pp(mom(df[cname].values.astype(float)))}）。'
+                    # 9a 是**美国**市场的成交股数，Exhibit 11 是**欧洲**市场的成交金额。
+                    # 两者看着像一对「数量 + 金额」，其实分属两个法域、两套市场，相除得到的
+                    # 「均价」不对应任何真实价格 —— 所以本页不做美股的量价分解，见 notes。
+                    + ('<b>本页不拿它去除欧股 ADNV（Exhibit 11）凑均价</b>：那是美国市场的'
+                       '股数除以欧洲市场的金额，跨法域跨市场，商没有经济含义。'
+                       'Cboe 不披露美股撮合的成交<b>金额</b>，所以美股的量价分解在本页'
+                       '<b>不具备数据条件</b>，本页也没有假装做到；能做的是期权的'
+                       f'「收入 = 张数 × 费率」分解，见 Exhibit {EX_DECOMP}。'
+                       if cname == 'adv_us_equities_matched_shares_bn' else ''),
         })
 
     # ── Exhibit 10：Futures (CFE) ADV（gsx.lvl_bar, show_mom=True → gs_bar）──
@@ -536,18 +634,19 @@ def main():
     ex.append({
         'n': 10, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': XL25,
         'title': 'Futures (CFE) ADV',
-        'ylab': 'k contracts / day', 'ylab2': '% y/y', 'legend': 'Monthly',
+        'ylab': 'k contracts / day', 'ylab2': '% y/y, 12M roll.', 'legend': 'Monthly',
         'values': L(fut),
         'yoy': yoy_rhs(df['adv_futures_kcontracts'], W25),
-        'note': f'CFE（Cboe Futures Exchange）合计，主体是 VIX 期货。金色折线 = 次轴同比'
-                f'（同原 deck）。本图的同比在 ±36% 之间跨零，柱又全为正，两轴零点若强行'
+        'note': f'CFE（Cboe Futures Exchange）合计，主体是 VIX 期货。'
+                f'本图的同比跨零、柱又全为正，两轴零点若强行'
                 f'对齐会浪费掉约一半画布，引擎因此改成两轴各自缩放并在图内左上角标出'
                 f'「左右轴零点不同高」——<b>柱与折线的零线不在同一高度，不要按同一条水平线读</b>。'
                 f'原 deck 对本图额外开了环比气泡（show_mom=True）：同比已经饱和时，'
                 f'月度动能只能从环比看 —— 网页版的环比气泡带一条指向第 12 根柱的箭头'
                 f'（为 13 个月窗口写死的），在本图 {WIN_LONG} 根柱的窗口下会指错柱，故不画，'
                 f'环比改写在这里。{mlab(LATEST)} {comma(fut[-1], 0)}k 张/日，'
-                f'同比 {pctf(yoy(fut_all))}、环比 {pp(mom(fut_all))}。',
+                f'TTM 同比 {ttm(LATEST, df["adv_futures_kcontracts"])}'
+                f'（单月同比 {pctf(yoy(fut_all))}、环比 {pp(mom(fut_all))}）。' + YOY_CAL,
     })
 
     # ── Exhibit 11：European equities ADNV（gsx.lvl_bar → gs_bar）──
@@ -555,14 +654,20 @@ def main():
     ex.append({
         'n': 11, 'kind': 'gs_bar', 'fmt': 'f1', 'xlabels': XL25,
         'title': 'European equities ADNV',
-        'ylab': 'EUR bn / day', 'ylab2': '% y/y', 'legend': 'Monthly',
+        'ylab': 'EUR bn / day', 'ylab2': '% y/y, 12M roll.', 'legend': 'Monthly',
         'values': L(eu_eq),
         'yoy': yoy_rhs(df['adv_eu_equities_adnv_eurbn'], W25),
         'note': f'Cboe Europe 的平均每日成交金额（ADNV，欧元计价，非合约张数）。'
-                f'金色折线 = 次轴同比（同原 deck）。'
-                f'{mlab(LATEST)} €{eu_eq[-1]:.1f} bn/日，同比 {pctf(yoy(eu_all))}、'
-                f'环比 {pp(mom(eu_all))}。原 deck 的 Exhibit 9 里那条欧股线就是本图的序列'
-                f'（同一个 {WIN_LONG} 个月窗口），拆图时没有再单画一张。',
+                f'{mlab(LATEST)} €{eu_eq[-1]:.1f} bn/日，'
+                f'TTM 同比 {ttm(LATEST, df["adv_eu_equities_adnv_eurbn"])}'
+                f'（单月同比 {pctf(yoy(eu_all))}、环比 {pp(mom(eu_all))}）。'
+                f'原 deck 的 Exhibit 9 里那条欧股线就是本图的序列'
+                f'（同一个 {WIN_LONG} 个月窗口），拆图时没有再单画一张。'
+                # 这条是**成交金额**，本页另有一条**成交股数**（Exhibit 9a，美股撮合）。
+                # 两者看着像一对「金额 + 数量」，其实分属欧洲与美国两个法域、两套市场，
+                # 相除得到的「均价」没有任何经济含义 —— 本页明写禁止，见 notes 的口径条。
+                f'<b>不要拿它去除 Exhibit 9a 的成交股数</b>：那是欧洲市场的金额除以美国市场的'
+                f'股数，跨法域跨市场，商出来的「均价」不对应任何真实价格。' + YOY_CAL,
     })
 
     # ── Exhibit 12：Index options share heat matrix（gsx.heat_matrix → heat_matrix，通栏）──
@@ -594,7 +699,137 @@ def main():
                 f'{np.nanmean([v for v in M[-1] if v is not None]):.0f}%。',
     })
 
-    # ── Exhibit 13：核对表（官方原始单位，不做任何换算）──
+    # ══ Exhibit EX_DECOMP：期权收入增长的「量 / 费率」分解（**不是成交额的量价分解**）══
+    # 恒等式：期权交易收入 ≡ 成交张数 × 每张收入(RPC)。这是 Cboe 页上唯一做得成的分解 ——
+    # 两个因子都是公司**按月官方披露**的，本页不必假设任何一个季度费率。
+    #
+    # 但它分的是**收入**，不是成交额。RPC 是交易所向客户收的每张费用，不是标的资产的成交
+    # 价格；把它和别的页上真正的「成交额 = 成交量 × 均价」并读，会得出完全错误的结论。
+    # 标题里写死「a revenue split」，图注第一句也写死，这一点不许含糊。
+    #
+    # 为什么美股/欧股那两块做不了：cboe.csv 里的成交**金额**列是欧洲的
+    # （adv_eu_equities_adnv_eurbn），成交**股数**列是美国的
+    # （adv_us_equities_matched_shares_bn）—— 跨法域跨市场，相除得到的「均价」不对应
+    # 任何真实价格。宁可不做，也不拿口径不一致的分子分母凑一个均价。
+    #
+    # 四条口径纪律（与 CME 页同一套，跨页可比）：
+    # （1）均价用「合计 ÷ 合计」（TTM 收入 ÷ TTM 张数），不是「逐月 RPC 的均值」——
+    #      后者对每月等权而各月量差着一倍以上，且均值之积 ≠ 积之均值，分解会不闭合。
+    # （2）端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，不做点对点。
+    # （3）图上用**对数分解**：ln(R1/R0) = ln(Q1/Q0) + ln(P1/P0)，天然可加、对称，
+    #      不必选「交叉项归谁」。算术分解必须选约定，交叉项整段压进费率那一块；量与费率
+    #      方向对冲的年份，交叉项能大到净增长的数倍，那时算术堆叠柱画出来就是错的。
+    #      算术版仍然照算，两者的差写进图注。
+    # （4）单位是**对数点**（100 × ln），不是百分点。不把对数贡献按总增长等比缩放回百分点，
+    #      是因为那要除以 ln(R1/R0)，净增长近零的月份分母也近零，同一个病又回来了。
+    _q = roll_mean(df['adv_us_options_kcontracts'])          # TTM 平均 ADV（千张/日）
+    _r = roll_mean(df['opt_rev_day_usdmn'])                  # TTM 平均收入（$mn/日）
+    _p = _r / _q * 1000.0                                    # TTM 混合 RPC（$/张）= 合计÷合计
+    _dec = pd.concat({
+        'tot': np.log(_r / _r.shift(ROLL)) * 100,
+        'vol': np.log(_q / _q.shift(ROLL)) * 100,
+        'rate': np.log(_p / _p.shift(ROLL)) * 100,
+        'arith_tot': (_r / _r.shift(ROLL) - 1) * 100,
+        'arith_vol': (_q / _q.shift(ROLL) - 1) * 100,
+        'arith_rate': (_p / _p.shift(ROLL) - 1) * (_q / _q.shift(ROLL)) * 100,
+    }, axis=1).dropna()
+
+    # 硬护栏：分解是恒等式，不是近似。对不上说明某处 shift/口径写错了，必须停在这里 ——
+    # 「两块加起来不等于总数」的分解图，读者是看不出来的。两种分解各查各的。
+    for _tag, _a, _b, _t in (('对数', 'vol', 'rate', 'tot'),
+                             ('算术', 'arith_vol', 'arith_rate', 'arith_tot')):
+        _res = float((_dec[_a] + _dec[_b] - _dec[_t]).abs().max())
+        if not np.isfinite(_res) or _res > 1e-9:
+            raise SystemExit(f'Exhibit {EX_DECOMP} {_tag}分解不闭合：'
+                             f'max|量+价−总| = {_res:.3e}（上限 1e-9）')
+
+    _lgap = float((_dec['vol'] - _dec['arith_vol']).abs().max())
+    _lgap_at = (_dec['vol'] - _dec['arith_vol']).abs().idxmax()
+    # 「算术分解里交叉项占净增长多大」正是不用算术分解的理由，数字现算，不照抄别页
+    _cross = _dec['arith_rate'] - (_p / _p.shift(ROLL) - 1).reindex(_dec.index) * 100
+    _csh = (_cross / _dec['arith_tot']).abs().replace([np.inf, -np.inf], np.nan).dropna() * 100
+    CROSS_MED, CROSS_MAX = float(_csh.median()), float(_csh.max())
+
+    _DW = _dec.index[-WIN_SHORT:]
+    _dw = _dec.loc[_DW]
+    ex.append({
+        'n': EX_DECOMP, 'kind': 'bridge_bar', 'fmt': 'f1',
+        'xlabels': [mlab(p) for p in _DW], 'xrot': 0,
+        'title': 'Implied options revenue growth split: contracts vs. RPC '
+                 '(a revenue split, NOT a turnover split)',
+        'ylab': 'log points of TTM revenue growth',
+        'stacks': [
+            {'name': 'Contracts (ADV)', 'color': 'NAVY', 'values': L(_dw['vol'].values)},
+            {'name': 'Revenue per contract (RPC)', 'color': 'GOLD', 'values': L(_dw['rate'].values)},
+        ],
+        'net': {'name': 'TTM implied revenue growth', 'values': L(_dw['tot'].values)},
+        'net_color': 'INK',
+        'src_extra': 'Identity: options transaction revenue = contracts x revenue per contract. '
+                     'Both legs are officially disclosed monthly — Cboe is the only name in this '
+                     'set where that is true. This decomposes REVENUE, not notional turnover',
+        'note': (f'<b>这是收入的量费分解，不是成交额的量价分解。</b>恒等式是「隐含期权交易收入 = '
+                 f'成交张数 × 每张收入(RPC)」。RPC 是 Cboe 向客户收的<b>每张费用</b>，'
+                 f'不是标的资产的成交价格 —— 不要和别的页上真正的「成交额 = 成交量 × 均价」'
+                 f'并读。Cboe 是本站清单里唯一把「量」与「每张收入」都按月官方披露的标的，'
+                 f'所以这张分解不必假设任何季度费率。'
+                 f' <b>美股与欧股那两块做不了</b>：本页的成交<b>金额</b>列是欧洲的'
+                 f'（Exhibit 11），成交<b>股数</b>列是美国的（Exhibit 9a），跨法域跨市场，'
+                 f'相除得到的「均价」不对应任何真实价格 —— <b>不具备数据条件</b>，本页不做。'
+                 f' <b>口径</b>：端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，'
+                 f'与本页各图次轴同比一致，不做点对点；混合 RPC 用「TTM 收入 ÷ TTM 张数」，'
+                 f'不是逐月 RPC 的简单平均。'
+                 f' <b>用对数分解</b>：ln(收入比) = ln(张数比) + ln(RPC 比)，天然可加、对称，'
+                 f'不必选「交叉项归谁」；算术分解要把交叉项整段压进费率那一块，'
+                 f'本页实测交叉项占净增长中位 {CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%。'
+                 f'两种分解的「量」这一块最大相差 {_lgap:.1f}（出现在 {mlab(_lgap_at)}）。'
+                 f' <b>单位是对数点</b>（100 × ln），不是百分点：小幅变化时两者近似相等，'
+                 f'大幅时不等。{mlab(_DW[-1])}：张数 {float(_dw["vol"].iloc[-1]):+.1f}、'
+                 f'RPC {float(_dw["rate"].iloc[-1]):+.1f}，合计 '
+                 f'{float(_dw["tot"].iloc[-1]):+.1f} 对数点，对应算术总增长 '
+                 f'{pctf(float(_dw["arith_tot"].iloc[-1]) / 100.0, 1)}。'
+                 f' <b>RPC 那一块读的是「结构 + 定价」</b>：自有指数期权的 RPC 约为多重挂牌的 '
+                 f'{ratio:.0f} 倍（Exhibit 3），所以总量不变、只要 mix 位移（Exhibit 5 / 12），'
+                 f'这一段就会动，它不是一个纯粹的价格变量。'
+                 f'另：RPC 本身是三个月滚动平均、滞后一个月发布，本图窗口因此止于 '
+                 f'{mlab(LATEST_RPC)}，比成交量图少一个月。'),
+    })
+
+    # ══ Exhibit EX_TTMVOL：量本身（TTM 水平值 + 同源增速曲线）══
+    # 为什么不是「月度 ADV + 滚动同比」——那张图就是 Exhibit 2，再画一遍是把同一份数据在
+    # 同一页上画两次。这里画的是分解图里那个「量」自己的水平值：近 12 个月的平均 ADV。
+    # 好处是柱与次轴的金色线**同源**：线上任一点的增速，就是柱子相对 12 根柱之前的涨幅，
+    # 读者不需要在两张图之间换算口径。窗口以 LATEST 结尾（量比 RPC 多一个月，
+    # 不受 RPC 发布节奏拖累）。
+    _tq = roll_mean(df['adv_us_options_mn']).dropna()
+    _TW = _tq.index[-WIN_SHORT:]
+    _tq_yoy = roll_yoy(df['adv_us_options_mn'])
+    ex.append({
+        'n': EX_TTMVOL, 'kind': 'gs_bar', 'fmt': 'f1',
+        'xlabels': [mlab(p) for p in _TW],
+        'title': 'U.S. options volume, trailing 12-month average',
+        'ylab': 'mn contracts / day, TTM avg', 'ylab2': '% y/y, 12M roll.',
+        'legend': 'Trailing 12-month average ADV',
+        'values': L(_tq.loc[_TW].values),
+        'yoy': {'name': '12M rolling y/y (RHS)', 'color': 'GOLD', 'yfmt': 'pct0',
+                'values': L(_tq_yoy.reindex(_TW).values)},
+        'src_extra': f'The volume leg of Exhibit {EX_DECOMP}, shown as a level',
+        'note': (f'柱 = 截至该月的近 12 个月<b>平均</b> ADV（百万张/日）。ADV 本身已是「每日」'
+                 f'口径，12 个月合计再除以 12 就回到同一单位，所以这里给均值而不是合计 —— '
+                 f'两者的同比逐点严格相等（除以 12 是同一个常数），换算不影响任何结论。'
+                 f'Cboe 不披露每月交易日数，因此本页没有「合计张数」这个口径，'
+                 f'也不去拿别处的交易日数硬凑。'
+                 f'金色线 = 该均值相对上一个 12 个月均值的同比，柱与线<b>同源</b> —— '
+                 f'线上任一点的读数就是这根柱相对 12 根柱之前的涨幅。'
+                 f'与 Exhibit 2 的区别：那张画的是月度 ADV 的水平值（毛刺全在），'
+                 f'本图画的是分解图 Exhibit {EX_DECOMP} 里「量」那一块自己的水平线。'
+                 f'{mlab(_TW[-1])} 为 {float(_tq.loc[_TW[-1]]):.1f} mn/日，'
+                 f'{ttm(_TW[-1], df["adv_us_options_mn"])} y/y。'
+                 f'单月成交量的毛刺在这条 TTM 曲线上看不到，这正是它的用处：'
+                 f'本页单月同比的相邻月最大跳变是 {CALIB["jump_m"]:.0f}pp，'
+                 f'TTM 口径只有 {CALIB["jump_r"]:.0f}pp。'),
+    })
+
+    # ── Exhibit EX_TABLE：核对表（官方原始单位，不做任何换算）──
     TCOLS = [
         ('U.S. options ADV (k)', 'us', 'adv_us_options_kcontracts', 0, ''),
         ('Index options (k)', 'ix', 'adv_index_options_kcontracts', 0, ''),
@@ -618,7 +853,7 @@ def main():
             r[key] = comma(v, dec, money) if np.isfinite(v) else None
         trows.append(r)
     table = {
-        'n': 13,
+        'n': EX_TABLE,
         'title': f'近 {WIN_SHORT} 个月月度指标核对表（官方原始单位，未换算）',
         'idx': '月份',
         'cols': [[c[0], c[1]] for c in TCOLS],
@@ -638,18 +873,22 @@ def main():
     # 两个都写，cme / cboe 原来只写同比，同一套页面口径不一致）。
     # Implied 收入与 RPC 同口径月（滞后一期），月份标记不能省 —— 卡片头写的是 LATEST，
     # 不标月份读者会把它当成最新月的数。
-    headline = (f'美国期权 ADV {adv_l:.1f}mn/日（{pctf(yoy(adv_all))} y/y、'
-                f'{pp(mom(adv_all))} m/m）· '
+    # 抬头是全页曝光最高的一行，而单月同比在本页有约三成的月份与趋势符号相反 ——
+    # 只放单月同比、不给对照，正是最容易被读反的地方。TTM 与单月两个口径都写、都标名。
+    headline = (f'美国期权 ADV {adv_l:.1f}mn/日（TTM {ttm(LATEST, df["adv_us_options_mn"])} y/y；'
+                f'单月 {pctf(yoy(adv_all))} y/y、{pp(mom(adv_all))} m/m）· '
                 f'自有指数期权 {ix_l:.1f}mn/日、占比 {sh_l:.0f}% · '
                 f'美国期权 RPC {comma(rpc_l, 3, "$")}（{mlab(LATEST_RPC)}，三个月滚动）· '
-                f'Implied 期权交易收入 {comma(rev_l, 2, "$")}mn/日（{mlab(LATEST_RPC)}）· '
-                f'CFE 期货 ADV {fut_l:,.0f}k/日（{pctf(yoy(fut_all))} y/y、'
-                f'{pp(mom(fut_all))} m/m）')
+                f'Implied 期权交易收入 {comma(rev_l, 2, "$")}mn/日（{mlab(LATEST_RPC)}，'
+                f'TTM {ttm(LATEST_RPC, df["opt_rev_day_usdmn"])} y/y）· '
+                f'CFE 期货 ADV {fut_l:,.0f}k/日（TTM '
+                f'{ttm(LATEST, df["adv_futures_kcontracts"])} y/y；'
+                f'单月 {pctf(yoy(fut_all))} y/y、{pp(mom(fut_all))} m/m）')
     # 首页卡片把 through_label（=LATEST 月）紧贴这一行渲染，读者会把三个指标一并归到
     # 最新月；RPC 却滞后一期（口径月 = LATEST_RPC）。口径月必须留在卡片上，否则与本页
     # Exhibit 1「最新月 RPC 单元格为空」直接冲突。「三个月滚动」这半句舍在子页 headline
     # 与 notes 里 —— 一并写进来会到 66 字，破 CONTRACT 的 hub_line ≤60 字上限。
-    hub_line = (f'美国期权 ADV {adv_l:.1f}mn/日（{pctf(yoy(adv_all))} y/y）· '
+    hub_line = (f'美国期权 ADV {adv_l:.1f}mn/日（TTM {ttm(LATEST, df["adv_us_options_mn"])} y/y）· '
                 f'指数期权占比 {sh_l:.0f}% · RPC {comma(rpc_l, 3, "$")}'
                 + (f'（{mlab(LATEST_RPC)}）' if LATEST_RPC != LATEST else ''))
 
@@ -689,6 +928,48 @@ def main():
 
         _brk_note,
 
+        # ── 同比口径：本页最容易被读反的一条，放在前面 ──
+        f'<b>同比一律用 12 个月滚动合计，不是单月同比。</b>单月同比把「去年那<b>一个</b>月'
+        f'碰巧是什么样」整个塞进分母，去年同月若是异常低点，今年一个平淡的月份也能印出'
+        f'三位数增速。后果不是噪声大一点，而是<b>方向会反</b>。本页美国期权 ADV 的实测'
+        f'（{CALIB["first"]} – {CALIB["last"]}，{CALIB["n"]} 个两种口径都有值的月份）：'
+        f'单月同比逐月标准差 <b>{CALIB["sd_m"]:.1f}pp</b>、相邻月最大跳变 '
+        f'<b>{CALIB["jump_m"]:.0f}pp</b>（{mlab(CALIB["jump_m_at"])}）；'
+        f'12 个月滚动合计同比标准差 <b>{CALIB["sd_r"]:.1f}pp</b>、最大跳变 '
+        f'<b>{CALIB["jump_r"]:.1f}pp</b>；两者<b>符号相反</b>的月份有 {CALIB["n_opp"]} 个'
+        f'（{CALIB["n_opp"] / CALIB["n"] * 100:.0f}%）'
+        + (('，最近几例：' + '、'.join(
+            f'{mlab(p)}（单月 {r["m"]:+.1f}%／滚动 {r["r"]:+.1f}%）'
+            for p, r in CALIB['opp'].tail(3).iterrows()) + '。')
+           if CALIB['n_opp'] else '。')
+        + f'算法是「最近 12 个月合计 ÷ 上一个 12 个月合计 − 1」；实现上取滚动均值再相比 —— '
+        f'窗口固定 12 个月，除以 12 是同一个常数，两者逐点严格相等，而均值让 ADV / ADNV 类'
+        f'源列的单位保持不变。第一个有值的点要等 24 个月（12 个月填窗 + 12 个月比较），'
+        f'所以窗口左端可能没有折线，那不是缺数。'
+        f'<b>不乘交易日数</b>：Cboe 的月度披露里没有交易日数这一列，本页也不去别处凑一个 —— '
+        f'而 12 个月窗口里交易日效应本来就基本自抵。',
+
+        f'<b>本页有三种同比口径，已逐处点名，不要跨口径比高低。</b>'
+        f'（a）Exhibit 2 / 4 / 10 / 11 的次轴金色折线，以及 Exhibit {EX_DECOMP} / {EX_TTMVOL}：'
+        f'12 个月滚动合计同比；'
+        f'（b）Exhibit 8 的绿线：本季 3 个月 vs 上年同季（柱是季度的，线只能与柱同期）；'
+        f'（c）汇总表（Exhibit 1）的 y/y 列：单月同比 —— 该表三列写死的就是「本月 / 上月 / '
+        f'去年同月」三个具名月份，放滚动值进去与列头自相矛盾，所以保留单月口径并在此点名。'
+        f'各图图注里凡写「单月同比」的读数都同属（c），与折线不是一回事。',
+
+        f'<b>Exhibit {EX_DECOMP} 分的是收入，不是成交额；本页做不了成交额的量价分解。</b>'
+        f'恒等式「期权交易收入 = 成交张数 × 每张收入(RPC)」两边都是公司按月官方披露的，'
+        f'所以这张分解做得成 —— 但 RPC 是交易所向客户收的<b>每张费用</b>，不是标的资产的'
+        f'成交价格，不能与别的页上真正的「成交额 = 成交量 × 均价」并读。'
+        f'而真正的量价分解在本页<b>不具备数据条件</b>：cboe.csv 里的成交<b>金额</b>列是'
+        f'欧洲的（欧股 ADNV，EUR bn/日），成交<b>股数</b>列是美国的（美股撮合，bn 股/日），'
+        f'两者分属不同法域、不同市场、不同货币，相除得到的「均价」不对应任何真实价格，'
+        f'方向与大小都不可知而图上完全看不出来 —— 宁可不做。'
+        f'分解本身是恒等式而非估算：两块相加逐月等于总增长，生成脚本对<b>对数与算术两种</b>'
+        f'分解的残差都设了 1e-9 的硬门槛，超了直接退出、不出图。'
+        f'图上画对数分解，算术分解只进图注 —— 算术版必须把交叉项整段压进 RPC 那一块，'
+        f'本页实测交叉项占净增长中位 {CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%。',
+
         '<b>Implied options transaction revenue（Exhibit 4）是推导值，不是披露值。</b>'
         '= 当月美国期权 ADV × 同月三个月滚动 RPC ÷ 1,000（$mn/日）。Cboe 是本站清单里'
         '唯一官方同时按月披露「量」与「单位价格」的标的，因此不必像其他券商那样假设一个'
@@ -724,10 +1005,11 @@ def main():
         '(4) Exhibit 9 拆成 9a/9b（见上一条）。'
         '除此之外图的顺序、编号、标题、窗口长度与图注均照搬原 deck。',
 
-        '<b>柱图的次轴同比（Exhibit 2 / 4 / 10 / 11）。</b>金色折线是同比，与原 deck 一致；'
-        '这四张图早先画的是 12 个月滚动均线，那只是把柱子再平滑一遍、不带新信息，'
-        '而同比回答的是「相对去年这个月是好是坏」。基数过小（不足序列中位绝对值的 15%）'
-        '或两期异号时该点留空，不硬算一个几百个百分点的假同比。'
+        f'<b>柱图的次轴同比（Exhibit 2 / 4 / 10 / 11 / {EX_TTMVOL}）。</b>'
+        '这些图画的是同比折线而不是 12 个月滚动均线（均线只是把柱子再平滑一遍、不带新信息），'
+        '这一点与原 deck 一致；但<b>口径与 deck 有意不同</b> —— deck 画的是<b>单月</b>同比，'
+        '本页画的是 <b>12 个月滚动合计同比</b>，理由与实测见上面的同比口径条。'
+        '基数近零或两期异号时该点留空，不硬算一个几百个百分点的假同比。'
         '双轴图的规矩是两轴零点画在同一高度，代价过大时引擎改为两轴独立缩放并在图内注明 —— '
         '本页 Exhibit 10 命中这一条，读它的柱与线时不要按同一条零线对齐。',
 
@@ -737,8 +1019,15 @@ def main():
         '说明这一列对该指标没有区分度，留空。'
         + (('本月留空的行：' + '；'.join(f'{lab}（{why}）' for lab, why in _blank_why) + '。')
            if _blank_why else '本月没有留空的行。')
-        + 'm/m 与 y/y 对分母为 0 或两期异号的情形留空。'
-        '末尾核对表（Exhibit 13）保持官方原始单位（k 张/日、bn 股/日、EUR bn/日、$bn/日、$/张），'
+        + '<b>本表的 y/y 是单月同比</b>（本月 ÷ 去年同月 − 1），与各图次轴的 12 个月滚动'
+        '合计同比不是一个口径 —— 本表三列写死的就是「本月 / 上月 / 去年同月」这三个具名月份，'
+        f'滚动值放进来与列头自相矛盾。单月同比有多毛：本页美国期权 ADV 的实测是 '
+        f'{CALIB["n"]} 个可比月里 {CALIB["n_opp"]} 个月与滚动口径符号相反。'
+        f'要判趋势请看各图的次轴金色折线与 Exhibit {EX_TTMVOL}，本表回答的是'
+        '「本月相对上月与去年同月的水平」。'
+        'm/m 与 y/y 对分母为 0 或两期异号的情形留空。'
+        f'末尾核对表（Exhibit {EX_TABLE}）保持官方原始单位'
+        '（k 张/日、bn 股/日、EUR bn/日、$bn/日、$/张），'
         '不做任何换算，便于与公司披露逐条对账；列数较多，在窄屏上需要左右滚动。',
     ]
 

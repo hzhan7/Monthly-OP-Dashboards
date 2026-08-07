@@ -4,7 +4,7 @@
 内容全部从已生成的 data/<t>.js 里读回来（数据月份、一行数据条），不重算任何数值：
 首页上的数字如果是首页自己算的，迟早会与子页对不上而没人发现。
 
-两条刻意的设计：
+三条刻意的设计：
 
 1. **payload 里不写任何日期。** roster.js 在 data/ 下，而 monthly_run 判断「数据是否
    真的变了」是按忽略首行的正文比较。构建日期一旦进 payload，正文就天天不同，
@@ -14,6 +14,11 @@
 2. **红点由浏览器按当天算，不由构建时算。** 「几号该发」（DUE）是口径知识，写在
    Python 侧；但「今天有没有超期」必须用**看页面的那一刻**的日期。若在构建时算死，
    这套东西哪天停跑了，页面会永远显示一片绿 —— 恰恰在最该报警的时候不报警。
+
+3. **导航排成几行由这里定，不交给 CSS 自动折行。** 每个 group 带一个 `row`，
+   assets/page.js 照它把导航铺成几条独立的行。交易所从 3 家扩到 12 家之后，
+   靠 `flex-wrap` 折行的断点会随窗口宽度乱跳，谁跟谁一组就读不出来了
+   —— 分组标签还在，分组信息没了（详见 GROUPS 的注释）。
 """
 import datetime
 import json
@@ -45,6 +50,25 @@ LAG = {
     'spgi': (16, 46),    # 次月约 15 日；季末月 14-41 天不等
     'axp':  (16, 16),    # 8-K 每月 15 日前后，撞周末顺延
     'msci': (17, 17),    # 次月中旬
+    # ── 9 家新增交易所（2026-08 接入）—— 一家一行，删掉一家就删掉它这一行 ──────
+    # 数值取自各 fetch/<t>.py docstring 的「发布节奏」实测统计，不是公司承诺。
+    # ⚠ **LAG 要跟着「哪条腿决定这一页的 data_through」走，不是跟着最快那条腿走。**
+    #    多源的四家（ndaq / tmx / db1 / miax）由 build/specs/<t>.py 的 headline 列
+    #    决定 data_through；拿快腿的日子当 LAG，红点会在慢腿到达之前每月假红几天。
+    'db1':  (5, 5),      # 头条是 Eurex 快腿，次月 1-5 日（Clearstream 等慢腿在 slow_cols 里）
+    'ice':  (6, 6),      # 次月第 3 个美股交易日；124 期实测落在 3-6 号，最晚 6 号无例外
+    'tmx':  (6, 6),      # 头条是 MX 腿，次月第 1-4 个工作日（2026 年 7 期实测日历第 1-4 天）
+    'miax': (8, 8),      # 次月第 3-5 个工作日；4 期实测日历第 3/5/5/7 天，最坏排列落到第 8 天
+    'jpx':  (8, 8),      # 每月第 5 个营业日；1 号撞周六 + 假期时最晚落在 8 号
+    'asx':  (8, 8),      # 次月第 3-8 个日历日，众数第 5-6；财年 6 月末**没有**季末月例外
+    'enx':  (13, 13),    # 90 期逐月实测第 3-13 天、中位第 7；最晚 2024-04 数据 → 2024-05-13
+    'sgx':  (13, 13),    # 95 期实测中位第 9 天；13 覆盖到实测那一档的最晚值
+    # NDAQ 的两条腿差一个多星期，而 build/specs/ndaq.py 把头条放在**慢腿**上：
+    # share_us_cash_matched_* 来自 Monthly Market Activity（官方自述次月第 10 个工作日，
+    # 实测 2026-06 数据 → 2026-07-13）。IR 快腿次月第 2-6 天就出，但它填的不是头条列，
+    # 不推进 data_through —— 照快腿填 (6, 9) 会让 NDAQ 每个月假红 2-5 天。
+    # 16 = 第 10 个工作日在最坏排列（月末撞周五 + 中间一个假期）下的日历日上界。
+    'ndaq': (16, 16),
     # LPLA 的季末月不是「随季报」——fetch/lpla.py 只认 Historical File，**明确不从季报推算**
     # （季报只给季度合计，倒挤 NNA 有 ±0.1 误差，8 个季度里 6 个对不上）。而季末月的官方原值
     # 要等**下一个月**的 Historical File 才出现，所以比常规月整整晚一个发布周期：
@@ -70,17 +94,66 @@ META = {
     'spgi': ('SPGI', 'S&P Global', '次月约 15 日；季末月随当季季报'),
     'axp': ('AXP', 'American Express', '次月约 15 日（8-K）'),
     'tsm': ('TSM', 'TSMC 2330.TW', '次月 10 日前'),
+    # 9 家新增交易所 —— 一家一行，cadence 与上面 LAG 的实测统计同源
+    'ice':  ('ICE', 'Intercontinental Exchange', '次月第 3 个美股交易日'),
+    'ndaq': ('NDAQ', 'Nasdaq', '份额腿次月第 10 个工作日（IR 腿第 2-6 天）'),
+    'miax': ('MIAX', 'Miami International Holdings', '次月第 3-5 个工作日'),
+    'tmx':  ('TMX', 'TMX Group', '次月第 1-4 个工作日（MX 腿）'),
+    'enx':  ('ENX', 'Euronext', '次月第 3-13 天，中位第 7'),
+    'db1':  ('DB1', 'Deutsche Börse', '次月 1-5 日（Eurex 腿）'),
+    'jpx':  ('JPX', 'Japan Exchange Group', '次月第 5 个营业日'),
+    'sgx':  ('SGX', 'Singapore Exchange', '次月第 6-13 天，中位第 9'),
+    'asx':  ('ASX', 'ASX Limited', '次月第 3-8 天，众数第 5-6'),
     'exchanges': ('交易所组', 'CME / Cboe / HKEX', '成员齐了才生成'),
     'wealth': ('财富组', 'SCHW / LPLA / IBKR / HOOD', '成员齐了才生成'),
+    'exchanges12': ('12 家总览', '12 家交易所 · 定基名义额', '成员齐了才生成'),
+    'exchanges-na': ('北美', 'ICE / Cboe / MIAX / Nasdaq（TMX 对照）', '成员齐了才生成'),
+    'exchanges-eu': ('欧洲', 'Euronext / Cboe Europe / Deutsche Börse', '成员齐了才生成'),
+    'exchanges-apac': ('亚太', 'HKEX / JPX / SGX / ASX', '成员齐了才生成'),
+    'exchanges-products': ('标的轴', '利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期',
+                           '成员齐了才生成'),
 }
 
+# 12 家交易所，**一行一条**。按地理排：北美 6 → 欧洲 2 → 亚太 4，
+# 与三张区域横截面页（exchanges-na / -eu / -apac）的分组读法一致。
+# 删掉一家 = 删掉这里这一行 + 另外四样东西，完整清单见 docs/CRON_WIRING.md。
+EXCH = [
+    'cme',     # 美国    CME Group
+    'cboe',    # 美国    Cboe Global Markets
+    'ice',     # 美国    Intercontinental Exchange（含 NYSE）
+    'ndaq',    # 美国    Nasdaq
+    'miax',    # 美国    Miami International Holdings
+    'tmx',     # 加拿大  TMX Group（TSX + Montréal Exchange）
+    'enx',     # 欧洲    Euronext
+    'db1',     # 欧洲    Deutsche Börse（Eurex + FWB + Clearstream）
+    'hkex',    # 亚太    香港交易所 0388
+    'jpx',     # 亚太    Japan Exchange Group
+    'sgx',     # 亚太    Singapore Exchange
+    'asx',     # 亚太    ASX Limited
+]
+
+# (key, nav_row, 标签, 成员)
+#
+# `nav_row` 决定顶部导航把这一组排在**第几行**；同一行号的组按本表先后排在同一行。
+# **交易所独占第 2 行**是用户明确要求的，理由不是审美：这一组从 3 家扩到 12 家之后，
+# 与别的组挤在同一条 flex 里会折成三四行，而折行位置随窗口宽度变 —— 谁跟谁一组
+# 就完全读不出来了，导航的分组信息等于白给。给它单独一行，12 个 ticker 永远整齐成排。
+#
+# 本表同时是**首页卡片**的分组顺序（首页忽略 nav_row，见 index.html）。两处共用一份
+# 清单是刻意的：分成两份的话，加一家页面时必然只改到其中一处。
 GROUPS = [
-    ('broker', '券商与财富管理', ['ibkr', 'schw', 'lpla', 'hood']),
-    ('exch', '交易所', ['cme', 'cboe', 'hkex']),
-    ('data', '数据与指数', ['msci', 'spgi']),
-    ('cons', '消费与信贷', ['cost', 'axp']),
-    ('semi', '半导体', ['tsm']),
-    ('cross', '横截面', ['exchanges', 'wealth']),
+    ('broker', 1, '券商与财富管理', ['ibkr', 'schw', 'lpla', 'hood']),
+    ('exch', 2, '交易所', EXCH),
+    ('data', 1, '数据与指数', ['msci', 'spgi']),
+    ('cons', 1, '消费与信贷', ['cost', 'axp']),
+    ('semi', 1, '半导体', ['tsm']),
+    # 横截面页也独占一行（第 3 行）：6 张页跟在半导体后面同样会把第 1 行撑破。
+    # （原本这里还有一个 exchanges-intl 欧亚合页，是 exchanges-eu / -apac 拆分前的旧版。
+    #   2026-08-06 已删除，实测的删除步骤见 docs/DELIVERY.md §4.4。）
+    ('cross', 3, '横截面', ['exchanges12', 'exchanges-na', 'exchanges-eu',
+                            'exchanges-apac',
+                            'exchanges-products',
+                            'exchanges', 'wealth']),
 ]
 
 
@@ -97,14 +170,20 @@ def read(t):
 def main():
     today = datetime.date.today()
     groups, missing = [], []
-    for key, label, tickers in GROUPS:
+    for key, nav_row, label, tickers in GROUPS:
         items = []
         for t in tickers:
             d = read(t)
             if d is None:
                 missing.append(t)
                 continue
-            code, name, cadence = META[t]
+            meta = META.get(t)
+            if meta is None:
+                # 删一家时只删了 META 那一行、忘了 GROUPS 这一行的典型症状。
+                # 裸 KeyError 只会打印一个 'sgx'，看不出该去哪儿补，所以在这里说清楚。
+                raise KeyError(f'META 里没有 {t!r} —— GROUPS 与 META 必须同增同删'
+                               f'（删一家的完整清单见 docs/CRON_WIRING.md）')
+            code, name, cadence = meta
             lag = LAG.get(t)
             items.append({
                 'ticker': t, 'label': code, 'name': name, 'cadence': cadence,
@@ -115,7 +194,8 @@ def main():
                 'headline': d.get('hub_line') or d.get('headline', '')[:110],
             })
         if items:
-            groups.append({'key': key, 'label': label, 'items': items})
+            # row 给顶部导航分行用（assets/page.js 的 nav()）；首页 index.html 忽略它。
+            groups.append({'key': key, 'row': nav_row, 'label': label, 'items': items})
 
     payload = {
         'grace': GRACE,

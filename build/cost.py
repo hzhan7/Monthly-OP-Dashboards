@@ -28,6 +28,7 @@ import os
 import numpy as np
 import pandas as pd
 
+import axisfmt
 import payload_guard
 import pctile                      # 3Y %ile 的唯一实现，本文件不再自己写分位判据
 
@@ -609,7 +610,11 @@ def main():
         'xlabels': tail13,
         'xlabels_long': [mlab(p) for p in df.index],
         'summary': summary,
-        'exhibits': ex,
+        # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+        # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+        # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
+        # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
+        'exhibits': axisfmt.fix_all(ex),
         'table': table,
         'notes': NOTES,
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '

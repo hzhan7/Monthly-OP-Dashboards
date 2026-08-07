@@ -1,0 +1,46 @@
+<meta charset="utf-8">
+<title>qa-geom-one</title>
+<body>
+<pre id="out">loading</pre>
+<script>
+/* qa_geom.html 的单页版：?page=tmx 只量一页，并把**每张** svg 的越界像素数都打出来
+   （母版只在 >6px 时才报，定位单张图的修复前后差值时看不到 0 与 3px 的区别）。 */
+var P = (location.search.match(/page=([\w-]+)/) || [])[1] || 'tmx';
+var lines = [];
+function ttlOf(svg) {
+  var host = svg.closest('.card') || svg.parentElement;
+  var t = host ? (host.querySelector('.exh-title,h3,h4,.title') || {}).textContent : '';
+  return (t || '').trim().slice(0, 70);
+}
+function scan(doc) {
+  var svgs = doc.querySelectorAll('svg');
+  lines.push('svg count = ' + svgs.length);
+  for (var c = 0; c < svgs.length; c++) {
+    var svg = svgs[c], sr = svg.getBoundingClientRect();
+    var over = 0, worst = '', nonFinite = 0;
+    svg.querySelectorAll('path,rect,circle,line,text').forEach(function (n) {
+      ['x','y','x1','x2','y1','y2','width','height','cx','cy','d'].forEach(function (a) {
+        var v = n.getAttribute(a);
+        if (v != null && /NaN|Infinity/.test(v)) nonFinite++;
+      });
+      var b = n.getBoundingClientRect();
+      if (!b || (!b.width && !b.height)) return;
+      var d = Math.max(0, b.bottom - sr.bottom, sr.top - b.top, b.right - sr.right, sr.left - b.left);
+      if (d > over) { over = d; worst = n.tagName + (n.textContent ? ' "' + n.textContent.slice(0, 20) + '"' : ''); }
+    });
+    lines.push('svg#' + c + '  over=' + over.toFixed(1) + 'px  nonFinite=' + nonFinite +
+               '  ' + worst + '  :: ' + ttlOf(svg));
+  }
+}
+var f = document.createElement('iframe');
+f.style.width = '1440px'; f.style.height = '900px';
+f.src = '/' + P + '/';
+f.onload = function () {
+  setTimeout(function () {
+    try { scan(f.contentDocument); } catch (e) { lines.push('ERR ' + e); }
+    document.getElementById('out').textContent = P + '\n' + lines.join('\n');
+  }, 2500);
+};
+document.body.appendChild(f);
+</script>
+</body>

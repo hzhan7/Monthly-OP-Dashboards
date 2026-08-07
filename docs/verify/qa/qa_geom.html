@@ -1,0 +1,67 @@
+<meta charset="utf-8">
+<title>qa-geom</title>
+<body>
+<pre id="out">loading</pre>
+<script>
+var PAGES = ['ice','ndaq','miax','enx','db1','jpx','tmx','asx','sgx',
+             'exchanges-na','exchanges-eu','exchanges-apac'];
+var lines = [];
+function ttlOf(svg) {
+  var host = svg.closest('.card') || svg.parentElement;
+  var t = host ? (host.querySelector('.exh-title,h3,h4,.title') || {}).textContent : '';
+  return (t || '').trim().slice(0, 56);
+}
+function scan(doc, page) {
+  var svgs = doc.querySelectorAll('svg');
+  for (var c = 0; c < svgs.length; c++) {
+    var svg = svgs[c], ttl = ttlOf(svg);
+    var W = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.width : 0;
+    var H = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.height : 0;
+    if (!H) { try { H = svg.getBBox().height; } catch (e) {} }
+    // 1) 画到画布外
+    var over = 0, worst = '';
+    // 用 getBoundingClientRect（含 transform）而不是 getBBox（不含自身 transform）——
+    // 竖排的断点标签与截轴真值标签都带 rotate，用 getBBox 量会得到假的越界值。
+    var sr = svg.getBoundingClientRect();
+    svg.querySelectorAll('path,rect,circle,line,text').forEach(function (n) {
+      var b = n.getBoundingClientRect();
+      if (!b || (!b.width && !b.height)) return;
+      var d = Math.max(0, b.bottom - sr.bottom, sr.top - b.top, b.right - sr.right, sr.left - b.left);
+      if (d > over) { over = d; worst = n.tagName + (n.textContent ? ' "' + n.textContent.slice(0,18) + '"' : ''); }
+    });
+    if (over > 6) lines.push('OVERFLOW ' + page + ' svg#' + c + ' 越界 ' + over.toFixed(0) +
+                             'px (画布 ' + W.toFixed(0) + 'x' + H.toFixed(0) + ', ' + worst + ') :: ' + ttl);
+    // 2) 文字互相压字
+    var ts = [], i, j;
+    svg.querySelectorAll('text').forEach(function (t) {
+      var b; try { b = t.getBBox(); } catch (e) { return; }
+      if (!b || !b.width) return;
+      if ((t.getAttribute('transform') || '').indexOf('rotate') >= 0) return; // 竖排/斜排标签另算
+      ts.push({ b: b, s: t.textContent });
+    });
+    for (i = 0; i < ts.length; i++) for (j = i + 1; j < ts.length; j++) {
+      var a = ts[i].b, e = ts[j].b;
+      var ox = Math.min(a.x + a.width, e.x + e.width) - Math.max(a.x, e.x);
+      var oy = Math.min(a.y + a.height, e.y + e.height) - Math.max(a.y, e.y);
+      if (ox > 2.5 && oy > 4) {
+        lines.push('OVERLAP ' + page + ' svg#' + c + ' "' + ts[i].s + '" × "' + ts[j].s +
+                   '" ' + ox.toFixed(1) + 'x' + oy.toFixed(1) + 'px :: ' + ttl);
+      }
+    }
+  }
+}
+var pending = PAGES.length;
+PAGES.forEach(function (p) {
+  var f = document.createElement('iframe');
+  f.style.width = '1440px'; f.style.height = '900px';
+  f.src = '/' + p + '/';
+  f.onload = function () {
+    setTimeout(function () {
+      try { scan(f.contentDocument, p); } catch (e) { lines.push(p + ' ERR ' + e); }
+      if (--pending === 0) document.getElementById('out').textContent = lines.join('\n') || 'CLEAN';
+    }, 1600);
+  };
+  document.body.appendChild(f);
+});
+</script>
+</body>

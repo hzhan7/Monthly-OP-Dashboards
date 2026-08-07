@@ -14,7 +14,7 @@
   <span class="meta" id="meta">—</span>
 </div>
 
-<h1>12 家公司的月度经营数据</h1>
+<h1>21 家公司的月度经营数据</h1>
 <p class="subtitle">
   每家公司按月披露的经营指标（成交量、账户、资产、余额、营收…），全部来自公司官网 IR
   或 SEC 申报的原始披露，版式仿 Goldman Sachs GIR exhibit。
@@ -24,7 +24,7 @@
 <div id="hub"></div>
 
 <h2 class="section">横截面</h2>
-<p class="subtitle">单家报告答不了「谁在跑赢」，这两页把同组公司放在同一张图上比。</p>
+<p class="subtitle">单家报告答不了「谁在跑赢」，这几页把同组公司放在同一张图上比。</p>
 <div id="hub2"></div>
 
 <div class="prose">
@@ -34,7 +34,9 @@
       工作日、SPGI 次月 15 日、AXP 8-K 约 15 日）。卡片上的月份就是该家目前的最新月，
       <span class="dot stale"></span> 表示已超过它自己的正常节奏还没更新，值得点进去看一眼。</li>
     <li><strong>不做跨家加总</strong>：CME/Cboe 是合约张数、HKEX 是成交金额、TSMC 是新台币营收，
-      量纲不可加。横截面页一律用同比与指数化比较。</li>
+      量纲不可加。横截面页一律用同比与指数化比较；12 家交易所总览另用<strong>定基名义额</strong>
+      （张数 × 乘数 × 2019-01 基期价格与汇率）把张数折成可比口径 —— 乘数是交易所自选的产品设计
+      （CME E-mini $50×指数 vs Micro $5×指数差 10 倍），裸张数跨家比没有意义。</li>
     <li><strong>Implied / 推导序列</strong>：标题带 <em>Implied</em> 的图不是公司直接披露值，
       是由披露量推导的，假设写在各图注里。凡是推导的都这么标。</li>
     <li><strong>口径断点</strong>用红色竖虚线标出（如 AXP 2026-05 合并 Card balances、

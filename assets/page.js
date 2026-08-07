@@ -34,21 +34,43 @@
   function el(id) { return document.getElementById(id); }
   function set(id, text) { var n = el(id); if (n) n.textContent = text; }
 
-  /* ── 顶部导航：12 家 + 2 张横截面页。roster 由 build_all.py 生成，
-        带各家的数据月份，停更的一眼看得出来（不靠人记）。 ── */
+  /* ── 顶部导航：21 张页（12 家交易所 + 9 家其它公司 + 7 张横截面）。
+        roster 由 build/roster.py 生成，带各家的数据月份，停更的一眼看得出来（不靠人记）。
+
+     **导航排成几行由 roster 的 g.row 决定，不靠 flex-wrap 自动折行。**
+     原来整条导航是一个 flex 容器、靠 wrap 换行；交易所从 3 家扩到 12 家之后，
+     折行断点随窗口宽度乱跳 —— 「交易所」这个标签可能落在上一行末尾，它的 12 个
+     ticker 散在两行里，中间还夹着「数据与指数」。分组标签全在，分组信息没了。
+     所以改成 roster 说第几行就第几行：交易所独占一行，横截面独占一行。
+     row 缺失时落到第 1 行 —— 老 roster.js 与新 page.js 撞上时退化成原来的一整条，
+     不至于白屏（发布顺序不可控，data/ 与 assets/ 是两次 commit）。 ── */
   function nav() {
     var R = window.ROSTER;
     if (!R) return '';
-    var here = D.ticker, h = '<nav class="nav">';
+    var here = D.ticker, order = [], byRow = {};
     R.groups.forEach(function (g) {
-      h += '<span class="ng">' + g.label + '</span>';
-      g.items.forEach(function (it) {
-        var cur = it.ticker === here;
-        h += '<a class="' + (cur ? 'on' : '') + '" href="' + (cur ? '#' : '../' + it.ticker + '/') +
-             '" title="' + it.name + ' · 数据截至 ' + (it.through || '—') + '">' + it.label + '</a>';
-      });
+      var k = g.row || 1;
+      if (!byRow[k]) { byRow[k] = []; order.push(k); }
+      byRow[k].push(g);
     });
-    return h + '<a class="home" href="../">总览</a></nav>';
+    order.sort(function (a, b) { return a - b; });
+    var h = '<nav class="nav">';
+    order.forEach(function (k, i) {
+      h += '<div class="navrow">';
+      byRow[k].forEach(function (g) {
+        h += '<span class="ng">' + g.label + '</span>';
+        g.items.forEach(function (it) {
+          var cur = it.ticker === here;
+          h += '<a class="' + (cur ? 'on' : '') + '" href="' + (cur ? '#' : '../' + it.ticker + '/') +
+               '" title="' + it.name + ' · 数据截至 ' + (it.through || '—') + '">' + it.label + '</a>';
+        });
+      });
+      /* 「总览」只出现一次，挂在第一行右端（CSS 的 margin-left:auto）。
+         挂在最后一行的话，行数一变它就换位置；第一行是唯一稳定的锚点。 */
+      if (i === 0) h += '<a class="home" href="../">总览</a>';
+      h += '</div>';
+    });
+    return h + '</nav>';
   }
 
   var head = el('head-slot');

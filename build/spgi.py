@@ -40,6 +40,7 @@ import importlib.util
 import json
 import os
 
+import axisfmt
 import payload_guard
 import pctile
 
@@ -395,7 +396,7 @@ ex4 = {
         {'name': 'SPDJI ADV', 'color': 'MBLUE', 'values': advy4},
     ],
     'break_at': b4, 'break_label': BRK_LABEL,
-    'note': ('两条线都是公司**直接披露**的同比百分比，不是本页推导值 —— 也是 S&amp;P Global '
+    'note': ('两条线都是公司<b>直接披露</b>的同比百分比，不是本页推导值 —— 也是 S&amp;P Global '
              '每月唯一公布的两个数。两者口径完全不同（评级业务的计费发行量 vs 指数业务的'
              '衍生品日均成交），同向或背离都不构成因果，只是把「这个月两块业务各自的动能」'
              f'放在一起看。窗口 {mlab(m4[0])}–{mlab(m4[-1])}。'
@@ -442,7 +443,7 @@ ex5 = {
     # 旁边，两边都印「15%」时看起来像同一个数字被打印了两遍。
     'line': {'name': 'y/y（RHS）', 'color': 'GOLD', 'values': [r6(v) for v in qy],
              'yfmt': 'pct1'},
-    'note': ('季度值是该季各月 ADV 的**简单平均**（日均口径不能相加），'
+    'note': ('季度值是该季各月 ADV 的<b>简单平均</b>（日均口径不能相加），'
              '右轴 y/y 用 4 个季度前作分母，故前 4 个季度留空。'
              '2024 各季用的是反算出来的月度 ADV。'
              + ('2025Q4 起口径变更只影响该季的 12 月一个月，红色竖虚线标在该季左缘 —— '
@@ -492,7 +493,7 @@ ex6 = {
     'ylab': 'mn contracts / day',
     'series': yser,
     'highlight': len(yser) - 1,
-    'note': ('画的是**水平值**不是累计（日均量累计没有意义），红线为当年。'
+    'note': ('画的是<b>水平值</b>不是累计（日均量累计没有意义），红线为当年。'
              + (f'{"、".join(str(y) for y in DERIVED_Y)} 年整条线是反算值；'
                 if DERIVED_Y else '')
              + f'{LY} 年只到 {MON[LM - 1]}，其后留空而不是画成 0。'
@@ -531,7 +532,7 @@ ex7 = {
                 '那一年公司只披露了绝对水平的对照基数本身，没有可用的 y/y 读数'
                 f'（第一个 y/y 读数是 {mlab(BIY_FROM)}）。留着这一行是为了让'
                 '三年的月份列对齐，也让「哪一年没有数」一眼可见。' if BLANK_Y else '')
-             + '同一格的高低是相对**去年同月**，不是相对上月，'
+             + '同一格的高低是相对<b>去年同月</b>，不是相对上月，'
              '所以一行里连着两个大正数并不等于绝对水平在连涨。'),
     'src_extra': ('Green = faster issuance growth'
                   + (f'; {"/".join(BLANK_Y)} is blank because only y/y is disclosed.'
@@ -655,7 +656,11 @@ payload = {
     'xlabels': [mlab(m) for m in tm],
     'xlabels_long': [mlab(m) for m in MONTHS],
     'summary': summary,
-    'exhibits': EXHIBITS,
+    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+    # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
+    # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
+    'exhibits': axisfmt.fix_all(EXHIBITS),
     'table': table,
     'notes': NOTES,
     'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '

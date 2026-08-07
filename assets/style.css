@@ -131,10 +131,16 @@ footer code { font-size: 10.5px; }
 
 /* ══ 总仓新增：顶部导航 + 首页总览 ══════════════════════════════════════════
    只加不改 —— 上面那段是 COST/IBKR 两个站已经在用的样式，改它等于同时改三个站。 */
-.nav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px;
-       margin: 0 0 16px; padding-bottom: 10px; border-bottom: 1px solid #e0e0dc;
+/* 导航按行铺：<nav class="nav"> 里每个 .navrow 是一行，行的划分由 data/roster.js 的
+   g.row 决定（见 build/roster.py 的 GROUPS）。交易所 12 家独占一行、横截面独占一行 ——
+   整条挤在一个 flex 里靠 wrap 折行时，断点随窗口宽度乱跳，分组读不出来。
+   .navrow 自己仍然 wrap：窄屏上 12 个 ticker 折成两行，但只会与**同组**的折在一起。 */
+.nav { margin: 0 0 16px; padding-bottom: 10px; border-bottom: 1px solid #e0e0dc;
        font-size: 11.5px; }
+.navrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; }
+.navrow + .navrow { margin-top: 5px; }
 .nav .ng { color: var(--ink-3); font-size: 10.5px; margin-left: 6px; }
+/* :first-child 是相对 .navrow 说的 —— 每一行的首个组标签都要顶格，不只是第一行 */
 .nav .ng:first-child { margin-left: 0; }
 .nav a { color: var(--ink-2); text-decoration: none; padding: 2px 6px; border-radius: 3px;
          font-variant-numeric: tabular-nums; }

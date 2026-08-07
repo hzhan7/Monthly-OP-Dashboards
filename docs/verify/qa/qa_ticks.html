@@ -1,0 +1,56 @@
+<meta charset="utf-8">
+<title>qa</title>
+<body>
+<pre id="out">loading</pre>
+<script>
+var PAGES = ['ice','ndaq','miax','enx','db1','jpx','tmx','asx','sgx',
+             'exchanges-na','exchanges-eu','exchanges-apac'];
+var lines = [];
+function scan(doc, page) {
+  var cards = doc.querySelectorAll('svg');
+  for (var c = 0; c < cards.length; c++) {
+    var svg = cards[c];
+    var host = svg.closest('.card') || svg.parentElement;
+    var ttl = host ? (host.querySelector('.exh-title,h3,h4,.title') || {}).textContent : '';
+    ttl = (ttl || '').trim().slice(0, 60);
+    var texts = svg.querySelectorAll('text');
+    var L = [], R = [];
+    for (var i = 0; i < texts.length; i++) {
+      var t = texts[i];
+      if (t.getAttribute('font-size') !== '9') continue;
+      var a = t.getAttribute('text-anchor');
+      var x = parseFloat(t.getAttribute('x'));
+      if (a === 'end' && x < 90) L.push(t.textContent);
+      else if (a === 'start' && x > 200) R.push(t.textContent);
+    }
+    var bad = [];
+    if (dup(L)) bad.push('L_DUP[' + L.join('|') + ']');
+    if (dup(R)) bad.push('R_DUP[' + R.join('|') + ']');
+    if (bad.length) lines.push(page + ' svg#' + c + ' ' + bad.join(' ') + ' :: ' + ttl);
+  }
+}
+function dup(a) {
+  for (var i = 1; i < a.length; i++) if (a[i] === a[i - 1]) return true;
+  // also flag rounded-fraction axes: parse and test even spacing
+  var v = a.map(function (s) { return parseFloat(String(s).replace(/[^0-9.\-]/g, '')); });
+  if (v.length < 3 || v.some(function (x) { return !isFinite(x); })) return false;
+  var d = [];
+  for (i = 1; i < v.length; i++) d.push(+(v[i] - v[i - 1]).toFixed(9));
+  var mn = Math.min.apply(null, d), mx = Math.max.apply(null, d);
+  return (mx - mn) > 1e-9;
+}
+var pending = PAGES.length;
+PAGES.forEach(function (p) {
+  var f = document.createElement('iframe');
+  f.style.width = '1440px'; f.style.height = '900px';
+  f.src = '/' + p + '/';
+  f.onload = function () {
+    setTimeout(function () {
+      try { scan(f.contentDocument, p); } catch (e) { lines.push(p + ' ERR ' + e); }
+      if (--pending === 0) document.getElementById('out').textContent = lines.join('\n') || 'ALL CLEAN';
+    }, 1500);
+  };
+  document.body.appendChild(f);
+});
+</script>
+</body>

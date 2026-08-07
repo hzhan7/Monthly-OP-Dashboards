@@ -1,8 +1,116 @@
 ticker,month,source_date,evidence
+asx,2017-10,2017-11-03,"asx_mar_2017-10.pdf 第 1 页抬头 ""3 November 2017"""
+asx,2017-11,2017-12-05,"asx_mar_2017-11.pdf 第 1 页抬头 ""5 December 2017"""
+asx,2017-12,2018-01-04,"asx_mar_2017-12.pdf 第 1 页抬头 ""4 January 2018"""
+asx,2018-01,2018-02-05,"asx_mar_2018-01.pdf 第 1 页抬头 ""5 February 2018"""
+asx,2018-02,2018-03-05,"asx_mar_2018-02.pdf 第 1 页抬头 ""5 March 2018"""
+asx,2018-03,2018-04-05,"asx_mar_2018-03.pdf 第 1 页抬头 ""5 April 2018"""
+asx,2018-04,2018-05-03,"asx_mar_2018-04.pdf 第 1 页抬头 ""3 May 2018"""
+asx,2018-05,2018-06-06,"asx_mar_2018-05.pdf 第 1 页抬头 ""6 June 2018"""
+asx,2018-06,2018-07-05,"asx_mar_2018-06.pdf 第 1 页抬头 ""5 July 2018"""
+asx,2018-07,2018-08-03,"asx_mar_2018-07.pdf 第 1 页抬头 ""3 August 2018"""
+asx,2018-08,2018-09-05,"asx_mar_2018-08.pdf 第 1 页抬头 ""5 September 2018"""
+asx,2018-09,2018-10-04,"asx_mar_2018-09.pdf 第 1 页抬头 ""4 October 2018"""
+asx,2018-10,2018-11-05,"asx_mar_2018-10.pdf 第 1 页抬头 ""5 November 2018"""
+asx,2018-11,2018-12-05,"asx_mar_2018-11.pdf 第 1 页抬头 ""5 December 2018"""
+asx,2018-12,2019-01-04,"asx_mar_2018-12.pdf 第 1 页抬头 ""4 January 2019"""
+asx,2019-01,2019-02-06,"asx_mar_2019-01.pdf 第 1 页抬头 ""6 February 2019"""
+asx,2019-02,2019-03-05,"asx_mar_2019-02.pdf 第 1 页抬头 ""5 March 2019"""
+asx,2019-03,2019-04-03,"asx_mar_2019-03.pdf 第 1 页抬头 ""3 April 2019"""
+asx,2019-04,2019-05-03,"asx_mar_2019-04.pdf 第 1 页抬头 ""3 May 2019"""
+asx,2019-05,2019-06-05,"asx_mar_2019-05.pdf 第 1 页抬头 ""5 June 2019"""
+asx,2019-06,2019-07-04,"asx_mar_2019-06.pdf 第 1 页抬头 ""4 July 2019"""
+asx,2019-07,2019-08-06,"asx_mar_2019-07.pdf 第 1 页抬头 ""6 August 2019"""
+asx,2019-08,2019-09-05,"asx_mar_2019-08.pdf 第 1 页抬头 ""5 September 2019"""
+asx,2019-09,2019-10-03,"asx_mar_2019-09.pdf 第 1 页抬头 ""3 October 2019"""
+asx,2019-10,2019-11-06,"asx_mar_2019-10.pdf 第 1 页抬头 ""6 November 2019"""
+asx,2019-11,2019-12-05,"asx_mar_2019-11.pdf 第 1 页抬头 ""5 December 2019"""
+asx,2019-12,2020-01-07,"asx_mar_2019-12.pdf 第 1 页抬头 ""7 January 2020"""
+asx,2020-01,2020-02-06,"asx_mar_2020-01.pdf 第 1 页抬头 ""6 February 2020"""
+asx,2020-02,2020-03-05,"asx_mar_2020-02.pdf 第 1 页抬头 ""5 March 2020"""
+asx,2020-03,2020-04-06,"asx_mar_2020-03.pdf 第 1 页抬头 ""6 April 2020"""
+asx,2020-04,2020-05-06,"asx_mar_2020-04.pdf 第 1 页抬头 ""6 May 2020"""
+asx,2020-05,2020-06-04,"asx_mar_2020-05.pdf 第 1 页抬头 ""4 June 2020"""
+asx,2020-06,2020-07-06,"asx_mar_2020-06.pdf 第 1 页抬头 ""6 July 2020"""
+asx,2020-07,2020-08-06,"asx_mar_2020-07.pdf 第 1 页抬头 ""6 August 2020"""
+asx,2020-08,2020-09-04,"asx_mar_2020-08.pdf 第 1 页抬头 ""4 September 2020"""
+asx,2020-09,2020-10-07,"asx_mar_2020-09.pdf 第 1 页抬头 ""7 October 2020"""
+asx,2020-10,2020-11-05,"asx_mar_2020-10.pdf 第 1 页抬头 ""5 November 2020"""
+asx,2020-11,2020-12-04,"asx_mar_2020-11.pdf 第 1 页抬头 ""4 December 2020"""
+asx,2020-12,2021-01-07,"asx_mar_2020-12.pdf 第 1 页抬头 ""7 January 2021"""
+asx,2021-01,2021-02-04,"asx_mar_2021-01.pdf 第 1 页抬头 ""4 February 2021"""
+asx,2021-02,2021-03-04,"asx_mar_2021-02.pdf 第 1 页抬头 ""4 March 2021"""
+asx,2021-03,2021-04-08,"asx_mar_2021-03.pdf 第 1 页抬头 ""8 April 2021"""
+asx,2021-04,2021-05-06,"asx_mar_2021-04.pdf 第 1 页抬头 ""6 May 2021"""
+asx,2021-05,2021-06-04,"asx_mar_2021-05.pdf 第 1 页抬头 ""4 June 2021"""
+asx,2021-06,2021-07-06,"asx_mar_2021-06.pdf 第 1 页抬头 ""6 July 2021"""
+asx,2021-07,2021-08-05,"asx_mar_2021-07.pdf 第 1 页抬头 ""5 August 2021"""
+asx,2021-08,2021-09-06,"asx_mar_2021-08.pdf 第 1 页抬头 ""6 September 2021"""
+asx,2021-09,2021-10-07,"asx_mar_2021-09.pdf 第 1 页抬头 ""7 October 2021"""
+asx,2021-10,2021-11-04,"asx_mar_2021-10.pdf 第 1 页抬头 ""4 November 2021"""
+asx,2021-11,2021-12-06,"asx_mar_2021-11.pdf 第 1 页抬头 ""6 December 2021"""
+asx,2021-12,2022-01-07,"asx_mar_2021-12.pdf 第 1 页抬头 ""7 January 2022"""
+asx,2022-01,2022-02-04,"asx_mar_2022-01.pdf 第 1 页抬头 ""4 February 2022"""
+asx,2022-02,2022-03-04,"asx_mar_2022-02.pdf 第 1 页抬头 ""4 March 2022"""
+asx,2022-03,2022-04-06,"asx_mar_2022-03.pdf 第 1 页抬头 ""06 April 2022"""
+asx,2022-04,2022-05-05,"asx_mar_2022-04.pdf 第 1 页抬头 ""5 May 2022"""
+asx,2022-05,2022-06-06,"asx_mar_2022-05.pdf 第 1 页抬头 ""6 June 2022"""
+asx,2022-06,2022-07-06,"asx_mar_2022-06.pdf 第 1 页抬头 ""6 July 2022"""
+asx,2022-07,2022-08-04,"asx_mar_2022-07.pdf 第 1 页抬头 ""04 August 2022"""
+asx,2022-08,2022-09-06,"asx_mar_2022-08.pdf 第 1 页抬头 ""06 September 2022"""
+asx,2022-09,2022-10-07,"asx_mar_2022-09.pdf 第 1 页抬头 ""7 October 2022"""
+asx,2022-10,2022-11-04,"asx_mar_2022-10.pdf 第 1 页抬头 ""4 November 2022"""
+asx,2022-11,2022-12-06,"asx_mar_2022-11.pdf 第 1 页抬头 ""6 December 2022"""
+asx,2022-12,2023-01-06,"asx_mar_2022-12.pdf 第 1 页抬头 ""6 January 2023"""
+asx,2023-01,2023-02-06,"asx_mar_2023-01.pdf 第 1 页抬头 ""6 February 2023"""
+asx,2023-02,2023-03-06,"asx_mar_2023-02.pdf 第 1 页抬头 ""6 March 2023"""
+asx,2023-03,2023-04-06,"asx_mar_2023-03.pdf 第 1 页抬头 ""6 April 2023"""
+asx,2023-04,2023-05-04,"asx_mar_2023-04.pdf 第 1 页抬头 ""4 May 2023"""
+asx,2023-05,2023-06-06,"asx_mar_2023-05.pdf 第 1 页抬头 ""6 June 2023"""
+asx,2023-06,2023-07-06,"asx_mar_2023-06.pdf 第 1 页抬头 ""6 July 2023"""
+asx,2023-07,2023-08-04,"asx_mar_2023-07.pdf 第 1 页抬头 ""4 August 2023"""
+asx,2023-08,2023-09-06,"asx_mar_2023-08.pdf 第 1 页抬头 ""6 September 2023"""
+asx,2023-09,2023-10-06,"asx_mar_2023-09.pdf 第 1 页抬头 ""6 October 2023"""
+asx,2023-10,2023-11-06,"asx_mar_2023-10.pdf 第 1 页抬头 ""6 November 2023"""
+asx,2023-11,2023-12-06,"asx_mar_2023-11.pdf 第 1 页抬头 ""6 December 2023"""
+asx,2023-12,2024-01-05,"asx_mar_2023-12.pdf 第 1 页抬头 ""5 January 2024"""
+asx,2024-01,2024-02-06,"asx_mar_2024-01.pdf 第 1 页抬头 ""6 February 2024"""
+asx,2024-02,2024-03-06,"asx_mar_2024-02.pdf 第 1 页抬头 ""6 March 2024"""
+asx,2024-03,2024-04-05,"asx_mar_2024-03.pdf 第 1 页抬头 ""5 April 2024"""
+asx,2024-04,2024-05-06,"asx_mar_2024-04.pdf 第 1 页抬头 ""6 May 2024"""
+asx,2024-05,2024-06-06,"asx_mar_2024-05.pdf 第 1 页抬头 ""6 June 2024"""
+asx,2024-06,2024-07-04,"asx_mar_2024-06.pdf 第 1 页抬头 ""4 July 2024"""
+asx,2024-07,2024-08-06,"asx_mar_2024-07.pdf 第 1 页抬头 ""6 August 2024"""
+asx,2024-08,2024-09-05,"asx_mar_2024-08.pdf 第 1 页抬头 ""5 September 2024"""
+asx,2024-09,2024-10-04,"asx_mar_2024-09.pdf 第 1 页抬头 ""4 October 2024"""
+asx,2024-10,2024-11-06,"asx_mar_2024-10.pdf 第 1 页抬头 ""6 November 2024"""
+asx,2024-11,2024-12-05,"asx_mar_2024-11.pdf 第 1 页抬头 ""5 December 2024"""
+asx,2024-12,2025-01-07,"asx_mar_2024-12.pdf 第 1 页抬头 ""7 January 2025"""
+asx,2025-01,2025-02-06,"asx_mar_2025-01.pdf 第 1 页抬头 ""6 February 2025"""
+asx,2025-02,2025-03-06,"asx_mar_2025-02.pdf 第 1 页抬头 ""6 March 2025"""
+asx,2025-03,2025-04-04,"asx_mar_2025-03.pdf 第 1 页抬头 ""4 April 2025"""
+asx,2025-04,2025-05-06,"asx_mar_2025-04.pdf 第 1 页抬头 ""6 May 2025"""
+asx,2025-05,2025-06-05,"asx_mar_2025-05.pdf 第 1 页抬头 ""5 June 2025"""
+asx,2025-06,2025-07-04,"asx_mar_2025-06.pdf 第 1 页抬头 ""4 July 2025"""
+asx,2025-07,2025-08-06,"asx_mar_2025-07.pdf 第 1 页抬头 ""6 August 2025"""
+asx,2025-08,2025-09-04,"asx_mar_2025-08.pdf 第 1 页抬头 ""4 September 2025"""
+asx,2025-09,2025-10-07,"asx_mar_2025-09.pdf 第 1 页抬头 ""7 October 2025"""
+asx,2025-10,2025-11-06,"asx_mar_2025-10.pdf 第 1 页抬头 ""6 November 2025"""
+asx,2025-11,2025-12-04,"asx_mar_2025-11.pdf 第 1 页抬头 ""4 December 2025"""
+asx,2025-12,2026-01-07,"asx_mar_2025-12.pdf 第 1 页抬头 ""7 January 2026"""
+asx,2026-01,2026-02-05,"asx_mar_2026-01.pdf 第 1 页抬头 ""5 February 2026"""
+asx,2026-02,2026-03-05,"asx_mar_2026-02.pdf 第 1 页抬头 ""5 March 2026"""
+asx,2026-03,2026-04-08,"asx_mar_2026-03.pdf 第 1 页抬头 ""8 April 2026"""
+asx,2026-04,2026-05-05,"asx_mar_2026-04.pdf 第 1 页抬头 ""5 May 2026"""
+asx,2026-05,2026-06-04,"asx_mar_2026-05.pdf 第 1 页抬头 ""4 June 2026"""
+asx,2026-06,2026-07-06,"asx_mar_2026-06.pdf 第 1 页抬头 ""6 July 2026"""
+asx,2026-07,2026-08-06,"asx_mar_2026-07.pdf 第 1 页抬头 ""6 August 2026"""
 cboe,2026-06,2026-07-06,"June-2026-Monthly-Volume-Statistics-Xlsx-.xlsx 工作表 ""2026"" 第 2 行 A 列 ""Updated on July 6, 2026"""
 cboe,2026-07,2026-08-05,"July-2026-Monthly-Volume-Statistics-Xlsx-.xlsx 工作表 ""2026"" 第 2 行 A 列 ""Updated on August 5, 2026"""
 cme,2026-07,2026-08-03,"cme_monthly_volume.xlsx（官方文件名 cme_group_adv-rpc-oi_trend_Jul26 incl cash markets.xlsx）的 HTTP Last-Modified ""Mon, 03 Aug 2026 21:47:51 GMT""，与工作簿 docProps/core.xml 的 dcterms:modified 2026-08-03T20:53:17Z 互证，换算到芝加哥时间同为 2026-08-03"
 cost,2026-07,2026-08-05,"GlobeNewswire 稿 costco-wholesale-corporation-reports-july-sales-results.html 的 <time itemprop=""datePublished""> 渲染文本 ""August 05, 2026 16:15 ET""；正文电头 ""ISSAQUAH, Wash., Aug. 05, 2026 (GLOBE NEWSWIRE)"" 一致"
+db1,2026-07,2026-08-04,monthlystat_202607.xls 的 Cover 表「Created on:」= 2026-08-04
+enx,2026-06,2026-07-06,"新闻列表页 https://www.euronext.com/en/investor-relations/financial-information/news?page=0 的一行「Euronext announces volumes for June 2026」：<time datetime=""2026-07-06T15:45:00Z"">06/07/2026</time>；详情页 https://www.euronext.com/en/investor-relations/financial-information/news/euronext-announces-volumes-for-june-2026 正文电头 ""– 6 July 2026 –"" 一致"
 hkex,2026-06,2026-07-07,"xlsx 直链 HTTP Last-Modified: Tue, 07 Jul 2026 10:24:47 GMT（= 2026-07-07 18:24 HKT）；工作簿 docProps/core.xml dcterms:modified=2026-07-07T10:24:36Z 同日，互为印证。HKEX 的工作簿与落地页都不写发布日，落地页只写数据月 ""Updated to …"""
 hood,2026-05,2026-06-09,"IR 静态文件「Robinhood Markets, Inc. May 2026 Monthly Metrics.xlsx」的 HTTP Last-Modified: Tue, 09 Jun 2026 16:19:38 GMT（取 GMT 日历日）"
 hood,2026-06,2026-07-29,"IR 静态文件「Q2'26 Earnings Supplement.xlsx」的 HTTP Last-Modified: Wed, 29 Jul 2026 15:56:23 GMT（取 GMT 日历日）"
@@ -10,8 +118,166 @@ ibkr,2026-04,2026-05-01,"新闻稿 pr_202604.pdf 电头 ""May 1, 2026"""
 ibkr,2026-05,2026-06-01,"新闻稿 pr_202605.pdf 电头 ""GREENWICH, CT, June 1, 2026"""
 ibkr,2026-06,2026-07-01,"新闻稿 pr_202606.pdf 电头 ""July 1, 2026"""
 ibkr,2026-07,2026-08-03,"新闻稿 pr_202607.pdf 电头 ""August 3, 2026"""
+ice,2026-07,2026-08-05,"新闻稿「Intercontinental Exchange Reports July 2026 Statistics」PressReleaseDate=2026-08-05（ir.theice.com/feed/PressRelease.svc）；xlsx 直链 HTTP Last-Modified ""Wed, 05 Aug 2026 12:30:32 GMT"" 与之同日，互证"
+jpx,2026-06,2026-07-07,"https://www.jpx.co.jp/english/markets/statistics-equities/misc/index.html 的 <div class=""JPX-site-update""> ""Update : Jul. 07, 2026""；https://www.jpx.co.jp/english/markets/statistics-derivatives/trading-volume/index.html 的 <div class=""JPX-site-update""> ""Update : Jul. 07, 2026""；historical-genbutsu.xlsx 的 HTTP Last-Modified ""Tue, 07 Jul 2026 04:00:22 GMT""；tv_ts202606.xls 的 HTTP Last-Modified ""Tue, 07 Jul 2026 01:00:20 GMT"""
 lpla,2026-05,2026-06-16,"新闻稿 lpla_pr_2026-05.pdf 电头 ""SAN DIEGO – June 16, 2026 –"""
+miax,2026-07,2026-08-05,"MIH_Volume_and_RPC_Report_08052026.pdf 第 2 行 ""Updated on August 5, 2026""（权威）；辅助线索：HTTP Last-Modified Wed, 05 Aug 2026 14:05:35 GMT"
+ndaq,2026-07,2026-08-05,"新闻稿 nasdaq-reports-july-2026-volumes 正文电头 ""NEW YORK, Aug. 05, 2026 (GLOBE NEWSWIRE)"""
 schw,2026-05,2026-06-12,"schw_may2026_press_release.pdf 首页 News Release 日期 ""June 12, 2026"""
 schw,2026-06,2026-07-21,"schwab_q2_2026_earnings_release.pdf 第 1 页电头 ""WESTLAKE, Texas, July 21, 2026"""
+sgx,2018-08,2018-09-24,"PDF 直链（官方文件名「Market Statistics - Aug 2018」）的 HTTP Last-Modified ""Mon, 24 Sep 2018 12:26:30 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2018-09,2018-10-22,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Sep-2018」）的 HTTP Last-Modified ""Mon, 22 Oct 2018 02:52:21 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2018-10,2018-11-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Oct-2018」）的 HTTP Last-Modified ""Thu, 08 Nov 2018 10:55:19 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2018-11,2018-12-07,"PDF 直链（官方文件名「SGX_Monthly_Market_Statistics_Report_Nov_2018」）的 HTTP Last-Modified ""Fri, 07 Dec 2018 08:58:01 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2018-12,2019-01-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Dec-2018」）的 HTTP Last-Modified ""Wed, 09 Jan 2019 03:37:28 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-01,2019-02-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jan-2019」）的 HTTP Last-Modified ""Tue, 12 Feb 2019 04:00:30 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-02,2019-03-06,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Feb-2019」）的 HTTP Last-Modified ""Wed, 06 Mar 2019 08:50:03 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-03,2019-04-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Mar-2019」）的 HTTP Last-Modified ""Tue, 09 Apr 2019 10:10:51 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-04,2019-05-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Apr-2019」）的 HTTP Last-Modified ""Thu, 09 May 2019 03:09:27 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-05,2019-06-10,"PDF 直链（官方文件名「SGX-Monthly-Market_Statistics-Report-May-2019」）的 HTTP Last-Modified ""Mon, 10 Jun 2019 10:00:31 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-06,2019-07-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jun-2019」）的 HTTP Last-Modified ""Tue, 09 Jul 2019 02:10:34 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-07,2019-08-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jul-2019」）的 HTTP Last-Modified ""Thu, 08 Aug 2019 04:18:11 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-08,2019-09-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Aug-2019」）的 HTTP Last-Modified ""Sun, 08 Sep 2019 14:54:48 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-09,2019-10-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Sep-2019」）的 HTTP Last-Modified ""Wed, 09 Oct 2019 10:57:18 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-10,2019-11-06,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Oct-2019」）的 HTTP Last-Modified ""Wed, 06 Nov 2019 07:32:11 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-11,2019-12-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Nov-2019」）的 HTTP Last-Modified ""Tue, 10 Dec 2019 03:06:55 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2019-12,2020-01-16,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Dec-2019」）的 HTTP Last-Modified ""Thu, 16 Jan 2020 07:21:19 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-01,2020-02-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jan-2020」）的 HTTP Last-Modified ""Mon, 10 Feb 2020 12:29:25 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-02,2020-03-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Feb-2020」）的 HTTP Last-Modified ""Sun, 08 Mar 2020 15:24:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-03,2020-04-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Mar-2020」）的 HTTP Last-Modified ""Thu, 09 Apr 2020 02:29:35 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-04,2020-05-11,"PDF 直链（官方文件名「SGX Monthly Market Statistics Report April 2020」）的 HTTP Last-Modified ""Mon, 11 May 2020 03:51:03 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-05,2020-06-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-May-2020」）的 HTTP Last-Modified ""Mon, 08 Jun 2020 03:50:21 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-06,2020-07-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jun-2020」）的 HTTP Last-Modified ""Mon, 13 Jul 2020 03:19:44 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-07,2020-08-11,"PDF 直链（官方文件名「SGX-Monthly- Market-Statistics-Report-Jul-2020」）的 HTTP Last-Modified ""Tue, 11 Aug 2020 04:14:22 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-08,2020-09-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Aug-2020」）的 HTTP Last-Modified ""Thu, 10 Sep 2020 04:07:47 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-09,2020-10-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Sep-2020」）的 HTTP Last-Modified ""Mon, 12 Oct 2020 09:17:51 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-10,2021-01-22,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Oct-2020」）的 HTTP Last-Modified ""Fri, 22 Jan 2021 02:09:50 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-11,2021-01-22,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Nov-2020」）的 HTTP Last-Modified ""Fri, 22 Jan 2021 02:12:07 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2020-12,2021-01-22,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Dec-2020」）的 HTTP Last-Modified ""Fri, 22 Jan 2021 02:20:38 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-01,2021-02-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Jan-2021」）的 HTTP Last-Modified ""Tue, 09 Feb 2021 02:28:34 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-02,2021-03-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Feb-2021」）的 HTTP Last-Modified ""Tue, 09 Mar 2021 04:07:37 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-03,2021-04-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Mar-2021」）的 HTTP Last-Modified ""Mon, 12 Apr 2021 05:10:23 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-04,2021-05-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Apr-2021」）的 HTTP Last-Modified ""Mon, 10 May 2021 03:43:06 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-05,2021-06-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-May-2021」）的 HTTP Last-Modified ""Wed, 09 Jun 2021 16:22:19 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-06,2021-07-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-June-2021」）的 HTTP Last-Modified ""Mon, 12 Jul 2021 09:10:38 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-07,2021-08-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-July-2021」）的 HTTP Last-Modified ""Wed, 11 Aug 2021 00:59:27 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-08,2021-09-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-August-2021」）的 HTTP Last-Modified ""Fri, 10 Sep 2021 04:25:53 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-09,2021-10-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-September-2021」）的 HTTP Last-Modified ""Mon, 11 Oct 2021 10:51:26 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-10,2021-11-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-October-2021」）的 HTTP Last-Modified ""Thu, 11 Nov 2021 01:30:37 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-11,2021-12-10,"PDF 直链（官方文件名「SGX-Monthly-Market Statistics-Report-November-2021」）的 HTTP Last-Modified ""Fri, 10 Dec 2021 08:47:32 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2021-12,2022-01-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-December-2021」）的 HTTP Last-Modified ""Thu, 13 Jan 2022 01:04:27 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-01,2022-02-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-January-2022」）的 HTTP Last-Modified ""Thu, 10 Feb 2022 23:57:03 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-02,2022-03-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-February-2022」）的 HTTP Last-Modified ""Wed, 09 Mar 2022 08:18:58 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-03,2022-04-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-March-2022」）的 HTTP Last-Modified ""Tue, 12 Apr 2022 08:46:03 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-04,2022-05-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-April-2022」）的 HTTP Last-Modified ""Wed, 11 May 2022 07:56:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-05,2022-06-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-May-2022」）的 HTTP Last-Modified ""Fri, 10 Jun 2022 00:20:24 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-06,2022-07-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-June-2022」）的 HTTP Last-Modified ""Fri, 08 Jul 2022 05:39:08 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-07,2022-08-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-July-2022」）的 HTTP Last-Modified ""Wed, 10 Aug 2022 01:44:36 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-08,2022-09-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-August-2022」）的 HTTP Last-Modified ""Fri, 09 Sep 2022 04:34:28 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-09,2022-10-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-September-2022」）的 HTTP Last-Modified ""Wed, 12 Oct 2022 07:17:12 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-10,2022-11-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-October-2022」）的 HTTP Last-Modified ""Thu, 10 Nov 2022 02:51:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-11,2022-12-14,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-November-2022」）的 HTTP Last-Modified ""Wed, 14 Dec 2022 06:11:00 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2022-12,2023-02-23,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-December-2022」）的 HTTP Last-Modified ""Thu, 23 Feb 2023 07:41:59 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-01,2023-02-23,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-January-2023」）的 HTTP Last-Modified ""Thu, 23 Feb 2023 07:45:05 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-02,2023-03-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-February-2023」）的 HTTP Last-Modified ""Mon, 13 Mar 2023 01:40:14 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-03,2023-04-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-March-2023」）的 HTTP Last-Modified ""Mon, 10 Apr 2023 09:10:50 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-04,2023-05-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-April-2023」）的 HTTP Last-Modified ""Wed, 10 May 2023 07:11:59 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-05,2023-06-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-May-2023」）的 HTTP Last-Modified ""Fri, 09 Jun 2023 10:55:11 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-06,2023-07-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-June-2023」）的 HTTP Last-Modified ""Thu, 13 Jul 2023 03:17:26 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-07,2023-08-16,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-July-2023」）的 HTTP Last-Modified ""Wed, 16 Aug 2023 03:52:38 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-08,2023-09-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-August-2023」）的 HTTP Last-Modified ""Wed, 13 Sep 2023 10:11:04 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-09,2023-10-13,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-September-2023」）的 HTTP Last-Modified ""Fri, 13 Oct 2023 02:06:20 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-10,2023-11-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-October-2023」）的 HTTP Last-Modified ""Thu, 09 Nov 2023 07:21:49 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-11,2023-12-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-November-2023」）的 HTTP Last-Modified ""Mon, 11 Dec 2023 07:58:22 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2023-12,2024-01-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-December-2023」）的 HTTP Last-Modified ""Thu, 11 Jan 2024 08:46:04 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-01,2024-02-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-January-2024」）的 HTTP Last-Modified ""Thu, 08 Feb 2024 09:36:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-02,2024-03-11,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-February-2024」）的 HTTP Last-Modified ""Mon, 11 Mar 2024 03:05:20 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-03,2024-04-12,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-March-2024」）的 HTTP Last-Modified ""Fri, 12 Apr 2024 04:01:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-04,2024-05-07,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-April-2024」）的 HTTP Last-Modified ""Tue, 07 May 2024 10:24:59 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-05,2024-06-06,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-May-2024」）的 HTTP Last-Modified ""Thu, 06 Jun 2024 06:42:01 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-06,2024-07-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-June-2024」）的 HTTP Last-Modified ""Wed, 10 Jul 2024 04:39:39 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-07,2024-08-07,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-July-2024」）的 HTTP Last-Modified ""Wed, 07 Aug 2024 07:33:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-08,2024-09-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-August-2024」）的 HTTP Last-Modified ""Tue, 10 Sep 2024 07:22:45 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-09,2024-10-09,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-September-2024」）的 HTTP Last-Modified ""Wed, 09 Oct 2024 03:31:14 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-10,2024-11-07,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-October-2024」）的 HTTP Last-Modified ""Thu, 07 Nov 2024 06:04:05 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-11,2024-12-06,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-November-2024」）的 HTTP Last-Modified ""Fri, 06 Dec 2024 10:55:04 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2024-12,2025-01-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-December-2024」）的 HTTP Last-Modified ""Wed, 08 Jan 2025 08:33:35 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-01,2025-02-10,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-January-2025」）的 HTTP Last-Modified ""Mon, 10 Feb 2025 06:55:12 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-02,2025-03-07,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-February-2025」）的 HTTP Last-Modified ""Fri, 07 Mar 2025 09:19:13 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-03,2025-04-07,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of March 2025」）的 HTTP Last-Modified ""Mon, 07 Apr 2025 17:22:11 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-04,2025-05-13,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of April 2025」）的 HTTP Last-Modified ""Tue, 13 May 2025 03:58:25 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-05,2025-06-06,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of May 2025」）的 HTTP Last-Modified ""Fri, 06 Jun 2025 09:45:59 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-06,2025-07-09,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of June 2025」）的 HTTP Last-Modified ""Wed, 09 Jul 2025 06:07:03 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-07,2025-08-08,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of July 2025」）的 HTTP Last-Modified ""Fri, 08 Aug 2025 03:34:21 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-08,2025-09-09,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of August 2025」）的 HTTP Last-Modified ""Tue, 09 Sep 2025 06:58:18 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-09,2025-10-08,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of September 2025」）的 HTTP Last-Modified ""Wed, 08 Oct 2025 03:16:47 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-10,2025-11-11,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of October 2025」）的 HTTP Last-Modified ""Tue, 11 Nov 2025 09:17:59 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-11,2025-12-10,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of November 2025」）的 HTTP Last-Modified ""Wed, 10 Dec 2025 07:54:35 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2025-12,2026-01-09,"PDF 直链（官方文件名「SGX Monthly Statistics For The Month Of December 2025」）的 HTTP Last-Modified ""Fri, 09 Jan 2026 03:51:57 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-01,2026-02-09,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For January 2026」）的 HTTP Last-Modified ""Mon, 09 Feb 2026 08:53:06 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-02,2026-03-09,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For February 2026」）的 HTTP Last-Modified ""Mon, 09 Mar 2026 10:28:51 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-03,2026-04-09,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For March 2026」）的 HTTP Last-Modified ""Thu, 09 Apr 2026 08:11:04 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-04,2026-05-12,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For April 2026」）的 HTTP Last-Modified ""Tue, 12 May 2026 07:14:16 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-05,2026-06-09,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For May 2026」）的 HTTP Last-Modified ""Tue, 09 Jun 2026 11:06:13 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
+sgx,2026-06,2026-07-10,"PDF 直链（官方文件名「SGX Monthly Statistics Report Update For June 2026」）的 HTTP Last-Modified ""Fri, 10 Jul 2026 09:49:24 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
 spgi,2026-06,2026-07-15,S&P Global Ratings!A22 'Published on 7/15/2026'; S&P Dow Jones Indices!A22 'Published on 7/15/2026'（源文件 S-P-Global-Monthly-Metrics-as-of-June-2026-Published-7-15-2026.xlsx）
+tmx,2021-08,2021-09-08,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2021」的 PressReleaseDate 字段
+tmx,2021-09,2021-10-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2021」的 PressReleaseDate 字段
+tmx,2021-10,2021-11-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2021」的 PressReleaseDate 字段
+tmx,2021-11,2021-12-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - November 2021」的 PressReleaseDate 字段
+tmx,2021-12,2022-01-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - December 2021」的 PressReleaseDate 字段
+tmx,2022-01,2022-02-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - January 2022」的 PressReleaseDate 字段
+tmx,2022-02,2022-03-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - February 2022」的 PressReleaseDate 字段
+tmx,2022-03,2022-04-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - March 2022」的 PressReleaseDate 字段
+tmx,2022-04,2022-05-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - April 2022」的 PressReleaseDate 字段
+tmx,2022-05,2022-06-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - May 2022」的 PressReleaseDate 字段
+tmx,2022-06,2022-07-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - June 2022」的 PressReleaseDate 字段
+tmx,2022-07,2022-08-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - July 2022」的 PressReleaseDate 字段
+tmx,2022-08,2022-09-08,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2022」的 PressReleaseDate 字段
+tmx,2022-09,2022-10-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2022 (Revised)」的 PressReleaseDate 字段
+tmx,2022-10,2022-11-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2022」的 PressReleaseDate 字段
+tmx,2022-11,2022-12-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - November 2022」的 PressReleaseDate 字段
+tmx,2022-12,2023-01-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - December 2022」的 PressReleaseDate 字段
+tmx,2023-01,2023-02-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - January 2023」的 PressReleaseDate 字段
+tmx,2023-02,2023-03-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - February 2023」的 PressReleaseDate 字段
+tmx,2023-03,2023-04-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - March 2023」的 PressReleaseDate 字段
+tmx,2023-04,2023-05-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - April 2023」的 PressReleaseDate 字段
+tmx,2023-05,2023-06-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - May 2023」的 PressReleaseDate 字段
+tmx,2023-06,2023-07-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - June 2023」的 PressReleaseDate 字段
+tmx,2023-07,2023-08-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - July 2023」的 PressReleaseDate 字段
+tmx,2023-08,2023-09-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2023」的 PressReleaseDate 字段
+tmx,2023-09,2023-10-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2023」的 PressReleaseDate 字段
+tmx,2023-10,2023-11-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2023」的 PressReleaseDate 字段
+tmx,2023-11,2023-12-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - November 2023」的 PressReleaseDate 字段
+tmx,2023-12,2024-01-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - December 2023」的 PressReleaseDate 字段
+tmx,2024-01,2024-02-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - January 2024」的 PressReleaseDate 字段
+tmx,2024-02,2024-03-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - February 2024」的 PressReleaseDate 字段
+tmx,2024-03,2024-04-03,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - March 2024」的 PressReleaseDate 字段
+tmx,2024-04,2024-05-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - April 2024」的 PressReleaseDate 字段
+tmx,2024-05,2024-06-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - May 2024」的 PressReleaseDate 字段
+tmx,2024-06,2024-07-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - June 2024」的 PressReleaseDate 字段
+tmx,2024-07,2024-08-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - July 2024」的 PressReleaseDate 字段
+tmx,2024-08,2024-09-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2024」的 PressReleaseDate 字段
+tmx,2024-09,2024-10-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2024」的 PressReleaseDate 字段
+tmx,2024-10,2024-11-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2024」的 PressReleaseDate 字段
+tmx,2024-11,2024-12-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - November 2024」的 PressReleaseDate 字段
+tmx,2024-12,2025-01-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - December 2024」的 PressReleaseDate 字段
+tmx,2025-01,2025-02-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - January 2025」的 PressReleaseDate 字段
+tmx,2025-02,2025-03-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - February 2025」的 PressReleaseDate 字段
+tmx,2025-03,2025-04-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - March 2025」的 PressReleaseDate 字段
+tmx,2025-04,2025-05-14,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - April 2025」的 PressReleaseDate 字段
+tmx,2025-05,2025-06-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - May 2025」的 PressReleaseDate 字段
+tmx,2025-06,2025-07-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - June 2025」的 PressReleaseDate 字段
+tmx,2025-07,2025-08-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - July 2025」的 PressReleaseDate 字段
+tmx,2025-08,2025-09-05,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2025」的 PressReleaseDate 字段
+tmx,2025-09,2025-10-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2025」的 PressReleaseDate 字段
+tmx,2025-10,2025-11-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2025」的 PressReleaseDate 字段
+tmx,2025-11,2025-12-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - November 2025」的 PressReleaseDate 字段
+tmx,2025-12,2026-01-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - December 2025」的 PressReleaseDate 字段
+tmx,2026-01,2026-02-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - January 2026」的 PressReleaseDate 字段
+tmx,2026-02,2026-03-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - February 2026」的 PressReleaseDate 字段
+tmx,2026-03,2026-04-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - March 2026」的 PressReleaseDate 字段
+tmx,2026-04,2026-05-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - April 2026」的 PressReleaseDate 字段
+tmx,2026-05,2026-06-04,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - May 2026」的 PressReleaseDate 字段
+tmx,2026-06,2026-07-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - June 2026」的 PressReleaseDate 字段
 tsm,2026-06,2026-07-13,"新闻稿「TSMC June 2026 Revenue Report」(https://pr.tsmc.com/english/news/3323) 正文电头 ""HSINCHU, Taiwan, R.O.C. – July 13, 2026""；同页 Issued on 2026-07-13；稿内 NT$442.68bn 与 xlsx 一致"
