@@ -83,7 +83,7 @@ TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
 # 横截面页没有自己的数据源，等成员都更新完之后再生成。
 # 这里的名字是**目录名 / data 文件名**（连字符）；生成器文件名是下划线的
 # build/exchanges_na.py —— 两者的对应由 builder() 负责，不在这张表里体现。
-CROSS = ['exchanges', 'wealth',
+CROSS = ['wealth',
          'exchanges12',      # 12 家总览（定基名义额）
          'exchanges-na',     # 北美：ICE / Cboe / MIAX / Nasdaq（TMX 对照）
          'exchanges-eu',     # 欧洲现货：Euronext / Cboe Europe / Deutsche Börse

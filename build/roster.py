@@ -104,7 +104,6 @@ META = {
     'jpx':  ('JPX', 'Japan Exchange Group', '次月第 5 个营业日'),
     'sgx':  ('SGX', 'Singapore Exchange', '次月第 6-13 天，中位第 9'),
     'asx':  ('ASX', 'ASX Limited', '次月第 3-8 天，众数第 5-6'),
-    'exchanges': ('交易所组', 'CME / Cboe / HKEX', '成员齐了才生成'),
     'wealth': ('财富组', 'SCHW / LPLA / IBKR / HOOD', '成员齐了才生成'),
     'exchanges12': ('12 家总览', '12 家交易所 · 定基名义额', '成员齐了才生成'),
     'exchanges-na': ('北美', 'ICE / Cboe / MIAX / Nasdaq（TMX 对照）', '成员齐了才生成'),
@@ -153,7 +152,7 @@ GROUPS = [
     ('cross', 3, '横截面', ['exchanges12', 'exchanges-na', 'exchanges-eu',
                             'exchanges-apac',
                             'exchanges-products',
-                            'exchanges', 'wealth']),
+                            'wealth']),
 ]
 
 

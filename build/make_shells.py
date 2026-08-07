@@ -11,7 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
-           'msci', 'spgi', 'axp', 'tsm', 'exchanges', 'wealth']
+           'msci', 'spgi', 'axp', 'tsm', 'wealth']
 
 SHELL = '''<!doctype html>
 <html lang="zh-CN">
