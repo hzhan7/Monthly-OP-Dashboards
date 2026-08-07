@@ -49,8 +49,10 @@ import sys
 import numpy as np
 import pandas as pd
 
+import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
 import payload_guard
 import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
+import yoy                          # 同比口径的唯一实现（build/yoy.py），本页不另写一份
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -306,6 +308,13 @@ put('hood_accounts', col('hood', 'funded_customers_mn'))
 #       融资余额与客户现金占客户资产的比重
 for t in ('schw', 'lpla', 'hood'):
     df[f'{t}_org'] = df[f'{t}_flow'] * 12 / df[f'{t}_assets'].shift(1) * 100
+    # 同一指标的**滚动 12 个月口径**：滚动 12 个月净流入 ÷ 12 个月前的月末资产。
+    # 分子已是一整年的流量，不用再乘 12。这不是「把 12 个月的比率平均」（那对比率
+    # 没有意义），而是分子分母各自滚动再相除 —— 出来的是真实的「过去一年的有机增速」。
+    # 本页图上画的仍是单月年化（GS 的流量口径规矩，与各单票页的柱一致），
+    # 这一列只用来在图注里给出对照读数与实测波动，见 Exhibit N_ORG / N_ORG_HOOD。
+    df[f'{t}_org_roll'] = (df[f'{t}_flow'].rolling(12).sum()
+                           / df[f'{t}_assets'].shift(12) * 100)
 for t in ('schw', 'lpla', 'ibkr', 'hood'):
     df[f'{t}_yoy'] = df[f'{t}_assets'].pct_change(12) * 100
 for t in ('ibkr', 'hood'):
@@ -446,6 +455,95 @@ def xls(idx, step=None):
     return [mlab(p) for p in idx]
 
 
+# ────────────────── 同比口径：数值实现一律走 build/yoy.py ──────────────────
+# 本页画同比的图**全部是存量序列**（客户资产、客户权益、平台资产、账户/客户存量），
+# 所以一张都没有改成 12 个月滚动合计 —— 那对存量是个假名字（12 个月末余额相加不指代
+# 任何真实的量）。但要说清楚：存量**并非不能平滑**，合法的平滑口径是
+# 12 个月滚动**均值**同比（去年一整年的平均资产 vs 前年），数值上等同于滚动合计比
+# （Σ12/Σ12′ 的除数约掉）。本页仍用点对点，理由由**逐条实测**给出，
+# 其中最硬的一条是 IBKR 账户数：换成均值口径标准差反而变大。
+def stock_pair(cname, idx):
+    """某条存量序列在给定窗口上「点对点同比 vs 12 个月均值同比」的实测对比。
+
+    ⚠ **必须先对齐到两种口径都算得出的同一批月份**：均值口径天然少掉头 12 个月，
+    不对齐就是拿两个不同样本比波动，样本效应会伪装成口径效应。
+    """
+    if cname not in df.columns:
+        return None
+    s = df[cname]
+    A = yoy.mom_yoy(s, yoy.STOCK)
+    B = yoy.ttm_mean_yoy(s, yoy.STOCK)
+    keep = [p for p in idx if p in A.index and np.isfinite(A.loc[p]) and np.isfinite(B.loc[p])]
+    if len(keep) < 3:
+        return None
+    a, b = A.loc[keep].astype(float), B.loc[keep].astype(float)
+    jump = lambda x: float(np.abs(np.diff(x.values)).max()) if len(x) > 1 else float('nan')
+    return {'n': len(keep), 'sd_m': float(a.std(ddof=0)), 'sd_r': float(b.std(ddof=0)),
+            'jump_m': jump(a), 'jump_r': jump(b),
+            'flips': [mlab(p) for p in keep if a.loc[p] * b.loc[p] < 0],
+            'cur_m': float(a.iloc[-1]), 'cur_r': float(b.iloc[-1])}
+
+
+def org_caliber_note(items, idx):
+    """有机增速图的口径说明：画的是**单月年化**水平值，滚动口径的读数在这里给出。
+
+    这类图画的不是同比而是一个**增长率的水平值**，所以「单月同比 vs 滚动同比」那套
+    判据不直接适用；但「当月流量 x12」这一步同样会把一个月的噪音放大 12 倍，
+    所以照样要把两种口径的读数与波动并排给出，让读者自己知道该信哪个。
+    """
+    rows = []
+    for name, t in items:
+        a, b = df.get(f'{t}_org'), df.get(f'{t}_org_roll')
+        if a is None or b is None:
+            continue
+        keep = [p for p in idx if np.isfinite(a.loc[p]) and np.isfinite(b.loc[p])]
+        if len(keep) < 3:
+            continue
+        A, B = a.loc[keep].astype(float), b.loc[keep].astype(float)
+        jump = lambda x: float(np.abs(np.diff(x.values)).max())
+        rows.append(f'{name} 当期单月年化 {A.iloc[-1]:.1f}% / 滚动 12 个月 {B.iloc[-1]:.1f}%'
+                    f'（窗口内逐月标准差 {A.std(ddof=0):.1f}pp vs {B.std(ddof=0):.1f}pp，'
+                    f'相邻月最大跳变 {jump(A):.1f}pp vs {jump(B):.1f}pp）')
+    if not rows:
+        return ''
+    return ('<b>口径：本图画的是「当月净流入 x 12」的<u>单月</u>年化增速</b>，'
+            '与各单票页柱子的口径一致（GS LPLA 的流量口径规矩）。'
+            '它把一个月的流量乘 12，所以本身是条噪声很大的线；'
+            '真要读趋势请看<b>滚动 12 个月有机增速</b>（滚动 12 个月净流入 ÷ 12 个月前的'
+            '月末资产 —— 注意这是分子分母各自滚动再相除，不是把 12 个月的比率平均，'
+            '后者对比率没有意义）。两种口径的当期读数与波动逐家并排：'
+            + '；'.join(rows)
+            + '。各单票页 Exhibit 3/4 的<b>次轴</b>画的正是滚动口径的同比。')
+
+
+def stock_caliber_note(items, idx, lead=''):
+    """存量类图注：为什么画点对点同比而不是 12 个月均值同比。逐家现算。
+
+    items = [(显示名, 列名), …]。数字一律现算 —— 写死的话下个月就是假话。
+    """
+    rows = []
+    for name, cname in items:
+        st = stock_pair(cname, idx)
+        if not st:
+            continue
+        r = st['sd_m'] / st['sd_r'] if st['sd_r'] else float('nan')
+        rows.append(f'{name} {st["sd_m"]:.1f}pp vs {st["sd_r"]:.1f}pp（{r:.2f} 倍'
+                    + ('，均值口径<b>反而更吵</b>' if r < 1 else '')
+                    + f'；符号相反 {len(st["flips"])} 个月）')
+    if not rows:
+        return ''
+    return (lead + '本图画的是<b>点对点（单月）同比</b>（本月末 ÷ 去年同月末 − 1）。'
+            '存量并非不能平滑 —— 合法的平滑口径是 <b>12 个月滚动均值同比</b>'
+            '（去年一整年的平均水平 vs 前年；数值上等同于滚动合计比，除数约掉了），'
+            '<b>但不能叫「12 个月合计同比」</b>，因为 12 个月末余额相加不指代任何真实的量。'
+            '本图不换的理由是实测（两种口径先对齐到同一批月份，逐月标准差）：'
+            + '；'.join(rows)
+            + '。均值口径按构造滞后约半年、回答的是「去年一整年的平均水平」而不是'
+            '「现在相对去年此刻」，而横截面页要比的正是后者；'
+            '存量的分子分母又都是时点数、不含日历效应，本来就不像流量那样被小分母放大。'
+            '噪声用轴范围解决。')
+
+
 WIN = 25                                   # 近期多线图窗口（同原 deck 的 win=25）
 XL = [mlab(p) for p in IDX[-13:]]
 XL_LONG = [mlab(p) for p in IDX]
@@ -455,6 +553,34 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 # ────────────────────────────── Exhibit 1：汇总表 ──────────────────────────────
 CUR, PRV, YAG = LATEST, LATEST - 1, LATEST - 12
+
+
+def acq_roll12(idx):
+    """LPL 各月的滚动 12 个月 Acquired NNA（含当月），$bn。
+
+    还原口径在本模块只有这一处定义：y/y 用它剔分子月的并购、客户现金占比用它剔分母 ——
+    两处各写各的，就会出现「同一句话在两种还原约定下结论相反」而没人发现。
+    """
+    s = pd.Series({pd.Period(k, 'M'): v for k, v in ACQ.items()}).reindex(idx).fillna(0.0)
+    return s.rolling(12, min_periods=1).sum()
+
+
+def lp_yoy_ex(d, cur):
+    """LPL 客户资产 y/y 的剔并购口径 →（y/y%, 该月滚动 12 个月 Acquired NNA）。
+
+    传 d/cur 而不是读全局，是为了能把序列截到历史任一个月重放：t12 跟着那个月的
+    12 个月窗口自己变，不是写死的 $277.0bn（并表滚出窗口那天它必须自己归零）。
+    算不出来（缺月、分母为零）返回 (None, None)，由调用方决定这句写不写。
+    """
+    yag = cur - 12
+    try:
+        now, ago = float(d['lpla_assets'].loc[cur]), float(d['lpla_assets'].loc[yag])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    if not B.need(now, ago) or ago == 0:
+        return None, None
+    t12 = sum(v for k, v in ACQ.items() if yag < pd.Period(k, 'M') <= cur)
+    return ((now - t12) / ago - 1) * 100, t12
 
 
 def _lp_rank_txt():
@@ -470,8 +596,8 @@ def _lp_rank_txt():
         return '', None
     if not all(np.isfinite(v) for v in (lp_now, lp_ago, sc)) or lp_ago == 0:
         return '', None
-    t12 = sum(v for k, v in ACQ.items() if YAG < pd.Period(k, 'M') <= CUR)
-    raw, exq = (lp_now / lp_ago - 1) * 100, ((lp_now - t12) / lp_ago - 1) * 100
+    exq, t12 = lp_yoy_ex(df, CUR)
+    raw = (lp_now / lp_ago - 1) * 100
     txt = (f'{mlab(CUR)} 的 LPL 读数为 <b>{raw:+.1f}%</b>，剔掉滚动 12 个月的 Acquired NNA'
            f'（${t12:,.1f}bn）之后是 <b>{exq:+.1f}%</b>，'
            + (f'<b>低于</b> Schwab 的 {sc:+.1f}% —— 名次是反的。'
@@ -558,7 +684,9 @@ SUM_ROWS = [
 srows, PCT_BLANK = [], []       # PCT_BLANK：分位留空的行，表注里点名，免得被当成漏算
 for r in SUM_ROWS:
     if r[0] == 'group':
-        srows.append({'kind': 'group', 'label': r[1]})
+        # 汇总表的 y/y 列**不换口径**：它恒等于表内算术「本月 ÷ 去年同月」，读者拿第一列
+        # 除第三列就能验算。换口径之后这一步会得出另一个数，表内自相矛盾比口径混用更糟。
+        srows.append({'kind': 'group', 'label': r[1] + '　·　y/y 列 = 单月口径（本月 ÷ 去年同月）'})
         continue
     _, t, lab, cname, d, kind, mode = r
     if t not in HAS or cname not in df.columns or not has(cname):
@@ -576,7 +704,7 @@ for r in SUM_ROWS:
 LAG = ' / '.join(NAME[t] for t in LAGGARDS)      # 短板：共同最新月就等于它自己的最新月
 summary = {
     'title': f'Wealth and brokerage group —— {mlab(LATEST)}（共同最新月）',
-    'heads': [mlab(CUR), mlab(PRV), mlab(YAG), 'm/m', 'y/y', '3Y %ile'],
+    'heads': [mlab(CUR), mlab(PRV), mlab(YAG), 'm/m', 'y/y 单月', '3Y %ile'],
     'sep': 3,
     'rows': srows,
     'note': (f'整张表统一截到<b>共同最新月 {mlab(LATEST)}</b>，由最慢的成员 {LAG} 决定；'
@@ -623,7 +751,7 @@ def rebase(cname, base):
     return s / float(s.loc[base]) * 100
 
 
-# ── Exhibit 2：客户资产 2018 基期重定基（HOOD 那时还没有月度披露）──
+# ── Exhibit N_REB18：客户资产 2018 基期重定基（HOOD 那时还没有月度披露）──
 B18 = max(pd.Period('2018-07', 'M'), IDX[0])
 I18 = pd.period_range(B18, LATEST, freq='M')
 s2, inc2, exc2 = [], [], []
@@ -651,7 +779,7 @@ ex.append({
              + f'各条线右端的粗体数字是当期指数值（{mlab(B18)} = 100）。' + GATE),
 })
 
-# ── Exhibit 3：客户资产 2023-04 基期重定基（四家同基期）──
+# ── Exhibit N_REB23：客户资产 2023-04 基期重定基（四家同基期）──
 B23 = max(pd.Period('2023-04', 'M'), IDX[0])
 I23 = pd.period_range(B23, LATEST, freq='M')
 s3, inc3, exc3 = [], [], []
@@ -679,13 +807,18 @@ ex.append({
              + f'右端粗体数字为当期指数值。有机口径见 Exhibit {N_ORG}。' + GATE),
 })
 
-# ── Exhibit 4：客户资产 y/y ──
+# ── Exhibit N_YOY：客户资产 y/y（存量 → 点对点口径）──
 _i4 = dense_win([(t, f'{t}_yoy', '') for t in ('schw', 'lpla', 'ibkr', 'hood')])
 s4, inc4, exc4 = sr([(t, f'{t}_yoy', NAME.get(t, t.upper()))
                      for t in ('schw', 'lpla', 'ibkr', 'hood')], _i4)
+_ST4 = stock_caliber_note(
+    [(NAME[t], f'{t}_assets') for t in ('schw', 'lpla', 'ibkr', 'hood') if t in HAS], _i4)
 ex.append({
     'n': N_YOY, 'kind': 'lines_endlabels', 'fmt': 'pct0', 'xlabels': xls(_i4), 'xstep': 2,
-    'title': 'Client asset growth, y/y', 'ylab': '% y/y', 'zero_line': True,
+    # 标题里写明「单月同比」：本站别的页上同名的 y/y 已经有画滚动口径的了
+    # （schw Exhibit 2、hood Exhibit 3 …），不写口径读者会拿两页的数互相核而对不上。
+    'title': 'Client asset growth, y/y（单月同比 / single-month）',
+    'ylab': '% y/y（单月）', 'zero_line': True,
     # 四条线的两端各要标一个数，其中两对（左端 23%/20%、右端 49%/48%）本来就只差 1pp。
     # 引擎的竖向避让有 9.6px 的最小行距，画布越矮就越多标签被推到「刚好不叠字」的距离上，
     # 读者只能靠颜色反推是哪家。加高画布是唯一在 payload 侧能给的解药：同样的 1pp 在
@@ -697,10 +830,10 @@ ex.append({
              + brk_note(_i4, ASSET_BRK,
                         tail='并进来的资产不是有机增长，跳升起的 12 个月里那条线的 y/y '
                              '与同图其余各家不可比。')
-             + LP_RANK_TXT + f'有机口径见 Exhibit {N_ORG}。' + win_note(_i4) + GATE),
+             + LP_RANK_TXT + f'有机口径见 Exhibit {N_ORG}。' + _ST4 + win_note(_i4) + GATE),
 })
 
-# ── Exhibit 5：年化有机增速（Schwab vs LPL）──
+# ── Exhibit N_ORG：年化有机增速（Schwab vs LPL）──
 # 原来这张图把 Robinhood 也放进来，纵轴被它的 20–49% 定死，Schwab（0.3–8%）与 LPL
 # 近一年的读数全压在最底下那条带里，headline 写的「Schwab 4.8% / LPL 4.3%」在图上根本
 # 读不出来。同一单位但差一个量级的序列不该共用一根轴，所以拆成两张（Robinhood 见下一张）。
@@ -751,10 +884,11 @@ ex.append({
              + brk_note(_i5, SCHW_NNA_BRK,
                         tail='两家的剔除规则本来就各自不同，断点标的是 Schwab 这一条线'
                              '自己前后不可比的那个位置。')
+             + org_caliber_note([('Schwab', 'schw'), ('LPL', 'lpla')], _i5)
              + win_note(_i5) + GATE),
 })
 
-# ── Exhibit 6：年化有机增速（Robinhood，另一个量级）──
+# ── Exhibit N_ORG_HOOD：年化有机增速（Robinhood，另一个量级）──
 if N_ORG_HOOD:
     _IT6H = [('hood', 'hood_org', 'Robinhood net deposits')]
     _i6h = dense_win(_IT6H)
@@ -777,18 +911,25 @@ if N_ORG_HOOD:
                  'LPL 的 organic NNA 是同一个经济含义，但三家的剔除规则各自不同。'
                  + brk_note(_i6h, HOOD_ND_BRK,
                             tail='并入的流量不是有机获客，断点右侧与左侧不可直读。')
+                 + org_caliber_note([('Robinhood', 'hood')], _i6h)
                  + win_note(_i6h) + GATE),
     })
 
-# ── Exhibit 7：账户数增速（只有 IBKR 与 HOOD 披露存量账户数）──
+# ── Exhibit N_ACCT：账户数增速（只有 IBKR 与 HOOD 披露存量账户数）──
 _IT6 = [('ibkr', 'ibkr_acct_yoy', 'IBKR accounts'),
         ('hood', 'hood_acct_yoy', 'Robinhood funded customers')]
 _i6 = dense_win(_IT6)
 s6, inc6, exc6 = sr(_IT6, _i6)
+# 这张是本轮实测里最重要的一条反例：账户/客户**存量**换成 12 个月均值同比之后，
+# IBKR 那条线的逐月标准差反而变大。所以「默认改滚动」这条规矩在这里必须让位于数据 ——
+# 图注里给的是本页自己算出来的数字，不是一句一般性原理。
+_ST7 = stock_caliber_note([(NAME[t], f'{t}_accounts')
+                           for t in ('ibkr', 'hood') if t in HAS], _i6)
 ex.append({
     'n': N_ACCT, 'kind': 'lines_endlabels', 'fmt': 'pct1', 'yfmt': 'pct0',
     'xlabels': xls(_i6), 'xstep': 2,
-    'title': 'Account growth, y/y: IBKR vs. Robinhood', 'ylab': '% y/y',
+    'title': 'Account growth, y/y: IBKR vs. Robinhood（单月同比 / single-month）',
+    'ylab': '% y/y（单月）',
     'series': s6,
     **brks(_i6, HOOD_CUST_BRK),
     'note': (firms_note(inc6, exc6,
@@ -800,10 +941,10 @@ ex.append({
              + brk_note(_i6, HOOD_CUST_BRK,
                         tail='并进来的客户不是自然获客，断点之后的 12 个月里 Robinhood 的 y/y '
                              '含这块一次性增量，与 IBKR 不 like-for-like。')
-             + win_note(_i6) + GATE),
+             + _ST7 + win_note(_i6) + GATE),
 })
 
-# ── Exhibit 7：融资余额 ──
+# ── Exhibit N_MGN：融资余额 ──
 _IT7 = [('schw', 'schw_margin', 'Schwab month-end margin'),
         ('ibkr', 'ibkr_margin', 'IBKR margin loans'),
         ('hood', 'hood_margin', 'Robinhood margin book')]
@@ -821,7 +962,7 @@ ex.append({
              '所以本图窗口从那里起。' + win_note(_i7) + GATE),
 })
 
-# ── Exhibit 8：客户现金（HOOD 口径不可比，只两家）──
+# ── Exhibit N_CASH：客户现金（HOOD 口径不可比，只两家）──
 _IT8 = [('lpla', 'lpla_cash', 'LPL client cash'),
         ('ibkr', 'ibkr_cash', 'IBKR client credits')]
 _i8 = dense_win(_IT8)
@@ -846,7 +987,7 @@ ex.append({
              + win_note(_i8) + GATE),
 })
 
-# ── Exhibit 9：日均交易笔数 ──
+# ── Exhibit N_DATS：日均交易笔数 ──
 _IT9 = [('schw', 'schw_dats', 'Schwab DATs'),
         ('ibkr', 'ibkr_dats', 'IBKR total client DARTs'),
         ('hood', 'hood_dats', 'Robinhood DATs')]
@@ -881,7 +1022,7 @@ ex.append({
              + win_note(_i9) + GATE),
 })
 
-# ── Exhibit 10：资产负债表项目 2019 基期重定基 ──
+# ── Exhibit N_REB19：资产负债表项目 2019 基期重定基 ──
 B19 = max(pd.Period('2019-01', 'M'), IDX[0])
 I19 = pd.period_range(B19, LATEST, freq='M')
 BS10 = [('ibkr', 'ibkr_margin', 'IBKR margin', 'MBLUE'),
@@ -920,7 +1061,7 @@ ex.append({
              + '右端粗体数字为当期指数值。' + GATE),
 })
 
-# ── Exhibit 11：融资余额 / 客户资产（杠杆强度，横截面归一化）──
+# ── Exhibit N_MGNPCT：融资余额 / 客户资产（杠杆强度，横截面归一化）──
 _IT11 = [('schw', 'schw_mgn_pct', 'Schwab'),
          ('ibkr', 'ibkr_mgn_pct', 'IBKR'),
          ('hood', 'hood_mgn_pct', 'Robinhood')]
@@ -939,7 +1080,7 @@ ex.append({
              '所以水平值有系统性偏差，趋势与相对位次才是要看的。' + win_note(_i11) + GATE),
 })
 
-# ── Exhibit 12：客户现金 / 客户资产（利率敏感度，横截面归一化）──
+# ── Exhibit N_CASHPCT：客户现金 / 客户资产（利率敏感度，横截面归一化）──
 _IT12 = [('lpla', 'lpla_cash_pct', 'LPL'),
          ('ibkr', 'ibkr_cash_pct', 'IBKR')]
 _i12 = dense_win(_IT12)
@@ -964,7 +1105,7 @@ ex.append({
              + win_note(_i12) + GATE),
 })
 
-# ── Exhibit 13..N：各家客户资产 y/y 的 月 x 年 热力矩阵 ──
+# ── Exhibit N_HEAT：各家客户资产 y/y 的 月 x 年 热力矩阵（编号见 N_HEAT）──
 def heat(n, t, title, extra=''):
     s = df[f'{t}_yoy'].dropna()
     if not len(s):
@@ -983,19 +1124,25 @@ def heat(n, t, title, extra=''):
         'title': title, 'rows': [str(y) for y in yrs], 'cols': MONTHS,
         'matrix': matrix, 'legend': title, 'row_head': '年',
         'note': ('绿 = 增长更快。色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。'
+                 '格内是<b>单月同比</b>（本月末 ÷ 去年同月末 − 1）—— 热力矩阵不换成滚动口径'
+                 '是刻意的：逐格的月度波动与季节形状就是这张图的题眼，平滑掉等于把它'
+                 '唯一的信息抹掉。'
                  + extra + GATE),
     }
 
 
 for _t, _title, _extra in [
-    ('schw', 'Schwab client assets y/y (%)', ''),
-    ('lpla', 'LPL client assets y/y (%)', '2024-10（Atria +$88.3bn）与 '
+    # 标题一律带「单月同比」：热力矩阵按定义是逐格月度读数，豁免于「默认改滚动」那条
+    # 规矩（逐格波动与季节形状就是它的题眼，平滑掉等于把唯一的信息抹掉），
+    # 但豁免不等于可以不写口径 —— 不写，读者会拿格子里的数去核别页的滚动线。
+    ('schw', 'Schwab client assets y/y — 单月同比 (%)', ''),
+    ('lpla', 'LPL client assets y/y — 单月同比 (%)', '2024-10（Atria +$88.3bn）与 '
                                           '2025-08（Commonwealth +$275.0bn）起的 12 个格子带着并购转入，'
                                           '不是有机增长；热力矩阵这个图型画不了断点竖线，'
                                           f'带断点线的同口径图见 Exhibit {N_YOY}，'
                                           f'剔并购后的有机口径见 Exhibit {N_ORG}。'),
-    ('ibkr', 'IBKR client equity y/y (%)', ''),
-    ('hood', 'Robinhood platform assets y/y (%)', 'Robinhood 的月度披露自 2023-04 起，'
+    ('ibkr', 'IBKR client equity y/y — 单月同比 (%)', ''),
+    ('hood', 'Robinhood platform assets y/y — 单月同比 (%)', 'Robinhood 的月度披露自 2023-04 起，'
                                                   '所以 y/y 自 2024-04 才有，矩阵行数少于另外三家。'),
 ]:
     if _t not in N_HEAT:
@@ -1078,6 +1225,38 @@ _HOOD_DRAWN = sorted(set(drawn_for(ex, HOOD_ND_BRK)) | set(drawn_for(ex, HOOD_CU
                      | set(drawn_for(ex, HOOD_TPA_BRK)))
 _HEAT_NS = sorted(N_HEAT.values())
 _others = [t for t in RAW if LATEST_EACH[t] != LATEST]
+
+
+# 有机增速图上「单月年化 vs 滚动 12 个月」的当期读数 —— 现算，供页尾口径说明并排印出。
+# 不并排印，读者拿本页 Exhibit N_ORG 的线去核各单票页 Exhibit 3/4 的次轴必然对不上。
+def _org_now(t):
+    a = df.get(f'{t}_org')
+    b = df.get(f'{t}_org_roll')
+    if a is None or b is None:
+        return None
+    a, b = a.dropna(), b.dropna()
+    if not len(a) or not len(b):
+        return None
+    return float(a.iloc[-1]), float(b.iloc[-1])
+
+
+_ORG_ROWS = []
+for _t in ('schw', 'lpla', 'hood'):
+    if _t not in HAS:
+        continue
+    # 变量名不要叫 _v —— 本文件下面把 _v 绑给了 _v0（取当期读数的那个函数），
+    # 在这里覆盖掉它会让 headline 那几行报 'tuple' object is not callable。
+    _og2 = _org_now(_t)
+    if _og2:
+        _ORG_ROWS.append(f'{NAME[_t]} 单月年化 {_og2[0]:.1f}% / 滚动 12 个月 {_og2[1]:.1f}%'
+                         f'（差 {abs(_og2[0] - _og2[1]):.1f}pp）')
+ORG_MIX_TXT = (
+    f'<b>有机增速图（Exhibit {N_ORG}'
+    + (f' / {N_ORG_HOOD}' if N_ORG_HOOD else '')
+    + '）画的是<u>单月</u>年化水平值</b>（当月净流入 x 12 ÷ 上月末资产），'
+    '与各单票页柱子的口径一致；而各单票页那几张图的<b>次轴</b>画的是滚动口径的同比 —— '
+    '同一个指标在本页与单票页上以两种口径出现，所以这里把当期读数并排现算印出：'
+    + '；'.join(_ORG_ROWS) + '。' if _ORG_ROWS else '')
 notes = [
     f'<b>发布门槛：共同最新月，不是各家自己的最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，'
     f'由成员中最慢的 {LAG} 决定。'
@@ -1123,6 +1302,33 @@ notes = [
     '比率序列的差异一律用<b>百分点（pp/bp）</b>，不是「百分比的百分比变化」；'
     '<code>abs(v) &lt; 1</code> 时用 bp，否则用 pp（CONTRACT §2）。'
     '四舍五入之后正好是零的负数一律回正 —— 不印「-0bp」「-0.0%」这种带负号的零。',
+
+    # ── 同比口径：本页只有一种，但必须说清楚为什么与各单票页不同 ──
+    f'<b>⚠ 同比口径：本页画同比的图<u>全部</u>用点对点（单月）口径，与各单票页不同，'
+    f'原因逐图实测过。</b>本页画同比的是 Exhibit {N_YOY}（客户资产 y/y）、'
+    f'Exhibit {N_ACCT}（账户 / 客户数 y/y）与 Exhibit {_exl(_HEAT_NS)} 四张热力矩阵，'
+    '<b>它们画的都是存量序列</b>（客户资产 / 客户权益 / 平台资产 / 账户存量）。'
+    '各单票页（/schw/、/hood/、/lpla/、/ibkr/）本轮把<b>流量</b>类图的同比改成了'
+    '「12 个月滚动合计同比」，本页一张都没改 —— 不是漏了，是本页根本没有画流量同比的图'
+    '（净流入在本页是以<b>年化有机增速</b>的形式出现的，那是水平值不是同比）。'
+    '<b>这里要更正一句本站从前的说法</b>：「存量不能做滚动，所以只能点对点」是<b>错的</b> —— '
+    'Σ12/Σ12′ 里的除数约掉，12 个月滚动合计比恒等于 12 个月滚动<b>均值</b>比，'
+    '而「去年一整年的平均客户资产 vs 前年」是个真实存在、可以核对的量；'
+    '假的只是<b>「合计」这个名字</b>（12 个月末余额相加不指代任何东西）。'
+    '所以存量<b>可以</b>平滑，本页仍用点对点，理由由各图图注里的<b>实测</b>给出 —— '
+    f'最硬的一条在 Exhibit {N_ACCT}：IBKR 账户数换成 12 个月均值同比之后，'
+    '逐月标准差<b>反而变大</b>（具体数字印在该图图注里，每月现算）。'
+    f'另外，Exhibit {_exl(_HEAT_NS)} 的热力矩阵<b>永远不换口径</b>：'
+    '逐格的月度波动与季节形状就是那类图的题眼，平滑掉等于把它唯一的信息抹掉，'
+    '所以标题里直接写了「单月同比」。'
+    'Exhibit 1 汇总表的 y/y 列同样是单月口径，且<b>刻意不改</b> —— '
+    '它恒等于表内算术（第一列 ÷ 第三列），读者可以直接验算；'
+    '换成别的口径这一步就会得出另一个数，表内自相矛盾比口径混用更糟。'
+    f'页顶「{B.TITLE}」一段（brief）引用的客户资产 y/y、IBKR 现金/资产同比与'
+    '有机增速名次<b>同样全部是单月口径</b>：与汇总表同口径、逐格可对，'
+    '句中凡同比措辞均已标注「单月」，有机增速名次标注「单月年化」——'
+    '单月读数在那一段只作位置与基数陈述（名次 / 齐备族数 / 峰值月），不作趋势断言。'
+    f'{ORG_MIX_TXT}',
 
     '<b>口径断点：图注说画了，图上就必须真有。</b>本页登记在册的断点有四组 —— '
     'LPL 的两次整体并表（Atria 2024-10 $88.3bn、Commonwealth 2025-08 $275.0bn，'
@@ -1178,9 +1384,291 @@ headline = (f'共同最新月 {mlab(LATEST)}（短板 {LAG}）'
             + (f' / Robinhood {_v("hood_org", 1)}%' if 'hood' in HAS else '')
             # 头条只报 as-reported 的 LPL y/y 就是只报喜：那 +38% 里有一大块是买来的。
             # 有剔并购口径就把两个数一起给，没有（缺月）就一个都不给。
-            + (f' · LPL 客户资产 y/y {signed(_LP_YOY_NOW, 1, "%")}'
+            # 口径写进标签：本站别的页上同名的 y/y 已经有画滚动口径的了，
+            # 抬头里一个光秃秃的 y/y 会被拿去和那些数互相核，然后对不上。
+            + (f' · LPL 客户资产 y/y·单月 {signed(_LP_YOY_NOW, 1, "%")}'
                f'（剔并购 {signed(LP_YOY_EX, 1, "%")}）'
                if _LP_YOY_NOW is not None and LP_YOY_EX is not None else ''))
+
+
+# ── 这里原来有一个 `_lp_cash_clause()`：brief 里 LPL 客户现金占比的那一句 ──
+# 整句撤了（理由见 compose_brief 的「分寸」一节），函数跟着删掉 —— 留一个没人调用的
+# 生成器，下一个人只会照它把句子接回去，而接回去的正是本轮要收的那一层。
+#
+# 它当年修对的两件事记在这里，谁要重写这一句必须一并带上：
+#   1. 占比的**分母**被 2025-08 并入 Commonwealth（Acquired NNA +$275.0bn）机械摊薄，
+#      极值断言（「N 个月最低」）必须先用 `acq_roll12()` 还原再判，还原后仍是最低才
+#      许写「最低」—— 与客户资产 y/y 的剔并购是同一条约定，口径只能有一处定义。
+#   2. 不许用「亦然」承接 IBKR 那句：IBKR 那句里有「绝对额创新高」与「摊薄非撤资」，
+#      而 LPL 的现金绝对额离 2022-06 的自身峰值还差一大截，承接过来就是假话。
+# 并表当月对这条比率的一次性摊薄仍在 Exhibit N_CASHPCT 的图注里现算（dilution_txt），
+# 没有随这一句消失。
+
+
+def compose_brief(df, latest):
+    """横截面页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），那边只算事实，句子在这里拼 ——
+    措辞是口径的一部分，属于各家自己。每个数字都当场从序列算，**没有一处硬编码**：
+    共同最新月、领先几个月、齐备几家、名次、「N 个月最高/最低」、峰值停在哪个月，
+    下个月重跑全部自己变。
+
+    ═══ 横截面页独有，单票页不能照抄 ═══
+      · **第一句必须是「能不能比」，不是「谁更强」。** 单票页的读数就是那家的最新读数；
+        本页统一定格在<b>共同最新月</b>（最慢的成员决定），各家自己往往已多披露 1-2 个月。
+        不先说这一句，读者会拿本页的横比当「当下」，而它是一个被最慢那家钉住的旧截面。
+      · **可比性是分层的，按指标族逐族点名。** 四家齐备的只有客户资产一族；客户现金
+        （Schwab 不单列、Robinhood 拆成不可合计的两条）与账户存量（IBKR 数账户、
+        Robinhood 数人）各只剩两家。把只有两家的族当成「四家横比」是本页最大的误读源。
+      · **「谁创新高」在横截面上受序列长度左右**（R1 的横截面变体）。Schwab 的月末融资
+        余额只有 2025-01 起的历史、Robinhood 只有 2023-04 起，IBKR 有 2016-01 起 ——
+        在一条 17 个月的序列上「停在峰值」与在 125 个月上「峰值停在 2017 年」根本不是
+        同一件事。单票页没有这个问题，所以这句话别家写不出来。
+      · **LPL 的名次要按还原口径报**：as-reported 的客户资产 y/y 含 Atria 与
+        Commonwealth 两次整体并表，剔掉滚动 12 个月的 Acquired NNA（`acq_roll12()`）
+        之后名次会掉，句子里必带「（还原口径）」（R5）。这条约定对**任何**以 LPL 客户
+        资产为分母的比率同样成立：分母被并表机械摊薄，极值断言（「N 个月最低」）必须
+        先还原再判，还原后不成立就不许写「最低」。现金占比那一句本轮整句撤了
+        （见下方「分寸」），约定留着 —— 谁要把它写回来，得连着还原一起写回来。
+      · **R3（日历护栏）在本页全程不适用**：本页没有任何「当月合计量」列 —— 客户资产 /
+        现金 / 融资余额都是月末时点值，DATs/DARTs 三家披露的本来就是<b>日均</b>笔数。
+        再除一次交易日会造出一个根本不存在的修正（brief.py 开头点名的那个坑）。
+
+    ═══ 与本页 2026-08 同比口径改造的关系（移植时的口径适配）═══
+      本页与 cboe/cme 那类页不同：**画同比的图本轮一张都没改滚动**（全是存量序列，
+      理由与实测见页尾「⚠ 同比口径」与各图图注），所以 brief 引用的 y/y 与汇总表、
+      与下方各图是**同一个口径（单月）**，不存在「brief 单月 vs 图上 TTM」的错位。
+      但同名的客户资产 y/y 在各单票页（/schw/、/hood/ …）的次轴已是滚动口径，
+      读者跨页核数会对不上，所以句中凡同比措辞仍按 CONTRACT §6 标「单月」。
+      有机增速自本轮起两个口径并存（图上画单月年化、图注与页尾并印滚动 12 个月对照，
+      `{t}_org_roll` 列），brief 引用其名次时点名「单月年化」——名次是在单月年化
+      序列上排的，拿图注里的滚动读数去核对不上，那不是错，是两个口径。
+      `{t}_org_roll` 这几列新派生列**不进** brief 的任何扫描：FAMS / ORG / 峰值扫描
+      全部按显式列名白名单走，不遍历 df.columns，新列不会被静默卷入。
+      单月读数在本段只作**位置与基数**陈述（名次 / 齐备族数 / 峰值月），不作趋势断言 ——
+      趋势归下方各图。另外本页存量图注本轮刚更正过「存量不能滚动」的旧说法
+      （滚动**均值**合法，假的只是「合计」这个名字），本段没有一句写「存量不能滚动」，
+      也不许写回来。
+
+    ═══ 措辞由当场算出的量决定分支，一个定性词都不许写死 ═══
+      「只有 / 创新高 / 最低 / 却」这类词全部挂在当月算出的名次、占比、`peak_scan`
+      的分组上：本月读着通顺的句子，下个月数字一变就会变成假话，而那种假话没有任何
+      自动检查拦得住（历史重放是唯一能逮到它的手段）。同理，缺值月一律**该句不写**
+      （`B.need`），不是让整页构建失败。
+
+    ═══ 分寸：以 build/ibkr.py 的 compose_brief() 为准 ═══
+    那一版是用户逐句验收过的标准，既是上限也是下限 —— 四句四层、一句一个意思、~300 字。
+    本页此前是六句，且句句是三四个从句的串联：比样板花哨。收的办法不是砍字数，是砍层数。
+
+    现在五句，比样板多的那一层是开头的「能不能比」（横截面页的身份，不能省）：
+
+        能不能比（时点 + 覆盖）→ 谁领先（还原口径下名次会不会翻）
+        → 基数（上月名次解释本月读数）→ 谁背离（绝对额与归一化占比同月一头一尾）
+        → 峰值的可比性（「在自身峰值」在 17 个月和 125 个月的序列上不是同一件事）
+
+    撤掉的是「LPL 客户现金占比亦为全样本最低，降幅 X% 来自 Commonwealth 并表当月」
+    那一句。它不是错的（「极值先还原再判」那一层是对的，约定见上），是**逐家展开**：
+    紧接着 IBKR 现金那句再讲第二家的同一个指标，读者拿到的是第二个例子而不是第二个
+    层次；句尾「降幅的 X% 来自并表当月」还多压了一层贡献度拆解。跨公司比较写到
+    「谁领先谁背离 + 口径可比性的边界」就够，再往下就是把横截面页写成四份单票页。
+      （旁证：历史重放里它在 2018-2020 一路印出「LPL 占比排倒数前100%」—— 序列还短的
+      月份里「倒数前 100%」等于没说，一句自己就撑不住的话不值得占掉整整一句的篇幅。）
+
+    口径标注（推导值 / 还原口径 / 并购并表）一个都不因为收篇幅而删：那不是花哨，
+    是诚实。被撤的是整句，不是某句的标注。
+    """
+    i = len(df.index) - 1
+    MO = [str(p) for p in df.index]
+    # 「两个月 / 两家」这条中文量词规矩已经由 brief.cn() 统管（序数写「第二」时传
+    # ordinal=True），本页不再自己包一层 —— 同一条规矩在两处定义，早晚会分叉。
+    cn = B.cn
+    fin = lambda a: int(np.isfinite(np.asarray(a, float)).sum())
+
+    # ── 边界一（时点）：本页的读数不是各家自己的最新读数 ──────────────────
+    # 只点名跑得最快的那一家 + 领先几个月：四家逐一列月份会把这一句撑到整段的三分之一，
+    # 而页脚已经逐家列过。这里要读者记住的是「本页不是当下」这一件事。
+    # 「本页定格在共同最新月」抬头已经印过（headline / subtitle 各一次），这里不复述，
+    # 只写抬头给不出的那一半：领先的那家多披露了几个月、而本页不取。
+    ahead = [(t, (LATEST_EACH[t] - latest).n) for t in RAW if LATEST_EACH[t] > latest]
+    if ahead:
+        t0, gap = max(ahead, key=lambda x: (x[1], x[0]))
+        ahead_txt = f'本页不取 {NAME[t0]} 多出的{cn(gap)}个月'
+    else:
+        ahead_txt = '各家最新月一致'
+
+    # ── 边界二（覆盖）：可比性是分层的，逐族点名齐备几家 ────────────────────
+    # 列名是显式白名单：本轮新加的 {t}_org_roll 派生列刻意不在任何一族里 ——
+    # 它是有机增速的滚动对照口径，不是一个新指标族。
+    FAMS = [('客户资产', ['schw_assets', 'lpla_assets', 'ibkr_assets', 'hood_assets']),
+            ('净流入', ['schw_flow', 'lpla_flow', 'hood_flow']),
+            ('融资余额', ['schw_margin', 'ibkr_margin', 'hood_margin']),
+            ('日均交易', ['schw_dats', 'ibkr_dats', 'hood_dats']),
+            ('客户现金', ['lpla_cash', 'ibkr_cash']),
+            ('账户存量', ['ibkr_accounts', 'hood_accounts'])]
+    cnt = {nm: sum(1 for c in cs if c in df.columns and np.isfinite(df[c].loc[latest]))
+           for nm, cs in FAMS}
+    full = [nm for nm, k in cnt.items() if k == len(HAS)]
+    kmin = min(cnt.values())
+    # kmin == 成员数意味着六族全齐，那时「最窄的是谁」是个没有内容的句子，整句省掉
+    narrow = [nm for nm, k in cnt.items() if k == kmin] if kmin < len(HAS) else []
+    # 月份本身抬头已经印过（「共同最新月 May-26（短板 …）」），这里不再复述
+    # 「只有」这类量词由 B.quant 按占比给：齐备的族数是当场数出来的，写死「只有」
+    # 会在六族齐备的那个月印出「六族里齐备的只有六族」。
+    if not full:
+        s1 = f'能不能比：{ahead_txt}；{cn(len(FAMS))}族没有一族{cn(len(HAS))}家齐备。'
+    else:
+        s1 = (f'能不能比：{ahead_txt}；'
+              f'{B.quant(len(full), len(FAMS), "族")}{cn(len(HAS))}家齐备'
+              f'（<b>{"、".join(full)}</b>）'
+              + (f'，{"、".join(narrow)}各{cn(kmin)}家。' if narrow else '。'))
+
+    # ── 相对表现 + R5：名次一律按还原口径报 ─────────────────────────────
+    # LP_YOY_EX 是当期的模块级常量，这里改成按 latest 现算 —— 否则把序列截到历史某月
+    # 重放时，用的还是当期那个 t12，名次会算在一个不属于那个月的还原口径上。
+    # 「y/y（单月）」的口径标注（CONTRACT §6）：本页图表全是单月口径、表内可直接验算，
+    # 但各单票页同名 y/y 的次轴已是滚动口径，不标读者会拿这里的名次去核那边的线。
+    yy = {NAME[t]: float(df[f'{t}_yoy'].loc[latest]) for t in ('schw', 'lpla', 'ibkr', 'hood')
+          if t in HAS and f'{t}_yoy' in df.columns and np.isfinite(df[f'{t}_yoy'].loc[latest])}
+    order = sorted(yy, key=yy.get, reverse=True)
+    lp_ex, _t12 = lp_yoy_ex(df, latest)
+    s2 = ''
+    if len(order) >= 2 and lp_ex is not None and NAME['lpla'] in yy:
+        adj = dict(yy, **{NAME['lpla']: lp_ex})
+        order2 = sorted(adj, key=adj.get, reverse=True)
+        r0, r1 = order.index(NAME['lpla']) + 1, order2.index(NAME['lpla']) + 1
+        # 完整位次留给 Exhibit 1 与 Exhibit 4 的端点标签，「谁居首」也留给它们 ——
+        # 位次表本身不是解读（本页第一句的职责是「能不能比」而不是「谁更强」），
+        # 只有 LPL 那一处**名次会翻**才是。
+        a0, a1 = cn(r0, ordinal=True), cn(r1, ordinal=True)   # 序数写「第二」不是「第两」
+        s2 = '客户资产 y/y（单月）剔并购（还原口径）后 LPL '
+        s2 += (f'从第{a0}掉到第{a1}、与 {order2[r1 - 2]} 换位。' if r1 > r0
+               else f'仍居第{a1}。')
+    else:
+        # 早年的月份 y/y 根本凑不齐（Schwab 2018-05 起、LPL 2018-07 起、HOOD 2023-04 起，
+        # 各自要满 12 个月才有分母）。那时这一句改说「谁还进不了这个横比」——
+        # 这仍是「能不能比」，比硬凑一个两家的名次表有用。
+        young = [NAME[t] for t in ('schw', 'lpla', 'ibkr', 'hood')
+                 if t in HAS and NAME[t] not in yy]
+        if young and yy:
+            s2 = (f'客户资产 y/y（单月）这个月只有{cn(len(yy))}家算得出，{"、".join(young)} '
+                  f'的 12 个月前分母还缺，横比先看水平值。')
+        elif len(order) >= 2:
+            # 还原口径算不出来（缺 LPL 的分母）时，只报能报的两端，不写半句还原
+            s2 = f'客户资产 y/y（单月）里 {order[0]} 居首、{order[-1]} 垫底。'
+
+    # ── R2 基数护栏：有机增速上月落在全样本底部，本月的环比要对着它读 ──────
+    # 这里刻意不报环比（本页规矩：流量类不算环比百分比，比率类的 m/m 用 pp 且已在
+    # Exhibit 1 里印过），只报**排名** —— 排名才是「环比看着猛」的解释。
+    # 「跌到 / 回升」这类方向词一律不写：它们描述的是上上月→上月、上月→本月的走向，
+    # 而句子里给的是名次，两者下个月未必同向（一家升一家跌时「同时跌到」就是假话）。
+    # 名次排在 {t}_org（单月年化）上，不是 {t}_org_roll —— 本轮起两个口径并存，
+    # 句子里点名「单月年化」，免得读者拿图注里的滚动读数来核名次。
+    ORG = [(t, f'{t}_org') for t in ('schw', 'lpla')
+           if t in HAS and f'{t}_org' in df.columns and np.isfinite(df[f'{t}_org'].loc[latest])]
+    rows = []
+    for t, c in ORG:
+        a = df[c].values
+        n = fin(a)
+        be = B.base_effect(a, i)
+        if be['prev_rank'] is None or be['rank'] is None or n < 2:
+            continue                       # 上月缺值：这一家不进句子，而不是让整页失败
+        rows.append((NAME[t], n, be['prev_rank'], be['rank']))
+    s3 = ''
+    if rows:
+        # 「第 65/96」把名次与样本长度绑成一个自足的词 —— 各家序列长度不同，
+        # 光给名次没法比。名次与年化与否无关（同一条序列同乘 12），故省掉「年化」两个字
+        # 的旧做法本轮撤销：滚动口径上线后「有机增速」一个词对着两条序列，
+        # 「单月年化」四个字就是消歧义的口径标注，不能省。
+        #
+        # 排法从「公司名一串、上月名次一串、本月名次一串」改成**一家一段**：原来的
+        # 「Schwab、LPL … 上月同落全样本倒数第 7、4，本月仍只第 65/96、77/94」要读者
+        # 在三串并列之间来回 zip 才知道哪个数属于谁，是全段最难读的一句。
+        # 两个月都用同向的「第 x/n」（不再上月说倒数、本月说正数）：一句话里换一次
+        # 方向，读者就得先判断这个名次是从哪头数起。
+        #
+        # 句尾那个 all() 算出来的「仍只」一并去掉：一个词同时替两家下结论，
+        # 一升一降的月份必然对其中一家失真，而「第 65/96」本身已经把高低说清楚了。
+        s3 = ('基数：有机增速（单月年化，推导值）的全样本名次，'
+              + '；'.join(f'{nm} 上月第 {prv}/{n}、本月第 {cur}/{n}'
+                          for nm, n, prv, cur in rows) + '。')
+
+    # ── 口径背离（R1 + R4）：绝对额与归一化占比同月一个到顶、一个到底 ─────
+    # 「创新高 / 却 / 最低」全部挂在当月名次上。绝对额未必每月都在最前、占比也未必
+    # 每月都在最后，任何一个写死的方向词都会在某个月与它自己引用的数字打架。
+    cash, ast = df['ibkr_cash'].values, df['ibkr_assets'].values
+    cpct = df['ibkr_cash_pct'].values
+    s4 = ''
+    if i >= 12 and B.need(cash[i], cash[i - 12], ast[i], ast[i - 12], cpct[i]):
+        pu = B.per_unit(cash, ast, i, scale=100.0)
+        n_c, n_p = fin(cash), fin(cpct)
+        r_hi, r_lo = B.rank_of(cash, i), B.rank_of(-cpct, i)
+        # T3：绝对额若几乎只增不减，「N 个月最高」每月都成立，是噪音不是信息
+        mono = B.is_monotonic(cash)
+        top = f'创 {n_c} 个月新高' if (r_hi == 1 and not mono) else f'排{B.top_pct(r_hi, n_c)}'
+        # 两条回溯长度相同才叫「同期」：那才准确说出「同一段历史里一个到顶、一个到底」
+        bot = (('落到同期最低' if (r_hi == 1 and n_c == n_p and not mono)
+                else f'落到 {n_p} 个月最低')
+               if r_lo == 1 else f'在倒数{B.top_pct(r_lo, n_p)}')
+        diverge = not mono and r_hi / n_c <= 1 / 3 and r_lo / n_p <= 1 / 3
+        s4 = f'IBKR 现金绝对额{top}、占比{"却" if diverge else "则"}{bot}'
+        # R4：只报两个增速之商，不做「一半分子一半分母」的比例拆分（那在数学上就是错的）
+        if B.need(pu.get('yoy'), pu.get('num_yoy'), pu.get('den_yoy')):
+            # 落点按**两个增速的大小关系**分支，不是只按分子的正负。
+            # 原来写的是「分子涨就叫摊薄」：历史重放里 113 个可算月份中有 22 个
+            # （2022 全年、2020-03/04 等）分母同比是负的，占比其实在升，句子却紧挨着
+            # 「现金 +12.7% ÷ 资产 -18.9%」印出「摊薄非撤资」—— 定性词与它自己引用的
+            # 两个数字打架。摊薄的定义就是分母跑得比分子快，判据只能是 den > num。
+            n_yy, d_yy = pu['num_yoy'], pu['den_yoy']
+            land = ('分子自己在缩' if n_yy <= 0 else
+                    '摊薄非撤资' if d_yy > n_yy else '分子跑赢分母')
+            s4 += (f'（推导值，单月同比：现金 {B.pct(n_yy)} ÷ 资产 {B.pct(d_yy)}，'
+                   f'<b>{land}</b>）')
+        s4 += '。'
+        # 这里曾经再接一句 LPL 的现金占比（「亦为全样本最低，降幅 X% 来自 Commonwealth
+        # 并表当月」）。撤掉的理由见本函数 docstring 的「分寸」：同一个指标换第二家讲
+        # 是逐家展开，读者拿到的是第二个例子而不是第二个层次。
+        # **要写回来就得连着还原一起写回来**：LPL 的占比分母被并表机械摊薄，
+        # 极值断言必须先用 acq_roll12() 剔掉滚动 12 个月的 Acquired NNA 再判，
+        # 还原后不成立就不许写「最低」。
+
+    # ── R1 的横截面变体：「谁在峰值」受各家披露起点长短左右 ──────────────
+    MG = [(NAME[t], f'{t}_mgn_pct') for t in ('schw', 'ibkr', 'hood')
+          if t in HAS and f'{t}_mgn_pct' in df.columns and np.isfinite(df[f'{t}_mgn_pct'].loc[latest])]
+    pk = B.peak_scan(MO, [(nm, df[c].values) for nm, c in MG], i)
+    ln = {nm: fin(df[c].values) for nm, c in MG}
+    at, off = pk['at_peak'], pk['off_peak']
+    # 分母用**真扫过的条数**，不是 len(MG)：被 skip_monotonic 剔掉的那条既不在 at_peak
+    # 也不在 off_peak，拿 len(MG) 当分母会让「三条里只有一条」的三与实际扫描数对不上。
+    n_scan = len(at) + len(off)
+    # 被剔掉的必须点名。否则某家一旦越过 is_monotonic 的 0.9 阈值（Schwab 实测 0.875，
+    # 只差 0.025），它会静悄悄从扫描里消失，而句子仍在替它下结论。
+    skip = f'（{"、".join(pk["skipped"])} 几乎只增不减，未入扫描）' if pk['skipped'] else ''
+    s5 = ''
+    if at and off:
+        nm_at = min(at, key=lambda x: ln[x])           # 历史最短的那条：「在峰值」最不值钱
+        ref, refm = max(off, key=lambda x: ln[x[0]])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）'
+              f'{B.quant(len(at), n_scan, "条")}在自身峰值：{nm_at} 仅 {ln[nm_at]} 个月，'
+              f'{ref} 的 {ln[ref]} 个月峰值在 {refm}{skip}。')
+    elif off and n_scan == 1:
+        # 只剩一条时不写「一条里无一条」：那句话读起来像模板没拼好
+        ref, refm = off[0]
+        s5 = (f'融资余额占比（推导值）本月只有 {ref} 一条有数{skip}，'
+              f'它也不在自身峰值 —— 峰值停在 {refm}。')
+    elif off:
+        ref, refm = max(off, key=lambda x: ln[x[0]])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）里无一条在自身峰值{skip}，'
+              f'历史最长的 {ref} 峰值停在 {refm}。')
+    elif at:
+        nm_at = min(at, key=lambda x: ln[x])
+        s5 = (f'{cn(n_scan)}条融资余额占比（推导值）本月全部在自身峰值{skip}，'
+              f'但最短的 {nm_at} 只有 {ln[nm_at]} 个月历史 —— 长短不同不是同一件事。')
+
+    return B.render([s1, s2, s3, s4, s5])
+
+
+BRIEF = compose_brief(df, LATEST)
 
 payload = {
     'ticker': 'wealth',
@@ -1194,6 +1682,9 @@ payload = {
                  f'（短板 {LAG}）· 版式沿用 Goldman Sachs GIR 的 monthly-metrics 体例 · '
                  '仅图表，无观点'),
     'headline': headline,
+    # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+    # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+    'brief': BRIEF,
     'hub_line': (f'共同最新月 {mlab(LATEST)}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）· '
                  f'{len(HAS)} 家 · {len(ex)} 张图'),
     'source': SRC,

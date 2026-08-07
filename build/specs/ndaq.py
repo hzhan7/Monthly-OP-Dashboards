@@ -12,7 +12,102 @@
 列名全部对着 `head -1 series/ndaq.csv` 逐字核过（14 列，251 个月，2005-09..2026-07）。
 注意：侦察稿里的 vol_us_matched_shares_mm / us_trading_days / us_*_shares_bn 等名字
 **都不是最终列名**，fetcher 落库时改过；docs/verify/_design.md 里引用的也是旧名。以 CSV 为准。
+
+━━ 📌 本页做不了量价分解：金额与股数分属两个法域 ━━━━━━━━━━━━━━━━━━━━━━━
+量价分解要一对**同口径**的（金额，数量）。本表唯一的金额列是
+`vol_nordic_cash_value_usdbn`（**北欧 + 波罗的海**现货成交额），
+而全部股数列（`vol_us_cash_*_sh` 四条 + `vol_us_cash_matched_mnsh`）都是**美国**的。
+两者相除得到的是「北欧的钱 ÷ 美国的股」—— 不指代任何东西，连量纲都是拼出来的。
+📌 **不许相除。**缺的是列不是口径：Nasdaq 既不发美股的成交金额，也不发北欧的成交股数。
+
+（北欧那一侧连「成交额 + 成交股数」都凑不齐：`vol_nordic_derivs_mmcontracts` 是
+衍生品张数，配的是衍生品不是现货。美股那一侧的四条股数列则一条金额都没有。）
 """
+
+import csv
+import os
+
+_CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), 'series', 'ndaq.csv')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 图注里要报的数**一个都不写死**：在 import 期从 series/ndaq.csv 现算。
+# 读不到就退回不含数字的定性版本 —— 缺文件不许在 import 期抛异常，
+# 否则 monthly_run 会因为一张页的配置炸掉整批。
+# ══════════════════════════════════════════════════════════════════════════════
+def _rows():
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            return list(csv.DictReader(fh))
+    except OSError:
+        return []
+
+
+def _num(r, col):
+    try:
+        v = r[col].strip()
+    except (KeyError, AttributeError):
+        return None
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _span(col):
+    """该列的 (首月, 末月, 有值月数)；算不出返回 (None, None, 0)。"""
+    ms = [r['month'] for r in _rows() if _num(r, col) is not None]
+    return (ms[0], ms[-1], len(ms)) if ms else (None, None, 0)
+
+
+def _tradingday_spread():
+    v = [d for d in (_num(r, 'trading_days_us_equities') for r in _rows()) if d]
+    if not v:
+        return None, None, None
+    return min(v), max(v), (max(v) / min(v) - 1.0) * 100.0
+
+
+_A0, _A1, _AN = _span('vol_us_cash_matched_mnsh')          # A 组（IR PDF）
+_B0, _B1, _BN = _span('vol_us_cash_matched_nasdaq_sh')     # B 组（nasdaqtrader）
+_DMIN, _DMAX, _DSPR = _tradingday_spread()
+
+_NO_DECOMP_NOTE = (
+    '📌 <b>本页不具备量价分解的数据条件 —— 金额与股数分属两个法域。</b>'
+    '量价分解要一对<b>同口径</b>的（金额，数量）。本表唯一的成交金额列是 '
+    '<code>vol_nordic_cash_value_usdbn</code>（<b>北欧 + 波罗的海</b>现货成交额），'
+    '而全部股数列都是<b>美国</b>的。两者相除得到的是「北欧的钱 ÷ 美国的股」，'
+    '不指代任何东西，连量纲都是拼出来的。<b>不许相除。</b>'
+    '北欧那一侧自己也凑不齐：<code>vol_nordic_derivs_mmcontracts</code> 是衍生品张数，'
+    '配的是衍生品不是现货；美股那一侧的四条股数列则一条金额都没有。'
+    '缺的是列不是口径 —— Nasdaq 既不发美股的成交金额，也不发北欧的成交股数。'
+)
+
+_NOTE_TTM = (
+    '<b>这张图用的是本页历史最长的一条流量序列</b>'
+    + (f'（<code>vol_us_cash_matched_nasdaq_sh</code>，{_B0} 起 {_BN} 个月）'
+       if _B0 else '')
+    + '，而不是 IR 月报那条'
+    + (f'（<code>vol_us_cash_matched_mnsh</code>，{_A0} 起只有 {_AN} 个月）'
+       if _A0 else '')
+    + '。理由很硬：12 个月滚动同比要两个不重叠的 12 个月窗口，'
+      '也就是至少 24 个月的连续历史 —— IR 那条<b>还不够</b>，'
+      '在它攒够之前，本页任何滚动同比都只能画在 nasdaqtrader 这条上。'
+
+      '<b>为什么这一列不在上面的分组里。</b>它的单位是裸股数/月、量级 10¹¹，'
+      '唯一能读的显示方式是 ×1e-9 换成「十亿股/月」；而底座给带 scale 的列生成的'
+      '<b>核对表脚注</b>写死成「源表是 0–1 的小数比率，本页统一按百分数显示」——'
+      '对这种非比率列会在页面上印出一句假话。'
+      '滚动同比这类图<b>不走核对表那条路径</b>，所以在这里用 scale 是安全的；'
+      '等底座把那句脚注一般化之后，这一列可以一并加回上面的分组。'
+    + (f'<b>为什么非要滚动。</b>美股每月 {_DMIN:.0f}–{_DMAX:.0f} 个交易日，'
+       f'两端相差 {_DSPR:.0f}%；「当月合计股数」的单月同比里有一大截只是'
+       f'「今年这个月比去年多开 / 少开了几天市」。任意连续 12 个月覆盖同一套日历。'
+       if _DSPR is not None else '')
+    + '<b>柱与线取自同一列</b>（当月合计），没有任何「日均还原成合计」的步骤。'
+)
 
 # ── 本页最要命的一件事：两组数据的发布节奏差一周多 ─────────────────────────
 # A 组（IR Monthly Reporting Sheet PDF，4 列）：次月第 6~8 个日历日发布，只有 19 个月，
@@ -52,7 +147,12 @@ SPEC = {
 
     'groups': [
         # ── A 组：IR 月报口径，权威值，但只有 2025-01 起 19 个月。
-        {'zh': '美国市场（IR 月报口径，当月总量）', 'cols': [
+        # 两列两个单位 ⇒ 两个单桶 ⇒ 两张 gs_bar，次轴都是**单月同比**。
+        # 这两列只有 2025-01 起 19 个月，**够不到滚动同比所需的 24 个月**
+        # （两个不重叠的 12 个月窗口），所以单月同比在这里不是取舍而是唯一可行的口径。
+        # 契约允许用单月同比，条件是标题里声明（CONTRACT.md §6）⇒ 口径写进组名。
+        # 等这两列攒够 24 个月（约 2026-12），应改用 ttm_yoy 并把声明去掉。
+        {'zh': '美国市场（IR 月报口径，当月总量；次轴：单月同比）', 'cols': [
             {'col': 'vol_us_options_mmcontracts', 'zh': '美股期权成交量（六所合计，含指数期权）',
              'unit': 'mn contracts/month', 'fmt': 'f0c'},
             {'col': 'vol_us_cash_matched_mnsh', 'zh': '美股 matched 成交股数（Nasdaq+NTX+PSX）',
@@ -64,7 +164,8 @@ SPEC = {
         #    × EURUSD 1.1518 ≈ $379bn/月 —— Cboe 是 Nasdaq 的 4.1 倍。
         #    Nasdaq 自报的「欧洲份额 74.5%」是北欧/波罗的海本地分母，与 Cboe 的泛欧份额
         #    不是同一个市场。所以只放绝对值，不放份额（CSV 里也没有份额列）。
-        {'zh': '北欧与波罗的海市场（Nordic + Baltic 口径，当月总量）', 'cols': [
+        # 同上：两列两个单位、同样只有 19 个月，滚动同比算不出来 ⇒ 口径写进组名。
+        {'zh': '北欧与波罗的海市场（Nordic + Baltic 口径，当月总量；次轴：单月同比）', 'cols': [
             {'col': 'vol_nordic_cash_value_usdbn', 'zh': '北欧+波罗的海现货成交额',
              'unit': 'USD bn/month', 'fmt': 'f1'},
             {'col': 'vol_nordic_derivs_mmcontracts', 'zh': '北欧+波罗的海期权与期货成交量',
@@ -120,7 +221,27 @@ SPEC = {
     # 写成断点会在 187 个月的图上画出四条与口径无关的红线。
     'breaks': [],
 
+    # 📌 'decomp' 刻意留空：金额列在北欧、股数列在美国，跨法域相除没有经济含义。
+    # 完整理由见 _NO_DECOMP_NOTE（它进了下面 notes 的第一条）。
+
+    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # ⚠ level 用的是 vol_us_cash_matched_nasdaq_sh 而**不是** IR 那条 ——
+    #   IR 那条只有 19 个月，滚动同比要 24 个月（两个不重叠的 12 个月窗口），画不出来。
+    # ⚠ 这一列**不在** groups 里（理由见上面的注释：底座给带 scale 的列生成的
+    #   核对表脚注对非比率列是假话）。ttm_yoy 不走核对表那条路径，所以这里用 scale 安全。
+    #   底座只校验它真实存在于 CSV，不会把它塞进核对表 ⇒ 那句假话不会被印出来。
+    'ttm_yoy': [{
+        'zh': 'The Nasdaq Stock Market 美股 matched 成交股数',
+        'granularity': 'monthly_total',   # 官方 xlsx 发的就是当月合计裸股数
+        'level': {'col': 'vol_us_cash_matched_nasdaq_sh', 'zh': '当月 matched 成交股数',
+                  'unit': 'bn shares/month', 'fmt': 'f1', 'scale': 1e-9},
+        # 不给 total_col / weight_col：level 那一列本身就是当月合计，柱与线同口径。
+        'note': _NOTE_TTM,
+    }],
+
     'notes': [
+        _NO_DECOMP_NOTE,
+
         '本页有两个数据源、两种发布节奏。<b>A 组</b>（美国期权、美股 matched、北欧两列）来自 Nasdaq IR 的 '
         'Monthly Reporting Sheet PDF，次月第 6~8 个日历日发布，是官方权威值；'
         '<b>B 组</b>（成交股数、份额、交易日）来自 nasdaqtrader.com 的月度市占率 xlsx，'

@@ -34,43 +34,21 @@
   function el(id) { return document.getElementById(id); }
   function set(id, text) { var n = el(id); if (n) n.textContent = text; }
 
-  /* ── 顶部导航：21 张页（12 家交易所 + 9 家其它公司 + 7 张横截面）。
-        roster 由 build/roster.py 生成，带各家的数据月份，停更的一眼看得出来（不靠人记）。
-
-     **导航排成几行由 roster 的 g.row 决定，不靠 flex-wrap 自动折行。**
-     原来整条导航是一个 flex 容器、靠 wrap 换行；交易所从 3 家扩到 12 家之后，
-     折行断点随窗口宽度乱跳 —— 「交易所」这个标签可能落在上一行末尾，它的 12 个
-     ticker 散在两行里，中间还夹着「数据与指数」。分组标签全在，分组信息没了。
-     所以改成 roster 说第几行就第几行：交易所独占一行，横截面独占一行。
-     row 缺失时落到第 1 行 —— 老 roster.js 与新 page.js 撞上时退化成原来的一整条，
-     不至于白屏（发布顺序不可控，data/ 与 assets/ 是两次 commit）。 ── */
+  /* ── 顶部导航：12 家 + 2 张横截面页。roster 由 build_all.py 生成，
+        带各家的数据月份，停更的一眼看得出来（不靠人记）。 ── */
   function nav() {
     var R = window.ROSTER;
     if (!R) return '';
-    var here = D.ticker, order = [], byRow = {};
+    var here = D.ticker, h = '<nav class="nav">';
     R.groups.forEach(function (g) {
-      var k = g.row || 1;
-      if (!byRow[k]) { byRow[k] = []; order.push(k); }
-      byRow[k].push(g);
-    });
-    order.sort(function (a, b) { return a - b; });
-    var h = '<nav class="nav">';
-    order.forEach(function (k, i) {
-      h += '<div class="navrow">';
-      byRow[k].forEach(function (g) {
-        h += '<span class="ng">' + g.label + '</span>';
-        g.items.forEach(function (it) {
-          var cur = it.ticker === here;
-          h += '<a class="' + (cur ? 'on' : '') + '" href="' + (cur ? '#' : '../' + it.ticker + '/') +
-               '" title="' + it.name + ' · 数据截至 ' + (it.through || '—') + '">' + it.label + '</a>';
-        });
+      h += '<span class="ng">' + g.label + '</span>';
+      g.items.forEach(function (it) {
+        var cur = it.ticker === here;
+        h += '<a class="' + (cur ? 'on' : '') + '" href="' + (cur ? '#' : '../' + it.ticker + '/') +
+             '" title="' + it.name + ' · 数据截至 ' + (it.through || '—') + '">' + it.label + '</a>';
       });
-      /* 「总览」只出现一次，挂在第一行右端（CSS 的 margin-left:auto）。
-         挂在最后一行的话，行数一变它就换位置；第一行是唯一稳定的锚点。 */
-      if (i === 0) h += '<a class="home" href="../">总览</a>';
-      h += '</div>';
     });
-    return h + '</nav>';
+    return h + '<a class="home" href="../">总览</a></nav>';
   }
 
   var head = el('head-slot');
@@ -89,6 +67,16 @@
   set('h1', D.title);
   set('sub', D.subtitle);
   set('headline', D.headline);
+
+  /* ── 数据总结（brief）──
+     一行数据条给的是**读数**，这一段给的是**读数该怎么读**：基数效应、口径背离、
+     所处区间。两者职责不同，所以没有并进 headline。
+     文字整段在 Python 侧拼好（同 CONTRACT：页面不做计算，也不做措辞判断）。
+     生成器没给 brief 的页面保持 hidden，不会留下一个空框。 */
+  if (D.brief) {
+    var bn = el('brief');
+    if (bn) { bn.innerHTML = D.brief; bn.hidden = false; }
+  }
 
   /* ── Exhibit 1：汇总表 ──
      不进 charts.js：那份文件是 SVG 绘图内核，塞 HTML 表格进去会让它同时承担两种职责。 */

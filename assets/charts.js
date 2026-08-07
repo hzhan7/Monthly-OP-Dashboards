@@ -151,6 +151,28 @@
     t.textContent = s;
     return t;
   }
+  /* 文字的**渲染**外接框（user 单位）。getBBox() 不含元素自身的 transform，而这套图里
+     竖排的标签（断点标签、截轴真值、x 轴月份）全是 rotate(±90 cx cy) —— 不还原的话
+     拿到的是「把它横过来摆」的框，长宽正好互换，用它去判压字必然算错。
+     只解析 rotate(角度 cx cy) 这一种形式：引擎里所有 transform 都是这个形式，
+     多解析一种就是多一处没有调用方的死代码。量不到（卡片 display:none）时返回 null。 */
+  function textRect(t) {
+    var b, m;
+    try { b = t.getBBox(); } catch (e) { return null; }
+    if (!b || !b.width || !b.height) return null;
+    m = /rotate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)[ ,]+(-?[\d.]+)/.exec(t.getAttribute('transform') || '');
+    if (!m) return { x: b.x, y: b.y, w: b.width, h: b.height };
+    var a = +m[1] * Math.PI / 180, cx = +m[2], cy = +m[3],
+        co = Math.cos(a), si = Math.sin(a), xs = [], ys = [], i, dx, dy,
+        P = [[b.x, b.y], [b.x + b.width, b.y], [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]];
+    for (i = 0; i < 4; i++) {
+      dx = P[i][0] - cx; dy = P[i][1] - cy;
+      xs.push(cx + dx * co - dy * si); ys.push(cy + dx * si + dy * co);
+    }
+    return { x: Math.min.apply(null, xs), y: Math.min.apply(null, ys),
+             w: Math.max.apply(null, xs) - Math.min.apply(null, xs),
+             h: Math.max.apply(null, ys) - Math.min.apply(null, ys) };
+  }
 
   function ticks(min, max, count) {
     if (!isFinite(min) || !isFinite(max)) { min = 0; max = 1; }
@@ -483,8 +505,12 @@
         var fc = ok ? sc.at(+v) : C.GRID;
         var rc = el('rect', { x: x.toFixed(2), y: y.toFixed(2), width: cw.toFixed(2),
           height: chh, fill: fc, stroke: C.WHITE, 'stroke-width': 1.1 }, g);
+        /* halo:false 是必须的，不是省事 —— txt() 默认给每个字加 2.4px 的**白色**描边，
+           而深色格子上 inkOn() 返回的字色也是白的：白字 + 白描边在 4.6–9px 的字号上
+           把笔画糊成一团白斑，颜色越深的格子（也就是最该被读到的极值）越读不出来。
+           格子本身是实心色块，底下没有网格线要挡，描边在这里没有任何作用。 */
         if (ok) txt(g, x + cw / 2, y + chh / 2 + fs * 0.35, fmt(+v),
-          { size: +fs.toFixed(2), fill: inkOn(fc) });
+          { size: +fs.toFixed(2), fill: inkOn(fc), halo: false });
         if (tip) (function (node, head, val, sw, cx) {
           node.setAttribute('style', 'cursor:crosshair');
           node.addEventListener('mouseenter', function () {
@@ -551,7 +577,7 @@
        末点读数按构造落在它自己那个值的轴高度上，而右轴刻度也在同一列 ——
        两者数值一接近就必然叠字（实测 6 页 18 处：'+5.0pp × +5.1pp'、'50% × 52%'…）。
        末点读数是真实数据、刻度只是标尺，冲突时让刻度让位（见 draw 末尾的 dropClashingTicks）。 */
-    var rtickEls = [], priorityLabs = [];
+    var rtickEls = [], priorityLabs = [], brks = [];
 
     var markSet = null, hatchId = null;
     if (ex.bar_marks && ex.bar_marks.length) {
@@ -1303,8 +1329,11 @@
         el('line', { x1: bx, x2: bx, y1: M.t, y2: M.t + ph, stroke: BREAK,
           'stroke-width': 1, 'stroke-dasharray': '4 3' }, g);
         var bs = bLb.length === 1 ? bLb[0] : bLb[i];
-        if (bs) txt(g, bx - 3, M.t + 3, bs, { size: 7, fill: BREAK, anchor: 'end',
-          transform: 'rotate(-90 ' + (bx - 3) + ' ' + (M.t + 3) + ')' });
+        /* 标签照老位置先画出来，但**最终落位推迟到 draw 末尾**统一做：它要避的柱值标签
+           这时才刚画完，而「左右轴零点不同高」「annot」两条说明还没画。详见末尾那段。 */
+        brks.push({ x: bx, ax: bx - 3, ay: M.t + 3,
+          el: bs ? txt(g, bx - 3, M.t + 3, bs, { size: 7, fill: BREAK, anchor: 'end',
+            transform: 'rotate(-90 ' + (bx - 3) + ' ' + (M.t + 3) + ')' }) : null });
       }
     }
     /* 截轴说明贴右上角：被截的通常是早期的低基数尖峰（图左侧），
@@ -1339,6 +1368,70 @@
       else
         txt(svg, M.l + pw - 3, M.t + ph - 7, ex.annot, { size: 8.5, anchor: 'end' });
     }
+
+    /* ── 断点标签避让 ────────────────────────────────────────────────────
+       断点标签是一条竖排长条，从绘图区顶端挂下来贴在断点线左侧；柱值标签是横排的，
+       钉死在各自柱顶。两者按构造垂直相交 —— 实测全站 29 页 × 2 视口 42 处直接印穿
+       数字（lpla Ex9「Commonwealth」穿过 $49.5、enx 20 处穿过「23,516」这类；
+       重叠面积清一色 25.9px²，正好是两条墨迹带的完整十字交叉，不是擦边）。
+       谁让位：沿用引擎既有那条规矩 —— 读数是真实数据、注记只是标尺 —— 让注记让。
+       做法只有一个动作：沿它自己那条竖线上下平移到空白段。标签仍锚在线上，
+       「从这一期起与左侧不可比」的语义不变，只是起点不再写死在顶端。
+       为什么不用别的办法：① 只靠白色描边遮盖没用 —— 描边压不住画在它**上面**的东西；
+       ② 缩字号要跌破引擎里 4.6px 的下限，不可读；③ 加不透明底色只是把数字盖得更死。
+       为什么放在这里而不是画断点线那一段：要避的对象里有「左右轴零点不同高」和 annot，
+       它们是在断点之后才画出来的，早了就量不到。
+       放不下就原地不动 —— 挪一半仍旧压着，不如维持现状（tmx Ex14/26/27 就是这种：
+       标签 180px、竖线只有 254px，正中间还钉着一个柱值，上下两段都塞不进）。 */
+    brks.forEach(function (bk) {
+      var br = bk.el && textRect(bk.el);
+      if (!br) return;
+      var obs = [], PAD = 1.5, z;
+      svg.querySelectorAll('text').forEach(function (o) {          // 同一竖直条带上的所有文字
+        if (o === bk.el) return;
+        var q = textRect(o);
+        if (q && q.x < br.x + br.w + 0.5 && br.x - 0.5 < q.x + q.w) obs.push([q.y, q.y + q.h]);
+      });
+      var vacant = function (yy) {
+        for (var j = 0; j < obs.length; j++)
+          if (yy < obs[j][1] + PAD && obs[j][0] - PAD < yy + br.h) return false;
+        return true;
+      };
+      if (vacant(br.y)) return;              // 本来就不压：一个属性都不改（输出逐字节不变）
+      /* 候选位置只取「紧贴某个障碍的上沿或下沿」—— 最优解必然贴着某个障碍，
+         逐像素扫描只是把同一个答案算得更慢。 */
+      var cand = [];
+      for (z = 0; z < obs.length; z++) { cand.push(obs[z][1] + PAD); cand.push(obs[z][0] - PAD - br.h); }
+      cand = cand.filter(function (yy) { return yy >= M.t + 1 && yy + br.h <= M.t + ph - 1; });
+      cand.sort(function (a, b) { return Math.abs(a - br.y) - Math.abs(b - br.y); });   // 挪得越少越好
+      for (z = 0; z < cand.length; z++) if (vacant(cand[z])) {
+        var ny = +(bk.ay + (cand[z] - br.y)).toFixed(2);
+        bk.el.setAttribute('y', ny);
+        bk.el.setAttribute('transform', 'rotate(-90 ' + bk.ax + ' ' + ny + ')');
+        return;
+      }
+    });
+    /* 挪不开的（以及被断点竖线本身划穿的）柱值标签，改用 z 序保命：把它 appendChild
+       回 g 的末尾，它自带的白色描边就能在红字/红虚线上打个洞，数字先保住。
+       断点线是「放在系列之后画」才压得住柱和折线的，代价就是也压在数值标签上面
+       —— lpla Ex9 的 $45.8 就是被这条虚线拦腰划断的，不是被标签压的。
+       手法与上面 y/y 那段一样（appendChild 已有节点 = 移到最后），只动 z 序、不动几何，
+       所以 QA 的重叠面积照旧记账，它解决的是「能不能读出来」而不是「有没有重叠」。
+       只提横排文字：竖排的都是红色注记，互相盖不出可读性问题。 */
+    brks.forEach(function (bk) {
+      var lr = bk.el && textRect(bk.el);
+      g.querySelectorAll('text').forEach(function (o) {
+        if (o === bk.el || o.parentNode !== g) return;
+        if ((o.getAttribute('transform') || '').indexOf('rotate') >= 0) return;
+        var q = textRect(o);
+        if (!q) return;
+        var onLine = q.y < M.t + ph && q.y + q.h > M.t &&
+                     q.x - 0.6 <= bk.x && bk.x <= q.x + q.w + 0.6;
+        var onLab = lr && q.x < lr.x + lr.w && lr.x < q.x + q.w &&
+                    q.y < lr.y + lr.h && lr.y < q.y + q.h;
+        if (onLine || onLab) g.appendChild(o);
+      });
+    });
 
     /* 次轴末点读数 vs 右轴刻度：冲突时让刻度让位。
        末点读数按构造落在它自己那个值的轴高度上，右轴刻度也在同一列，两者数值一接近

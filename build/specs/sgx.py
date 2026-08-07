@@ -90,6 +90,69 @@ def _first_present(col):
     return None
 
 
+# GIFT Nifty 的计数口径断点月。这一条**只能写死** —— CSV 里没有任何标记列能
+# 指出它，依据是官方报告脚注「For periods prior to June 2023, volumes are
+# computed based on higher of buy and sell lots」（见 docs/verify/sgx.md 口径坑 3）。
+# 抽成常数：_breaks() 与页尾口径说明里的污染期算术都从它推，不各写一份。
+_NIFTY_BREAK = '2023-07'
+
+
+def _madd(m, k):
+    """'YYYY-MM' + k 个月。断点月的衍生日期（+11 / +23）用它算，不手写第二份日期。"""
+    y, mo = int(m[:4]), int(m[5:7]) + k
+    return f'{y + (mo - 1) // 12:04d}-{(mo - 1) % 12 + 1:02d}'
+
+
+def _yoy_gap(col):
+    """一列的单月同比 vs 12 个月滚动合计同比，全期逐月对比（全部从 CSV 现算）。
+
+    页尾口径说明引用的分歧数字都出自这里，一个数字不写死。本页的月总量列都是
+    当月合计口径，滚动合计 = 12 个月直加，无需交易日权重。「符号相反」与
+    tools/check_yoy_caliber.py 同一条死区：两侧 |同比| ≥ 0.5pp 才计
+    （贴零的正负是舍入不是方向分歧）。
+    返回 (可比月数, 符号相反月数, 分歧最大的月份, 该月单月%, 该月滚动%,
+          最新有滚动同比的月份, 该月滚动%)；算不出返回 (None,) * 7。
+    """
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            rows = list(csv.DictReader(fh))
+    except OSError:
+        return (None,) * 7
+    months = [r['month'] for r in rows]           # series/*.csv 按月升序、逐月连续
+    vals = []
+    for r in rows:
+        v = (r.get(col) or '').strip()
+        try:
+            vals.append(float(v) if v else None)
+        except ValueError:
+            vals.append(None)
+    mom, ttm = {}, {}
+    for i, m in enumerate(months):
+        a = vals[i]
+        if i >= 12 and a is not None and vals[i - 12] not in (None, 0.0) \
+                and a * vals[i - 12] > 0:
+            mom[m] = (a / vals[i - 12] - 1) * 100.0
+        if i >= 23 and all(v is not None for v in vals[i - 23:i + 1]):
+            s1, s0 = sum(vals[i - 11:i + 1]), sum(vals[i - 23:i - 11])
+            if s0 != 0 and s1 * s0 > 0:
+                ttm[m] = (s1 / s0 - 1) * 100.0
+    both = sorted(m for m in mom if m in ttm)
+    if not both:
+        return (None,) * 7
+    flips = [m for m in both
+             if mom[m] * ttm[m] < 0 and abs(mom[m]) >= 0.5 and abs(ttm[m]) >= 0.5]
+    worst = max(both, key=lambda m: abs(mom[m] - ttm[m]))
+    last = max(ttm)
+    return (len(both), len(flips), worst, mom[worst], ttm[worst], last, ttm[last])
+
+
+# 页尾口径说明用的两组实测（FTSE 台湾、新债券挂牌）。GIFT Nifty 不算这组数 ——
+# 它的全期 mom/ttm 对比会跨 2023-07 计数断点，两种口径都被污染，
+# 算出来的「分歧」混着断点效应，不能当口径论据（那张的理由是污染期算术，见 notes）。
+_GT = _yoy_gap('vol_ftse_taiwan_futures_contracts')
+_GB = _yoy_gap('new_bond_listings')
+
+
 def _breaks():
     out = []
     # 台指授权换手：MSCI Taiwan 合约到期不再续约，SGX 改挂 FTSE Taiwan。
@@ -97,11 +160,8 @@ def _breaks():
     m = _first_present('vol_ftse_taiwan_futures_contracts')
     if m:
         out.append({'month': m, 'zh': '台指授权由 MSCI 换为 FTSE，两条序列不可直连'})
-    # GIFT Nifty：2023-07 GIFT Connect 迁移，同时改了计数口径。
-    # 这一条**只能写死** —— CSV 里没有任何标记列能指出它，
-    # 依据是官方报告脚注「For periods prior to June 2023, volumes are computed
-    # based on higher of buy and sell lots」（见 docs/verify/sgx.md 口径坑 3）。
-    out.append({'month': '2023-07',
+    # GIFT Nifty：GIFT Connect 迁移，同时改了计数口径（月份常数的依据见其定义处）。
+    out.append({'month': _NIFTY_BREAK,
                 'zh': 'GIFT Connect 迁移，Nifty 计数由「买卖孰高」改为双边合计'})
     # 底座画红虚线时按索引取月份，乱序会让标签配错断点 —— 统一按月份排。
     return sorted(out, key=lambda b: b['month'])
@@ -127,7 +187,13 @@ SPEC = {
     ],
 
     'groups': [
-        {'zh': '证券市场成交', 'cols': [
+        # 三列三个单位 ⇒ 三个单桶 ⇒ 三张 gs_bar，次轴都是**单月同比**。
+        # tools/check_yoy_caliber.py 实测当月成交额 / 成交股数各有 2 / 6 个月与
+        # 滚动口径符号相反（如 2024-07 成交额单月 +23.3% vs 滚动 −3.6%）。
+        # 契约允许单月，条件是标题声明（CONTRACT.md §6）⇒ 口径写进组名。
+        # 当月总量两张保留单月是**对账视图**（官方月报 At-A-Glance 的原样数字），
+        # 「一整年在不在长」交给末尾 ttm_yoy 的两张滚动图，详见页尾口径说明。
+        {'zh': '证券市场成交（次轴：单月同比）', 'cols': [
             {'col': 'sdav_sgdmn', 'zh': '日均成交额 SDAV',
              'unit': 'S$mn/day', 'fmt': 'f0c'},
             {'col': 'sec_turnover_sgdmn', 'zh': '当月成交额',
@@ -175,13 +241,19 @@ SPEC = {
         ]},
 
         # GIFT Nifty 有 2023-07 的计数口径断点，单列一组便于配断点线。
-        {'zh': 'GIFT Nifty 50 期货（2023-07 计数口径断点）', 'cols': [
+        # 单桶 ⇒ gs_bar + 次轴**单月同比**，口径写进组名（CONTRACT.md §6）。
+        # 这张**特意不换滚动口径**：断点让滚动的污染期比单月长将近一倍
+        # （单月只有断点后 12 次比较跨口径，滚动要 23 个月后两窗才都落进新口径），
+        # 算术写在页尾口径说明，日期由 _NIFTY_BREAK 推导。
+        {'zh': 'GIFT Nifty 50 期货（2023-07 计数口径断点；次轴：单月同比）', 'cols': [
             {'col': 'vol_nifty50_futures_contracts', 'zh': 'GIFT Nifty 50 期货',
              'unit': 'contracts/month', 'fmt': 'f0c'},
         ]},
 
-        # 2020-07 起（起点与主体差 66 个月），单独一组。
-        {'zh': 'FTSE 台湾指数期货（2020-07 起）', 'cols': [
+        # 2020-07 起（起点与主体差 66 个月），单独一组。单桶 ⇒ 次轴**单月同比**，
+        # 口径写进组名；与滚动口径的分歧实测和「方向以滚动为准」的现算读数
+        # 都在页尾口径说明（_GT，从 CSV 现算）。
+        {'zh': 'FTSE 台湾指数期货（2020-07 起；次轴：单月同比）', 'cols': [
             {'col': 'vol_ftse_taiwan_futures_contracts', 'zh': 'FTSE 台湾期货',
              'unit': 'contracts/month', 'fmt': 'f0c'},
         ]},
@@ -217,10 +289,18 @@ SPEC = {
              'unit': 'companies', 'fmt': 'f0'},
             {'col': 'ipo_funds_sgdmn', 'zh': 'IPO / RTO 募资额',
              'unit': 'S$mn', 'fmt': 'f0c'},
-            {'col': 'new_bond_listings', 'zh': '当月新债券挂牌数',
-             'unit': 'listings', 'fmt': 'f0'},
             {'col': 'bond_funds_sgdmn', 'zh': '债券募资额',
              'unit': 'S$mn', 'fmt': 'f0c'},
+        ]},
+
+        # 新债券挂牌数从「发行与上市」拆出来单独成组：它是原组里唯一的
+        # listings/month 列，天然单桶 ⇒ gs_bar + 次轴**单月同比**，契约要求单月
+        # 口径写进标题（CONTRACT.md §6），而 ex_single 的标题 = 组名 + 列名
+        # ⇒ 口径写进组名。拆组不改图号：原组的 companies / S$mn 两桶在前、
+        # listings 桶在后，与拆之前的出图顺序逐张一致。
+        {'zh': '当月新债券挂牌数（次轴：单月同比）', 'cols': [
+            {'col': 'new_bond_listings', 'zh': '当月新债券挂牌数',
+             'unit': 'listings', 'fmt': 'f0'},
         ]},
     ],
 
@@ -274,6 +354,18 @@ SPEC = {
                   'unit': 'mn shares/month', 'fmt': 'f0c'},
         # 不给 total_col / weight_col：level 那一列本身就是当月合计，
         # 底座直接拿它滚 12 个月，柱与线同口径。
+    }, {
+        # 成交额的滚动趋势（2026-08-07 加）：组图 Exhibit「当月成交额」保留的是
+        # 官方当月总量 + 单月同比的对账视图，「一整年在不在长」由这张回答。
+        # 同样不给 total_col / weight_col：列本身即当月合计，直接滚。
+        # 12 个月滚动块可与官方 FYTD 对账（见文件抬头口径核查第 4 条）。
+        'zh': '证券市场成交额',
+        'granularity': 'monthly_total',
+        'level': {'col': 'sec_turnover_sgdmn', 'zh': '当月成交额',
+                  'unit': 'S$mn/month', 'fmt': 'f0c'},
+        'note': ('与上一张（证券市场成交股数）配对：额与股数各看一张滚动趋势，'
+                 '年度的量价归因见量价分解图；当月总量的单月视图'
+                 '（与官方月报逐格对账用）在「证券市场成交」组图。'),
     }],
 
     'notes': [
@@ -315,5 +407,38 @@ SPEC = {
         '未上页面的月频列：sec_trading_days（分母，且是证券市场口径）、'
         'deriv_swaps_vol_contracts（2026-06 = 7,662 张，占总量 0.02%）、'
         'vol_msci_taiwan_futures_contracts（已停发的死列，见上）。',
+
+        # 单月口径的**理由**（CONTRACT.md §6 第 2 条：用单月必须说明为什么）。
+        # 逐图的口径分类由底座的「同比口径」自动条目从 yoy_log 现算点名，本条只补
+        # 底座给不出的那半 —— 为什么这几张该用单月。Exhibit 号是结构引用：
+        # ⑥⑦ 类图一律追加在既有图之后，本页图号不会因加图而位移。
+        # 分歧数字全部现算（_GT / _GB / _madd），没有一个写死的数据数字。
+        '<b>单月口径为什么保留（Exhibit 6、7、8、13、14、20，标题均已注明'
+        '「次轴：单月同比」；逐图的口径分类见上文「同比口径」条）。</b>逐张交代：'
+        'Exhibit 7、8 画的是官方月报 At-A-Glance 的<b>当月总量原样数字</b>，'
+        '本页拿它与官方披露逐格对账，单月同比与柱逐月对得上；'
+        '「一整年在不在长」看同两列的滚动口径 —— 成交股数 Exhibit 27、'
+        '成交额 Exhibit 28，两种口径分歧有多大由那两张的图注按本序列实测。'
+        f'Exhibit 13（GIFT Nifty）：{_NIFTY_BREAK} 计数口径断点让滚动口径的'
+        f'污染期比单月长将近一倍 —— 单月同比只有 {_NIFTY_BREAK} 至 '
+        f'{_madd(_NIFTY_BREAK, 11)} 的比较跨断点，而 12 个月滚动合计要到 '
+        f'{_madd(_NIFTY_BREAK, 23)} 起两个窗口才都落进新口径、此前至少一个窗口'
+        f'混着「买卖孰高」旧口径，所以这张保留单月。'
+        + (f'Exhibit 14（FTSE 台湾）：全期实测单月与滚动符号相反 {_GT[1]} 个月'
+           f'（{_GT[0]} 个可比月），分歧最大的 {_GT[2]} 单月 {_GT[3]:+.1f}% vs '
+           f'滚动 {_GT[4]:+.1f}%；单月视图读逐月的竞争动态（与 GIFT、A50 各图'
+           f'同窗对照），方向判断以滚动口径为准 —— {_GT[5]} 的滚动同比 '
+           f'{_GT[6]:+.1f}%（现算）。'
+           if _GT[0] else
+           'Exhibit 14（FTSE 台湾）：单月视图读逐月的竞争动态，'
+           '方向判断以滚动口径为准。')
+        + (f'Exhibit 20（新债券挂牌）：逐月的发行事件计数，单月同比天生毛刺大 —— '
+           f'全期实测与滚动符号相反 {_GB[1]} 个月（{_GB[0]} 个可比月）；'
+           f'方向判断以滚动口径为准 —— {_GB[5]} 的滚动同比 {_GB[6]:+.1f}%（现算）。'
+           if _GB[0] else
+           'Exhibit 20（新债券挂牌）：逐月的发行事件计数；'
+           '方向判断以滚动口径为准。')
+        + '「符号相反」的统计与 tools/check_yoy_caliber.py 同一条死区：'
+          '两侧 |同比| ≥ 0.5pp 才计。',
     ],
 }

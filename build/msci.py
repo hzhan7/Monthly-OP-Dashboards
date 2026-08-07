@@ -25,8 +25,11 @@ import os
 import re
 
 import axisfmt
+import brief as B    # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
+import numpy as np   # 只用于口径对照那一段的统计量（标准差 / 相邻月跳变）
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
+import yoy as Y      # 同比口径的唯一实现（build/yoy.py）：本页的口径选择要拿它实测出来
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -157,6 +160,166 @@ def read_rates():
     if not bp:
         raise SystemExit('series/fee_rates.csv 里没有 MSCI 的有效费率')
     return bp, rev, disc
+
+
+# ────────────────────────── 顶部 brief（headline 之下、Exhibit 1 之上） ──────────────────────────
+def compose_brief(months, EOP, AVG, brk):
+    """MSCI 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R4 单位恒等 /
+    R5 标注 / R6 有效位），那边只算事实，句子在这里拼 —— 措辞是口径的一部分，属于各家自己。
+    每个数字都当场从序列算，**一处硬编码都没有**：读数、排名、出现次数下个月重跑都会自己变。
+
+    ═══ 分寸 ═══
+    以 `build/ibkr.py::compose_brief()` 为准：四句话四个层次，每句一个意思。本页的四层是
+    规模（两条口径各自的位置）/ 基数（上月读数把这个环比顶成了什么样）/ 口径背离（月末快照
+    与月均积分劈叉，费基跟的是后者）/ 标注（新高含金量 + 推导值 + 口径断点）。
+    回撤深度、收复用时、「第几快」、组合出现次数这类统计**已经越线**，不写 —— 它们让这段
+    读起来像研究报告摘要而不是一段导读。
+
+    ═══ 与本页 2026-08 同比口径改造的关系（移植时的口径适配）═══
+    远端写这一段时页尾还没有「同比口径逐处点名」那条 note；本地已把全页定为
+    **每一处都是点对点（单月）同比**（理由在页尾 note 里逐条实测，没有一张图用
+    12 个月滚动口径）。适配照 schw / ibkr 的先例：
+      · s2 引用的同比标「单月」（§6.1 第 2 条的正文版）—— 本页图上、汇总表、核对表
+        全是同一口径，标注不是为了区分两种口径，是让 brief 与全页措辞统一，
+        读者拿它对 Exhibit 2 的金线与汇总表 y/y 列能逐格对上。
+      · 「只看环比会误读成趋势反转」说的是**环比的读法**（R2 的本职），不是拿单月
+        同比另立一条趋势 —— 对存量序列，点对点同比就是本页实测选定的口径
+        （页尾 note ①：窗口内没有一个月与滚动均值口径方向相反）。
+      · 本页核心算术「费收 ≈ 平均 AUM × 有效费率」已判定**费收不改滚动口径**
+        （换了口径，Exhibit 12 的缺口会把口径差读成费率压缩）。本段引的只有
+        AUM 两列的水平、排名与单月环比同比，**不引隐含费收与费率的任何读数** ——
+        哪天要引，三者必须同口径（全部点对点），否则同一段里就会出现
+        `single.caliber_audit` 专拦的那种互斥断言。
+
+    ═══ MSCI 独有，别家不能照抄 ═══
+      · 本页只有两列，且**两列都是水平值**：月末时点（eop）与当月月均（avg）。它们不是
+        「当月合计量」，所以 **R3 日历护栏在这里根本不成立** —— 再除一次交易日会造出一个
+        不存在的修正（brief.py 头部列的第一个坑）。同理这页没有任何分子/分母对，R4 也不用。
+      · 这一家真正的口径背离是**同一个量的两种时间口径**：月末是快照、月均是月内积分，
+        而 asset-based fee 计提在**月均**那条线上（页尾 notes 第 2 条）。只读 headline 里
+        月末那半句会把一个仍在扩张的费基读成收缩。别家的背离是「总量涨/单位量跌」，
+        这里不是，句子不能照搬。这一层占的是模板里「日历」那一格 —— 本页没有日历效应。
+      · **两条口径的差只能说到「月内节奏」为止**：这是第三方 ETF 的资产规模，环比里同时
+        含市场涨跌与净流入两部分，而本序列不拆分（Exhibit 3 的图注就是这么写的）。所以
+        「不是资金掉头 / 不是净流出」这类话本段一律不许出现 —— 两列水平值推不出资金流向，
+        写了就是替读者拆了一次它自己声明不拆的东西。措辞上也要绕开「掉头」这类会被读成
+        资金流向的词：句子只说「趋势反转」这种关于**读数本身**怎么读的话。
+      · 口径断点：AUM 是随市值走的第三方资产规模，没有交易日、没有公司重述，唯一的历史
+        断点是 2019-04 的数据供应商切换（Bloomberg → Refinitiv），而全样本排名跨在它两侧
+        —— 所以末句必须点出「更早月份不完全同口径」，这句话是本页专有（断点滚出序列时
+        该从句自动消失）。「（推导值）」同理：排名与次数都是本站按公司披露的两列水平值
+        算的，为省字删掉标注不是精简，是不诚实。
+      · T3 的处理：两列都**不是**单调序列（逐月上升占比约 0.65 / 0.70，低于 is_monotonic
+        的 0.9 阈值），故「创新高」在这里是信息不是噪音；但含金量要按当场算出的新高月占比
+        折价（≤1/3 才叫稀缺），而不是把「又创新高」当结论、也不是写死「要打折」。
+        「创新高」的判据全段只有一处：`pos_txt()` 里的 `rank == 1`（rank_of 只数严格大于者，
+        故它与末句 nh 计数的 `>=` running-max 是同一个约定）。**不再走 peak_scan**：它的
+        skip_monotonic 会在早期截断段把月均整列跳过，于是 at_peak 说「没创新高」而同页
+        rank==1 说「创新高」—— 一页两个「峰值」定义，正是 brief.py 警告的那种漂移。
+      · 反向指标（T2）在本页没有：AUM 与费基都是越高越好，故各处排名一律正向。
+      · 「所处区间」为什么用**全样本排名**而不是分位：Exhibit 1 的 3Y %ile 只看近 36 个月，
+        且这两行常被 `pctile.py` 判为「近两年恒定在区间端点、无区分度」而留空 —— 于是整页
+        没有任何一处给出位置。排名（第几高、`B.top_pct` 的前百分之几）与「新高月占比」
+        是本页唯一可用的取位工具。
+      · 与 headline / Exhibit 1 的重叠：读数与环比同比允许出现，但只能作为**这一句的论据**
+        （样板 ibkr 的第二句就是这么写的：「环比从 6 月 190.3 千户跌 30.7%…同比 +42.6%」）。
+        禁的是无论据的罗列 —— 把表里的格子逐个念一遍那叫复述式摘要，不叫导读。
+    """
+    n, i = len(months), len(months) - 1
+    eop = [EOP[k] for k in months]
+    avg = [AVG[k] for k in months]
+
+    # ── R2：两条口径各自的基数护栏。conflict=True 时必须说基数，否则一个由上月极值造出来的
+    #    环比会被读成趋势反转 —— 本页 headline 印的正是那个环比。
+    be, ba = B.base_effect(eop, i), B.base_effect(avg, i)
+
+    def pos_txt(rank):
+        """名次 → 位置措辞。全段唯一的「创新高」判据（见 docstring 的 T3 段）：rank == 1。
+
+        「创新高」与「第 1（前 1%）」是同一件事，两种说法并存就是一页两个定义；
+        名次一律走 B.top_pct（向上取整，不能四舍五入到一个更好看的档）。
+        """
+        return '创全样本新高' if rank == 1 else f'居{n}个月第{rank}（{B.top_pct(rank, n)}）'
+
+    # ── s1：规模。两条口径各自的位置并排给 —— 「月末没创、月均创了」本身就是本月的信息，
+    #    谁高谁低一律由 rank 决定，不预设方向。
+    #    月末那条线后面挂一个位置补语，两种情形互斥、只占一个槽：
+    #      没创新高 → 峰值停在哪（样板 ibkr 第一句的「峰值停在 5、6 月」）。峰值就是上月时
+    #                 不写 —— 下一句的基数说明会点名同一个月，写两遍是冗余。
+    #      创了新高 → 已经连着创了几个月（连续 1 个月不算「连续」，不写）。
+    #    两者都由 rank==1 这**同一个判据**分流，argmax 与 hi_flag 的 running-max 是同一个
+    #    约定（`>=`），不是第二个「峰值」定义。
+    hi_flag, rm0 = [], eop[0] - 1
+    for v in eop:
+        rm0 = max(rm0, v)
+        hi_flag.append(v >= rm0)
+    streak = 0
+    for f in reversed(hi_flag):
+        if not f:
+            break
+        streak += 1
+    pk = max(range(n), key=lambda j: eop[j])
+    if be['rank'] == 1:
+        tail = f'（连续第{streak}个月）' if streak >= 2 else ''
+    else:
+        tail = '' if pk == i - 1 else f'，峰值停在{mlab(months[pk])}'
+    s1 = (f'{mlab(months[i])}月末 AUM <b>{B.usd(eop[i], 1)}bn</b>，{pos_txt(be["rank"])}{tail}；'
+          f'当月平均 AUM {B.usd(avg[i], 1)}bn，{pos_txt(ba["rank"])}。')
+
+    # ── s2：基数护栏（R2）。上月的**读数与名次**就是基数说明本身，故先给它再给本月环比；
+    #    「只看环比会误读」这半句只在 conflict（环比同比反号）时出现，不是每月都挂。
+    #    同比标「单月」：见 docstring「口径适配」一段 —— 与汇总表 y/y 列、Exhibit 2 金线同口径。
+    # 「全样本」而不是再写一遍 {n} 个月：s1 刚给过样本长度，同一段里重复报基数是噪音。
+    hi = '全样本最高月' if be['prev_is_max'] else f'全样本第{be["prev_rank"]}高月'
+    if not B.need(be['mm']):
+        s2 = ''
+    else:
+        s2 = (f'{mlab(months[i - 1])}的{B.usd(eop[i - 1], 1)}bn是{hi}，'
+              f'本月环比{"跌" if be["mm"] < 0 else "涨"}{abs(be["mm"]) * 100:.1f}%'
+              + ('。' if not B.need(be['yy']) else
+                 f'，单月同比{B.pct(be["yy"])}，<b>只看环比会误读成趋势反转</b>。'
+                 if be['conflict'] else f'，单月同比{B.pct(be["yy"])}。'))
+
+    # ── s3：本页的口径背离（占模板里「日历」那一格）。月末是时点快照、月均是月内积分，
+    #    费基计提在月均那条线上，所以两者反号的月份必须点名。
+    #    分母是**有环比的**月份数 n-1，不是 n —— 首月无环比，可发生的机会只有 n-1 次。
+    #    结论只能收到「月内节奏」为止：两列水平值不含资金流，说资金去向是越界。
+    #    两支的结构必须对称：**方向 → 落点 → 基准频次**。落点（读不读得反）是这一句真正
+    #    要讲的事，不能只在反向那一支有；频次垫底，是给读者判断「每月要不要检查这件事」的
+    #    基准，不是结论。写「本月是/不是其中之一」这类话没必要 —— 方向词已经说完了。
+    mm_n = n - 1
+    opps = [k for k in range(1, n)
+            if (eop[k] < eop[k - 1]) != (avg[k] < avg[k - 1])]
+    if mm_n <= 0 or not B.need(be['mm'], ba['mm']):
+        # 首月没有环比，「背离/同向」无从谈起 —— 只报前提，不报关系。
+        s3 = '费基计提在月均那条线上，不在月末快照上。'
+    elif (be['mm'] < 0) != (ba['mm'] < 0):
+        s3 = (f'费基计提的是月均那条线：<b>当月平均环比{B.pct(ba["mm"])}、与月末反向</b>，'
+              f'只读月末会把仍在{"扩张" if ba["mm"] > 0 else "收缩"}的费基读反；'
+              f'这样反向的月份在有环比的{mm_n}个月里共{len(opps)}次'
+              f'（占{B.pct(len(opps) / mm_n, sign=False)}）。')
+    else:
+        s3 = (f'费基计提的是月均那条线：当月平均环比{B.pct(ba["mm"])}、与月末同向，'
+              f'读月末快照不会读反；这样反向的月份在有环比的{mm_n}个月里共{len(opps)}次'
+              f'（占{B.pct(len(opps) / mm_n, sign=False)}）。')
+
+    # ── s4：给「新高」打折（T3），并标推导值与口径断点（R5）。
+    #    「打折 / 稀缺」由当场算出的新高月占比决定，阈值与 B.quant 的 1/3 对齐，
+    #    否则会出现「只有 5 个月是新高」配「要打折」这种自相矛盾。
+    #    计数直接数 s1 那张 hi_flag，不另起一个 running-max 循环 —— 同一页两处「新高」
+    #    各算各的，正是 brief.py 警告的那种定义漂移。
+    nh = sum(hi_flag)
+    s4 = (f'另注：序列随市值走，{n}个月里{B.quant(nh, n, "个月")}是当时新高，'
+          f'「新高」{"要打折" if nh / n > 1 / 3 else "确实稀缺"}；'
+          '排名与次数均为本站按 MSCI 披露的月末/月均两列推算（推导值）'
+          # 判据是 `brk in months`（本段描述的那条序列）而不是 `brk in EOP`（整本字典）：
+          # 两者在正常构建时重合，但断点若还没进入序列，用字典判会印出一句凭空的口径警告。
+          + (f'，且跨{mlab(brk)}数据源切换，更早月份不完全同口径。'
+             if brk in months else '。'))
+
+    return B.render([s1, s2, s3, s4])
 
 
 def main():
@@ -596,6 +759,45 @@ def main():
     }
 
     # ══════════════════════════ 口径与方法说明 ══════════════════════════
+    # ── 轴刻度收口（必须排在 notes 之前）────────────────────────────────────
+    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+    # **位置很要紧**：axisfmt 还会给「柱图型出现负值」的图补 ycap/yfloor，
+    # 而下面的口径说明里有若干句是现读 payload 的 —— 要读到最终结果，不能读中间态。
+    axisfmt.fix_all(ex)
+
+    # ── 同比口径盘点：本页全部用点对点同比，理由要拿本页自己的序列实测 ──────────
+    # ⚠️ 不许写「存量不能做滚动」这种一般性说辞：12 个月滚动**均值**同比对存量在数值上
+    # 完全正确（Σ12/Σ12′ ≡ 均值比），不能说的只是把它叫「合计」（12 个月末快照相加不指代
+    # 任何东西）。所以这里真的把两种口径都算出来、对齐月份后比一遍，再决定用哪个。
+    def _cal(seq_map, keys, kind, win):
+        """两种同比在**共同月份**上的统计。
+
+        `keys` 给的是图上那个窗口，但同比必须在**全历史**上算完再切窗 —— 切完再算的话
+        窗口最前 12（滚动是 24）期永远是空的，量出来的是切法不是口径。
+        `win` 因此只切统计范围，不切算法输入。
+        """
+        allk = sorted(seq_map)
+        s = [seq_map[k] for k in allk]
+        a = Y.mom_yoy(s, kind).values.astype(float)
+        b = (Y.ttm_mean_yoy(s, kind) if kind == Y.STOCK else Y.ttm_yoy(s, kind)) \
+            .values.astype(float)
+        inwin = np.array([k in set(win) for k in allk])
+        m = np.isfinite(a) & np.isfinite(b) & inwin
+        aa, bb = np.where(m, a, np.nan), np.where(m, b, np.nan)
+        def sd(x):
+            return float(np.nanstd(x, ddof=1)) if np.isfinite(x).sum() >= 2 else float('nan')
+        def mj(x):
+            d = np.abs(np.diff(x))
+            return float(np.nanmax(d)) if np.isfinite(d).any() else float('nan')
+        return {'n': int(m.sum()), 'sd_mom': sd(aa), 'sd_ttm': sd(bb),
+                'mj_mom': mj(aa), 'mj_ttm': mj(bb),
+                'opp': [(allk[i], float(a[i]), float(b[i]))
+                        for i in np.flatnonzero(m & (a * b < 0))]}
+
+    _CAL_AUM = _cal(EOP, W25, Y.STOCK, W25)     # Exhibit 2 画的那 25 个月
+    _CAL_ABF = _cal(abf, W25a, Y.FLOW, W25a)    # Exhibit 7 画的那 25 个月（隐含费收是流量）
+
     notes = [
         '<b>这不是 MSCI 的营收。</b>本页画的是<b>第三方</b>挂钩 MSCI 指数的 ETF 资产规模（客户端产品）；'
         '它由 MSCI 官方按月披露，且直接决定 asset-based fee 收入，故可用作月度抢跑季报的高频量。',
@@ -631,6 +833,59 @@ def main():
         '<b>窗口一律从数据最新月倒推</b>，不依赖构建日期：月度图 25 个月、季度图 14 个季度'
         f'（Exhibit 5 / 8 / 10 三张都是 14 季）、年线图最近 6 年、热力矩阵最近 11 个年度、核对表 13 个月。'
         'Exhibit 12 取 24 个点（y/y 在第 25 格无值），画面内容与原 deck 相同。',
+        # ── 同比口径（CONTRACT.md §6）：本页每一处都是点对点，理由逐条实测 ──
+        (f'<b>同比口径：本页每一处都是点对点同比</b>（当月对去年同月；费率那条取基点差），'
+         f'<b>没有一张图用 {Y.TTM_WIN} 个月滚动口径</b> —— Exhibit 2 / 5 / 7 / 10 / 12 的同比线、'
+         f'Exhibit 8 的基点差、Exhibit 3 / 13 的 m/m 与汇总表、核对表，以及页顶 brief 段的'
+         f'环比与同比（句中同比已标「单月」）全部同口径，'
+         f'所以本页任意两处的读数可以直接互相对读。理由如下，'
+         f'<b>都不是「存量不能做滚动」那句一般性说辞</b>'
+         f'（{Y.TTM_WIN} 个月滚动<b>均值</b>同比对存量在数值上完全正确 —— '
+         f'Σ12 ÷ Σ12′ 恒等于均值比 —— 不许说的只是把它叫「合计」：'
+         f'12 个月末的 AUM 快照相加不指代任何真实的量）：<br>'
+         f'① <b>月末／月均 AUM（Exhibit 2 / 5 / 6 / 9 / 11）是期末存量</b>。'
+         f'两种口径在 Exhibit 2 画出来的那 {_CAL_AUM["n"]} 个共同月份上实测：'
+         f'点对点逐月标准差 {_CAL_AUM["sd_mom"]:.2f}pp、'
+         f'{Y.TTM_WIN} 个月均值同比 {_CAL_AUM["sd_ttm"]:.2f}pp'
+         f'（放大 {_CAL_AUM["sd_mom"] / _CAL_AUM["sd_ttm"]:.2f} 倍），'
+         f'相邻月最大跳变 {_CAL_AUM["mj_mom"]:.2f}pp vs {_CAL_AUM["mj_ttm"]:.2f}pp，'
+         f'符号相反的月份 {len(_CAL_AUM["opp"])} 个'
+         + (f'（{_CAL_AUM["opp"][0][0]} 点对点 {_CAL_AUM["opp"][0][1]:+.1f}% vs '
+            f'均值 {_CAL_AUM["opp"][0][2]:+.1f}%）' if _CAL_AUM['opp'] else '')
+         + '。'
+         # 「更平滑」这个结论必须由数据说了算，不能写死：本页 AUM 处在一段单边上行里，
+         # 换个行情这个倍数会翻上去，那时候还印「远低于」就是一句假话。
+         + (f'放大倍数确实到了全站流量序列的中位水平（2.08 倍），'
+            f'但窗口内没有一个月方向相反 —— 也就是说滚动均值只会让转折点晚半年显形，'
+            f'并不会把结论说反；'
+            if _CAL_AUM['sd_mom'] >= _CAL_AUM['sd_ttm'] * 2.0 and not _CAL_AUM['opp'] else
+            f'放大倍数低于全站流量序列的中位（2.08 倍）且窗口内没有一个月方向相反；'
+            if not _CAL_AUM['opp'] else
+            f'⚠️ 窗口内已经出现方向相反的月份，下一轮应当重新评估这几张图的口径；')
+         + f'存量比的是两个时点的资产，不含「今年这个月比去年多开几天市」这类日历效应，'
+         f'而本页真正要回答的是「AUM 相对去年这个月是多少」；'
+         f'噪声用轴范围解决，不换口径。<br>'
+         f'② <b>隐含费收（Exhibit 7 / 10 / 12）是流量</b>，按契约默认本该用 '
+         f'{Y.TTM_WIN} 个月滚动合计。这里仍用点对点，理由是<b>它必须与 AUM 同口径</b>：'
+         f'本页的核心算术是「费收 ≈ 平均 AUM × 有效费率」，Exhibit 12 的标题'
+         f'（费收 {sgn_pct(yv[-1])} 慢于平均 AUM {sgn_pct(aum_yoy)}，缺口 '
+         f'{yv[-1] - aum_yoy:+.1f}pp）就是这条算术的读数。'
+         f'把费收换成滚动、AUM 留在点对点，这个缺口立刻变成两种口径相减，'
+         f'读者按字面理解会把「口径差」读成「费率压缩」。'
+         f'代价可以量出来：那 {_CAL_ABF["n"]} 个共同月份上，费收点对点同比标准差 '
+         f'{_CAL_ABF["sd_mom"]:.2f}pp、滚动 {_CAL_ABF["sd_ttm"]:.2f}pp'
+         f'（放大 {_CAL_ABF["sd_mom"] / _CAL_ABF["sd_ttm"]:.2f} 倍），'
+         f'相邻月最大跳变 {_CAL_ABF["mj_mom"]:.2f}pp vs {_CAL_ABF["mj_ttm"]:.2f}pp，'
+         f'符号相反 {len(_CAL_ABF["opp"])} 个月 —— '
+         + ('点对点确实更吵，但没有一个月方向相反，'
+            '换来的「与 AUM 同口径」比那点平滑更值。<br>'
+            if not _CAL_ABF['opp'] else
+            '⚠️ 窗口内已经出现方向相反的月份，这个取舍下一轮要重新算账。<br>')
+         + f'③ <b>有效费率（Exhibit 8）是比率</b>，同比只能是基点差；'
+         f'滚动合计与滚动均值对比率都没有意义（要「一年的平均费率」得用 AUM 加权，'
+         f'即 Σ费收 ÷ Σ平均 AUM，那要两条序列）。<br>'
+         f'④ <b>Exhibit 13 是热力矩阵</b>，按 §6 本就豁免（逐格波动正是这类图的题眼）；'
+         f'<b>两张表的 y/y 列</b>必须恒等于表内算术，读者拿相邻两列去除要能得到同一个数。'),
         '<b>柱图的右轴金色线是同比，不是滚动均线</b>（Exhibit 2 / 7 / 8）：均线只是把柱子再平滑一遍、'
         '不带新信息，同比才回答「相对去年这个月是好是坏」，这也是原 deck（gsx.lvl_bar）的画法。'
         '开了同比线的图不再画那条 12 个月均线虚线，也不再另给同比气泡。'
@@ -667,17 +922,16 @@ def main():
                      f'（{sgn_pct(yv[-1])} YoY） · 有效费率 {last_bp:.3f}bp'
                      f'（{last_q}，{yoy8:+.2f}bp YoY'
                      + (f'，其后 {n_ffill} 个月沿用该值）' if n_ffill else '，已覆盖到最新月）')),
+        # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：那一行给读数，
+        # 这一段给「读数该怎么读」（基数效应 / 口径背离 / 所处区间）。见 compose_brief 的 docstring。
+        'brief': compose_brief(months, EOP, AVG, BRK),
         'hub_line': (f'月末 AUM ${f(EOP[LATEST], 0)}bn，{pp_txt(yoy(EOP, LATEST))} YoY；'
                      f'有效费率压到 {last_bp:.2f}bp'),
         'source': SRC,
         'xlabels': XL13,
         'xlabels_long': XL_LONG,
         'summary': summary,
-        # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
-        # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
-        # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
-        # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
-        'exhibits': axisfmt.fix_all(ex),
+        'exhibits': ex,          # 已在上面过完 axisfmt.fix_all（幂等，这里不重复调）
         'table': table,
         'notes': notes,
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '

@@ -244,7 +244,8 @@ def ttm_mean_yoy(s, kind):
     return ((r / base - 1.0) * 100.0).mask((base == 0) | (r * base < 0))
 
 
-ttm_mean_yoy.__doc__ = ttm_mean_yoy.__doc__.replace('{TTM_WIN}', str(TTM_WIN))
+if ttm_mean_yoy.__doc__:   # python -OO 会把 docstring 抹成 None，别在那儿炸
+    ttm_mean_yoy.__doc__ = ttm_mean_yoy.__doc__.replace('{TTM_WIN}', str(TTM_WIN))
 
 
 def ttm_yoy_unchecked(s):

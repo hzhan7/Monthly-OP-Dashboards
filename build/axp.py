@@ -26,13 +26,16 @@ exhibit 逐张移植成 payload 对象，写出 data/axp.js。图的顺序、编
 import datetime
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
 
 import axisfmt
+import brief as B
 import payload_guard
 import pctile
+import yoy as Y        # 同比口径的唯一实现（build/yoy.py）；kind 必填，传错会抛而不是静默给错数
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -130,6 +133,15 @@ _tf['month'] = pd.PeriodIndex(_tf['month'], freq='M')
 _fd = _tf.set_index('month')['filing_date']
 SOURCE_DATE = str(_fd.get(LATEST, '')) or None
 
+# 10-D 全字段，按 axp_trust.csv 的月份对齐（两者起点不同：full 从 2023-01，摘要从 2023-07，
+# 排名口径必须与摘要表同一个窗口，否则「36 个月里第几低」会和汇总表那一列各说各话）。
+# 这张表才有违约率的**分解**：ann_default_rate_pct（毛）− ann_recovery_rate_pct（回收）
+# = ann_default_rate_net_pct（净，等于摘要表的 nco_pct）。brief 的 Trust 那句要用它。
+tfull = _tf.set_index('month').sort_index().reindex(trust.index)
+need(tfull, ['days_in_period', 'ann_default_rate_pct', 'ann_recovery_rate_pct',
+             'ann_default_rate_net_pct', 'recoveries_usd', 'defaulted_amount_usd'],
+     'axp_trust_full.csv')
+
 
 # ────────────────────────────── 小工具 ──────────────────────────────
 def mlab(p):
@@ -146,33 +158,37 @@ def L(a):
 
 
 def lvl_yoy(s, pct_series=False):
-    """照抄 gsx.lvl_bar 的次轴同比：比率序列取百分点差；水平值取百分比变化，
-    但基数过小（< 0.15 x 中位绝对值）或两期异号时留空 —— 那种同比没有意义。"""
-    v = np.asarray(s.values, dtype=float)
-    scale = float(np.nanmedian(np.abs(v))) or 1.0
-    out = np.full(len(v), np.nan)
-    for i in range(12, len(v)):
-        a, b = v[i], v[i - 12]
-        if not (np.isfinite(a) and np.isfinite(b)):
-            continue
-        if pct_series:
-            out[i] = a - b
-        elif abs(b) < 0.15 * scale or a * b < 0:
-            continue
-        else:
-            out[i] = (a / b - 1) * 100.0
-    return pd.Series(out, index=s.index)
+    """gsx.lvl_bar 的次轴**单月同比**：比率序列取百分点差，水平值取百分比变化。
+
+    算式本身走 <build/yoy.py>（全站唯一一份实现），本函数只做两件本页特有的事：
+
+      1. **kind 的选择**。`yoy.py` 的 kind 是必填参数，就是为了逼调用点把
+         「这条序列是流量、存量还是比率」写出来而不是默认掉。本页的 `pct_series`
+         正是这个判断：True → RATIO（同比出百分点差，而不是「百分比的百分比变化」），
+         False → STOCK。**本页所有非比率的 gs_bar 画的都是月末余额与月度隐含收入**，
+         这里统一传 STOCK 是安全的一侧：STOCK 与 FLOW 的 `mom_yoy` 结果逐位相同
+         （两者都是 a/b−1），差别只在 STOCK 不许再往下调 `ttm()` —— 传错方向会抛，
+         传对方向不会静默给错数。
+      2. **近零基数保护**（基期 < 本序列 |值| 中位数 × 0.15 时留空）。这一层 yoy.py
+         做成了独立的 `near_zero_base()` 诊断而不是塞进 mom_yoy，因为它是「要不要画
+         这条线」的判断、不是同比的定义。本页保留逐点过滤（原 gsx 行为），
+         阈值 0.15 与 yoy.NEAR_ZERO_BASE_FRAC 同源，不再写第二个常数。
+    """
+    v = Y._as_series(s)
+    out = Y.mom_yoy(v, Y.RATIO if pct_series else Y.STOCK)
+    if not pct_series:
+        scale = float(np.nanmedian(np.abs(v.values.astype(float)))) or 1.0
+        out = out.mask(v.shift(Y.LAG).abs() < Y.NEAR_ZERO_BASE_FRAC * scale)
+    return pd.Series(out.values, index=s.index)
 
 
 def plain_yoy(s):
-    """照抄 gsx.rev_bar_yoy 用的 _yoy：不做基数保护，只要两期都在就算。"""
-    v = np.asarray(s.values, dtype=float)
-    out = np.full(len(v), np.nan)
-    for i in range(12, len(v)):
-        a, b = v[i], v[i - 12]
-        if np.isfinite(a) and np.isfinite(b) and b != 0:
-            out[i] = (a / b - 1) * 100.0
-    return pd.Series(out, index=s.index)
+    """gsx.rev_bar_yoy 用的 _yoy：不做近零基数保护，只要两期都在就算。
+
+    与 `lvl_yoy` 的差别只有那一层保护，算式同样走 yoy.mom_yoy —— 本页两个同比
+    口径的定义因此只有一处，不会出现「同一条余额序列在 Exhibit 2 和 Exhibit 12
+    算出两个数」。"""
+    return pd.Series(Y.mom_yoy(Y._as_series(s), Y.STOCK).values, index=s.index)
 
 
 def tail_contiguous(s):
@@ -189,6 +205,55 @@ def tail_contiguous(s):
             start = i
             break
     return s.iloc[start:]
+
+
+ALIGN_WASTE_MAX = 0.38      # 与 assets/charts.js 的 ALIGN_WASTE_MAX 同值
+
+
+def align_sim(ex):
+    """复算引擎「两轴零点画在同一高度」之后，这张图的左轴与浪费掉的画布比例。
+
+    返回 dict（单轴图或右轴无值返回 None）：
+      lo/hi     引擎**实际**用的左轴上下界
+      alo/ahi   假如对齐，左轴会被扩到哪（不对齐分支下就是「代价有多大」的具体数）
+      waste     对齐要浪费掉的量程比例
+      aligned   引擎最终有没有对齐（waste > ALIGN_WASTE_MAX 就不对齐并在图上标红字）
+
+    为什么要在生成端复算：图注里「零点不同高 / 左轴会被扩到 −25%、四成画布是空的」
+    是一句**关于渲染结果的声称**，而那两个数随每月新数据变；更要命的是
+    「对齐还是不对齐」这个结论本身由浪费比例与 38% 阈值的大小关系决定 ——
+    数变了而话不变，就会出现「图注说零点不同高、图上其实已经对齐」。
+    本仓规矩也是「一个数字都不许写死在文案里」。
+
+    零件全部来自 build/axisfmt.py（引擎量程/刻度算法的 Python 复算），
+    这里只把 charts.js:690 起那段对齐分支按同一顺序走一遍，不另写算法。
+    ⚠️ 本函数与 build/tsm.py 里的同名函数逐字相同 —— 它该住在 axisfmt.py 里供全站共用，
+    但那个文件本轮不归本任务改，所以先各放一份，注释互相点名以免日后只改一处。
+    """
+    rng = axisfmt._left_range(ex)
+    rc = axisfmt._rhs(ex)
+    k = ex.get('kind')
+    dual = k in ('bar_line_dual', 'stacked_dual') or \
+        (k in ('qtr_bar', 'grouped_bars', 'gs_bar') and rc is not None)
+    if rng is None or not (dual and rc):
+        return None
+    y0, y1 = rng
+    rv = axisfmt._fin(rc.get('values'))
+    if not rv:
+        return None
+    rtk = axisfmt.ticks(min(rv + [0.0]), max(rv), 9)
+    r0, r1 = rtk[0], rtk[-1]
+    f = max(axisfmt._zero_frac(y0, y1), axisfmt._zero_frac(r0, r1))
+    if f <= 1e-9:                      # 两轴都不含负值：零点本来就同高，没有代价
+        return {'lo': y0, 'hi': y1, 'alo': y0, 'ahi': y1, 'waste': 0.0, 'aligned': False}
+    la0, la1 = axisfmt._align_zero(y0, y1, f)
+    ra0, ra1 = axisfmt._align_zero(r0, r1, f)
+    w1 = 1 - (y1 - y0) / (la1 - la0) if (la1 - la0) else float('nan')
+    w2 = 1 - (r1 - r0) / (ra1 - ra0) if (ra1 - ra0) else float('nan')
+    waste = max(w1, w2)
+    ok = not (waste > ALIGN_WASTE_MAX)     # 超阈值 → 引擎改为不对齐并在图上标红字
+    return {'lo': la0 if ok else y0, 'hi': la1 if ok else y1,
+            'alo': la0, 'ahi': la1, 'waste': waste, 'aligned': ok}
 
 
 def pp_unit(y_vals):
@@ -657,11 +722,29 @@ ex.append(gs_bar_ex(
          f'（窗口内 {_es_y.min() * _ES_MULT:+.{_es_d}f}{_ES_UNIT} ~ '
          f'{_es_y.max() * _ES_MULT:+.{_es_d}f}{_ES_UNIT}，'
          f'当期 {_es_y.iloc[-1] * _ES_MULT:+.{_es_d}f}{_ES_UNIT}）。'
-         f'本图左右轴零点不同高（引擎已在绘图区左上角标出）：柱全为正而同比跨零，'
-         f'强行把两个零点拉到同一高度会把左轴一路扩到 −25% 左右，四成画布是空的。',
+         f'{{ALIGN}}',
     src_extra=TRUST_SRC + '.  Portfolio yield less charge-offs, servicing and note coupon — '
               'the cushion that absorbs losses before noteholders are hit. The single '
               'most-watched number in the trust report'))
+
+# 「两轴零点同不同高、代价多大」这句话由 align_sim 现读本图 payload，不写死。
+# 原文写的是「左轴一路扩到 −25% 左右，四成画布是空的」—— 今天恰好对得上
+# （实测 −25.5%、浪费 44%），但这两个数随每月新数据变，而且更要命的是
+# 「对齐 / 不对齐」这个结论本身由浪费比例与引擎 38% 阈值的大小关系决定：
+# 数变了而话不变，就会出现「图注说零点不同高、图上其实对齐了」。
+_a8 = align_sim(ex[-1])
+if _a8 is None or _a8['waste'] <= 1e-9:
+    _ALIGN_TXT = '本图左右轴零点同高（柱与同比线都不跨零，本来就对得上）。'
+elif _a8['aligned']:
+    _ALIGN_TXT = (f'本图左右两轴的零点已被引擎拉到同一高度，代价是左轴向下扩到 '
+                  f'{_a8["lo"]:.1f}%、浪费掉量程的 {_a8["waste"]:.0%}'
+                  f'（低于引擎 {ALIGN_WASTE_MAX:.0%} 的兜底阈值，所以仍然对齐）。')
+else:
+    _ALIGN_TXT = (f'本图左右轴零点<b>不同高</b>（引擎已在绘图区左上角标出）：柱全为正'
+                  f'而同比跨零，强行把两个零点拉到同一高度会把左轴一路扩到 '
+                  f'{_a8["alo"]:.0f}%、{_a8["waste"]:.0%} 的画布是空的，'
+                  f'超过引擎 {ALIGN_WASTE_MAX:.0%} 的兜底阈值。')
+ex[-1]['note'] = ex[-1]['note'].replace('{ALIGN}', _ALIGN_TXT)
 
 ex.append(multi_line_ex(
     9, SEC_T + 'Trust portfolio yield and payment rate', trust,
@@ -815,6 +898,381 @@ while len(_hub) > 1 and len('；'.join(_hub)) > 60:
     _hub.pop()
 HUB = '；'.join(_hub)
 
+
+# ────────────────────────── 页顶 ~300 字数据总结（brief）──────────────────────────
+def compose_brief(new, avgbal, trust, tfull, cur, oneoff_m, oneoff_c):
+    """AXP 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），那边只算事实，句子在这里拼 ——
+    措辞是口径的一部分，属于各家自己。每个数字都当场从序列算，一处硬编码都没有：
+    排名、并列数、一次性影响占环比降幅的比例、毛/净违约率各自的变动，
+    下个月重跑全都会自己变。
+
+    ═══ 分寸：以 build/ibkr.py 的 compose_brief 为准 ═══
+    那一版是用户逐句验收过的标准，既是上限也是下限：四句话四个层次，一句一个意思，
+    ~300 字。本页对齐它砍掉的东西（第一版写过头的地方）：
+      · 回收率占净降幅的百分比、「按上月回收率固定」的反事实 —— 贡献度拆解，删。
+      · 「两者非独立佐证」—— 方法论议论，删；改为只陈述「与 8-K 那笔出售同月」这个事实。
+      · s1 尾巴的「两条同向下行、位置分化」与 SBS 还原口径位置 —— 第三、四个意思，删。
+        随之 `oneoff_s` 不再进正文，故不再入参（ONEOFF_S 仍用于 Exhibit 的 JUN_NOTE）。
+      · 期末余额的名次、回收/违约比的名次 —— 同一句里第二、三个名次，删。
+    删的是措辞不是判断：每处保留的定性词仍挂在当场算出的分支上（见下）。
+
+    ═══ 本地移植适配（2026-08-07，同比口径全站改造之后）═══
+    远端写这一段时与本地的差别，逐条核对过：
+      · **本页全部同比今天复查后仍是点对点（单月）口径**（NOTES 那条逐类给了理由与
+        实测：余额是存量走 §6.4 默认、比率走 pp 差、流量那张滚动口径画不满窗口），
+        brief 与全页同口径，不存在 ibkr / cboe 那种「图改滚动、brief 并排两口径」的
+        适配。要做的只有 CONTRACT §6 的措辞面：brief 里出现的同比一律标「单月」
+        （s4 的 SBS 余额那句），并把 brief 补进页尾「同比口径逐处点名」的名单。
+      · **Exhibit 8 的次轴今天从 pp 换成了 bp**（pp1 印不出 0.25 步长，见 pp_unit()）。
+        本段不引用超额利差及其同比 —— Trust 那句用的是 10-D 的毛/净违约率分解，
+        bp 措辞与汇总表「|差| < 1pp 写 bp」同规，不受那次换轴影响；若日后往这里
+        加超额利差的读数，单位必须走同一个 pp_unit() 的结论（bp），不许写死 pp。
+      · 月均余额合计不再当场相加：本地装载段已有 `avgbal['us_avg_bal']`
+        （Exhibit 6 隐含 NII 的乘数基数就是它），口径只能有一处定义，直接引用。
+
+    ═══ 定性词一律由当场算出的量决定分支 ═══
+    「买来的」「跌幅不是位置」「还得快」「改善落在回收」这些词全部挂在 if 分支上，
+    判据写在旁边。写死措辞 + 算出来的数字 = 下个月印出自相矛盾的句子，这是本轮审查
+    逮到的最主要一类 bug（本页原文的「26 个月最低是买来的」与紧随其后的
+    「还原后并列第 1 低」就是同一句里自相矛盾）。
+
+    ═══ AXP 独有，别家不能照抄 ═══
+      · **本页四条主指标全是反向指标**（30+ 逾期率、净核销率，Consumer 与 SBS 各两条），
+        `peak_scan` 一律传 `inverse=True`，措辞只能写「最低位」「最好读数」，
+        写成「创新高」会把风险读成利好。本页没有任何一句用「新高」形容这四条。
+      · **`peak_scan` 的 argmin 在并列最低时只认第一次出现的那个月**，会把当月并列的
+        序列错报成「峰值停在 X 月」。AXP 的 Consumer 逾期率恰好连着两个月并列最低，
+        所以「谁在最低位」改用 `months_since_lower()`（没有严格更低的月 = 最低，含并列）
+        判定，`peak_scan` 的 `off_peak` 只用来取「还没回到最低位」那几条的月份。
+      · **被买来的是跌幅，不是最低位本身**：公司披露出售已核销余额压低了 Consumer / SBS
+        的核销率（ONEOFF_C / ONEOFF_S pp，只在 ONEOFF_M 那一个月成立）。正文给
+        **还原口径**的位置与排名（R5，字面必须出现「还原口径」四个字），并算出
+        「这一档占了环比降幅的百分之几」。当期还原后 Consumer 仍与另一个月并列全样本
+        最低 —— 所以只能说跌幅是买来的，不能说最低位是买来的，落点句挂在 `r_lo == 1`
+        且 `d_mm < 0` 上，两个条件缺一句子就换。
+      · **还原值本身不印数字**：headline 已逐字给出「剔除…后约 X%」，hub_line 也印了一次，
+        brief 再印一遍就是规矩 13 禁的复述式摘要。brief 只印 headline 没有的增量：
+        名次与并列数。
+      · **交叉验证只能用没被那笔出售动过的序列**：`inv_rows` 的第三个元素登记「这条受不受
+        该出售影响」，`clean_best`（谁在最低位）与 `off`（谁没跟上）**都**只从 hit=False
+        的两条逾期率里取。拿核销率给核销率作证等于用一次性因素给自己背书。
+      · **Trust 的违约率是净额口径，正文必须同时给毛与净**：`axp_trust.csv` 的 `nco_pct`
+        与 `axp_trust_full.csv` 的 `ann_default_rate_net_pct` 是同一列（净额、已扣回收），
+        而 full 表另给毛违约率 `ann_default_rate_pct` 与回收率 `ann_recovery_rate_pct`。
+        句子只做一件事：把「净降 X bp」与「毛只降 Y bp」并排放（同 ibkr 的
+        「表面跌 6.7%、日均实跌 11.0%」），差额归谁由 `share_rec` 的分支决定。
+        **不再算占比、不再做反事实** —— 那是贡献度拆解。当期净降主要来自回收率跳升，
+        而 8-K 同月披露的正是出售已核销余额，故 `share_rec >= 0.5 and on` 时点明同月，
+        点到为止，不写「互不印证」这类议论。
+      · **MIN_BP 是材料性闸门**：净变动只有一两个 bp 时不谈来源分解 —— 分母一小，
+        任何占比都会飙成噪音（重放里 2025-05 真的印出过「440%」）。
+      · **余额有期末与月均两个口径**：8-K 同时披露 total 与 average balances，月均那条是
+        Exhibit 6 隐含 NII 的乘数基数。**不能叫「计息余额」**——本页 NOTES 第一条明写合并
+        口径里含不计息的 pay-in-full 部分，两处会自相矛盾。名次只给月均那条（NII 基数
+        是它），期末那条给方向就够；一句里塞两个名次是第一版的通病。
+      · **R3 日历护栏在这里不成立**：`axp_trust_full.csv` 确有 `days_in_period` 列（28-31 天），
+        所以理由不是「没有交易日列」；理由是**本页没有一列是当月合计量**——余额是月末/月均
+        存量，逾期率核销率是比率，Trust 三条是月度比率或年化比率，除天数会造出一个假修正。
+        天数只作**定性限定**用：还款率在少一天的月份里仍站高位，比硬做日均化更硬。
+      · **两套口径不可连比**：新合并 Card balances 口径只有两年出头（`new.index[0]` 起），
+        旧 loans-only 长历史（Exhibit 12-18）的分母不含 pay-in-full 余额，比率整体更高。
+        所以正文里的「N 个月」一律以新口径序列长度现算，并显式点明口径变更；
+        Trust 那句的「N 个月」是另一条更长的序列，两个 N 各算各的，不能共用。
+    """
+    i = len(new) - 1
+    n_new, n_tr = len(new), len(trust)
+    ml = [mlab(p) for p in new.index]
+
+    # ── R1（inverse=True）：四条**越低越好**的比率。绝不写「创新高」。
+    c_dq, c_nco = new['consumer_dq30_pct'].values, new['consumer_nco_pct'].values
+    s_dq, s_nco = new['sbs_dq30_pct'].values, new['sbs_nco_pct'].values
+    # 第三个元素 = 那笔出售有没有动过这条序列（公司只把影响归到核销率）。
+    inv_rows = [('Consumer 逾期', c_dq, False), ('Consumer 核销', c_nco, True),
+                ('SBS 逾期', s_dq, False), ('SBS 核销', s_nco, True)]
+    pk = B.peak_scan(ml, [(nm, a) for nm, a, _ in inv_rows], i, inverse=True)
+    # 并列修正：argmin 只认第一次出现的最低月，当月并列时会被误判成 off_peak。
+    # 「有没有严格更低的月」才是「是不是最低位」的正确判据。
+    at_best = [nm for nm, a, _ in inv_rows if B.months_since_lower(a, i) is None]
+    # 交叉验证只能用**没被那笔出售动过**的序列，否则等于拿一次性因素给自己作证。
+    # `off`（谁没跟上）与 `clean_best`（谁在最低位）同属这一句，必须过同一个 clean 滤网。
+    clean = [nm for nm, _, hit in inv_rows if not hit]
+    clean_best = [nm for nm in clean if nm in at_best]
+    off = [(nm, k) for nm, k in pk['off_peak'] if nm in clean and nm not in at_best]
+    off_all = [(nm, k) for nm, k in pk['off_peak'] if nm not in at_best]
+
+    def fmt_off(pairs):
+        """几条同时停在同一个月时按月份归并：「A 停在 May-24、B 停在 May-24」是同一个数印两遍。"""
+        by_m = {}
+        for nm, k in pairs:
+            by_m.setdefault(k, []).append(nm)
+        return '、'.join('、'.join(v) + f'停在 {k}' for k, v in by_m.items())
+
+    # ── R5：净核销的还原口径。一次性影响只在 ONEOFF_M 那一个月成立。
+    # `mention` = s1 这一版会不会提到那笔出售（当月命中，或它还坐在 y/y 基数里）——
+    # 后面几句的「该出售」「同样」都指回 s1，s1 不提就不能用这些词。
+    on = (cur == oneoff_m) and B.need(c_nco[i], c_nco[i - 1])
+    mention = on or (0 < cur.ordinal - oneoff_m.ordinal <= 12)
+    if on:
+        rc = c_nco.copy()
+        rc[i] += oneoff_c
+        d_mm = c_nco[i] - c_nco[i - 1]
+        share = (oneoff_c / abs(d_mm)) if d_mm else None
+        # 「买来的」是有条件的：这一档大于报出来的跌幅时，还原后其实是升的；
+        # 报出来根本没跌时更不能说「降幅的百分之几」。三种都得分开写。
+        if d_mm < 0 and share is not None and share < 1:
+            head = f'{mlab(cur)} Consumer 核销率环比降幅的 {share * 100:.0f}% 是出售已核销余额买来的'
+        elif d_mm < 0:
+            head = f'{mlab(cur)} Consumer 核销率的环比下降全部由出售已核销余额贡献'
+        else:
+            head = f'{mlab(cur)} Consumer 核销率环比未降，出售已核销余额已压低它 {oneoff_c:.1f}pp'
+        # 还原后的位置：值本身 headline 已印过（规矩 13），这里只印名次与并列数。
+        # 转折词也挂在分支上：只有还原后仍站在最低位，才能说「买来的只是跌幅」。
+        r_lo = B.rank_of(-rc, i)
+        tie = int(np.sum(np.isclose(rc[np.isfinite(rc)], rc[i]))) - 1
+        # R5 要求字面出现「（还原口径）」；这里不印还原后的数值（headline 已逐字印过），
+        # 标注就挂在名次前面 —— 名次与并列数才是 headline 没有的增量。
+        if r_lo == 1:
+            pos_c = (f'，但（还原口径）仍与另{B.cn(tie)}个月并列全样本最低' if tie
+                     else '，但（还原口径）仍是全样本唯一最低')
+        else:
+            pos_c = f'，（还原口径）退到第{r_lo}低'
+        # 落点只在「确实跌了」且「还原后仍在最低位」时才成立 —— 两个条件缺一，
+        # 「买来的是跌幅不是位置」就成了假话，所以它挂在分支上而不是写死在句尾。
+        land = '，买来的是跌幅不是位置' if (d_mm < 0 and r_lo == 1) else ''
+        s1 = head + pos_c + land + f'（新口径 {new.index[0]} 起，与旧口径不可连比）。'
+    elif 0 < cur.ordinal - oneoff_m.ordinal <= 12:
+        # 一次性影响已滚出当月读数，但它还坐在 y/y 的比较基数里，直到 ONEOFF_M + 12。
+        # 用 ordinal 之差判断而不是「不等于就是之后」：数据回补／回放时 cur 可能早于
+        # ONEOFF_M，那时说「已不在当月读数里、要到某月才滚出去」是反的。
+        # 这一句原先 117 字，长到把后面的交叉验证句挤出了字数护栏（重放里 s2 被丢掉、
+        # 整段只剩三句）。压到 ~95 字，四句就都放得下。
+        s1 = (f'{mlab(oneoff_m)} 出售已核销余额压低 Consumer 核销率的那 {oneoff_c:.1f}pp 已不在当月读数里，'
+              f'但仍坐在 y/y 的基数上，要到 {mlab(oneoff_m + 12)} 才滚出去'
+              f'（新口径 {new.index[0]} 起，与旧口径不可连比）。')
+    else:
+        # 那笔出售要么还没发生、要么连 y/y 的基数都滚过了：正文不再提它。
+        # 这一句原本是一整句纯口径声明，一个读数都没有 —— 重放里 13/14 个月都以免责声明
+        # 开场，比 build/ibkr.py 的样板（s1 就是当月读数 + 它在历史里的位置）单薄一截。
+        # 改成四条反向指标的**位置扫描**（R1，inverse=True），口径断点没删，只是降级成
+        # 句尾的括号：F4 要求标注一个都不许少，但没要求它自成一句。
+        # 注：ONEOFF_M 那个月的核销率被出售压低，它一直留在历史分布里，所以此后
+        # 「N 个月最低」只会更难达成 —— 偏保守，不会把改善说过头。
+        if at_best:
+            core1 = (f'{B.quant(len(at_best), len(inv_rows), "条")}在{n_new}个月最低：'
+                     + '、'.join(at_best))
+        else:
+            core1 = f'没有一条落在{n_new}个月最低'
+        tail1 = fmt_off(off_all)
+        s1 = (f'{mlab(cur)} {B.cn(len(inv_rows))}条逾期与核销率里{core1}'
+              + (f'；{tail1}' if tail1 else '')
+              + f'（新口径 {new.index[0]} 起，与旧 loans-only 序列不可连比）。')
+
+    # ── R1 续：逾期率不在那笔出售之列，是本页唯一能对冲一次性因素的交叉验证。
+    # 只在 s1 确实点了那笔出售的月份才写：不提出售的月份里「不受该出售影响」没有先行词，
+    # 而四条的位置 s1 已经全量给过一遍，再写一句就是同一件事说两遍。
+    # B.cn(2) 给的是「二」，中文量词这里要「两」——「二条逾期率」读起来是错的。
+    if mention:
+        n_clean = '两' if len(clean) == 2 else B.cn(len(clean))
+        if clean_best:
+            core = '、'.join(clean_best) + f'同样在{n_new}个月最低，改善有真实成分'
+        else:
+            core = f'没有一条落在{n_new}个月最低，真实改善存疑'
+        off_txt = fmt_off(off)
+        s2 = (f'不受该出售影响的{n_clean}条逾期率里，' + core
+              + (f'，{off_txt}。' if off_txt else '。'))
+    else:
+        s2 = ''
+
+    # ── 口径背离：期末余额 vs 月均余额（后者是 Exhibit 6 隐含 NII 的乘数基数）。
+    # **不写「计息的」**：合并 Card balances 含不计息的 pay-in-full 部分，见本页 NOTES 第一条。
+    # 月均合计直接用装载段的 us_avg_bal（Exhibit 6 的乘数基数就是这一列，口径同一处定义）。
+    end_tot = (new['consumer_balance_usdbn'] + new['sbs_balance_usdbn']).values
+    avg_tot = avgbal['us_avg_bal'].values
+    if i >= 1 and B.need(end_tot[i], end_tot[i - 1], avg_tot[i], avg_tot[i - 1]):
+        e_mm = end_tot[i] / end_tot[i - 1] - 1
+        a_mm = avg_tot[i] / avg_tot[i - 1] - 1
+        # T3：月均若是几乎只增不减的序列，「排第几高」每月都是同一个答案、是噪音，那就不报名次。
+        # 名次只给月均那一条：它是 Exhibit 6 隐含 NII 的乘数基数，也是这句话的主语；
+        # 期末那条给方向就够 —— 一句里并排两个名次是第一版的通病，读起来像脚注。
+        mono = B.is_monotonic(avg_tot)
+        rk_a = '' if mono else f'、第{B.rank_of(avg_tot, i)}高'
+        # 四舍五入后印成 0.0% 的月均变动不配叫「口径反向」：页面上会出现「期末降、月均
+        # 却 0.0% m/m」这种自打嘴巴的句子（重放里 Jun-25 就是）。闸门与 B.pct 的显示
+        # 精度对齐（<0.05% 即印成 0.0%），所以判据用显示精度而不是另设一个阈值。
+        if abs(a_mm) * 100 < 0.05:
+            s3 = (f'期末合计环比{"降" if e_mm < 0 else "升"}，但隐含 NII 的月均余额几乎没动'
+                  f'（{B.pct(a_mm)} m/m{rk_a}），NII 的基数没跟着走。')
+        elif (e_mm < 0) != (a_mm < 0):
+            s3 = (f'余额口径反向：期末合计环比{"降" if e_mm < 0 else "升"}，'
+                  f'隐含 NII 的月均余额却 <b>{B.pct(a_mm)}</b> m/m{rk_a}，'
+                  f'只读期末会把 NII 基数读{"成缩表" if e_mm < 0 else "偏乐观"}。')
+        else:
+            s3 = (f'期末与月均两个余额口径同向（月均 {B.pct(a_mm)} m/m{rk_a}），'
+                  f'本月不会把 NII 基数读反。')
+    else:
+        s3 = ''
+
+    # ── R2：SBS 余额的基数护栏。上月排全样本第几，是这句话的全部信息量。
+    # 存量的点对点同比是 §6.4 的默认口径，但措辞按 §6 标「单月」——
+    # 与页尾「同比口径逐处点名」那条互为对照，读者不用猜这个 y/y 是哪种。
+    be = B.base_effect(new['sbs_balance_usdbn'].values, i)
+    if be['conflict'] and be['prev_rank']:
+        s4 = (f'SBS 余额环比的{"负" if be["mm"] < 0 else "正"}号来自上月基数：{mlab(cur - 1)} 是新口径'
+              + ('最高月' if be['prev_is_max'] else f'第{be["prev_rank"]}高月')
+              + f'，单月同比仍{"为正" if be["yy"] > 0 else "为负"}。')
+    elif be['prev_rank'] and be['yy'] is not None:
+        s4 = f'SBS 余额环比与单月同比同向（上月排第{be["prev_rank"]}高），不是基数造出来的。'
+    else:
+        s4 = ''
+
+    # ── 所处区间 + 口径分解：Trust 层（另一个池子、另一条更长的序列，N 各算各的）。
+    j = len(trust) - 1
+    prate = trust['payment_rate_pct'].values
+    pool = trust['principal_receivables_usdbn'].values
+    days = tfull['days_in_period'].values
+    gross = tfull['ann_default_rate_pct'].values          # 毛违约率
+    recr = tfull['ann_recovery_rate_pct'].values          # 回收率
+    netd = tfull['ann_default_rate_net_pct'].values       # 净违约率（= 摘要表 nco_pct）
+
+    pr_rank = B.rank_of(prate, j)
+    # R3 不适用（本页没有当月合计量），但天数可以当定性限定：少一天还能站高位才是硬证据。
+    dd = (days[j] - days[j - 1]) if (j >= 1 and B.need(days[j], days[j - 1])) else 0
+    if dd < 0:
+        lead = f'Trust 还款率在 {days[j]:.0f} 天短月里仍排{n_tr}个月第{pr_rank}高'
+    elif dd > 0:
+        lead = f'Trust 还款率排{n_tr}个月第{pr_rank}高（当月多 {dd:.0f} 天）'
+    else:
+        lead = f'Trust 还款率排{n_tr}个月第{pr_rank}高'
+    # 「池子缩是还得快」只在还款率确实站在高位、且池子确实在缩时才成立。
+    if pool[j] < pool[j - 1] and pr_rank <= max(1, n_tr // 3):
+        pay = lead + '，池子缩是<b>还得快</b>；'
+    else:
+        pay = lead + f'，池子在{"缩" if pool[j] < pool[j - 1] else "扩"}；'
+
+    # 净额口径：Δ净 = Δ毛 − Δ回收。句子只做一件事 —— 把「净降 X bp」与「毛只降 Y bp」
+    # 并排放（同 ibkr 的「表面跌 6.7%、日均实跌 11.0%」），差额归谁由分支决定。
+    # 远端这里写的是「单月降 X bp」—— 指的是 m/m。今天的口径改造把「单月」定成了
+    # **单月同比**的专用标签（CONTRACT §6.2，页尾点名条也按这个词核对），m/m 再用
+    # 这两个字就会被读成 y/y，所以下面四个分支一律改写「环比」（本函数第一个分支
+    # 「环比持平」本来就是这个词）。
+    # **不再报回收率占净降幅的百分比、不再算「按上月回收率固定」的反事实**：那是贡献度
+    # 拆解，样板里没有这种东西。share_rec 仍然当场算，但只用来选句子，不印出来。
+    # MIN_BP 是**材料性闸门**：净变动只有一两个 bp 时谈来源就是把噪音当信号 ——
+    # 分母一小，任何占比都能飙到几百 %（重放里 2025-05 真的印出过「440%」）。
+    MIN_BP = 5.0
+    if not B.need(netd[j], netd[j - 1], gross[j], gross[j - 1], recr[j], recr[j - 1]):
+        dec = '违约率为净额口径（已扣回收），当月缺分解所需字段。'
+    else:
+        d_net = netd[j] - netd[j - 1]
+        d_gross = gross[j] - gross[j - 1]
+        d_rec = recr[j] - recr[j - 1]
+        share_rec = (-d_rec / d_net) if d_net else None
+        mv, gv = ('降' if d_net < 0 else '升'), ('降' if d_gross < 0 else '升')
+        rv = '升' if d_rec > 0 else '降'
+        g_lo = B.rank_of(-gross, j)
+        # 四舍五入到 0 的变化不给方向（同 _signed 的规矩：舍入后的零没有方向）。
+        g_txt = ('毛违约率几乎没动' if round(abs(d_gross) * 100) == 0
+                 else f'毛违约率只{gv} {abs(d_gross) * 100:.0f}bp')
+        # 8-K 那笔出售在信托里的表现形式就是回收跳升 —— 只在同月才可能是同一笔，
+        # 所以这半句挂在 `on` 上。只陈述「同月」这个事实，不下「互不印证」的判断。
+        same = '，与 8-K 那笔出售同月' if on else ''
+        if share_rec is None or abs(d_net) * 100 < MIN_BP:
+            dec = (f'违约率（<b>净额</b>口径）环比{"持平" if share_rec is None else "只动了个位数 bp"}，'
+                   f'毛违约率在{n_tr}个月里排第{g_lo}低。')
+        elif share_rec > 1:
+            # 回收率一头把净额拉过了头：毛违约率其实在往反方向走。
+            dec = (f'违约率是<b>净额</b>口径：环比{mv} {abs(d_net) * 100:.0f}bp 全由回收率'
+                   f'{rv} {abs(d_rec) * 100:.0f}bp 造成，'
+                   f'毛违约率反而{gv} {abs(d_gross) * 100:.0f}bp{same}。')
+        elif share_rec >= 0.5:
+            dec = (f'违约率是<b>净额</b>口径：环比{mv} {abs(d_net) * 100:.0f}bp，'
+                   f'{g_txt}、第{g_lo}低，差额是回收率{rv} {abs(d_rec) * 100:.0f}bp{same}。')
+        elif share_rec > 0:
+            dec = (f'违约率是<b>净额</b>口径：环比{mv} {abs(d_net) * 100:.0f}bp 主要来自毛违约率'
+                   f'（{gv} {abs(d_gross) * 100:.0f}bp、第{g_lo}低），回收率只添 '
+                   f'{abs(d_rec) * 100:.0f}bp。')
+        else:
+            dec = (f'违约率是<b>净额</b>口径：环比{mv} {abs(d_net) * 100:.0f}bp 全部来自毛违约率'
+                   f'（{gv} {abs(d_gross) * 100:.0f}bp、第{g_lo}低），回收率反向变动。')
+    s5 = pay + dec
+
+    # 字数：B.render 的 230-380 是硬护栏（拦「模板拼坏了」），本页自己收到 250-330 ——
+    # 句子长度随数据变（off 里几条、at_best 里几条、Trust 走哪个分支都会变），所以超出
+    # 上界时按**重要性倒序**丢句：先丢 R2 基数句，再丢交叉验证，最后才是口径背离。
+    # s1（一次性因素怎么读）与 s5（净额口径怎么读）是本页的全部理由，一句都不丢。
+    # 丢之前先看丢完会不会掉到下界以下 —— 会的话宁可略长，也不要把一段解读砍成半段。
+    # 五句是上限（F3），正常月份丢掉 s4 后落在四句，与 build/ibkr.py 的样板同形。
+    plain = lambda ss: len(re.sub(r'<[^>]+>', '', ''.join(x for x in ss if x)))
+    LO, HI = 250, 330
+    sents = [s1, s2, s3, s4, s5]
+    for k in (3, 1, 2):
+        if plain(sents) <= HI:
+            break
+        # 这一句已经空了、或丢掉它会掉到下界以下 —— 跳过它去试下一句，别整个停下来
+        # （写成 break 的那一版：s4 恰好为空时后面两句一句都不再考虑，重放里 344 字下不来）。
+        if not sents[k] or plain(sents) - plain([sents[k]]) < LO:
+            continue
+        sents[k] = ''
+    return B.render(sents)
+
+
+# ── 轴刻度收口（必须排在 NOTES 之前）──────────────────────────────────────────
+# 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+# 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+# **位置很要紧**：axisfmt 除了改格式器，还会给「柱图型出现负值」的图补 ycap/yfloor。
+# 下面那几串「哪几张画了什么」的编号是现读 payload 生成的，必须读到最终结果，
+# 否则又会出现「图注声称的与图上画的对不上」——本轮修的正是这一类。
+axisfmt.fix_all(ex)
+
+# ── 「哪几张画了什么」一律从 payload 现读，不手写编号 ──────────────────────────
+# 全站复查抓到过一整类缺陷：图注声称的口径与图上实际画的对不上，根因都是注释是手写常量、
+# 而图上画什么由数据当场决定（本页 Exhibit 7 就是：费率同比是不是常数决定它画次轴同比
+# 还是 12 个月均线，而那句说明以前写死成「Exhibit 7 是本页唯一不画次轴同比的一张」）。
+# 下面三串编号跟着 payload 走，改了图这几句话会自己改口。
+_LVL_EX = [str(e['n']) for e in ex if e['kind'] == 'gs_bar']
+_YOY_EX = [str(e['n']) for e in ex if e.get('yoy')]
+_AVG_EX = [str(e['n']) for e in ex if e.get('avg12') is not None]
+
+# ── 同比口径盘点：本页每一条同比线是什么口径、为什么 ──────────────────────────
+# 判据不是「感觉存量噪声小」，而是**用本页自己的序列实测**：
+# 存量序列的 12 个月滚动窗口同比在数值上完全正确（Σ12/Σ12′ ≡ 均值比，实测差 2.3e-14），
+# 只是不能把它叫作「合计」（12 个月末快照相加不指代任何东西），所以这里用
+# yoy.ttm_mean_yoy() 算出「12 个月均值同比」，与点对点同比并排实测，再决定用哪个。
+def _cal_stock(s, win):
+    """存量序列：点对点同比 vs {TTM_WIN} 个月均值同比，对齐月份后各项统计。"""
+    v = Y._as_series(s)
+    a = Y.mom_yoy(v, Y.STOCK)
+    b = Y.ttm_mean_yoy(v, Y.STOCK)
+    av, bv = a.values.astype(float), b.values.astype(float)
+    m = np.isfinite(av) & np.isfinite(bv)
+    if win:
+        w = np.zeros(len(m), bool)
+        w[-win:] = True
+        m &= w
+    idx = list(v.index)
+    aa, bb = np.where(m, av, np.nan), np.where(m, bv, np.nan)
+    n = int(m.sum())
+    opp = [(idx[i], float(av[i]), float(bv[i])) for i in np.flatnonzero(m & (av * bv < 0))]
+    def _sd(x):
+        return float(np.nanstd(x, ddof=1)) if np.isfinite(x).sum() >= 2 else float('nan')
+    def _mj(x):
+        d = np.abs(np.diff(x))
+        return float(np.nanmax(d)) if np.isfinite(d).any() else float('nan')
+    return {'n': n, 'sd_mom': _sd(aa), 'sd_ttm': _sd(bb),
+            'mj_mom': _mj(aa), 'mj_ttm': _mj(bb), 'opp': opp}
+
+
+# 拿**旧口径**那条余额序列做这次实测，不是新口径：新口径自 2024-05 起只有 26 个月，
+# 而 12 个月均值同比要 24 个月才有第一个点 —— 样本只剩 3 个月，算出来的标准差比
+# 它要回答的问题还不确定。旧口径同一个量有 123 个月，正是 Exhibit 12 画的那条。
+_W12 = 42                # Exhibit 12 实际画出来的窗口长度（下面 bar_yoy_ex 的 win）
+_CAL_BAL = _cal_stock(tail_contiguous(old['consumer_balance_usdbn']), _W12)
+_CAL_ALL = _cal_stock(tail_contiguous(old['consumer_balance_usdbn']), None)
+_CAL_MIN_N = 24          # 少于两年的重叠就不下「哪个口径更好」的结论，只报数
+
 NOTES = [
     f'<b>两套口径不可连比。</b>AXP 自 2026 年 5 月起把 Card Member loans 与 receivables 合并披露为'
     f' "Card balances"（含 pay-in-full 余额），并在 2026-05-15 的 8-K Exhibit 99.1 里重述了 24 个月历史。'
@@ -870,19 +1328,81 @@ NOTES = [
     f'只到 {MONTHS[old.index[-1].month - 1]}）。Exhibit 17 / 18 的热力矩阵配色已反转：'
     f'<b>绿 = 核销率低（好）</b>，色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。',
 
-    f'<b>与原 PDF 的四处有意差异。</b>(1) 原 deck 的 <code>lvl_bar</code>（Exhibit 2/4/6/7/8）'
-    f'是「浅蓝柱 + 每柱数值 + 次轴金色同比线」，网页版现在用 <code>gs_bar</code> + '
-    f'<code>yoy</code> 逐条还原，<b>不画 12 个月均线</b>（deck 的 docstring：均线只是把柱子'
-    f'再平滑一遍、不带新信息）。此前用的 <code>bar_line_dual</code> 形态对、但丢了'
+    f'<b>与原 PDF 的四处有意差异。</b>(1) 原 deck 的 <code>lvl_bar</code>'
+    f'（Exhibit {"/".join(_LVL_EX)}）是「浅蓝柱 + 每柱数值 + 次轴金色同比线」，'
+    f'网页版用 <code>gs_bar</code> + <code>yoy</code> 逐条还原。'
+    f'本轮实际画出次轴同比的是 <b>Exhibit {"/".join(_YOY_EX)}</b>；'
+    + (f'画 12 个月均线（而非次轴同比）的是 <b>Exhibit {"/".join(_AVG_EX)}</b>，'
+       f'理由见第 (2) 条。'
+       if _AVG_EX else
+       '本轮<b>没有任何一张画 12 个月均线</b>（deck 的 docstring：均线只是把柱子'
+       '再平滑一遍、不带新信息）。')
+    + f'这两串编号由本页 payload 现读（谁挂了 <code>yoy</code>、谁挂了 '
+    f'<code>avg12</code>），不是写死的说明文字 —— 哪张图改了口径，这句话会自己跟着改。'
+    f'此前用的 <code>bar_line_dual</code> 形态对、但丢了'
     f'「每柱数值」那一层，而 Exhibit 7 / 8 的全部信息恰好就在那一层。'
     f'Exhibit 12 来自 <code>rev_bar_yoy</code> 而非 <code>lvl_bar</code>，柱是深色 NAVY'
     f'（图例 "Reported"），<code>gs_bar</code> 的柱色写死在引擎里的浅蓝，故仍留 '
     f'<code>bar_line_dual</code>。'
-    f'(2) <b>Exhibit 7 是本页唯一不画次轴同比的一张</b>：费率是季度阶梯，同比在整个窗口内'
-    f'恒为 {_niy_yy_set[0]:+.2f}pp，是个常数、不带信息，而常数同比的次轴必然退化'
-    f'（量程塌成一个点、刻度舍成一列重复读数、末点读数压在最高刻度上）。'
-    f'那一张改画 12 个月均线（费率看「当前 vs 过去一年均值」才有意义），常数写进图注；'
-    f'生成器里有断言，同比一旦不再是常数就会报错要求改回次轴同比。'
+    f'(2) <b>Exhibit 7 的次轴画什么，由数据当场决定</b>：费率是季度阶梯（同一季三个月同值），'
+    + (f'本轮窗口内它的同比<b>恒为 {_niy_yy_set[0]:+.2f}pp</b> —— 一个常数、不带信息，'
+       f'而常数同比的次轴必然退化（量程塌成一个点、刻度舍成一列重复读数、'
+       f'末点读数压在最高刻度上），所以这一张<b>改画 12 个月均线</b>'
+       f'（费率看「当前 vs 过去一年均值」才有参考意义），那个常数写进图注。'
+       if _niy_const else
+       f'本轮窗口内它的同比取值 {"、".join(f"{v:+.2f}pp" for v in _niy_yy_set)}'
+       f'（{len(_niy_yy_set)} 个不同值），<b>不是常数</b>，所以这一张与其余同类图一样'
+       f'画次轴同比。')
+    + f'这里没有断言、也不会因此构建失败：月度数字本来就走在季度费率前面，'
+    f'费率一落后一个季度、ffill 把最后一档拉平，同比就不再是常数 —— '
+    f'那是常态不是异常，生成器自己在两种画法之间切换，本条说明跟着切。'
+    f'(2.5) 本页<b>没有任何一条同比线用 {Y.TTM_WIN} 个月滚动口径</b>，全部是'
+    f'<b>点对点同比</b>（当月对去年同月；比率序列取百分点差）——'
+    f'Exhibit {"/".join(_YOY_EX)} 的次轴、Exhibit 12 的右轴线、'
+    f'Exhibit 13/15 的季节性基准、Exhibit 17/18 的热力矩阵、两张表的 y/y 列，'
+    f'以及页顶 brief 段里出现的任何同比读数（句中已标「单月」）全部同口径，'
+    f'所以本页任意两处的同比读数可以直接互相对读。理由逐类不同，都不是「存量不能滚动」'
+    f'那句一般性说辞（{Y.TTM_WIN} 个月滚动<b>均值</b>同比对存量在数值上完全正确，'
+    f'不许说的只是把它叫「合计」）：'
+    f'① <b>余额类（Exhibit 2/4/12）是期末存量</b>，用本页自己的序列实测'
+    f'（取 Exhibit 12 那条旧口径 Consumer 余额，<b>只量图上真画出来的 {_W12} 个月</b> —— '
+    f'图外的历史读者根本看不到；新口径只有 {len(new)} 个月，'
+    f'重叠样本太少算不出可信的标准差）：'
+    f'{_CAL_BAL["n"]} 个两种口径都有值的月份上，'
+    f'点对点同比逐月标准差 {_CAL_BAL["sd_mom"]:.2f}pp、'
+    f'{Y.TTM_WIN} 个月<b>均值</b>同比 {_CAL_BAL["sd_ttm"]:.2f}pp'
+    f'（放大 {_CAL_BAL["sd_mom"] / _CAL_BAL["sd_ttm"]:.2f} 倍），'
+    f'相邻月最大跳变 {_CAL_BAL["mj_mom"]:.2f}pp vs {_CAL_BAL["mj_ttm"]:.2f}pp，'
+    f'符号相反的月份 {len(_CAL_BAL["opp"])} 个'
+    + (f'（{_CAL_BAL["opp"][0][0]} 点对点 {_CAL_BAL["opp"][0][1]:+.1f}% vs '
+       f'均值 {_CAL_BAL["opp"][0][2]:+.1f}%）' if _CAL_BAL['opp'] else '')
+    + ' —— '
+    + ('重叠样本不足两年，这里只报数、不下「哪个口径更好」的结论；'
+       if _CAL_BAL['n'] < _CAL_MIN_N else
+       '存量的点对点同比比的是两个时点的余额、不含日历效应，放大倍数远低于'
+       f'全站流量序列的中位 2.08 倍，且没有一个月符号相反，'
+       '所以这里保留点对点、噪声用轴范围解决；'
+       if _CAL_BAL['sd_mom'] < _CAL_BAL['sd_ttm'] * 2.08 and not _CAL_BAL['opp'] else
+       f'放大倍数或符号分歧已经追上全站流量序列的水平，'
+       f'下一轮应当把这几张图改成 {Y.TTM_WIN} 个月均值同比；')
+    + (f'（把窗口放到全历史 {_CAL_ALL["n"]} 个月，放大倍数是 '
+       f'{_CAL_ALL["sd_mom"] / _CAL_ALL["sd_ttm"]:.2f} 倍、符号相反 '
+       f'{len(_CAL_ALL["opp"])} 个月，那 {len(_CAL_ALL["opp"])} 个月全部落在 '
+       f'{_CAL_ALL["opp"][0][0]}–{_CAL_ALL["opp"][-1][0]} 的疫情 V 型段里、'
+       f'早已滚出本图窗口 —— 拿它当判据就是报图外的问题。）'
+       if _CAL_ALL['opp'] and not _CAL_BAL['opp'] else '')
+    + f'② <b>比率类（Exhibit 7/8 与逾期率、核销率）</b>的同比只能是百分点差，'
+    f'滚动合计与滚动均值对比率都没有意义（要「一年的平均费率」得用余额加权）；'
+    f'③ <b>Exhibit 6（隐含净利息收入）是流量</b>，按契约默认本该用 {Y.TTM_WIN} 个月滚动合计，'
+    f'但新口径序列自 {new.index[0]} 起只有 {len(new)} 个月，'
+    f'而滚动同比要 {Y.TTM_WIN} 个月填窗 + {Y.TTM_WIN} 个月比较才有第一个点 —— '
+    f'本图 24 个月的窗口里滚动口径只画得出 '
+    f'{int(Y.ttm_yoy(tail_contiguous(avgbal["implied_nii_usdmn"]), Y.FLOW).iloc[-24:].notna().sum())} '
+    f'个月，画出来是一条几乎空白的线；'
+    f'④ <b>Exhibit 13/15/17/18</b> 是季节性与热力矩阵，按 CONTRACT.md §6 本就豁免'
+    f'（逐格逐月的波动正是这两类图的题眼）；'
+    f'⑤ <b>两张表的 y/y 列</b>必须恒等于「本月 ÷ 去年同月」的表内算术，'
+    f'读者拿第一列除第三列要能得到同一个数 —— 表内自相矛盾比口径混用更糟。'
     f'(3) 两张热力矩阵没有走通栏：通栏卡片会被渲染器排到汇总表正下方、跑到 Exhibit 2 前面，'
     f'为保住原 deck 的图序改用半栏（引擎会按格宽自动收字号）。'
     f'(4) 汇总表里「零变化」不着色（原 deck 把 0 着成红色，等于说「没变 = 变坏」）。'
@@ -905,17 +1425,16 @@ payload = {
                 f'{new.index[0]} 起；Trust {trust.index[0]} 起）　·　版式仿 J.P. Morgan'
                 f'「Managed Data Release」',
     'headline': HEADLINE,
+    # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+    # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+    'brief': compose_brief(new, avgbal, trust, tfull, CUR, ONEOFF_M, ONEOFF_C),
     'hub_line': HUB,
     'source': 'Source: AXP 8-K Item 7.01 (SEC CIK 0000004962) and American Express Credit Account '
               'Master Trust Form 10-D (SEC CIK 0001003509); format after J.P. Morgan',
     'xlabels': [mlab(p) for p in TB_WIN],
     'xlabels_long': xl(old.index),
     'summary': summary,
-    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
-    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
-    # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
-    # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
-    'exhibits': axisfmt.fix_all(ex),
+    'exhibits': ex,              # 已在上面过完 axisfmt.fix_all（幂等，这里不重复调）
     'table': table,
     'notes': NOTES,
     'footer': FOOTER,

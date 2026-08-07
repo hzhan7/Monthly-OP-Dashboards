@@ -40,9 +40,13 @@ import importlib.util
 import json
 import os
 
+import numpy as np
+
 import axisfmt
+import brief as B
 import payload_guard
 import pctile
+import yoy as Y        # 同比口径的唯一实现（build/yoy.py）；本页不再自己写滞后 12 期的除法
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -167,16 +171,25 @@ def tail(arr, n):
 
 
 def yoy_of(vals):
-    """水平值序列的逐月同比（%），与 gsx.lvl_bar 的次轴口径一致：
-    滞后 12 期、基数为 0 或两期异号时放弃该点（同比在那里没有意义）。
-    序列本身必须逐月连续 —— load() 已经强制过。"""
-    out = [None] * len(vals)
-    for i in range(12, len(vals)):
-        a, b = vals[i], vals[i - 12]
-        if a is None or b is None or b == 0 or a * b < 0:
-            continue
-        out[i] = (a / b - 1) * 100
-    return out
+    """水平值序列的**单月同比**（%），与 gsx.lvl_bar 的次轴口径一致。
+
+    口径实现走 <build/yoy.py>（全站唯一一份）而不是在这里再写一遍滞后 12 期的除法：
+    同比曾在 15+ 个 builder 里各实现一遍，那正是全站口径出错的根因 —— 副本的代价
+    不是重复代码，是同一个判断要做 15 次、漏掉一次不报错。
+    `mom_yoy` 与本函数原来的逐点循环完全同口径（基数为 0 或两期异号 → 留空）。
+    kind=FLOW：ADV 与链式指数都是可加总的量纲，传 STOCK 会被 yoy.py 直接拒。
+    序列必须逐月连续 —— load() 已经强制过。"""
+    s = Y.mom_yoy(vals, Y.FLOW)
+    return [None if v != v else float(v) for v in s.values]
+
+
+def ttm_cover(vals):
+    """{TTM_WIN} 个月滚动同比在这条序列上**有几个月画得出来**。
+
+    这是本页放弃滚动口径的那条实测判据（见 Exhibit 2 图注）：判据要现算不能写死，
+    序列每月长一个月，滚动口径的覆盖度会自己变好，写死的数字迟早变成假话。"""
+    s = Y.ttm_yoy(vals, Y.FLOW)
+    return [None if v != v else float(v) for v in s.values]
 
 
 def brk_idx(months):
@@ -297,6 +310,20 @@ adv_yoy_lvl = (ADV[at(CUR)] / ADV[at(YAG)] - 1) * 100
 # 两者本来就应当相等（2024 年的 ADV 正是用披露的同比反算出来的），最新月
 # +30.0% vs 披露 +30.0% 即互为校验；不等就说明 CSV 内部矛盾，宁可让它露出来。
 advy_w = tail(yoy_of(ADV), W2)
+# ── 为什么本页留在单月口径（CONTRACT.md §6 的默认是 12 个月滚动合计）──
+# 理由不是「ADV 不能加总」（日均量的 12 个月合计确实有量纲问题，但同比是比值、
+# 分子分母同权，交易日在比值里直接约掉，所以那不是障碍），而是**数据长度**：
+# 本页序列自 2024-01 起（更早年份的官网 xlsx 在 CDN 上已不可访问，见口径说明），
+# 而滚动同比要 12 个月填窗 + 12 个月比较才有第一个点。下面这两个数现算，
+# 窗口每月往前滚、序列每月长一个月，它们会自己变 —— 写死就迟早变成假话。
+_ttm_w = tail(ttm_cover(ADV), W2)
+TTM_HAVE = sum(1 for v in _ttm_w if v is not None)
+MOM_HAVE = sum(1 for v in advy_w if v is not None)
+# 滚动口径的这几个点里有几个落在口径断点之后 —— 同样现算，不写死。
+# 断点右侧的滚动同比比单月更糊：滚动窗口把「剔除 event contracts」一次抹到 12 个月上，
+# 而单月口径至少还能逐月点名哪几个读数跨了口径。
+_ttm_after_brk = sum(1 for i, m in enumerate(m2)
+                     if _ttm_w[i] is not None and mkey(m) >= mkey(BRK_M))
 # 断点右侧的同比是「新口径的当月 ÷ 旧口径的去年同月」——公司不重述，只能这么算，
 # 但必须在图注里点名，不能让读者把它当成同口径的动能。
 n_mixed = sum(1 for i, m in enumerate(m2)
@@ -309,16 +336,26 @@ mark_y = sorted({m2[i][:4] for i in mark_i})
 
 ex2 = {
     'n': 2, 'kind': 'gs_bar', 'full': True, 'fmt': 'f1', 'xlabels': xl2,
-    'title': 'SPDJI average daily volume of ETDs',
-    'ylab': 'mn contracts / day', 'ylab2': '% y/y',
+    'title': 'SPDJI average daily volume of ETDs（右轴 = 单月同比 / single-month y/y）',
+    'ylab': 'mn contracts / day', 'ylab2': '% y/y（单月）',
     'legend': 'Monthly ADV',
     'values': [r6(v) for v in adv_w],
     'break_at': brk_i, 'break_label': BRK_LABEL,
     'bar_marks': mark_i,
     'mark_note': '该月 ADV 由 2025 年值与官方 25 v. 24 % change 反算，非直接披露值',
     'note': (f'柱为公司披露的 SPDJI 交易所交易衍生品日均成交量；金线（右轴）是同月对'
-             f'去年同月的水平值同比，最新月 {adv_yoy_lvl:+.1f}% 与公司披露的 '
+             f'去年同月的水平值同比（<b>单月口径</b>），最新月 {adv_yoy_lvl:+.1f}% 与公司披露的 '
              f'{ADVY[at(CUR)]:+.1f}% 互为校验。'
+             f'<b>本图偏离契约默认的 {Y.TTM_WIN} 个月滚动合计同比，理由是数据长度不够，'
+             f'不是「日均量不能加总」</b>（同比是比值，分子分母同权，交易日在比值里约掉）：'
+             f'本页序列自 {mlab(MONTHS[0])} 起共 {len(MONTHS)} 个月，'
+             f'而滚动同比要 {Y.TTM_WIN} 个月填窗 + {Y.TTM_WIN} 个月比较才有第一个点 —— '
+             f'本图这 {W2} 个月的窗口里，单月口径能画 {MOM_HAVE} 个月，'
+             f'滚动口径只能画 {TTM_HAVE} 个月。'
+             f'换口径会把这条线的 {(W2 - TTM_HAVE) / W2 * 100:.0f}% 变成空白，'
+             f'而剩下的 {TTM_HAVE} 个点里有 {_ttm_after_brk} 个落在 {mlab(BRK_M)} '
+             f'口径断点之后 —— 滚动窗口会把这次断点一次抹到 {Y.TTM_WIN} 个月上，'
+             f'反倒比单月更难说清哪几个读数跨了口径。'
              + (f'窗口最左端没有上年对位月，同比从 {advy_from} 起才有。'
                 if advy_from else '窗口内还没有上年对位月，暂时只有柱、没有同比线。')
              + (f'红色竖虚线 = 口径断点（{mlab(BRK_M)}）：该月起 ADV 剔除 event '
@@ -355,8 +392,8 @@ idxy_from = mlab(tail(idx_months, W3)[idxy_at[0]]) if idxy_at else None
 
 ex3 = {
     'n': 3, 'kind': 'gs_bar', 'full': True, 'fmt': 'f0', 'xlabels': xl3,
-    'title': 'Ratings billed issuance index',
-    'ylab': 'index, 2024 same month = 100', 'ylab2': '% y/y',
+    'title': 'Ratings billed issuance index（右轴 = 单月同比 / single-month y/y）',
+    'ylab': 'index, 2024 same month = 100', 'ylab2': '% y/y（单月）',
     'legend': 'Monthly index',
     'values': [r6(v) for v in idx_w],
     'note': ('<b>指数不是公司披露值</b>：官方每月只给 billed issuance 的同比百分比，'
@@ -366,7 +403,11 @@ ex3 = {
              + (f'干净的只有金线（右轴）那条同比：2024 同月基数在分子分母上精确对消，'
                 f'{idx_yoy:+.0f}% 与官方披露的 {BIY[at(CUR)]:+.0f}% 一致。'
                 f'指数从 {mlab(idx_months[0])} 起才有，故同比从 {idxy_from} 起'
-                f'才存在（窗口内 {idxy_n} 个点）。' if idxy_from else
+                f'才存在（窗口内 {idxy_n} 个点）。'
+                f'这条线是<b>单月口径</b>，而且只能是单月：指数的水平值按本图自己的'
+                f'声明就跨月不可比（每根柱的分母都不同），对它做 {Y.TTM_WIN} 个月滚动'
+                f'合计等于把 {Y.TTM_WIN} 个不同分母的比值加起来，那不指代任何东西。'
+                if idxy_from else
                 f'指数从 {mlab(idx_months[0])} 起才有，窗口内还没有满 12 个月的对位'
                 '基数，故本图暂时只有柱、没有同比线。')),
     'src_extra': INOTE + (f'; the y/y line starts {idxy_from}.' if idxy_from else '.'),
@@ -529,17 +570,30 @@ ex7 = {
     'row_lab_w': 62,                       # 行标签加了「（无 y/y）」，32px 装不下
     'note': ('色标取全部有限值的 5/95 分位，绿 = 发行量增速更快。'
              + (f'{"、".join(BLANK_Y)} 一整行是灰的（行标已标「无 y/y」），不是没加载出来：'
-                '那一年公司只披露了绝对水平的对照基数本身，没有可用的 y/y 读数'
-                f'（第一个 y/y 读数是 {mlab(BIY_FROM)}）。留着这一行是为了让'
-                '三年的月份列对齐，也让「哪一年没有数」一眼可见。' if BLANK_Y else '')
-             + '同一格的高低是相对<b>去年同月</b>，不是相对上月，'
-             '所以一行里连着两个大正数并不等于绝对水平在连涨。'),
+                'billed issuance <b>从来没有绝对面值可披露</b>（官方每月只给同比百分比，'
+                '见下方口径说明第 3 条），所以那一年空着的原因不是「只有水平值没有同比」，'
+                f'而是<b>本页序列自 {mlab(MONTHS[0])} 起</b> —— 更早年份的官网 xlsx 在 CDN 上'
+                '已不可访问，那一年的同比要用它自己那份 xlsx 才拿得到'
+                f'（本页第一个 y/y 读数是 {mlab(BIY_FROM)}）。留着这一行是为了让'
+                f'{len(hy)} 年的月份列对齐，也让「哪一年没有数」一眼可见。' if BLANK_Y else '')
+             + '同一格是相对<b>去年同月</b>的<b>单月同比</b>，不是相对上月，'
+             '所以一行里连着两个大正数并不等于绝对水平在连涨。'
+             '热力矩阵按 CONTRACT.md §6 豁免滚动口径：逐格的月度波动就是这类图的题眼，'
+             '抹平了这张图就没有内容了。'),
     'src_extra': ('Green = faster issuance growth'
                   + (f'; {"/".join(BLANK_Y)} is blank because only y/y is disclosed.'
                      if BLANK_Y else '.')),
 }
 
 EXHIBITS = [ex2, ex3, ex4, ex5, ex6, ex7]
+
+# ── 轴刻度收口（必须排在 NOTES 之前）────────────────────────────────────────
+# 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+# 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+# **位置很要紧**：axisfmt 除了改格式器，还会给「柱图型出现负值」的图补 ycap/yfloor，
+# 而紧接着的 BRK_DRAWN / BRK_TXT 是**现读 payload** 生成的断点说明 ——
+# 要读到最终结果，否则又是一处「图注声称的与图上画的对不上」。
+axisfmt.fix_all(EXHIBITS)
 
 # 图注里「哪几张画了断点线」不许手写：断点滚出某张图的窗口时（或某张图换了窗口长度），
 # 手写的编号就变成一句假话。这里从真正写进 payload 的 break_at 反查。
@@ -627,6 +681,25 @@ NOTES = [
      '一定是空的，不是数据；代价过大（浪费四成以上画布）时引擎会改为不对齐并在图上标红字。'),
     ('<b>核对表保持官方原始单位</b>：ADV 为 mn 张/日、两条 y/y 为百分比，均未换算；'
      '指数那一列是本页推导值，已在表头标注，拿它去核对官方文件会对不上。'),
+    (f'<b>同比口径：本页每一处都是单月同比</b>（当月 ÷ 去年同月 − 1），'
+     f'没有一张图用 {Y.TTM_WIN} 个月滚动合计同比 —— 页顶 brief 引用的同比、'
+     f'Exhibit 2（ADV 右轴）、'
+     f'Exhibit 3（指数右轴）、Exhibit 4（两条披露 y/y）、Exhibit 5（季度，3 个月比 3 个月）、'
+     f'Exhibit 7（热力矩阵）与汇总表、核对表的 y/y 列全部同口径，'
+     f'所以本页任意两处的同比读数可以直接互相对读。'
+     f'<b>偏离 CONTRACT.md §6 默认（流量用 {Y.TTM_WIN} 个月滚动）的理由逐条如下，'
+     f'都不是「日均量不能加总」</b>（同比是比值，分子分母同权，交易日在比值里直接约掉）：'
+     f'(1) <b>Exhibit 2</b> —— 序列自 {mlab(MONTHS[0])} 起共 {len(MONTHS)} 个月，'
+     f'而滚动同比要 {Y.TTM_WIN} 个月填窗 + {Y.TTM_WIN} 个月比较才有第一个点：'
+     f'本图 {W2} 个月的窗口里单月能画 {MOM_HAVE} 个月、滚动只能画 {TTM_HAVE} 个月，'
+     f'换口径等于把这条线的 {(W2 - TTM_HAVE) / W2 * 100:.0f}% 变成空白。'
+     f'(2) <b>Exhibit 3 / 4 / 7</b> —— 画的是公司<b>直接披露</b>的同比百分比'
+     f'（billed issuance 从来不给面值），我们手里根本没有可加总的水平值序列，'
+     f'滚动口径无从算起。(3) <b>Exhibit 5</b> 是季度对照、<b>Exhibit 7</b> 是热力矩阵，'
+     f'按 §6 本就豁免。(4) 两张表的 y/y 列必须恒等于表内算术，读者拿相邻两列去除'
+     f'要能得到同一个数 —— 表内自相矛盾比口径混用更糟。'
+     f'序列长到能画滚动口径（约需再攒 {max(0, Y.TTM_WIN * 2 - len(MONTHS))} 个月）之后，'
+     f'Exhibit 2 应当改回默认口径。'),
 ]
 
 adv_c, advy_c, biy_c, bidx_c = ADV[at(CUR)], ADVY[at(CUR)], BIY[at(CUR)], BIDX[at(CUR)]
@@ -639,6 +712,236 @@ headline = (f'SPDJI ADV {adv_c:,.2f} mn 张/日（{advy_c:+.1f}% y/y，公司披
             f' · issuance 指数 {bidx_c:,.1f}（2024 同月 = 100，推导值，跨月不可比）'
             f' · 序列 {MONTHS[0]} 起共 {len(MONTHS)} 个月')
 
+
+# ────────────────────────── 页顶 brief（本月读数怎么读）──────────────────────
+def _fa(seq):
+    """None → NaN 的数组化。brief.py 的缺失判定一律走 np.isfinite，而把 None 直接塞进
+    np.array 会得到 object dtype —— 那之后所有比较静默返回 False，排名与分位会算错
+    而不是报错（同一个坑在 build/ibkr.py 的 as_list 里也单独写过一次）。"""
+    return np.array([np.nan if v is None else float(v) for v in seq], float)
+
+
+def _cn_mo(v):
+    """带量词的小计数。B.cn(2) 给的是「二」，而「二个月」不是中文说法，得是「两个月」。
+    brief.py 是 12 家共用的只读规则库，不为本页改它；这条本地化就留在本页。"""
+    return '两' if v == 2 else B.cn(v)
+
+
+def _q(k, n, noun='个'):
+    """B.quant 的本地化包装。「只有 / 有 / 多达」的判据仍然由规则库当场按 k/n 算，
+    这里只把中文里不成话的「二个」换成「两个」（同 _cn_mo 的理由）。
+
+    凡是「只有 N 个」这类**定性词 + 算出来的数字**，一律走这里而不是写死措辞：
+    断点后的可比月数会随时间增长，写死「只有」总有一天会印出「三十个里只有二十个」。"""
+    return B.quant(k, n, noun).replace('二个', '两个')
+
+
+def _mlab_key(k):
+    """整数月序 → 'Jun-26' 标签。用来把「断点 + 11」这类当场算出来的月份印成日期，
+    比「还剩 N 个月」不容易被读成差一个月。"""
+    return mlab(f'{k // 12}-{k % 12 + 1:02d}')
+
+
+def compose_brief(months, adv_raw, advy_raw, biy_raw, derived_raw):
+    """SPGI 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`。本页用到 R1（峰值扫描）、R2（排名与基数）、
+    R5（推导值标注）、R6（有效位）；**R3 与 R4 明确不适用**，理由见下。
+    所有数字当场从序列算，一个都没有硬编码 —— 排名、样本分母、断点后的月数、
+    峰值停在哪个月、跨口径同比还剩几个月，下个月重跑都会自己变。
+
+    ═══ 分寸 ═══
+    以 `build/ibkr.py::compose_brief()` 为准（那是验收过的样板，既是上限也是下限）：
+    四句、四个层次、**一句一个意思**，成品要能和它并排读。本页的四层是
+    位置 / 口径 / 分母 / 另一条披露序列 —— 日历（R3）与人均（R4）两层在这里
+    根本不存在，不许为了凑够四层去造。
+
+    ═══ 与本页 2026-08 同比口径改造的关系（移植时的口径适配）═══
+    远端写这一段时 Exhibit 2 / 3 的标题还没有「单月」标注；本地已按 CONTRACT §6
+    在两图标题写明「单月同比 / single-month y/y」，并在页尾口径说明里逐处点名
+    「本页每一处都是单月同比」（偏离默认口径的理由是数据长度，见那条说明）。
+    适配照 cboe / ibkr 的先例：brief 里凡引用同比读数，措辞一律带「单月」标签，
+    与两图标题、页尾点名逐字对得上；页尾点名的名单里也补上了 brief。
+    与 ibkr 不同，本页**没有**滚动口径的读数可并排印 —— 序列长度画不出那条线
+    （Exhibit 2 图注现算过覆盖度），所以不造一个「单月 / 滚动并排」的假对照；
+    brief 对单月同比只作位置、口径与基数陈述，不下趋势判断。
+
+    ═══ SPGI 独有，别家不能照抄 ═══
+      · **R3（交易日/日历修正）在这里是错的**：SPDJI 那一列披露的本来就是 ADV
+        （已经日均化），再除一次交易日会造出一个根本不存在的修正 —— brief.py 开头
+        点名的 CME/CBOE/HKEX/SPGI 四家之一就是本页。序列里也压根没有交易日列。
+      · **billed issuance 披露的本来就是同比百分比，不是水平值**：对一条 y/y 序列
+        再算 y/y 是无意义的（这条口径提醒 Exhibit 1 的表下 note 已经印过，brief 里
+        不复述）。剩下能读的就是「它踩的是什么基数」—— 本页对它只写这个。
+      · **R4（单位恒等）无处可用**：公司每月只给两个数，没有任何一对分子/分母
+        （没有收入、没有 AUM、没有账户数），构造不出人均/户均型指标。
+      · **排名类表述必须写清样本，且本页的样本有两处要标注**：2024 全年的 ADV 是用
+        官方百分比反推的**推导值**、序列横跨 2025-12「剔除 event contracts」的口径
+        断点（序列本身也只有 30 个月 —— 更早的 xlsx 已从 CDN 撤下）。两处标注
+        一个都不能为省字删掉，但每一处后面**紧跟它自己那一句当场判定**：推导月里有
+        没有高过本月的、剔掉断点前的月份后名次变没变。不给「样本有 N 处不干净」这类
+        统一总述 —— 两处的约束力本来就不一样，并列成一句会让读者去折价一个其实很结实
+        的排名，而且那句总述本身是方法论议论，不是导读。
+      · **跨口径同比的偏差方向是往下的**，与直觉相反：分子已剔除 event contracts、
+        分母未重述，无论把 like-for-like 定义成「两边都含 event」还是「两边都不含」，
+        同口径增速都不低于披露值（event 量非负，两种算法同向；基期 event 量恰为 0
+        时取等，所以措辞是「不会更低」而不是「更高」）。读者默认「口径变更 = 往上
+        粉饰」，在这里正好读反 —— 这是本页唯一一处只看表面数字必错的地方，压字数时
+        第一个要保住的就是它。
+      · **分母那一句是算术，不是预判**：下个月同比要用的分母，就是序列里 12 个月前
+        那个已经落库的读数，本页只报它的位置与它比这个月的分母低多少。不许由此推出
+        「下月同比会更高」——那是对未披露月份的预测，本页只画图不给观点。
+      · **定性词一律由当场算出的量决定分支**：「只有 N 个」走 `_q()`（B.quant）、
+        「基数偏低/偏高」与「读数在高位/低位」各由样本三分位判定、「名次不变」由两个
+        排名比出来。写死措辞 + 算出来的数字，下个月就会印出自相矛盾的句子。
+
+    ═══ 删过一次，别再加回来 ═══
+      · 「两条序列 N 个共有月里有 M 个方向相反 → 本月同向不等于互相印证」：
+        这是**方法论议论**不是导读。读者要的是两条各自怎么读，不是一段关于
+        「不能互证」的告诫；而且 ADV 与 billed issuance 分属两块业务，本来也没人
+        承诺过它们同向。
+      · 「样本最高的 X 月踩的是 Y 月的垫底基数，那一次才是基数变出来的」：
+        把镜头从本月挪到另一个月，一句里塞进第二个基数故事 —— 样板一句只讲一件事。
+    """
+    i = len(months) - 1
+    adv, advy, biy = _fa(adv_raw), _fa(advy_raw), _fa(biy_raw)
+    n_all = len(months)
+
+    # ── R1：ADV 是本页唯一的水平值序列。skip_monotonic 用默认值，让规则库自己判
+    #    （实测非单调，峰值扫描在这里有信息量；若哪天变成只增不减的列会自动被剔除）。
+    #    off_peak 为空（本月就是峰值、被判单调、或本月缺值）时整段省掉：
+    #    peak_months_txt([]) 返回空串，硬拼会印出「峰值停在月」这种残句而不报错。
+    #    「本月就是峰值」不在这里说 —— 那与名次第 1 是同一件事，交给下面的 pos。
+    pk = B.peak_scan(months, [('ADV', adv)], i)
+    peak_txt = f'、峰值停在{B.peak_months_txt(pk["off_peak"])}月' if pk['off_peak'] else ''
+
+    # 两处口径标注（推导值 / 断点）**一个都不能删**，但也不给「样本有 N 处不干净」这种
+    # 统一总述：那是一句方法论议论，而且会让读者去折价一个其实很结实的排名。改成每处
+    # 标注后面紧跟它自己的当场判定 —— 推导月里有没有高过本月的、剔掉断点前的月份后
+    # 名次变没变，两个判定都是算出来的，下个月会自己翻面。
+    rank_all = B.rank_of(adv, i)
+    if not B.need(adv[i]) or rank_all is None:
+        s1 = ''                       # 本月 ADV 缺值：这一句不写，而不是整页构建失败
+    else:
+        # 「排第 1」与「峰值停在 X 月」是同一件事的两种说法，同时印会自我重复；
+        # 名次为 1 时照样板的写法直接写「为 N 个月最高」。
+        pos = (f'为{n_all}个月最高' if rank_all == 1
+               else f'在全部{n_all}个月里排第{rank_all}{peak_txt}')
+        cav = []
+        d_idx = [j for j, v in enumerate(derived_raw) if v == 1]
+        if d_idx:
+            d_yrs = '、'.join(sorted({months[j][:4] for j in d_idx}))
+            n_up = sum(1 for j in d_idx if np.isfinite(adv[j]) and adv[j] > adv[i])
+            # 「反推自官方百分比」在 Notes 与 Exhibit 2 图注里已经讲全，这里只留标注本身
+            cav.append(f'{len(d_idx)}个<b>推导值</b>月全在 {d_yrs} 年、'
+                       + ('无一高于本月' if n_up == 0 else f'其中{_cn_mo(n_up)}个高于本月'))
+        new_idx = [j for j, m in enumerate(months) if mkey(m) >= mkey(BRK_M)]
+        if new_idx and len(new_idx) < n_all:
+            rank_new = 1 + sum(1 for j in new_idx if np.isfinite(adv[j]) and adv[j] > adv[i])
+            cav.append(f'剔掉 {mlab(BRK_M)} 断点前的月份，同口径'
+                       f'{_q(len(new_idx), n_all, "个月")}，'
+                       f'本月{"仍" if rank_new == rank_all else "改"}排第{rank_new}')
+        # 断点还没进序列时（BRK_M 被提前登记、或重放到断点之前），这个名次整段同口径，
+        # 说清楚比省略强 —— 否则读者会拿断点后的规矩去折价一个不受影响的排名。
+        tail1 = ('' if new_idx else f'；{mlab(BRK_M)} 的口径断点还在序列之外，'
+                                    '这个名次整段都是同口径的')
+        s1 = (f'{mlab(months[i])} 的 ADV <b>{B.num(adv[i], 2)}mn 张/日</b>{pos}'
+              + ('；' + '；'.join(cav) if cav else '')
+              + tail1 + '。')
+
+    # ── R2/R5：跨口径同比。主语必须是**本月这一个读数**，不能是「断点右侧共有几个」——
+    #    后者是个历史计数，滚过 12 个月后永久停在 12，而本句的落点（「正好读反」）说的
+    #    是本月的同比。倒计时印成末月标签（断点 + 11，当场算），「还剩 N 个月」含不含
+    #    本月读者要猜，印 Nov-26 不会差一个月。三个分支各管一段时间，不能只写两个：
+    #    断点之前根本没有跨口径这回事，写「已落回同一口径」是无中生有。
+    #    三个分支的第一次提及一律写「单月同比」——与 Exhibit 2 标题、页尾口径说明
+    #    同一套标签（见 docstring「口径适配」一段）；标签是页内互相对读的锚点，
+    #    省掉它读者就要自己猜这条同比该对哪张图。
+    cur = mkey(months[i])
+    # 带上这个月的同比读数，句子才有主语可指（原来开头是「这条跨口径同比」，而 brief 里
+    # 上一句根本没提过同比 —— 指代落空）。缺值时整段省掉这个数，不留下一个空格。
+    av = f' {B.pct(advy[i] / 100)} ' if B.need(advy[i]) else ''
+    if cur >= mkey(BRK_M) > cur - 12:
+        s2 = (f'单月同比{av}跨着口径，要到 {_mlab_key(mkey(BRK_M) + 11)} 才滚完；'
+              '偏差方向<b>朝下</b>：同含或同不含 event contracts 两种同口径算法都不会'
+              '给出更低的增速，当成口径粉饰读正好读反。')
+    elif cur < mkey(BRK_M):
+        # 断点尚未到来（重放到断点之前，或下一次口径变更被提前登记进 BRK_M）：
+        # 此时同比还是同口径的，把「到时候会发生什么」讲清楚，别拿未来的折扣套在今天。
+        n_ay, r_ay = int(np.isfinite(advy).sum()), B.rank_of(advy, i)
+        s2 = ((f'ADV 单月同比此时还是同口径的，在{n_ay}个披露读数里排第{r_ay}' if r_ay
+               else 'ADV 单月同比此时还没有可用读数')
+              + f'；到 {mlab(BRK_M)} 分子才开始剔除 event contracts、分母不重述，'
+              '此后 12 个月的同比是跨口径的，且会系统性偏低。')
+    else:
+        s2 = (f'单月同比已落回同一口径、不再是跨口径比值（跨口径月止于 '
+              f'{_mlab_key(mkey(BRK_M) + 11)}）；但断点两侧的<b>水平值</b>依旧不可直读——'
+              '更早的月份不追溯重述，这一条不随时间自愈。')
+
+    # ── R2：这个同比踩的是什么分母。本页没有量价、没有分部，能拆的只有「分子在哪、
+    #    分母在哪」这一层，所以只报两个位置：去年同月那个分母在全样本的名次，以及下个月
+    #    要换成哪一个（它就是序列里 12 个月前那个已落库的读数，不是预测）。
+    #    两处都缺就整句不写 —— 序列头一年（2024）没有对位的去年同月。
+    if i >= 12 and B.need(adv[i], adv[i - 12]):
+        # 「这个同比」是指上一句那个读数，所以指代词跟着 advy 在不在走：公司没披露同比的
+        # 月份写「这个」就指了个空。分母本身照算不误 —— 它是序列里的水平值，与披露无关。
+        s3 = (f'{"这个" if B.need(advy[i]) else ""}同比的分母是去年同月 '
+              f'{B.num(adv[i - 12], 2)}mn，在{n_all}个月里排第{B.rank_of(adv, i - 12)}')
+        if B.need(adv[i - 11]):
+            # 「再低 N%」的方向词与数字必须一起算：四舍五入后为 0 时整句换成「几乎不变」，
+            # 否则会印出「分母再低0%」这种自相矛盾的话（历史重放里 2025-01 / 2026-01 命中）。
+            d_nxt = adv[i - 11] / adv[i - 12] - 1
+            mv = abs(d_nxt) * 100
+            s3 += (f'；下个月换成 {mlab(months[i - 11])} 的 {B.num(adv[i - 11], 2)}mn，'
+                   f'排第{B.rank_of(adv, i - 11)}，'
+                   + ('分母几乎不变' if round(mv) == 0 else
+                      f'分母再{"低" if d_nxt < 0 else "高"}{mv:.0f}%'))
+        s3 += '。'
+    else:
+        s3 = ''
+
+    # ── R2：billed issuance 披露的就是同比，能读的只有它踩的基数。三分位判档，
+    #    且**本月自己在高位还是低位**同样当场判 —— 「顶出来 / 基数给的」这套动词只有
+    #    读数在高位时才通顺，一个垫底读数没有任何东西被顶出来。
+    #    「只披露单月同比」的「单月」不是装饰：官方 xlsx 里这一列就是当月对去年同月，
+    #    与 Exhibit 4 / 7 画的是同一列（页尾口径说明已点名），标签照抄过来。
+    n_bi = int(np.isfinite(biy).sum())
+    cur_r = B.rank_of(biy, i)
+    if n_bi == 0 or cur_r is None:
+        # 这一列还没有读数时，能读的只剩 ADV 自己的位置 —— 与其空着，不如把水平值
+        # 上一次被跌破是几个月前给出来（R1 的另一半），仍然是当场算的。
+        gap = B.months_since_lower(adv, i) if B.need(adv[i]) else None
+        s4 = ('billed issuance 此时还没有对位的披露读数，本页只有 ADV 一条序列，'
+              + (f'能读的只有它自己的位置：上一次比本月更低是{gap}个月前。' if gap
+                 else '能读的只有它自己的位置：全样本还没有比本月更低的月份。'))
+    elif n_bi == 1:
+        # 这一列刚开张（只有本月一个读数）：「在1个读数里排第1」是个没有信息的名次，
+        # 排名与基数这两件事此时都还不成立，直说比印一个 1/1 的名次诚实。
+        s4 = (f'billed issuance 只披露单月同比，本月 {B.pct(biy[i] / 100, 0)} 是这一列的'
+              '第一个读数，既排不出位置、也没有对位的去年同月。')
+    else:
+        hi_cut, lo_cut = n_bi // 3, n_bi - n_bi // 3     # 名次 ≤ hi_cut 为高位
+        bi_base = B.rank_of(biy, i - 12) if i >= 12 else None
+        if bi_base is None:
+            base_txt = '去年同月还没有对位读数'
+        else:
+            if cur_r <= hi_cut:
+                why = ('这个高位有一截是弱基数给的' if bi_base >= lo_cut
+                       else '这个高位不是弱基数顶出来的')
+            elif cur_r >= lo_cut:
+                why = ('这次的低位有一截是高基数压的' if bi_base <= hi_cut
+                       else '这次的低位不是高基数压出来的')
+            else:
+                why = '本月自己也在中段，基数解释不了什么'
+            base_txt = f'去年同月基数排第{bi_base}，{why}'
+        # 「披露的本来就是同比、对它再算同比无意义」是 Exhibit 1 表下 note 的原话，
+        # brief 不复述规则、直接交结论：这一列能读的就是名次与它踩的基数。
+        s4 = (f'billed issuance 只披露单月同比：本月 {B.pct(biy[i] / 100, 0)} 在'
+              f'{n_bi}个读数里排第{cur_r}，{base_txt}。')
+
+    return B.render([s1, s2, s3, s4])
+
+
 payload = {
     'ticker': 'spgi',
     'tracker': 'SPGI Monthly Metrics Tracker',
@@ -650,17 +953,15 @@ payload = {
                  f'（{len(MONTHS)} 个月）· 版式沿用 Goldman Sachs GIR monthly-metrics note'
                  f'，仅图无观点'),
     'headline': headline,
+    # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+    'brief': compose_brief(MONTHS, ADV, ADVY, BIY, DERIVED),
     'hub_line': (f'ADV {adv_c:.1f}mn/日（{advy_c:+.0f}% y/y）· '
                  f'billed issuance {biy_c:+.0f}% y/y'),
     'source': SRC,
     'xlabels': [mlab(m) for m in tm],
     'xlabels_long': [mlab(m) for m in MONTHS],
     'summary': summary,
-    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
-    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
-    # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
-    # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
-    'exhibits': axisfmt.fix_all(EXHIBITS),
+    'exhibits': EXHIBITS,        # 已在上面过完 axisfmt.fix_all（幂等，这里不重复调）
     'table': table,
     'notes': NOTES,
     'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '

@@ -153,6 +153,16 @@ DECOMP_LN_MIN = 1e-6     # |ln(V₁/V₀)| 低于它就整根柱留空（见 ex_
 TOTAL_TOL = 1e-6         # 「日均 × 权重」与「当月合计列」的一致性容差（见 monthly_total）
 TTM_WIN = 12             # 滚动合计窗口（个月）
 
+# 同比口径账本认的类别（页尾「同比口径」条目按类各写一段点名文案，见 notes()）：
+#   ttm     = 12 个月滚动合计的同比 —— 流量默认口径（CONTRACT §6.1 第 1 条），ex_ttm 次轴金线
+#   mom     = 单月同比（当月对去年同月）—— 头条同比图与 gs_bar 次轴
+#   mom_pp  = 比率列的单月同比（百分点差 —— 比率不做滚动，CONTRACT §6.1 第 5 条）
+#   stock   = 存量列的点对点同比（存量不可加总，CONTRACT §6.1 第 4 条）
+#   heat    = 热力矩阵（格内是单月同比，按 CONTRACT §6.2 豁免保留）
+# 做成白名单是因为拼错的类别只会静默丢一段点名文案，页面照常上线没人发现，
+# 所以 log_yoy 对不认识的名字硬失败。
+YOY_CALS = ('ttm', 'mom', 'mom_pp', 'stock', 'heat')
+
 
 class SpecError(SystemExit):
     """spec 写错 / CSV 结构不对 —— 要人去改，退出码 1。
@@ -794,6 +804,10 @@ class Page:
 
         # 窗口内恒为 0 的图由各 ex_* 自己判（flat0_skip），这里只开账本。
         self.flat0 = []
+        # 同比口径账本：各 ex_* 每画一条同比就记一笔 (图号, 口径类别)，
+        # 页尾「同比口径」条目从这本账现算点名文案（见 log_yoy 与 notes()）。
+        # payload() 组装前会再清一遍 —— 这里先建着，免得单测直接调 ex_* 时炸。
+        self.yoy_log = []
         self.breaks = _load_breaks(spec, series_dir)
         for b in self.breaks:
             if b['col'] and b['col'] not in have:
@@ -895,6 +909,24 @@ class Page:
                 'last_nz': (str(nz_s.index[-1]), float(nz_s.iloc[-1])) if len(nz_s) else None,
             })
         return True
+
+    def log_yoy(self, n, cal):
+        """记账：Exhibit n 画了一条 cal 类口径的同比（cal ∈ YOY_CALS）。
+
+        页尾「同比口径」条目从这本账**现算**点名文案（CONTRACT §6.1 第 3 条：同页并存
+        两种口径必须逐处点名成「Exhibit X、Y：单月同比」这种可核对的形式）。点名必须由
+        产图的代码自报、图号必须是派生的，两个理由：
+          · 被点名的对象里有底座自己生成的图（头条同比、滚动同比次轴），spec 作者
+            看不见它们排在几号，没法在 spec 的 notes 里点对；
+          · 写死的图号会在删图加图后指向错的图而**不报任何错**（本仓吃过这亏 ——
+            图号硬编码在别处造成过「Exhibit 17 之后跟着 15」）。账本跟着产图走，
+            哪张图不再画同比、或新增一张，页尾那段话自动跟随。
+        """
+        if cal not in YOY_CALS:
+            raise SpecError(f'log_yoy 收到未知口径类别 {cal!r} —— 这是底座代码写错，'
+                            f'不是 spec 的问题（拼错的类别会静默丢一段点名文案，'
+                            f'所以硬失败）；认得的类别：{YOY_CALS}')
+        self.yoy_log.append({'n': n, 'cal': cal})
 
     def breaks_for(self, window, cols=()):
         """窗口内的断点 → (break_at, break_label, 命中的断点列表)。
@@ -1021,6 +1053,8 @@ class Page:
             + rng
             + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）：'
                f'跨断点的同比本身就不可比。' if hit else ''))
+        # 整张图画的都是单月口径（比率列 = 百分点差）→ 记进口径账本，页尾点名
+        self.log_yoy(n, 'mom_pp' if ratio else 'mom')
         return ex
 
     # ────────────────────── exhibit：分组多列对比 ──────────────────────
@@ -1049,6 +1083,8 @@ class Page:
         rhs = yoy_rhs(self.ser(c), win, pct_series=ratio)
         ex = bar_ex(n, f'{gz}：{c["zh"]}', c, xl, v, rhs,
                     ylab2=('pp y/y' if ratio else '% y/y'))
+        if rhs:      # 次轴金线是单月口径的同比；rhs 没画出来就没有同比可点名
+            self.log_yoy(n, 'mom_pp' if ratio else 'mom')
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
             f'近 {len(win)} 个月。'
@@ -1133,6 +1169,8 @@ class Page:
             'row_lab_w': max(label_width(r) for r in rows),
             'src_extra': 'Cells are y/y growth, not levels',
         }
+        # 格内是单月同比（豁免图型，但页尾口径点名不豁免 —— CONTRACT §6.2）
+        self.log_yoy(n, 'heat')
         ex['note'] = (
             f'格内是<b>同比</b>（%），不是水平值：色标由全部有限值的 5/95 分位共用一条，'
             f'量级相差几十倍的列放同一张矩阵会被最大的那列吃掉整条色标。'
@@ -1154,6 +1192,8 @@ class Page:
             return None
         rhs = yoy_rhs(self.ser(c), win)
         ex = bar_ex(n, f'{gz}：{c["zh"]}（存量，期末口径）', c, xl, v, rhs, ylab2='% y/y')
+        if rhs:      # 存量的次轴同比是点对点口径（月末快照 vs 去年同月月末）
+            self.log_yoy(n, 'stock')
         ex['src_extra'] = 'Period-end stock, not a flow'
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
@@ -1626,6 +1666,8 @@ class Page:
                    'yfmt': 'pct0', 'values': LN(rv)}
         ex = bar_ex(n, f'{t["zh"]}：水平值与 {TTM_WIN} 个月滚动同比', c, xl, v, rhs,
                     ylab2=f'% y/y（{TTM_WIN}M 滚动）')
+        if rhs:      # 次轴金线是滚动口径；短历史画不出金线时就没有滚动同比可点名
+            self.log_yoy(n, 'ttm')
         hit = self.mark_breaks(ex, win, [c])
 
         # ── 毛刺量级：拿这条序列自己实测，两种同比只在**都有值**的月份上比 ──
@@ -1850,6 +1892,7 @@ class Page:
         idx = list(self.df.index)
         newest = idx[-1]
         ex, n = [], 2
+        self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
 
         for c in self.head:                                   # ① 长历史 + 3Y 分位带
             ex.append(self.ex_history(n, c)); n += 1
@@ -2053,6 +2096,53 @@ class Page:
             f'lines —— 平滑图型会把 null 当 0，画出一条塌到零的假线还不报错。'
             f'④ 热力矩阵画同比不画水平值：色标是全表共用的 5/95 分位，水平值量级差几十倍时'
             f'会被最大的那列吃掉整条色标。')
+        # ── 同比口径：从 yoy_log 账本现算，逐处点名（CONTRACT §6.1 第 3 条）──
+        # 这段话为什么必须由底座生成、图号为什么必须派生，见 log_yoy 的 docstring。
+        # 文案按类别分段拼装，只写账本里真有的类别 —— 页上没画滚动同比就绝不出现
+        # 「其余均为滚动」这类以偏概全的断言（没有滚动图时那是一句假话）。
+        cal_ns = {}
+        for r in self.yoy_log:
+            cal_ns.setdefault(r['cal'], set()).add(r['n'])
+        if cal_ns:
+            def _exs(k):
+                return '、'.join(f'Exhibit {j}' for j in sorted(cal_ns[k]))
+            # 「并存」只看滚动 vs 单月两大侧：mom / mom_pp / stock / heat 都属单月侧
+            # 的合法形态。读者要防的是拿滚动折线和单月读数跨口径比高低。
+            mixed = 'ttm' in cal_ns and len(cal_ns) > 1
+            seg = []
+            if 'ttm' in cal_ns:
+                seg.append(
+                    f'{_exs("ttm")} 的次轴金色折线：<b>{TTM_WIN} 个月滚动合计的同比</b>'
+                    f'（流量的默认口径 —— 任意连续 {TTM_WIN} 个月覆盖同一套日历与'
+                    f'到期周期，交易日数与月度形状的差整个消掉）')
+            if 'mom' in cal_ns:
+                seg.append(
+                    f'{_exs("mom")}：<b>单月同比</b>（当月对去年同月）—— 单月口径'
+                    f'吃基数与日历效应，毛刺比滚动口径大，同一序列的两种同比甚至'
+                    f'可以符号相反，跨图比增速之前先核对口径')
+            if 'mom_pp' in cal_ns:
+                seg.append(
+                    f'{_exs("mom_pp")}：比率列的同比 = 单月口径的<b>百分点差</b>'
+                    f'（比率不做滚动合计也不做滚动均值 —— 「一年的平均比率」要按量'
+                    f'加权，换个窗口得不到）')
+            if 'stock' in cal_ns:
+                seg.append(
+                    f'{_exs("stock")}：存量列的<b>点对点同比</b>（月末快照 vs 去年'
+                    f'同月月末）—— 存量不可加总，把 12 个月末快照相加不指代任何'
+                    f'真实的量，所以存量没有「滚动合计」口径可选')
+            if 'heat' in cal_ns:
+                seg.append(
+                    f'{_exs("heat")}（热力矩阵）：格内是<b>单月同比</b>，按豁免保留 '
+                    f'—— 这张图逐格看的就是单月波动，抹平了信息就没了')
+            out.append(
+                '<b>同比口径'
+                + ('（本页并存两种口径，逐处点名 —— 不要跨口径比高低）' if mixed else '')
+                + '。</b>' + '；'.join(seg) + '。'
+                + '汇总表（Exhibit 1）的 m/m 与 y/y 列及页顶抬头行是「本月 / 上月 / '
+                  '去年同月」三个具名月份的<b>单月</b>读数（运营核对用途，按豁免保留 '
+                  '—— 放滚动值进去与列头自相矛盾）。'
+                + ('趋势判断看滚动折线，当月核对看单月读数，两者并存是分工不是疏忽。'
+                   if mixed else ''))
         out.append(
             f'<b>汇总表读法。</b>「{pctile.WINDOW // 12}Y %ile」= 当月读数在最近 '
             f'{pctile.WINDOW} 个月中的分位，由全站唯一的 <code>build/pctile.py</code> 计算'

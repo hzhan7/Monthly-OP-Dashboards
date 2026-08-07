@@ -29,8 +29,11 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import brief as B                  # 顶部 brief 的共享规则库（R1-R6），只算事实不出文字
 import payload_guard
 import pctile                      # 3Y %ile 的唯一实现，本文件不再自己写分位判据
+import yoy as Y                    # 同比口径的唯一实现；本页画的增速全是公司披露值，
+#                                    只用它的常量与滚动口径做「为什么不改口径」的实测对照
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -62,6 +65,243 @@ OVERLAY_MONTHS = 25
 ECOMM_BREAK = pd.Period('2025-09', 'M')
 
 SRC = 'Source: Company data (Costco monthly sales press releases)'
+
+
+def compose_brief(df):
+    """COST 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
+
+    规则库在 `build/brief.py`（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 / R4 单位恒等 /
+    R5 标注 / R6 有效位），那边只算事实、不出文字，句子在这里拼 —— 措辞是口径的一部分，
+    属于各家自己。每个数字都当场从 `series/cost.csv` 算，**一处硬编码都没有**：排名、
+    「N 个月最低」、哪个地区相对自身历史最弱、净增 0 出现过几次，下月重跑全都会自己变。
+
+    ═══ COST 独有，别家不能照抄 ═══
+      · **R3 的日历变量是 4-4-5 零售日历的 `weeks`（5 周月 vs 4 周月），不是交易日。**
+        全站只有这一家是零售周口径。判据仍是「这一列是当月合计还是已经日均化」：
+        `net_sales_bn` 是当月合计，除周数才可比；而 comp（同店）是公司**已经按可比周
+        调整过**的口径，再除一次周数就是重复修正，所以下面凡是 comp 的句子一律不碰 weeks。
+      · 净销售额的 m/m 在 Exhibit 1 里是**整格留空**的（`srow(..., mm_ok=False)`），
+        表面 m/m 是多少、其中多少百分点纯粹是周数，全页只有这一段有 —— 它补的正是被
+        留空的那一格背后的算术，不是复述汇总表。
+      · 报告口径与核心 comp 之差是**推导值**（公司只披露两个口径各自的 comp，不披露差额），
+        且按地区拆开后常常正负相消（美国项主要是汽油、国际项主要是汇率，见 Exhibit 6），
+        所以只报合计楔子的水平与各地区的符号，不报「合计楔子里汽油占几成」这种拆不出来的比例。
+        合计楔子的**名次按符号分两头取**：正楔子问「油汇撑得多不多」（降序第 1 = 撑得最多），
+        负楔子问「拖得多深」（升序第 1 = 拖得最深）。一律用降序会印出「被油汇拖低 3.3pp、
+        排 53 个月第 53 高」这种要读者自己反过来读的话（2020-04 就是）。
+        楔子**是宽是窄只能由 |楔子ᵢ| − |楔子ᵢ₋₁| 现算**：两个口径同向还是反向变动与楔子走阔
+        走窄毫无关系（原来那句写死的「继续走阔」在 96 次触发里有 54 次是假的）；
+        取绝对值是因为「宽窄」问的是两个口径离得多远，−2.7 → −4.2 是拉开了不是收窄了。
+        核心口径已剔除汽油与汇率，所以楔子越宽 = 报告 comp 被油价/汇率撑得越多、
+        读数质量越低 —— 排位高不是好消息，措辞必须把这层含义带出来。
+      · 仓库数 `wh_total` 是只增不减的计数（`B.is_monotonic` 为真，全序列的月度变动
+        一次都没降过）：按 T3，「又创新高」每月都成立、是噪音，汇总表的分位那一列也因此
+        留空；有信息的是「净增 0」这件事在历史上有多常见，所以改成频次这种**相对**表述。
+      · 本页没有「越低越好」的反向序列（comp、销售额、仓库数都是越高越好），故
+        `peak_scan(inverse=True)` 与 T2 的措辞规则在这一家不适用。
+
+    ═══ 与本页 2026-08 同比口径改造的关系（移植时的口径适配）═══
+      本页所有增速都是**公司披露的可比周口径**，这是页尾「同比口径」条 + WK_EVID
+      在本页数据上实测过的：53 周错位月里披露值与「本月 ÷ 去年同月」的表内算术差出
+      整整一周的量、甚至反号（Jan-25 披露 +9.2% vs 算术 −11.6%）。所以本段**一个
+      自算的跨年增速都不引**。远端原版 s2 引的是周均序列的自算 y/y（pw[i]/pw[i-12]−1），
+      还在错位月配一句「y/y 也非同长区间之比」—— 对披露值这句是**反的**（披露同比的
+      基期本来就是同周数的上年错位窗口，错位月里恰恰只有它可直读，不可直读的是表内
+      算术），对自算值则当场推翻页尾「唯一一处表内算术在汇总表」的声明。适配后 s2 引
+      **披露的 ns_yoy**，按 CONTRACT §6 标「单月」（与汇总表 y/y 列同口径、可逐格
+      对上），只作位置与基数陈述、不作趋势断言；反号判据改为周均环比（现算，环比不涉
+      同比口径之争）对披露同比；错位月的警告句方向反转 —— 提醒「会反号的是表内算术」。
+      环比侧（s1 的表面/周均拆分）保持现算：它是环比不是同比，补的是汇总表 m/m
+      留空那一格背后的算术，页尾口径条已把这两处现算读数点名。
+
+    ═══ 定性词一律由当场算出的量决定分支（写死的措辞 + 算出来的数字 = bug）═══
+      「只」「走阔」「撑出」「最低」「常态」这类词下面**没有一个是写死的**：周均折算的
+      「只」由 |周均变化| < |表面变化| 定（周数 4→5 的月份周均跌得更深，写「只」是反的）；
+      楔子的走阔/收窄由 |楔子| 的环比变化定（还有第四个分支：跨零时说「翻了号」）；
+      「靠油汇撑出」在楔子为负时改写成「被油汇拖低」、为零时改写成「净影响约为 0」；
+      「N 个月最低」在与上月并列时改写成「已连续 N 个月停在下沿」（并列不是本月才发生的
+      新低，读者会当成新闻）；净增 0 的稀常由 `B.quant` 按占比给词，不写死「是常态」。
+      缺值月一律用 `B.need` 让**该句不写**，而不是让整页构建失败。
+
+    ═══ 分寸：并排读 build/ibkr.py 的 compose_brief()（那是样板，也是上限）═══
+    一句话一个意思，五句五层：日历（周数）/ 基数（周均的位置与反号）/ 口径（楔子）/
+    区间（三地各自的名次）/ 存量（仓库数）。本月 302 字对样板 347 字，同一个量级。
+
+    改的是**从句数，不是字数**：第一版把楔子那句写成「值 + 走向 + 地区 + 金额 + 排位 +
+    破折号转折」六件事挤一句，又把仓库数拿分号挂在「哪个地区最弱」的尾巴上凑成两件事
+    一句话 —— 那读起来像脚注不像导读。现在楔子的水平与地区归属用分号分成两段、仓库
+    单独成句（顺带不再受地区名次那个 if 的连累）。
+
+    真正删掉的只有一句：周数两端相同时的「y/y 无日历成分」（那是常态，全样本九成以上
+    的月份，印出来等于没说）。补上的两处都是**相对表述**：合计楔子的历史名次，以及三地
+    里最强的那个排第几 —— 只报最弱的等于只给半张图，读者分不清是全线走弱还是地区分化。
+    """
+    i = len(df) - 1
+    ALL = [str(p) for p in df.index]
+    ns, wk = df['net_sales_bn'].values, df['weeks'].values
+    nfin = lambda a: int(np.isfinite(np.asarray(a, float)).sum())
+    # 序列只剩一个月时，四句话（环比 / 基数 / 楔子变化 / 区间）没有一句算得出来，而 numpy
+    # 的 a[i-1] 在 i=0 时会静默取到序列末尾那个月 —— 宁可显式失败，也别印一段拿末月冒充上月的话。
+    if i < 1:
+        raise SystemExit('brief: 序列只有一个月，无法做任何环比/区间判断')
+
+    # ── R3：净销售额是「当月合计」，周数就是这一家的日历变量 ──────────────
+    cs = B.calendar_split(ns, wk, i)
+    if cs is None:                       # 缺周数就没法拆日历，宁可整页失败也别少说一半
+        raise SystemExit('brief: 最近两个月的 net_sales_bn / weeks 有缺失，无法做 4-4-5 日历拆分')
+    pw = cs['series']                                   # 周均销售额（推导值）
+    # 相邻月周数相同的月份（4-4-5 里的 4+4 那一对）占三分之一强，那种月份没有日历成分，
+    # 硬套「其中 0.0pp 是周数差、周均也是同一个数」等于把同一个环比印两遍。两种写法都得有。
+    ndiff = int((np.diff(wk) != 0).sum())
+    # 「只」是定性词，得由两个幅度的大小决定：周数由 4 增到 5 的月份，周均变化比表面变化
+    # 更深（per_week = (1+raw)·wᵢ₋₁/wᵢ − 1），那种月份印「只」正好说反。
+    softer = '只' if abs(cs['per_day']) < abs(cs['raw']) else ''
+    s1 = (f'{B.mo(ALL[i])}月{wk[i]:.0f}周、{B.mo(ALL[i - 1])}月{wk[i - 1]:.0f}周：'
+          f'净销售额表面环比<b>{B.pct(cs["raw"])}</b>，其中{abs(cs["gap_pp"]):.1f}pp'
+          f'纯是周数差，按周均（推导值）{softer}{B.pct(cs["per_day"])}；日历拆得掉、季节性拆不掉。'
+          if wk[i] != wk[i - 1] else
+          f'{B.mo(ALL[i])}月与{B.mo(ALL[i - 1])}月同为{wk[i]:.0f}周，'
+          f'净销售额表面环比<b>{B.pct(cs["raw"])}</b>不含日历成分'
+          f'（全样本{len(wk) - 1}次相邻月里{ndiff}次周数不同，这次不是）；季节性仍在。')
+
+    # ── R2：环比与同比反号时必须给基数。周均序列排名接近历史高位，退一格不是掉头 ──
+    # 名次的移动方向也是算出来的：写死「退到」的话，周均创出新高的月份会印成往下退。
+    # ⚠ 口径适配（2026-08 移植时改，理由见 docstring）：这句的同比引**公司披露的
+    # ns_yoy**（单月可比周口径，与汇总表 y/y 列同口径、可逐格对上），不引 base_effect
+    # 在周均序列上的自算 y/y —— 本页所有增速都是披露值，53 周错位月里自算的跨年增速
+    # 与披露值会反号（见表注与页尾口径条），引它等于把「唯一一处表内算术在汇总表」
+    # 的页尾声明当场推翻。be 只取排名（位置陈述），它的 yy / mm / conflict 一概不用。
+    be = B.base_effect(pw, i)
+    yy_disc = df['ns_yoy'].values
+    s2 = ''
+    if B.need(pw[i], be['rank'], be['prev_rank']):
+        r, pr = be['rank'], be['prev_rank']
+        move = (f'从上月的历史第{pr}高退到第{r}' if r > pr else
+                (f'从上月的第{pr}升到历史第{r}高' if r < pr else f'与上月并列历史第{r}高'))
+        if not B.need(yy_disc[i]):
+            # 披露同比缺失的月份（历史上没有，但护栏不能只对今天的数据成立）：
+            # 说清楚为什么没有这句，别让读者以为漏印。
+            cf, cal = '；本月新闻稿未披露净销售额同比，这句从缺', ''
+        else:
+            # 反号判据：周均环比（现算，s1 刚印过的那个数）对披露同比 —— 两个都是
+            # 读者在本页看得到的读数，不另引第三个口径。
+            cf = (f'，却与披露同比（单月可比周口径）{B.pct(yy_disc[i] / 100)}反号，'
+                  f'<b>只看环比会读错方向</b>'
+                  if (cs['per_day'] < 0) != (yy_disc[i] < 0) else
+                  f'，与披露同比（单月可比周口径）{B.pct(yy_disc[i] / 100)}同向')
+            # 周数错位月（53 周财年）的警告方向与远端原版**相反**：披露同比的基期本来
+            # 就是同周数的上年错位窗口，错位月里恰恰只有它可直读；会反号的是「本月 ÷
+            # 去年同月」的表内算术（本页实测差出整整一周的量，见页尾 WK_EVID 与表注）。
+            # 同周数月份什么都不加 —— 那是常态，印出来等于没说。i < 12 时 wk[i-12]
+            # 是负索引回卷（会静默取到序列末尾），必须先挡。
+            cal = ('' if i < 12 or not B.need(wk[i], wk[i - 12]) or wk[i] == wk[i - 12] else
+                   f'；本月{wk[i]:.0f}周、去年同月{wk[i - 12]:.0f}周（53 周财年错位），'
+                   f'该披露值仍可直读，会反号的是表内算术（见表注）')
+        s2 = f'周均{B.usd(pw[i], 2)}bn{move}{cf}{cal}。'
+
+    # ── 口径背离：楔子（= 汽油 + 汇率的贡献）本月是宽了还是窄了，只能靠差分现算 ──
+    tr, ta = df['tc_r'].values, df['tc_a'].values
+    # R6 的负零规矩：-0.04pp 印成 '-0.0pp' 是格式化产物不是数据（同一个毛病在 pctf/dsp/num
+    # 里都单独堵过一次），夹在一串带符号的 pp 中间会让人以为那是个缺失值。
+    pp = lambda v: f'{v:+.1f}pp' if round(float(v), 1) else '0.0pp'
+    REG = [('美国', 'us_r', 'us_a'), ('加拿大', 'ca_r', 'ca_a'), ('其他国际', 'oi_r', 'oi_a')]
+    wg = {nm: df[r].values - df[a].values for nm, r, a in REG}
+    s3 = ''
+    if B.need(tr[i], ta[i], tr[i - 1], ta[i - 1], *(wg[nm][i] for nm in wg)):
+        # 走阔/收窄只能由楔子自己的**环比变化**定：触发原措辞的条件（两个口径同向还是
+        # 反向变动）与楔子是宽是窄毫无关系。而「宽窄」问的是两个口径**离得多远**，所以
+        # 判据是 |楔子| 的变化，不是带符号差 —— 楔子由 -2.7 走到 -4.2，带符号差为负，
+        # 两个口径却是拉开了 1.5pp（油汇的拖累在加重）；由 -2.0 走到 0.0 更露馅：带符号差
+        # +2.0 会印出「楔子 0.0pp、环比走阔 2.0pp」这种自己打自己的话。
+        # 取整后再比，措辞才和印出来的那两个数一致（0.04 的抖动不该说成走阔）。
+        w_now, w_prev = round(tr[i] - ta[i], 1), round(tr[i - 1] - ta[i - 1], 1)
+        dgap = round(abs(w_now) - abs(w_prev), 1)
+        moveW = (f'较上月的{pp(w_prev)}翻了号' if w_now * w_prev < 0 else
+                 f'环比走阔{dgap:.1f}pp' if dgap > 0 else
+                 f'环比收窄{abs(dgap):.1f}pp' if dgap < 0 else '环比与上月持平')
+        # 名次按符号分两头取（见 docstring）：正楔子降序数「第几宽」，负楔子升序数「第几深」。
+        # 印出来的符号是四舍五入后的 w_now，分支就跟着它走，否则措辞和数字会对不上。
+        wser = tr - ta                                  # 合计楔子（推导值）
+        rkw = ('' if not w_now else
+               f'，排{nfin(wser)}个月第{B.rank_of(wser if w_now > 0 else -wser, i)}'
+               f'{"宽" if w_now > 0 else "深"}')
+        top = max(wg, key=lambda k: wg[k][i])           # 楔子最高的地区
+        # 措辞跟**印出来的那个数**走（四舍五入后的），否则 +0.04pp 会印成「撑出0.0pp」。
+        tv = round(float(wg[top][i]), 1)
+        # 核心口径已剔除油汇，所以正楔子 = 报告 comp 被油价/汇率撑高的幅度（负则是被拖低）。
+        how = (f'靠油汇撑出{tv:.1f}pp' if tv > 0 else
+               (f'被油汇拖低{abs(tv):.1f}pp' if tv < 0 else '油汇净影响约为 0'))
+        pos = [nm for nm in wg if wg[nm][i] > 0]        # 报告口径**严格**高于核心的地区
+        neg = [nm for nm in wg if wg[nm][i] < 0]
+        # 楔子按地区拆开常正负相消，所以只报符号与是谁，不报「汽油占几成」那种拆不出的比例。
+        # 四种组合都得说得通，且**楔子恰好为 0 的地区既不算正也不算负**（历史上出现过 3 次，
+        # comp 只有一位小数，0 楔子不罕见）—— 兜底措辞因此不含正负断言。
+        # 「只有」只出现在 len(pos)==1 这一支：那时正楔子的地区必然就是 top（最高的那个），
+        # 名字不用报两遍；pos 有两个的月份改说「是 A、B，其中 C…」，不能沿用「只有」。
+        if pos and neg:
+            split = (f'报告口径高于核心的只有{pos[0]}，{how}' if len(pos) == 1 else
+                     f'报告口径高于核心的是{"、".join(pos)}，其中{top}{how}')
+        elif pos:
+            split = f'各地区楔子无一为负，最高的{top}{how}'
+        elif neg:
+            split = f'各地区楔子无一为正，最高的{top}{how}'
+        else:
+            split = '各地区楔子全为 0'
+        s3 = f'报告−核心楔子（推导值）<b>{pp(w_now)}</b>、{moveW}{rkw}；{split}。'
+
+    # ── 所处区间：地区里相对自身历史最弱的那个 + T3 的单调序列改成频次表述 ──
+    REGA = {nm: a for nm, _, a in REG}
+    rk = {nm: B.rank_of(df[a].values, i) for nm, a in REGA.items()}
+    s4 = ''
+    if all(v is not None for v in rk.values()):
+        worst = max(rk, key=lambda k: rk[k])
+        wa = df[REGA[worst]].values
+        lo = B.months_since_lower(wa, i)                # 上一次严格更低是多少个月以前
+        # 判据是**严格**小于，所以与上月并列时「为 N 个月最低」上个月同样成立 —— 语义不假，
+        # 但读起来像本月才发生的恶化。并列几个月就说几个月，由这里数出来。
+        tie = 0
+        while i - tie - 1 >= 0 and np.isfinite(wa[i - tie - 1]) and wa[i - tie - 1] == wa[i]:
+            tie += 1
+        # 「二个月」不是中文量词，B.cn 只管数字不管量词，两个月这一档在这里单独给。
+        cnt = '两' if tie == 1 else B.cn(tie + 1)
+        if lo is None:                                  # 全样本里没有更低的月份
+            zone = f'已连续{cnt}个月停在全样本最低位' if tie else '为全样本最低'
+        elif tie:
+            zone = f'已连续{cnt}个月停在{lo}个月区间的下沿（上次更低在 {ALL[i - lo]}）'
+        else:
+            zone = f'为{lo}个月最低（上次更低在 {ALL[i - lo]}）'
+        # 只报最弱的那个等于只给了半张图：三地各自的名次同为「相对自身历史」的位置，
+        # 另一头在哪里，读者才知道这是全线走弱还是分化。名次并列时（序列头几个月三地
+        # 都排第 1）不写这半句 —— 否则会印出「A 最弱…最强的 A 排第 1」。
+        best = min(rk, key=lambda k: rk[k])
+        far = (f'，最强的{best}排第{rk[best]}'
+               if best != worst and rk[best] < rk[worst] else '')
+        s4 = (f'{B.cn(len(REG))}个地区里{worst}核心 comp 相对自身历史最弱，'
+              f'排第{rk[worst]}/{nfin(wa)}、{zone}{far}。')
+
+    # ── T3：wh_total 只增不减，「又创新高」每月都成立、是噪音（汇总表的分位那一列也因此留空），
+    #    所以这里不报水平值，只报「净增 0」在历史上出现的频次这种相对表述 —— 而「常见不常见」
+    #    这个词也得跟着频次走（B.quant），不能写死「是常态」：36/122 与 3/122 是两回事。
+    #    仓库是自成一层的存量，原来挂在上一句的分号后面，跟「哪个地区最弱」凑成了两件事一句话；
+    #    拆出来单独成句，顺带不再受地区名次那个 if 的连累（缺了地区名次不等于缺仓库数）。
+    wh = df['wh_total'].values
+    dwh = np.diff(wh)
+    fin = np.isfinite(dwh)               # 2016-08 / 2017-08 / 2017-09 三个月未披露仓库数
+    nz, nf = int(((dwh == 0) & fin).sum()), int(fin.sum())
+    if nf and B.need(wh[i], wh[i - 1]) and B.is_monotonic(wh):
+        op = wh[i] - wh[i - 1]
+        # is_monotonic 允许一成的下降，真出现关店月时「净增 -1 家」既难读又像格式化事故。
+        s5 = ('仓库数本月' + ('净增 0' if not op else
+                           f'净{"增" if op > 0 else "减"} {abs(op):.0f} 家')
+              + f'，{nf}次可比变动里{B.quant(nz, nf, "次")}为 0。')
+    else:
+        # 2016-08 / 2017-08 / 2017-09 的新闻稿没给仓库数，那两三个月的净增算不出来。
+        # 同上：说清楚缺的是哪一头，比整句消失强 —— 缺口本身在 Exhibit 13 的图注里也点了名。
+        miss = '本月' if not B.need(wh[i]) else ('上月' if not B.need(wh[i - 1]) else '')
+        s5 = (f'仓库数{miss}新闻稿未披露（全序列 {int((~np.isfinite(wh)).sum())} 个月缺），'
+              '本月净增算不出。' if miss else '')
+
+    return B.render([s1, s2, s3, s4, s5])
 
 
 def main():
@@ -349,14 +589,41 @@ def main():
     same = df[(df.index.month == mo)].dropna(subset=['net_sales_bn'])
     n_yr = len(same) - 1
     cagr = ((same['net_sales_bn'].iloc[-1] / same['net_sales_bn'].iloc[0]) ** (1 / n_yr) - 1) * 100 if n_yr > 0 else 0.0
+    # 「同一零售月跨年周数是否一致」现算：不一致时必须点名是哪几年、各几周。
+    _wk_same = sorted({int(w) for w in same['weeks'].dropna()})
+    if len(_wk_same) <= 1:
+        _SAME_MONTH_WK = (f'同一零售月跨年对比：本图 {len(same)} 个年度的 '
+                          f'{LATEST.strftime("%B")} 零售月周数一致'
+                          + (f'（各 {_wk_same[0]} 周）' if _wk_same else '')
+                          + '，柱高差里没有周数差，季节性也已被同月对比剔除。')
+    else:
+        _odd = '、'.join(f'{p.year} 年 {int(w)} 周'
+                        for p, w in same['weeks'].dropna().items())
+        _SAME_MONTH_WK = (f'⚠️ 同一零售月跨年对比，但<b>周数并不一致</b>（{_odd}）—— '
+                          f'53 周财年让这个日历月在不同年度分到 '
+                          f'{"／".join(str(w) for w in _wk_same)} 周，'
+                          f'相差一周约占该月营收的 {100 / max(_wk_same):.0f}%，'
+                          f'柱高差不能全读成经营变化。季节性已被同月对比剔除。')
     ex.append({
         'n': 14, 'kind': 'bars_labeled',
         'title': f'{LATEST.strftime("%B")} Retail-Month Net Sales Across Years ($bn)', 'yfmt': 'usd0',
         'xlabels': [str(p.year) for p in same.index], 'xstep': 1, 'xrot': 0,   # PDF 里年份标签水平
-        'src_extra': '同一零售月跨年对比(周数一致口径), 剔除季节性',
+        # ⚠️ 原文无条件写着「周数一致口径」。那句话只对**大部分**日历月成立：
+        # 实测 1 月在历年里同时出现 4 周与 5 周（53 周财年），本图若跑在 1 月，
+        # 「周数一致」就是一句假话，而柱高差里有整整一周的量。这里现算再说。
+        'src_extra': _SAME_MONTH_WK,
         'annot': f'{same.index[0].year}-{same.index[-1].year} CAGR: {cagr:.1f}%',
         'values': L(same['net_sales_bn']), 'label_fmt': 'f1',
     })
+
+    # ── 轴刻度收口（必须排在 notes 之前）────────────────────────────────────
+    # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
+    # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
+    # **位置很要紧**：axisfmt 除了改格式器，还会给「柱图型出现负值」的图补 ycap/yfloor。
+    # 下面 cap_note_txt 那句「本页哪几张截了轴」若在它之前算，某个月一旦真触发那条兜底，
+    # 就会出现「图上截了轴、图注说没有」。所以先收口，再让 capped 现读最终 payload。
+    axisfmt.fix_all(ex)
+    capped = [e['n'] for e in ex if e.get('ycap') is not None or e.get('yfloor') is not None]
 
     # ── Exhibit 1：规矩 10 的汇总表（本月 | 上月 | 去年同月 ‖ m/m | y/y | 3Y %ile）──
     cur, prv, yag = LATEST, LATEST - 1, LATEST - 12
@@ -439,6 +706,19 @@ def main():
             pcell(col),
         ]}
 
+    # 「净销售额」那一组的两个 y/y 读数：表内算术 vs 公司披露的可比口径。
+    # 两个数都现算，一个都不写死 —— 差值在 53 周财年前后会从 0.0pp 跳到 20pp 以上。
+    _ns_c, _ns_y = sget('net_sales_bn', cur), sget('net_sales_bn', yag)
+    NS_ARITH = ((_ns_c / _ns_y - 1) * 100 if np.isfinite(_ns_c) and np.isfinite(_ns_y) and _ns_y
+                else float('nan'))
+    NS_DISC = sget('ns_yoy', cur)
+    NS_ARITH_TXT = PCTF(NS_ARITH)
+    NS_DISC_TXT = PCTF(NS_DISC)
+    NS_GAP_TXT = (ppdiff(NS_ARITH - NS_DISC)[0]
+                  if np.isfinite(NS_ARITH) and np.isfinite(NS_DISC) else '—')
+    _wk_c, _wk_y = df['weeks'].get(cur), df['weeks'].get(yag)
+    WK_MATCH = bool(pd.notna(_wk_c) and pd.notna(_wk_y) and _wk_c == _wk_y)
+
     # 表注：每一个留空、每一个 † 都必须在这里有一句对应的解释，且解释由留空本身
     # 现算出来 —— 手写的表注会在数据滚动后变成假话。
     _blank_lines = []
@@ -463,7 +743,22 @@ def main():
         '说明它对这一行没有区分度，整列留空。'
         f'净销售额是 4-4-5 零售日历下的月度绝对额，相邻月在周数与季节性上都不可比'
         f'（本月 {iv(df["weeks"].iloc[-1])} 周 vs 上月 {iv(df["weeks"].iloc[-2])} 周），'
-        f'其 m/m 一律留空，不做周均折算；y/y 对齐同一零售月，可比。'
+        f'其 m/m 一律留空，不做周均折算。'
+        # ⚠️ 这里原来无条件写着「y/y 对齐同一零售月，可比」。那句话在 53 周财年前后
+        # 是**假的**：Jan-25 是 4 周、Jan-24 是 5 周，表内算术给 −11.6%，而公司披露 +9.2%，
+        # 差 20.8pp —— 表里两行相隔两行、符号相反，却没有一个字解释。
+        # WEEK_BREAKS 本来就是现算的，这句话现在跟着它走。
+        + f'<b>「净销售额 ($bn)」行的 y/y 列是<u>表内算术</u></b>'
+          f'（{mlab(cur)} ÷ {mlab(yag)} 的绝对额之比 = {NS_ARITH_TXT}），'
+          f'读者拿第一列除第三列必须能得到同一个数，所以这一格<b>不换口径</b>；'
+          f'而下一行「净销售额 y/y」印的是<b>公司披露的可比口径</b>'
+          f'（{NS_DISC_TXT}，基期是同样周数的上年错位窗口）。'
+        + (f'本月与去年同月周数相同（各 {iv(df["weeks"].get(cur))} 周），'
+           f'两者差 {NS_GAP_TXT}，只是公司口径的错位与四舍五入。'
+           if WK_MATCH else
+           f'<b>⚠️ 本月 {iv(df["weeks"].get(cur))} 周而去年同月 {iv(df["weeks"].get(yag))} 周'
+           f'（53 周财年），两者差 {NS_GAP_TXT} —— 这一格的表内算术里有整整一周的量，'
+           f'该读的是下一行的披露值。</b>')
         + ('' if not _blank_lines else ' ' + ' '.join(_blank_lines))
         + ('' if not EC_CROSS_YOY else
            f' <b>†</b>：本月（{mlab(cur)}）与去年同月（{mlab(yag)}）分处 {ECOMM_BREAK} '
@@ -488,7 +783,11 @@ def main():
             srow('Canada', 'ca_r', 'pp', PCTF),
             srow("Other Int'l", 'oi_r', 'pp', PCTF),
             srow('E-comm / Digitally-Enabled', 'ec_r', 'pp', PCTF, cross=EC_CROSS_YOY),
-            G('净销售额'),
+            # 组标题写明这一组的 y/y 是什么口径：这一组里「$bn」行的 y/y 是表内算术
+            # （本月 ÷ 去年同月），而下一行是公司披露的可比口径，两者在 53 周财年前后
+            # 差 20pp 以上。不在组标题上说清楚，读者只会以为表里有个数算错了。
+            G('净销售额（「$bn」行的 y/y 是<b>单月口径</b>表内算术 = 本月 ÷ 去年同月；'
+              '下一行是公司披露的可比口径 —— 两者当期读数见表注）'),
             srow('净销售额 ($bn)', 'net_sales_bn', 'ratio', USDF, mm_ok=False),
             srow('净销售额 y/y', 'ns_yoy', 'pp', PCTF),
             srow('非 comp 贡献 (y/y − 报告 comp)', 'nc_gap', 'pp', PPF),
@@ -545,6 +844,58 @@ def main():
                + 'Exhibit 10 图窗自 2022 起（2021-01 曾达 ~+106% 的 COVID 低基数）。'
                + ('' if not EC_CROSS_YOY else
                   f'Exhibit 1 汇总表里 e-comm 两行的 y/y 跨该断点，已加 † 标出。'))
+    # ── 「公司披露的 y/y 已按可比周调整」这句话，用本页数据当场验一遍 ──────────
+    # 判据：把周数错位的那几个月，公司披露的 ns_yoy 与「本月绝对额 ÷ 去年同月绝对额」
+    # 并排放。若公司真按可比周报，两者应当在这些月份上差出接近整整一周的量
+    # （4 周 vs 5 周 ⇒ 约 ±20%），而在周数相同的月份上几乎重合。差多少全部现算。
+    _arith_all = (df['net_sales_bn'] / df['net_sales_bn'].shift(12) - 1) * 100
+    _gap_all = (df['ns_yoy'] - _arith_all).dropna()
+    _gap_mis = _gap_all[[p for p in _gap_all.index if p in WEEK_BREAKS]]
+    _gap_ok = _gap_all[[p for p in _gap_all.index if p not in WEEK_BREAKS]]
+    WK_EVID = (
+        f'周数与上年同月<b>相同</b>的 {len(_gap_ok)} 个月里，公司披露值与表内算术的差'
+        f'中位只有 {_gap_ok.abs().median():.2f}pp；'
+        f'而周数<b>错位</b>的 {len(_gap_mis)} 个月里，这个差是 '
+        + '、'.join(f'{mlab(p)} {v:+.1f}pp' for p, v in _gap_mis.items())
+        + f'，量级正好是一周营收（{100 / 5:.0f}% 上下）。'
+        '两条口径在错位月给出的甚至是相反的符号 —— '
+        + '；'.join(f'{mlab(p)} 披露 {df["ns_yoy"][p]:+.1f}% vs 算术 {_arith_all[p]:+.1f}%'
+                    for p in list(_gap_mis.index)[-2:])
+        + '。')
+    # ── 同比口径盘点（CONTRACT.md §6）──────────────────────────────────────
+    # 本页**没有一处**是「本脚本自算的单月同比」，所以全站审计里那条
+    # 「单月同比 vs 12 个月滚动同比」的判据在这里不适用：图上画的增速全是公司披露值，
+    # 而公司的分母是它自己的可比周窗口，我们手里根本没有那个基期的水平值。
+    _disc_cols = ['tc_a', 'tc_r', 'us_a', 'us_r', 'ca_a', 'ca_r', 'oi_a', 'oi_r',
+                  'ec_a', 'ec_r', 'ns_yoy']
+
+    def _is_pct_axis(e):
+        """这张图的纵轴画的是不是百分比/百分点（= 图上那条线是不是增速）。"""
+        fs = [e.get('yfmt'), (e.get('bar') or {}).get('yfmt'), (e.get('line') or {}).get('yfmt')]
+        return any(str(f).startswith(('pct', 'pp')) for f in fs if f)
+
+    _LVL_ONLY_EX = [str(e['n']) for e in ex if not _is_pct_axis(e)]
+    WEEK_CAL_NOTE = (
+        '<b>同比口径：本页画的增速<u>没有一个</u>是我们自己算的</b>（CONTRACT.md §6 的'
+        f'「单月 vs {Y.TTM_WIN} 个月滚动」之争在这里不适用）。'
+        f'除 Exhibit {"／".join(_LVL_ONLY_EX)}（画的是水平值：净销售额绝对额与仓库数）'
+        f'之外，本页每一张图上的每一条线、以及汇总表与核对表里的每一条 comp 与'
+        f'净销售额同比，都是 Costco 新闻稿里的<b>披露值</b>'
+        f'（CSV 里的 {len(_disc_cols)} 列：<code>' + '</code> <code>'.join(_disc_cols)
+        + '</code>），公司按<b>可比周</b>口径报出，基期是同样周数的上年错位窗口。'
+        '我们既没有那个基期的水平值，也就无从把它改写成滚动口径 —— '
+        f'唯一能加总的水平值序列只有 <code>net_sales_bn</code>，'
+        f'而它的 {Y.TTM_WIN} 个月滚动合计同比是<b>另一个指标</b>'
+        f'（公司从不报、且 53 周财年会给它带进整整一周的量），不是本页任何一条线的替代品。'
+        '<b>唯一一处「本月 ÷ 去年同月」的表内算术</b>在汇总表「净销售额 ($bn)」那一行的 '
+        'y/y 列，已在组标题与表注里点名，并把两种口径的当期读数并排印出。'
+        '页顶「本月读数怎么读」一段（brief）遵守同一条：段内的<b>同比</b>全部引披露值，'
+        '句内标「单月可比周口径」，与汇总表 y/y 列同口径、可逐格对上，没有一个自算的'
+        '跨年增速；段内现算的只有环比与位置类推导量（净销售额的表面环比与周均折算、'
+        '楔子的宽窄、历史排名）—— 环比不是同比，不在本条口径之列，周均拆分补的正是'
+        '汇总表 m/m 留空那一格背后的算术。'
+        '（哪几张画的是水平值由 payload 现读 —— 看每张图的纵轴格式器是不是百分比，'
+        '不是手写编号：手写的编号在图序变动后就是一句假话。）')
     cap_note_txt = (
         '<b>截轴</b>（' + ' / '.join(f'Exhibit {n}' for n in capped) + '）：'
         '2021 年 COVID 低基数尖峰把近 12 个月压成窄带，故对 y 轴设上界。'
@@ -564,7 +915,9 @@ def main():
         ec_note,
         (f'<b>53 周财年</b>造成个别 1 月的周数与上年同月不同（{wk_txt}）。'
          '公司披露的 comp 已按可比周调整；<strong>净销售额同比是公司报告值，'
-         '其基期是同样周数的上年错位窗口</strong>，与图上相邻的柱不是同一区间。'),
+         '其基期是同样周数的上年错位窗口</strong>，与图上相邻的柱不是同一区间。'
+         '这句话不是引述公司的说法，是<b>在本页数据上实测过的</b>：' + WK_EVID),
+        WEEK_CAL_NOTE,
         ('<b>客流与品类</b>：traffic（客流）/ ticket（客单）与品类细分不在月度新闻稿内'
          '（仅公司预录电话留言口头披露），本页只采用官网新闻稿数据，故不含该细分。'),
         ('<b>Stacks</b>（Exhibit 3 / 12）= 同一零售月过去 N 年核心 comp 之和，'
@@ -604,17 +957,16 @@ def main():
         # 规矩 13：只留一行数据条，叙述性 bullets 里的数字全部在下面的表和图里。
         # 正负号一律交给 f-string 的 '+' 标志，不能写死字面量（负值会印成 '+-0.6%'）。
         'headline': headline,
+        # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
+        # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
+        'brief': compose_brief(df),
         'hub_line': (f'核心 comp {dsp(Lr["tc_a"], 1, "%")[0]}（{mm_tc} m/m）· '
                      f'净销售额 ${Lr["net_sales_bn"]:.2f}bn（{dsp(Lr["ns_yoy"], 1, "%")[0]} y/y）'),
         'source': SRC,
         'xlabels': tail13,
         'xlabels_long': [mlab(p) for p in df.index],
         'summary': summary,
-        # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
-        # 判据与算法见 build/axisfmt.py（与 build/single.py 共用同一份）。
-        # 放在全部 exhibit 建完之后统一做一遍，而不是散在每个 ex_* 里 —— 判据只跟最终
-        # 量程（含 ycap/yfloor）有关，各处各写一遍必然漏掉后加的图。
-        'exhibits': axisfmt.fix_all(ex),
+        'exhibits': ex,          # 已在上面过完 axisfmt.fix_all（幂等，这里不重复调）
         'table': table,
         'notes': NOTES,
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '

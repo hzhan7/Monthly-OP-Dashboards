@@ -33,7 +33,156 @@ DB1 一家缝了**三个官方源、两种发布节奏**（fetch/db1.py 模块 d
 换算不在这里发生（notional.py 的事），但标注必须先对 —— 见 notes 里 AuC 那条**冲突声明**。
 """
 
+import csv
 import os
+
+_CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), 'series', 'db1.csv')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 图注里要报的数**一个都不写死**：在 import 期从 series/db1.csv 的表头现数。
+# 算不出就退回不含数字的定性版本 —— 缺文件不许在 import 期抛异常。
+# ══════════════════════════════════════════════════════════════════════════════
+def _column_census():
+    """数一数：金额列几条、张数/笔数列几条、两者配得上对的有几条。
+
+    这就是「本页为什么做不了量价分解」的**机器判据**，不是一句形容词：
+    量价分解要 (金额, 数量) 成对同口径，而本表的金额全在现货侧（turnover_*_eurbn）、
+    数量全在衍生品侧（*_contracts）—— 两侧是两个不同的市场，相除没有经济含义。
+
+    返回 (金额列数, 合约张数列数, 现货侧数量列数)；读不到返回 (None, None, None)。
+    """
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            cols = next(csv.reader(fh))
+    except (OSError, StopIteration):
+        return (None,) * 3
+    money = [c for c in cols if c.startswith('turnover_') or c.endswith('_eurbn')
+             or c.endswith('_eurmn')]
+    contracts = [c for c in cols if c.endswith('_contracts')]
+    # 现货侧的「数量」列 = 股数 / 笔数 / 手数。逐个词根找，一条都找不到才是本页的处境。
+    qty_spot = [c for c in cols
+                if any(k in c for k in ('shares', 'volume_sh', 'trades', 'transactions',
+                                        'txn'))
+                and not c.endswith('_contracts')]
+    # settle_* 是结算笔数，属于托管结算业务，不是现货成交笔数 —— 不算配对候选。
+    qty_spot = [c for c in qty_spot if not c.startswith('settle_')]
+    return len(money), len(contracts), len(qty_spot)
+
+
+def _fd_reconcile():
+    """撞一次「Eurex 工作簿口径 × 交易日」与「集团台账口径月成交量」。
+
+    这不是好奇：ttm_yoy 的 `total_col` 一旦填了 vol_fd_total_contracts，
+    底座会拿它与 `adv × weight` 逐月对账，超过 1e-6 就硬失败。
+    所以「为什么不填」这句话的依据必须量出来，不能靠形容词。
+
+    返回 (可比月数, 最大相对偏差, 中位相对偏差)；算不出返回 (None, None, None)。
+    """
+    rel = []
+    for r in _rows():
+        a = _num(r, 'adv_eurex_total_contracts')
+        w = _num(r, 'trading_days_eurex')
+        t = _num(r, 'vol_fd_total_contracts')
+        if a and w and t:
+            rel.append(abs(a * w / t - 1.0))
+    if not rel:
+        return (None,) * 3
+    rel.sort()
+    return len(rel), rel[-1], rel[len(rel) // 2]
+
+
+def _rows():
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            return list(csv.DictReader(fh))
+    except OSError:
+        return []
+
+
+def _num(r, col):
+    try:
+        v = r[col].strip()
+    except (KeyError, AttributeError):
+        return None
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _calendar_gap():
+    """两套交易日日历（Eurex vs Xetra）有几个月不等 —— 「不能互相顶替」的判据。
+
+    返回 (可比月数, 不等的月数)；算不出返回 (None, None)。
+    """
+    n = diff = 0
+    for r in _rows():
+        a, b = _num(r, 'trading_days_eurex'), _num(r, 'trading_days_cash')
+        if a is None or b is None:
+            continue
+        n += 1
+        if a != b:
+            diff += 1
+    return (n, diff) if n else (None, None)
+
+
+_NMONEY, _NCONTRACTS, _NQTY = _column_census()
+_FDN, _FDMAX, _FDMED = _fd_reconcile()
+_CALN, _CALDIFF = _calendar_gap()
+
+_NO_DECOMP_NOTE = (
+    '📌 <b>本页不具备量价分解的数据条件 —— 缺的是列，不是口径。</b>'
+    '量价分解要一对<b>同口径</b>的（金额，数量）：现货侧要「成交额 + 成交股数/笔数」，'
+    '衍生品侧要「名义金额 + 合约张数」。本表两侧各缺一半：'
+    + ((f'金额类列 {_NMONEY} 条<b>全在现货侧</b>（<code>turnover_*_eurbn</code> 与'
+        f'托管结算的余额类），而现货侧可配对的数量列有 <b>{_NQTY}</b> 条；'
+        f'合约张数类列 {_NCONTRACTS} 条<b>全在衍生品侧</b>（Eurex 与集团台账两套口径），'
+        f'而衍生品侧一条名义金额列都没有。'
+        if _NMONEY is not None else
+        '金额类列全在现货侧、合约张数类列全在衍生品侧，两侧都配不成对。'))
+    + '⇒ 唯一「凑得出来」的做法是拿现货成交额去除以衍生品张数，'
+      '那是两个不同市场的数相除，得到的比值不指代任何东西。'
+      '<b>缺的是列不是口径，所以不去凑</b> —— 官方哪天把现货成交笔数或衍生品名义额发出来，'
+      '这张图一行配置就能加上。'
+      '（对照：本仓 SGX / TMX 有「金额 + 股数」，ASX / Euronext 有「金额 + 笔数」，'
+      'DB1 两者都没有。）'
+)
+
+_NOTE_TTM_EUREX = (
+    '<b>柱是当月日均、线是当月合计的同比，两者口径不同是有意的。</b>'
+    '柱回答「开市那天有多热」（官方工作簿自己就发 Daily average，不是本仓算的）；'
+    '线回答「一整年的总量在不在长」——'
+    '<code>adv_eurex_total_contracts × trading_days_eurex</code> 还原成当月合计再滚 12 个月。'
+    '<b>为什么不用台账口径的 <code>vol_fd_total_contracts</code> 当合计列</b>：'
+    '那是<b>另一套并行口径</b>（含 ETC / 农产品 / 贵金属），与 Eurex 工作簿永不互校。'
+    + ((f'本页在 import 期撞过一次：{_FDN} 个可比月里，'
+        f'「ADV × 交易日」与台账合计的相对偏差<b>中位 {_FDMED:.2e}、最大 {_FDMAX:.2e}</b>，'
+        f'远超底座对账阈值 1e-6 —— 填进去会直接硬失败，而那正是那道护栏该干的事。'
+        if _FDMAX is not None else
+        '两者的偏差远超底座对账阈值 1e-6，填进去会直接硬失败。'))
+    + '<b>⚠️ 交易日用的是 <code>trading_days_eurex</code> 不是 '
+      '<code>trading_days_cash</code></b>'
+    + ((f'：两套日历在 {_CALN} 个可比月里有 <b>{_CALDIFF}</b> 个不等'
+        if _CALN else '：两套日历并不总是相等')
+       + '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），'
+         '互相顶替会把还原出来的当月合计算错。')
+)
+
+_NOTE_TTM_CASH = (
+    '<b>柱与线取自同一列</b>（<code>turnover_cash_total_eurbn</code>，当月<b>合计</b>），'
+    '所以这里没有任何「日均还原成合计」的步骤 —— 也正因为如此，'
+    '这张图不受 <code>trading_days_cash</code> 是慢腿列的影响。'
+    '<b>为什么现货这条尤其需要滚动</b>：德国现货的月度形状被复活节、'
+    '圣灵降临节与年末假期推着走，各月交易日数在 18–23 天之间浮动，'
+    '「当月合计」的单月同比里有一大截只是日历差。任意连续 12 个月覆盖同一套日历。'
+    '⚠️ 这一列是<b>集团台账口径</b>的现货合计（2010-01 起深史），'
+    '与上面那张 Xetra / 法兰克福分项的热力矩阵不是同一套口径，不要逐格相加对账。'
+)
+
 
 # ── 慢腿列：优先从 fetch/db1.py 的权威常量派生 ─────────────────────────────
 # 兜底清单只在 fetch/db1.py 读不到时使用。两者本机实测完全一致（20 列），
@@ -213,9 +362,19 @@ GROUPS = [
          'unit': 'contracts/month', 'fmt': 'f0c'},
     ]},
 
-    {'zh': 'EurexOTC Clear 场外清算', 'cols': [
+    # ⚠ 存量与流量拆成两组，不是为了排版。合在一组时流量那一列是**单位桶里的独苗**，
+    #   底座对单桶画 gs_bar，而 gs_bar 的次轴是**单月同比**；
+    #   tools/check_yoy_caliber.py 实测这一列有 5 个月与 12 个月滚动口径**符号相反**
+    #   （2025-02 单月 −37.5% vs 滚动 +24.2%）。本表里没有第二条 EUR bn/month 的
+    #   同伴可以同轴，所以口径写进组名 —— 契约允许用单月同比，条件是标题里声明
+    #   （CONTRACT.md §6）。声明必须只落在真的画了次轴同比的那张图上，
+    #   所以存量那一列先搬出去（存量走点对点同比，本来就不适用这条声明）。
+    {'zh': 'EurexOTC Clear 名义未平仓（月内平均值）', 'cols': [
         {'col': 'otc_notional_outstanding_eurbn', 'zh': '名义未平仓（月内平均值）',
          'unit': 'EUR bn', 'fmt': 'f0c', 'stock': True},
+    ]},
+
+    {'zh': 'EurexOTC Clear 当月清算名义量（次轴：单月同比）', 'cols': [
         {'col': 'otc_notional_cleared_eurbn', 'zh': '当月清算名义量（含压缩）',
          'unit': 'EUR bn/month', 'fmt': 'f0c'},
     ]},
@@ -237,18 +396,33 @@ GROUPS = [
          'unit': 'EUR mn', 'fmt': 'f0c', 'stock': True},
     ]},
 
-    {'zh': 'Clearstream 基金服务（IFS）', 'cols': [
+    # 同上：存量与流量拆开，口径声明只落在真的画了次轴同比的那一张上。
+    {'zh': 'Clearstream 基金服务（IFS）托管资产', 'cols': [
         {'col': 'auc_fund_services_eurbn', 'zh': 'IFS 托管资产（月内平均）',
          'unit': 'EUR bn', 'fmt': 'f0c', 'stock': True},
+    ]},
+
+    {'zh': 'Clearstream 基金服务（IFS）结算笔数（次轴：单月同比）', 'cols': [
         {'col': 'settle_ifs_txn_mn', 'zh': 'IFS 结算笔数',
          'unit': 'mn transactions/month', 'fmt': 'f2'},
     ]},
 
-    {'zh': '指数授权、ETF 资产与 360T 外汇', 'cols': [
+    # 原本三列同组、三个单位 ⇒ 三个单桶 ⇒ 三张 gs_bar，次轴都是单月同比。
+    # 实测：授权指数衍生品有 11 个月与 12 个月滚动口径**符号相反**
+    # （2024-06 单月 +4.2% vs 滚动 −11.6%），360T 外汇则是「用了单月但标题没写明」。
+    # 存量那一列（ETF 资产）走点对点同比、本来就合法，所以单独拆出去，
+    # 免得口径声明落到一张不适用的图上。
+    {'zh': '挂钩 STOXX/DAX 的 ETF 资产（存量）', 'cols': [
         {'col': 'aum_stoxx_dax_etf_eurbn', 'zh': '挂钩 STOXX/DAX 的 ETF 资产',
          'unit': 'EUR bn', 'fmt': 'f1', 'stock': True},
+    ]},
+
+    {'zh': '授权指数衍生品月成交量（次轴：单月同比）', 'cols': [
         {'col': 'vol_licensed_index_contracts', 'zh': '授权指数衍生品月成交量',
          'unit': 'contracts/month', 'fmt': 'f0c'},
+    ]},
+
+    {'zh': '360T 外汇 ADV（次轴：单月同比）', 'cols': [
         {'col': 'adv_360t_fx_eurbn', 'zh': '360T 外汇 ADV',
          'unit': 'EUR bn/day', 'fmt': 'f1'},
     ]},
@@ -299,7 +473,37 @@ SPEC = {
     # 已知的列级口径变化只影响单列，画成全页红线会误伤其余四十多列，故留空。
     'breaks': [],
 
+    # 📌 'decomp' 刻意留空：本表没有任何一对同口径的（金额，数量）列。
+    # 理由与机器判据见 _NO_DECOMP_NOTE（它进了下面的 notes 第一条）。
+
+    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # 两条腿各一张：Eurex 衍生品（快腿，2008-01 起）与集团台账口径现货（慢腿，2010-01 起）。
+    # 两条 level 列在 groups 里分别落在「5 列同轴的 lines」与「7 列的热力矩阵」里，
+    # 都不是单桶 gs_bar ⇒ 这两张滚动图不会与任何一张单月同比图重复。
+    'ttm_yoy': [
+        {'zh': 'Eurex 衍生品成交量',
+         'granularity': 'daily_avg',      # 官方工作簿直接发 Daily average
+         'level': {'col': 'adv_eurex_total_contracts', 'zh': '全所日均成交',
+                   'unit': 'contracts/day', 'fmt': 'f0c'},
+         # ⚠ 只给 weight_col，不给 total_col：台账口径的 vol_fd_total_contracts 与
+         #   「ADV × 交易日」对不上（相对偏差量级 1e-3 ≫ 底座阈值 1e-6），
+         #   两者是并行口径不是同一个数，填进去会硬失败。
+         'weight_col': 'trading_days_eurex',
+         'note': _NOTE_TTM_EUREX},
+
+        {'zh': '集团台账口径现货成交额',
+         'granularity': 'monthly_total',  # turnover_* 本身就是当月合计
+         'level': {'col': 'turnover_cash_total_eurbn', 'zh': '当月成交额（单边计）',
+                   'unit': 'EUR bn/month', 'fmt': 'f1'},
+         # 不给 total_col / weight_col：level 那一列本身就是当月合计，柱与线同口径。
+         # 也**不能**给 weight_col —— granularity='monthly_total' 配 weight_col 是硬失败，
+         # 而真乘上去会把年度合计放大二十几倍，图形却照常画得出来。
+         'note': _NOTE_TTM_CASH},
+    ],
+
     'notes': [
+        _NO_DECOMP_NOTE,
+
         '发布节奏：三个源两种节奏。Eurex 工作簿月末后第 2–6 天（2016-01 以来 127 期'
         '全部在此带宽内）、FWB 现货工作簿第 1–4 天（20 期里 18 期）、集团 IR 台账'
         '约第 10 天（落地页原文 "available as of the second week after the reporting '

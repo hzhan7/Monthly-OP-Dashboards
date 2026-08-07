@@ -166,6 +166,7 @@ import numpy as np
 import pandas as pd
 
 import notional
+import axisfmt
 import payload_guard
 import pctile
 
@@ -1402,7 +1403,9 @@ def build_payload(raw, specs, fx, kconst, source_date):
                      f'— annual y/y (%), every cell exact',
             'rows': rows6, 'cols': [str(y) for y in yrs],
             'matrix': heat6, 'legend': '年度同比（产品块自身的量）',
-            'cell_h': 22, 'row_lab_w': 168, 'row_head': '交易所·产品块',
+            # row_lab_w 204：最长行标签「ICE / NYSE·能源（仅 Brent 原油） 等 2 腿（已定基）」
+            # 实测 196.1px（visual_qa 报 168 时左溢 28.1px），取 204 留 8px 余量。
+            'cell_h': 22, 'row_lab_w': 204, 'row_head': '交易所·产品块',
             'src_extra': ('Each row is a single product block, so its own base constant cancels '
                           'out of the growth rate entirely. No unknown constant enters any cell'),
             'note': ('<b>这张图是上一张的补集，也是「缺常数不等于看不见增长」的直接证明。</b>'
@@ -1898,7 +1901,8 @@ def build_payload(raw, specs, fx, kconst, source_date):
         'xlabels': XL13,
         'xlabels_long': XL_LONG,
         'summary': summary,
-        'exhibits': ex,
+        # 轴刻度小数位与截轴护栏：判据见 build/axisfmt.py（全站唯一实现）。
+        'exhibits': axisfmt.fix_all(ex),
         'table': table,
         'notes': notes,
         'footer': (f'12 家交易所总览 · 主口径定基名义额（{mlab(BASE)} 价格与汇率锁死）· '

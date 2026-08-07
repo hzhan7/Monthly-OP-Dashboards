@@ -10,7 +10,141 @@
 
 列名全部对着 `head -1 series/ice.csv` 逐字核过（55 列，187 个月，2011-01..2026-07，
 CDS 三列 2013-01 起，其余 52 列零空洞）。
+
+━━ 📌 本页做不了量价分解，而且「收入分解」也不是它的替身 ━━━━━━━━━━━━━━━━
+量价分解的恒等式是 `成交额 ≡ 成交量 × 成交价`。本表**一条成交金额列都没有** ——
+`adv_*_kcontracts` 是张数、`oi_*` 是未平仓张数、`adv_nyse_tape*_mnsh` 是股数，
+唯一带货币单位的是 `rpc_*_usd` 与 `cds_*_notional_usdbn`。
+
+⚠ **`rpc_*_usd` 是每张收入（费率），不是成交价。**这是本页最容易犯的一个错：
+它长得像「价」（美元 / 张），语义却完全不同 —— 成交价是市场撮合出来的价格，
+每张收入是 ICE 向会员收的费。拿它当 `decomp` 的派生量，底座会印出
+「成交量加权平均成交价」那一整套措辞，句句是假的。
+
+ICE 确实有另一条恒等式 `交易收入 ≡ 成交量 × 每张费率`，底座也确实为它准备了
+`kind='revenue_rate'`（图注会写明「分解的是**收入**不是成交额；与前两类不可并读」）。
+**但本页仍然不画**，原因是缺列不是缺口径：`decomp.value` 要的是一条**真实存在的
+金额列**，而本表没有收入列。用 `ADV × 交易日 × RPC` 现造一条，等于把算术写进 spec ——
+契约第一句就是「配置里只有数据，没有逻辑」，而且那样造出来的「收入」既不是 ICE 的
+分部收入口径（不含数据 / 上市 / 固定收益等非交易收入），也没有任何官方数字能对账。
+⇒ 📌 **不具备数据条件，不凑。**RPC 本身照常上页面（「单位经济」那一组），
+它作为费率序列是有信息的，只是不能进分解图。
+
+`cds_*_notional_usdbn` 是清算名义额，配得上的数量列同样没有（没有 CDS 笔数 / 张数列）。
 """
+
+import csv
+import os
+
+_CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), 'series', 'ice.csv')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 图注里要报的数**一个都不写死**：在 import 期从 series/ice.csv 的表头现数。
+# 读不到就退回不含数字的定性版本 —— 缺文件不许在 import 期抛异常，
+# 否则 monthly_run 会因为一张页的配置炸掉整批。
+# ══════════════════════════════════════════════════════════════════════════════
+def _column_census():
+    """数「金额列 / 数量列 / 费率列」各几条 —— 「做不了分解」的机器判据。
+
+    返回 (成交金额列数, 数量列数, 费率列数, 清算名义额列数)；读不到返回 (None,)*4。
+    """
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            cols = next(csv.reader(fh))
+    except (OSError, StopIteration):
+        return (None,) * 4
+    rate = [c for c in cols if c.startswith('rpc_')]
+    notional = [c for c in cols if 'notional' in c]
+    qty = [c for c in cols if c.endswith('_kcontracts') or c.endswith('_mnsh')]
+    # 「成交金额」= 带货币单位、且不是费率、不是清算名义额的列。本表应当是 0 条。
+    money = [c for c in cols
+             if (c.endswith('_usd') or c.endswith('_usdbn') or 'usd' in c)
+             and c not in rate and c not in notional]
+    return len(money), len(qty), len(rate), len(notional)
+
+
+def _split_vs_total():
+    """商品合计 + 金融合计 与「衍生品总 ADV」的相对差 —— 「两套交易日」的直接证据。
+
+    官方分项与合计用不同的交易日归一，所以这两个数本来就不该逐格相等。
+    量出来才敢在图注里说「没有哪一套交易日能单独代表总 ADV」。
+
+    返回 (可比月数, 最大相对差%, 中位相对差%)；算不出返回 (None, None, None)。
+    """
+    rel = []
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            for r in csv.DictReader(fh):
+                try:
+                    c = float(r['adv_commodities_kcontracts'])
+                    f = float(r['adv_financials_kcontracts'])
+                    t = float(r['adv_futures_options_kcontracts'])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if t:
+                    rel.append(abs((c + f) / t - 1.0) * 100.0)
+    except OSError:
+        return (None,) * 3
+    if not rel:
+        return (None,) * 3
+    rel.sort()
+    return len(rel), rel[-1], rel[len(rel) // 2]
+
+
+_NMONEY, _NQTY, _NRATE, _NNOT = _column_census()
+_SPLITN, _SPLITMAX, _SPLITMED = _split_vs_total()
+
+_NO_DECOMP_NOTE = (
+    '📌 <b>本页不具备量价分解的数据条件。</b>量价分解的恒等式是「成交额 ≡ 成交量 × '
+    '成交价」，而本表<b>一条成交金额列都没有</b>：'
+    + ((f'数量类列 <b>{_NQTY}</b> 条（合约张数与股数），费率类 <code>rpc_*</code> '
+        f'<b>{_NRATE}</b> 条，清算名义额 <b>{_NNOT}</b> 条，'
+        f'真正的成交金额列 <b>{_NMONEY}</b> 条。'
+        if _NQTY is not None else
+        '数量类列有几十条，货币单位的只有 rpc_* 与 CDS 清算名义额。'))
+    + '<b>⚠️ <code>rpc_*_usd</code> 是每张收入（费率），不是成交价</b> —— '
+      '这是本页最容易犯的一个错：它长得像「价」（美元/张），语义却完全不同。'
+      '成交价是市场撮合出来的价格，每张收入是 ICE 向会员收的费。'
+      '拿它当分解的派生量，图注会印出「成交量加权平均成交价」那一整套措辞，句句是假的。'
+
+      '<b>ICE 确实另有一条恒等式：交易收入 ≡ 成交量 × 每张费率。</b>'
+      '那是<b>收入分解</b>，与成交额分解不是一回事，两者的读数<b>不可并读</b>。'
+      '本页仍然不画它，原因同样是缺列：分解图要的是一条<b>真实存在的金额列</b>，'
+      '而本表没有收入列。用「ADV × 交易日 × RPC」现造一条，'
+      '既把算术写进了配置（契约只允许配置放数据、不放逻辑），'
+      '造出来的「收入」也不是 ICE 任何一个官方口径（不含数据 / 上市 / 固定收益等'
+      '非交易收入），没有任何官方数字能对账。<b>不具备数据条件，不凑。</b>'
+      'RPC 本身照常上页面（见「单位经济」那一组），它作为费率序列有信息，'
+      '只是不能进分解图。'
+)
+
+_NOTE_TTM_FO = (
+    '<b>⚠️ 本图没有交易日权重列可用，这是有意的选择而不是疏漏。</b>'
+    '<code>series/ice.csv</code> 里有两套交易日（<code>trading_days_commod</code> 与 '
+    '<code>trading_days_rates</code>），而「衍生品总 ADV」横跨商品与金融两侧，'
+    '没有哪一套能单独代表它 —— 官方自己也是分项与合计用不同的交易日归一。'
+    + ((f'这件事在本表里量得出来：商品合计 + 金融合计与「衍生品总 ADV」的相对差'
+        f'<b>中位 {_SPLITMED:.3f}%、最大 {_SPLITMAX:.3f}%</b>（{_SPLITN} 个月）——'
+        f'两套交易日不同，分项与合计本来就不该逐格相等。'
+        if _SPLITMAX is not None else
+        '分项之和与合计因此有一个系统性差。'))
+    + '硬挑一套乘回去，会给一半的量配错权重，而图上完全看不出来。'
+    '⇒ 这里让底座按<b>等权</b>相加，并在上面那段话里把这个偏差说出来。'
+    '<b>滚动同比对这件事天然更耐受</b>：任意连续 12 个月覆盖同一套日历，'
+    '而单月同比里那截「今年这个月比去年多开几天市」的差是消不掉的。'
+)
+
+_NOTE_TTM_CASH = (
+    '<b>这一张有正确的交易日列可用</b>（<code>trading_days_us_equities</code>，'
+    '就是官方拿来算这条 ADV 的那一列除数），所以线的滚动合计是把日均精确还原成'
+    '当月合计之后再滚 12 个月，柱与线口径不同是有意的：'
+    '柱回答「开市那天有多热」，线回答「一整年的总量在不在长」。'
+    '⚠️ handled ≠ matched：handled 含 ICE 为客户路由到别家撮合的量，'
+    'matched 才是本所自己撮合的。市场份额只能用 matched 算'
+    '（见「NYSE 美股现货：本所量 vs 全市场分母」那一组）。'
+)
 
 # ── 为什么 fmt 这么选 ───────────────────────────────────────────────────────
 # 1) 月度单元格在官方原表里就已经四舍五入到整千张 / 整百万股（10,026 格里只有
@@ -179,7 +313,35 @@ SPEC = {
         {'month': '2013-11', 'zh': 'NYSE Euronext 收购完成；此前 NYSE 各列为追溯并入的形式数'},
     ],
 
+    # 📌 'decomp' 刻意留空：本表没有任何一条成交金额列，rpc_* 是费率不是价。
+    # 完整理由与机器判据见 _NO_DECOMP_NOTE（它进了下面 notes 的第一条）。
+
+    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # 两条头条各一张。两条 level 列在 groups 里都落在多列同轴的图里
+    # （能源/金融 ADV 那几组、以及 tape 那一大组），不是单桶 gs_bar ⇒ 不与任何图重复。
+    'ttm_yoy': [
+        {'zh': 'ICE 衍生品成交量',
+         'granularity': 'daily_avg',      # 官方原表发的就是 ADV
+         'level': {'col': 'adv_futures_options_kcontracts', 'zh': '衍生品总 ADV',
+                   'unit': 'k contracts/day', 'fmt': 'f0c'},
+         # ⚠ 刻意**不给** weight_col：本表有 trading_days_commod 与 trading_days_rates
+         #   两套交易日，而总 ADV 横跨商品与金融两侧，没有哪一套能单独代表它。
+         #   硬挑一套会给一半的量配错权重，而图上完全看不出来。
+         #   底座会因此在图注里印一段 ⚠️ 等权相加的说明 —— 那句话是真的，别去掩盖。
+         'note': _NOTE_TTM_FO},
+
+        {'zh': 'NYSE 美股现货成交股数',
+         'granularity': 'daily_avg',
+         'level': {'col': 'adv_nyse_us_cash_handled_mnsh', 'zh': 'NYSE handled ADV',
+                   'unit': 'mn shares/day', 'fmt': 'f0c'},
+         # 这一条有唯一正确的交易日列：美股现货只有一套日历。
+         'weight_col': 'trading_days_us_equities',
+         'note': _NOTE_TTM_CASH},
+    ],
+
     'notes': [
+        _NO_DECOMP_NOTE,
+
         '数据源：ICE 官网 IR 的 Monthly Statistics Tracking 单一 xlsx（4 个 sheet，2011-01 起 187 个月），'
         '指针由 ir.theice.com 的 ContentAsset JSON feed 给出。全部 55 列取自同一文件、同一发布日。',
 

@@ -32,13 +32,38 @@ Euronext 是靠连续并购长起来的：都柏林、奥斯陆、米兰、雅�
 不用 `'breaks': 'enx_breaks.csv'` 这种字符串写法（底座也支持）：那样 zh 会取台账的
 `footnote` 列，印出来是 'Equity Markets (3)' 这种官方分节编号，读者看不懂。
 这里保留读 CSV 拿月份与列，只把「这个月发生了什么」翻成中文。
+
+━━ 📌 本页**不画** `decomp`（量价分解），理由不是缺数据，是图注会说假话 ━━━━━━
+数据条件其实够：`adv_cash_adnv_eurbn`（成交额 ADV，单边计）与 `adv_cash_trades_k`
+（成交笔数 ADV）都是 2012-01 起 174 个月零断档，是全仓最长的一对。
+`build/exchanges_eu.py` 的 Exhibit 15 就用这一对画了「成交额 = 笔数 × 每笔均值」的
+对数分解，并用三重检验判定「**增长率分解成立、绝对水平不可读**」：
+
+  ① 常数缩放不变性 —— 分解对笔数列乘任何常数完全不变（实测残差 2.1e-14）；
+  ② 计数惯例没有中途翻转 —— 惯例一翻，每笔均值会在那一个月跳约 ln2 ≈ 69.3%，
+     而排除并表断点月之后实测最大单月跳变只有 21.1%（2020-03，COVID）；
+  ③ 断点集合逐个相同。
+
+「绝对水平不可读」的原因：官方同一张表里**金额列单边计、笔数列买卖双边计**
+（docs/verify/enx.md 口径坑 6），两者相除得到的不是每笔真实成交额，
+而是它除以一个没有独立证据确证的计数因子 —— 自算约 €4 千/笔，只有常识值的一半。
+所以那张横截面图**一个每笔均值的绝对数都不印**。
+
+而 `build/single.py` 的 `ex_decomp` 图注**无条件**印出年度派生量的水平值
+（`年度{price_zh}（Σ金额 ÷ 数量）… {price_unit}`），没有任何 spec 字段能关掉它。
+⇒ 在这一页上用 `decomp`，等于把「不可读的绝对水平」印到页面上。
+**宁可少一张图，也不印一个自己都不信的数**（准确优先于覆盖）。
+增长这一侧没有丢：末尾两张 `ttm_yoy` 分别给出**成交额**与**成交笔数**各自的
+12 个月滚动同比，两条金线之差就是每笔均值的增长贡献 —— 全程只有增长率、没有水平值。
 """
 
 import collections
 import csv
+import math
 import os
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CSV = os.path.join(_ROOT, 'series', 'enx.csv')
 _BREAKS_CSV = os.path.join(_ROOT, 'series', 'enx_breaks.csv')
 
 # 断点月的中文说法。**月份不写死在这里** —— 月份与受影响的列都从 CSV 读，
@@ -115,6 +140,131 @@ def _read_breaks(charted):
     return out, note
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 图注里要报的数**一个都不写死**：全部在 import 期从 series/enx.csv 现算。
+# ⚠ 本页有一条额外纪律：这些函数**只许算增长率与占比，不许算每笔均值的水平值** ——
+#   理由见模块 docstring 里的 📌 那一节。
+# 任何一步算不出来就退回不含数字的定性版本；缺文件不许在 import 期抛异常。
+# ══════════════════════════════════════════════════════════════════════════════
+def _rows():
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            return list(csv.DictReader(fh))
+    except OSError:
+        return []
+
+
+def _num(r, col):
+    try:
+        v = r[col].strip()
+    except (KeyError, AttributeError):
+        return None
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _break_months():
+    """台账里全部断点月（不分列）—— 计数惯例检验要把这些月排除在外。"""
+    try:
+        with open(_BREAKS_CSV, newline='') as fh:
+            return {(r.get('break_month') or '').strip() for r in csv.DictReader(fh)}
+    except (IOError, OSError):
+        return set()
+
+
+def _conv_stability():
+    """复算 exchanges_eu.py 的检验 ②：计数惯例有没有中途从单边翻成双边。
+
+    翻转一次，每笔均值（= 成交额 ÷ 笔数）会在那一个月跳约 ln2 ≈ 69.3%。
+    所以逐月算 |Δln(每笔均值)|、排除并表断点月（那些月覆盖范围本来就变了），
+    看最大的一个离 ln2 有多远。**这是增长率统计量，不是水平值** ——
+    本页允许印它，正如本页不允许印任何一个每笔均值的绝对数。
+
+    返回 (可比月数, 最大单月跳变%, 该月份, ln2 的百分数)；算不出全部返回 None。
+    """
+    bm = _break_months()
+    prev_m, prev_v, best = None, None, (0.0, None)
+    n = 0
+    for r in _rows():
+        m = (r.get('month') or '').strip()
+        a, b = _num(r, 'adv_cash_adnv_eurbn'), _num(r, 'adv_cash_trades_k')
+        v = (a / b) if (a and b) else None
+        if v is not None and prev_v is not None and m not in bm:
+            n += 1
+            j = abs(math.log(v / prev_v)) * 100.0
+            if j > best[0]:
+                best = (j, m)
+        prev_m, prev_v = m, v
+    if not n:
+        return (None,) * 4
+    return n, best[0], best[1], math.log(2.0) * 100.0
+
+
+def _tradingday_spread():
+    v = [d for d in (_num(r, 'trading_days_cash') for r in _rows()) if d]
+    if not v:
+        return None, None, None
+    return min(v), max(v), (max(v) / min(v) - 1.0) * 100.0
+
+
+_CVN, _CVMAX, _CVM, _LN2 = _conv_stability()
+_DMIN, _DMAX, _DSPR = _tradingday_spread()
+
+_NO_DECOMP_NOTE = (
+    '📌 <b>本页刻意不画量价分解图。</b>数据条件是够的（成交额 ADV 与成交笔数 ADV 都是 '
+    '2012-01 起 174 个月零断档，是全仓最长的一对），欧洲横截面页 '
+    '<code>build/exchanges_eu.py</code> 的 Exhibit 15 就用这一对画了'
+    '「成交额 = 笔数 × 每笔均值」的对数分解。但那张图的结论是'
+    '<b>「增长率分解成立、绝对水平不可读」</b>：官方同一张表里金额列<b>单边计</b>、'
+    '笔数列<b>买卖双边计</b>，两者相除得到的不是每笔真实成交额，'
+    '而是它除以一个我们没有独立证据确证的计数因子，所以那张图<b>一个绝对数都不印</b>。'
+    + ((f'本页在 import 期复算了它的关键检验：排除并表断点月后的 {_CVN} 个可比月里，'
+        f'每笔均值的最大单月跳变是 <b>{_CVMAX:.1f}%</b>（{_CVM}），'
+        f'远低于计数惯例翻转会造成的 ln2 ≈ {_LN2:.1f}% —— '
+        f'惯例确实没有中途翻过，所以<b>增长</b>那一侧可信。'
+        if _CVMAX is not None else
+        '（本次未能从 CSV 复算该检验。）'))
+    + '而 <code>build/single.py</code> 的量价分解图注会<b>无条件</b>印出年度每笔均值的'
+      '水平值，没有任何 spec 字段能关掉它。⇒ 在这一页上画那张图，等于把一个'
+      '「自己都不信的绝对数」印到页面上。'
+      '<b>宁可少一张图</b>：增长这一侧没有丢 —— 下面两张滚动同比图分别给出成交额与'
+      '成交笔数各自的 12 个月滚动同比，<b>两条金线之差</b>就是每笔均值的增长贡献，'
+      '全程只有增长率、没有水平值。'
+)
+
+_NOTE_TTM_VAL = (
+    '<b>柱是当月日均、线是当月合计的同比，两者口径不同是有意的。</b>'
+    '柱回答「开市那天有多热」（官方直接发布的 ADV，已经把交易日数除掉了）；'
+    '线回答「一整年的总量在不在长」——'
+    '<code>adv_cash_adnv_eurbn × trading_days_cash</code> 还原成当月合计再滚 12 个月。'
+    + (f'<b>为什么非要滚动。</b>本序列覆盖期内每月 {_DMIN:.0f}–{_DMAX:.0f} 个交易日，'
+       f'两端相差 {_DSPR:.0f}%；任意连续 12 个月覆盖同一套日历，这一层被整个消掉。'
+       if _DSPR is not None else '')
+    + '⚠️ 这一列是<b>单边计</b>（官方表头 "single counted"），与下面的笔数列'
+      '（买卖双边计）不是同一种计数惯例 —— 两条线可以比<b>增长</b>，'
+      '但相除得到的每笔均值绝对水平不可读，本页因此不印它（见页尾 📌 那一条）。'
+)
+
+_NOTE_TTM_TRD = (
+    '<b>与上一张成对读。</b>上一张是成交额的 12 个月滚动同比、这一张是成交笔数的，'
+    '<b>两条金线之差读出来的就是「每笔平均成交额」的增长贡献</b>。'
+    '这是本页能给出的全部分解信息 ——'
+    '而且它<b>只用增长率</b>，绕开了「每笔均值的绝对水平不可读」那个坑。'
+    '⚠️ 柱的绝对水平按<b>交易所自己的口径</b>读：这一列是<b>买卖双边计</b>且含 '
+    'reported trades，与金额列的单边计不是一回事，跨家比笔数前必须先统一惯例。'
+    '⚠️ 增长这一侧不受影响 —— 双边计等价于把整列乘一个常数，'
+    '而同比与滚动同比对常数缩放<b>恒等不变</b>（常数在分子分母上同时出现、逐项抵消；'
+    '欧洲横截面页对这一条做过数值实证，残差落在浮点舍入量级）。'
+    '⚠️ <b>「两条金线之差」严格成立是在对数上</b>：ln 成交额 = ln 笔数 + ln 每笔均值。'
+    '金线画的是百分数同比，增长率不大时两者之差与对数差很接近，'
+    '增长率大时（例如 +40% 以上）要按对数读，不要拿两个百分数直接相减去汇报。'
+)
+
+
 # ── 头条 ───────────────────────────────────────────────────────────────────
 # 两条都是 2012-01 起 174 个月、gaps=0。
 # 用两条而不是一条，且刻意取自**两张不同的官方 sheet**（Equity Markets / FICC Markets）：
@@ -146,8 +296,23 @@ GROUPS = [
          'unit': 'EUR bn/day', 'fmt': 'f2'},
         {'col': 'adv_cash_structured_adnv_eurbn', 'zh': '结构化产品（单边）',
          'unit': 'EUR bn/day', 'fmt': 'f3'},
+    ]},
+
+    # ⚠ 笔数与清算笔数原先挂在上面那一组里，但它们各自是**单位桶里的独苗**
+    #   （k trades/day 与 k contracts/day 各一列），底座对单桶画 gs_bar，
+    #   而 gs_bar 的次轴是**单月同比**。tools/check_yoy_caliber.py 实测：
+    #   成交笔数有 7 个月、股票清算有 4 个月与 12 个月滚动口径**符号相反**。
+    #   本表里没有同单位同量级的第二条列可以同轴（athex 那两条只有主列的 3–6%，
+    #   同轴等于画一条贴地线），所以改成**各自单列一组、口径写进组名** ——
+    #   契约允许用单月同比，条件是标题里声明（CONTRACT.md §6）。
+    #   成交笔数另有一张 12 个月滚动同比专图（见末尾 ttm_yoy），两者并列正是要
+    #   让读者看见两种口径差多少。
+    {'zh': '现货成交笔数（⚠ 买卖双边计，含 reported trades；次轴：单月同比）', 'cols': [
         {'col': 'adv_cash_trades_k', 'zh': '成交笔数（⚠ 买卖双边计，含 reported trades）',
          'unit': 'k trades/day', 'fmt': 'f0'},
+    ]},
+
+    {'zh': '股票清算笔数/手数（单边，2022-01 起；次轴：单月同比）', 'cols': [
         {'col': 'adv_shares_cleared_kcontracts', 'zh': '股票清算笔数/手数（单边，2022-01 起）',
          'unit': 'k contracts/day', 'fmt': 'f0'},
     ]},
@@ -190,14 +355,26 @@ GROUPS = [
          'unit': 'k contracts', 'fmt': 'f0', 'stock': True},
     ]},
 
-    # ⚠ adv_fx_spot_usdbn 是**美元**，不是欧元。整页只有这一列不是 EUR。
-    {'zh': '固定收益与外汇（MTS / Euronext FX）', 'cols': [
+    {'zh': 'MTS 固定收益（欧洲主权债）', 'cols': [
         {'col': 'adv_mts_cash_eurbn', 'zh': 'MTS 现券 ADV（欧洲主权债，单边）',
          'unit': 'EUR bn/day', 'fmt': 'f1'},
         {'col': 'taadv_mts_repo_eurbn', 'zh': 'MTS 回购 TAADV（期限调整后，官方主口径）',
          'unit': 'EUR bn/day', 'fmt': 'f0'},
+    ]},
+
+    # 下面两条与 MTS 那两条**单位不同**（EUR mn/day、USD bn/day），底座本来就会把它们
+    # 拆成两张单桶 gs_bar；原先它们与 MTS 同组，只是让组名读起来像一张图而已。
+    # 实测两条各有 9 个月与 12 个月滚动口径**符号相反**，所以口径写进各自的组名。
+    # 拿 MTS 那两条硬凑同轴不是办法：MTS 现券是 EUR bn 量级、这一条是 EUR mn 量级，
+    # 差两三个数量级，小的那条振幅只占画布百分之一，等于白画。
+    {'zh': 'MTS 以外的债券成交 ADV（次轴：单月同比）', 'cols': [
         {'col': 'adv_other_fixed_income_eurm', 'zh': 'MTS 以外的债券成交 ADV',
          'unit': 'EUR mn/day', 'fmt': 'f0'},
+    ]},
+
+    # ⚠ adv_fx_spot_usdbn 是**美元**，不是欧元。整页只有这一列不是 EUR，
+    #   所以它在本表里天然没有同单位的同伴。
+    {'zh': 'Euronext FX 即期 ADV（⚠ 美元，单边；次轴：单月同比）', 'cols': [
         {'col': 'adv_fx_spot_usdbn', 'zh': 'Euronext FX 即期 ADV（⚠ 美元，单边）',
          'unit': 'USD bn/day', 'fmt': 'f1'},
     ]},
@@ -228,14 +405,22 @@ GROUPS = [
          'unit': 'instruments', 'fmt': 'f0c', 'stock': True},
         {'col': 'listed_funds', 'zh': '挂牌基金只数（月末，2019-01 起）',
          'unit': 'instruments', 'fmt': 'f0c', 'stock': True},
-        {'col': 'new_listings_equities', 'zh': '当月新增股票挂牌家数',
-         'unit': 'listings/month', 'fmt': 'f0'},
         {'col': 'money_raised_new_listings_eurm', 'zh': '当月新上市募资额（含超额配售）',
          'unit': 'EUR mn/month', 'fmt': 'f0c'},
         {'col': 'money_raised_followon_eurm', 'zh': '当月再融资募资额',
          'unit': 'EUR mn/month', 'fmt': 'f0c'},
         {'col': 'mktcap_eurtn', 'zh': '挂牌总市值（月末，2022-01 起）',
          'unit': 'EUR tn', 'fmt': 'f2', 'stock': True},
+    ]},
+
+    # 家数是这一组里唯一的 listings/month 列 ⇒ 单桶 gs_bar ⇒ 次轴单月同比。
+    # 实测有 8 个月与 12 个月滚动口径符号相反（2024-10 单月 +33.3% vs 滚动 −43.3%）。
+    # 家数是小整数序列（个位到十几），单月同比天生毛刺极大 —— 口径写进组名。
+    # 不给它配 ttm_yoy：新增挂牌家数在多个月为个位数，滚动同比也救不了小整数噪声，
+    # 而多画一张图会让读者以为那条线更可信。
+    {'zh': '当月新增股票挂牌家数（次轴：单月同比）', 'cols': [
+        {'col': 'new_listings_equities', 'zh': '当月新增股票挂牌家数',
+         'unit': 'listings/month', 'fmt': 'f0'},
     ]},
 
     {'zh': '结算与托管（五家 CSD，2022-01 起）', 'cols': [
@@ -250,9 +435,16 @@ GROUPS = [
     #   ⇒ 主列 + 备注列 = 官方 pro-forma 口径（实测能精确复现官方季报的备考数）；
     #     主列 − 备注列 = legacy Euronext（旧口径）。
     #   实测 Q2-25 单股衍生品：主列 19,608,871 + 雅典 = 22,791,315 = 官方备考数（相对差 0）。
-    {'zh': 'Athens（Athex）并表备注列 —— 2025-11 红线的桥', 'cols': [
+    # 现货那条备注列在这一组里同样是单桶（EUR bn/day 只有它一条）⇒ gs_bar + 单月同比。
+    # 单列一组、口径写进组名；不能把声明写在下面那一组的组名上 ——
+    # 那一组的两条 k contracts/day 同轴成 lines、**根本没有次轴同比**，
+    # 写上去就成了一句假话（口径断言不许无条件写，SINGLE_SPEC §4 最后一行）。
+    {'zh': 'Athens 并表备注列：雅典现货 ADV（次轴：单月同比）', 'cols': [
         {'col': 'athex_adv_cash_adnv_eurbn', 'zh': '雅典现货 ADV（备注列，2021-01 起）',
          'unit': 'EUR bn/day', 'fmt': 'f3'},
+    ]},
+
+    {'zh': 'Athens（Athex）并表备注列 —— 2025-11 红线的桥', 'cols': [
         {'col': 'athex_adv_singlestock_futures_kcontracts',
          'zh': '雅典单股期货 ADV（占并表后 90–98%）',
          'unit': 'k contracts/day', 'fmt': 'f1'},
@@ -288,7 +480,38 @@ SPEC = {
     # 月份与受影响的列都从 series/enx_breaks.csv 读，不写死；逐列限定，见模块 docstring。
     'breaks': _BREAKS,
 
+    # 📌 'decomp' 刻意留空 —— 理由见模块 docstring 的 📌 一节与 notes 里那一条。
+    # 不是没有数据，是底座的分解图注会无条件印出「每笔均值」的绝对水平，
+    # 而这一家的绝对水平不可读（金额单边计 vs 笔数双边计）。
+
+    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # 两张成对：成交额与成交笔数各一张。**两条金线之差 = 每笔均值的增长贡献** ——
+    # 这是本页能给出的全部分解信息，而且全程只有增长率、没有水平值。
+    # 顺序不能反：先金额后笔数，图注里「与上一张成对读」那句才对得上。
+    'ttm_yoy': [
+        {'zh': '现货成交额',
+         # adv_ 前缀 = 当月日均（官方直接发布 ADNV，不是本仓算的）
+         'granularity': 'daily_avg',
+         'level': {'col': 'adv_cash_adnv_eurbn', 'zh': '日均成交额（全品种，单边）',
+                   'unit': 'EUR bn/day', 'fmt': 'f1'},
+         # 官方没有发布当月合计列，用交易日数还原。trading_days_cash 正是官方拿来
+         # 算这条 ADV 的那一列除数（同一张表的 "Nb of trading days" 行），
+         # 所以乘回去是精确还原、不是近似。
+         'weight_col': 'trading_days_cash',
+         'note': _NOTE_TTM_VAL},
+
+        {'zh': '现货成交笔数',
+         'granularity': 'daily_avg',
+         'level': {'col': 'adv_cash_trades_k',
+                   'zh': '日均成交笔数（⚠ 买卖双边计）',
+                   'unit': 'k trades/day', 'fmt': 'f0'},
+         'weight_col': 'trading_days_cash',
+         'note': _NOTE_TTM_TRD},
+    ],
+
     'notes': _BREAK_NOTES + [
+        _NO_DECOMP_NOTE,
+
         '⚠ 现货断点与衍生品断点不是同一批月份，别搞混：现货的都柏林在 2017-01、'
         '奥斯陆在 **2018-01**；而 2019-07 那个奥斯陆断点属于**股指与单股衍生品、商品**列。'
         '上市统计的都柏林与奥斯陆则是 2019-01。这三条线在官方脚注里分属 '
