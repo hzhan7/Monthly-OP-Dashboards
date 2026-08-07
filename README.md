@@ -1,6 +1,6 @@
-# 月度经营指标看板（21 家）
+# 月度经营指标看板（22 家）
 
-21 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
+22 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
 数据全部来自公司官网 IR 或 SEC 申报的原始披露，不含任何券商研报的观点或数据。
 
 **看板地址：** https://hzhan7.github.io/monthly-op-dashboards/
@@ -8,9 +8,9 @@
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 
 ```
-/            总览（21 家 + 6 张横截面，含各家新鲜度红点）
+/            总览（22 家 + 6 张横截面，含各家新鲜度红点）
 /ibkr/ /schw/ /lpla/ /hood/         券商与财富管理
-/cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 2 → 亚太 4）
+/cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /lseg/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 3 → 亚太 4）
 /msci/ /spgi/                       数据与指数
 /cost/ /axp/                        消费与信贷
 /tsm/                               半导体
@@ -22,6 +22,12 @@
 `/exchanges-products/` 标的轴（利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期）、
 `/wealth/` 财富管理组。原 `/exchanges/`（CME / Cboe / HKEX 三家旧横截面）已被 12 家版
 取代，2026-08-07 删除。
+
+**LSEG（`/lseg/`）本轮只上了单公司页，暂未进任何一张横截面页。** `/exchanges12/` 仍是
+那 12 家、`/exchanges-eu/` 仍是 Euronext / Cboe Europe / Deutsche Börse 三家，
+`build/exchanges*.py` 与 `data/exchanges-*.js` 这一轮逐字节未动。原因不是漏接：LSEG 的四条腿
+（LSE 订单簿 / 一级市场 / Tradeweb / LCH）里没有一条与现有横截面池同口径同量纲，
+接进去要先定跨口径规则。四条腿各自的口径边界、能与不能配对的理由见 `docs/verify/lseg.md`。
 
 `/cost/` 与 `/ibkr/` 原先是两个独立仓库（costco-monthly-sales / ibkr-monthly-metrics），
 **已整体并入本仓；那两个仓库连同它们的 Pages 站点已于 2026-08-06 从 GitHub 删除。**
@@ -39,9 +45,9 @@
 
 ```
 index.html          总览页
-<ticker>/index.html 27 个页面外壳 —— 里面没有任何公司专属内容
+<ticker>/index.html 28 个页面外壳 —— 里面没有任何公司专属内容
                     13 个（12 家老单公司页 + wealth）由 build/make_shells.py 生成；
-                    14 个（5 张横截面 + build/specs/ 下每一家）由 build/make_shells12.py 生成
+                    15 个（5 张横截面 + build/specs/ 下每一家）由 build/make_shells12.py 生成
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
 assets/page.js      通用页面渲染器，全部页面共用一份（导航分行读 roster 的 row）
 assets/style.css    版式
@@ -49,7 +55,7 @@ series/*.csv        历史序列（唯一真值，入库）[注]
 fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
-build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（9 家新交易所走这条）
+build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所走这条）
 build/specs/<t>.py  一家一份配置（见 docs/SINGLE_SPEC.md）
 build/CONTRACT.md   payload 数据契约（写生成器前先读它；§6 是全站同比口径）
 build/yoy.py        同比口径的唯一实现，所有生成器算同比一律走这里
@@ -73,8 +79,8 @@ docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 21 家 + 2 张公共表（费率、汇率）+ 6 张横截面页。
-**每天跑一次**：21 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
+**入口是 `monthly_run.py`**，一条 cron 管 22 家 + 2 张公共表（费率、汇率）+ 6 张横截面页。
+**每天跑一次**：22 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
 省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
 各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`
 （删一家 = 3 个文件 + 5 行注册，见其 §4；删一张横截面页照 `docs/DELIVERY.md` §4.4 的实测清单）。
@@ -98,16 +104,16 @@ python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据
 
 | 总状态 | 含义 |
 |---|---|
-| `NOTHING_TO_DO` | 21 家都没有新数据（正常，等下次） |
+| `NOTHING_TO_DO` | 22 家都没有新数据（正常，等下次） |
 | `PUBLISHED <sha> <n> <月份串>` | n 家更新并已推送，Pages 约 1 分钟后生效 |
 | `PARTIAL <sha> <n> ok / <m> fail` | 有更新也有失败，成功的那部分已发布 |
 | `FAILED <原因>` | 一家都没成功，或工作树不干净 / push 失败 |
 
-### 一家失败不拖累其余二十家
+### 一家失败不拖累其余二十一家
 
 单公司仓库的老脚本是「一有问题就整体退出」——那时只有一家，退出=什么都不做，代价为零。
-扩到 21 家后同样的写法意味着：TSMC 官网当天抽风，CME / Cboe / HKEX 已经抓到的新数据
-也一起不发布，**一家的故障惩罚了另外二十家**。所以这里逐家隔离：失败的那家跳过
+扩到 22 家后同样的写法意味着：TSMC 官网当天抽风，CME / Cboe / HKEX 已经抓到的新数据
+也一起不发布，**一家的故障惩罚了另外二十一家**。所以这里逐家隔离：失败的那家跳过
 （线上仍是它自己的旧数据，不会变成错数据），成功的照常发布，失败清单打在总状态里。
 
 ### 三条护栏（刻意让它失败，而不是替你做决定）
@@ -118,8 +124,8 @@ python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据
    「更新数据」推到公开站。（`--dry-run` 不 commit/push，故只警告不拦。）
 2. **缺列一律失败**，绝不静默写 NaN 上线。解析结果少任何一个已有列，该家的 fetch
    模块直接抛异常。
-3. **未到披露期不下载。** 21 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
-   天天跑；但天天把 21 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
+3. **未到披露期不下载。** 22 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
+   天天跑；但天天把 22 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
    `data_through` 对照各家的 LAG 节奏表，够新的直接跳过。
 
    **闸门比 LAG 提前 `EARLY = 5` 天开，不要改成和红点一样的 `+ GRACE`。** 两者共用
