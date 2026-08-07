@@ -347,7 +347,7 @@ def _short_hist_why(col):
         return ('本列已有 %d 期、滚动口径已经算得出来 —— 这张图待改成滚动同比，'
                 '当前的单月次轴是历史遗留' % n)
     pts = max(0, n - _TTM_FIRST + 1)
-    return ('本列只有 %d 期，滚动同比要 %d 期才连得成线（现在只能算出 %d 个点）'
+    return ('本列只有 %d 期，滚动同比要 %d 期才连得成线，现在只算得出 %d 个点'
             % (n, _TTM_LINE, pts))
 
 
@@ -779,14 +779,18 @@ def _ccy_counts():
             continue
         seen.add(c['col'])
         u = c['unit']
-        if u.startswith('GBP'):
+        # `EUR per GBP` 是**汇率**不是金额，必须先挑出去 —— 它以 'EUR' 开头，
+        # 漏了这一句就会被数进欧元列，欧元变 5 列、无币种变 35 列，两个数同时错。
+        if u == 'EUR per GBP' or ' per ' in u:
+            n['none'] += 1
+        elif u.startswith('GBP'):
             n['GBP'] += 1
         elif u.startswith('USD'):
             n['USD'] += 1
-        elif u.startswith('EUR '):        # 'EUR tn/month'；'EUR per GBP' 是汇率不是金额
+        elif u.startswith('EUR'):
             n['EUR'] += 1
         else:
-            n['none'] += 1                # 笔数 / 家数 / 交易日 / 份额 / 换算率
+            n['none'] += 1                # 笔数 / 家数 / 交易日 / 成交份额
     return n
 
 
@@ -998,6 +1002,28 @@ def _summary_yy(col, month):
     return ((a / b - 1) * 100, a, b)
 
 
+def _fmt_like(v, fmt):
+    """按该列自己的 `fmt` 把数字排版 —— 页注里报的绝对值必须与汇总表印的<b>逐字一致</b>。
+
+    直接 `%g` 会印出 4.86696，而汇总表按 f1 印的是 4.9，读者会以为两处是两个数。
+    这里只覆盖本文件实际用到的几个 fmt，其余退回 %g。
+    """
+    try:
+        if fmt in ('f0', 'int'):
+            return '%d' % round(v)
+        if fmt == 'f0c':
+            return '{:,.0f}'.format(v)
+        if fmt in ('f1', 'pct1', 'pp1'):
+            return '%.1f' % v
+        if fmt in ('f2', 'usd2'):
+            return '%.2f' % v
+        if fmt == 'f3':
+            return '%.3f' % v
+    except Exception:
+        pass
+    return '%g' % v
+
+
 def _near_zero_note():
     if _NEAR_ZERO is None:
         return ('<b>近零基数的列：图上不画同比，汇总表的 y/y 列照印。</b>'
@@ -1012,11 +1038,13 @@ def _near_zero_note():
         if got is None:
             continue
         y, a, b = got
-        printed.append((abs(y), _META.get(c, {}).get('zh', c), y, a, b,
-                        _META.get(c, {}).get('unit', '')))
+        m = _META.get(c, {})
+        printed.append((abs(y), m.get('zh', c), y,
+                        _fmt_like(a, m.get('fmt', '')),
+                        _fmt_like(b, m.get('fmt', '')), m.get('unit', '')))
     printed.sort(reverse=True)
     worst = '；'.join(
-        '<b>%s %+.1f%%</b>（本月 %g、去年同月 %g %s）' % (zh, y, a, b, u)
+        '<b>%s %+.1f%%</b>（本月 %s、去年同月 %s %s）' % (zh, y, a, b, u)
         for _, zh, y, a, b, u in printed[:3])
     return (
         '<b>近零基数的列：<u>图上</u>不画同比（CONTRACT §6.1 第 6 条），'
@@ -1033,11 +1061,13 @@ def _near_zero_note():
         '读者拿它逐格对公司披露，把格子留空反而对不上账；'
         '底座 <code>summary()</code> 的留空判据也只有两条'
         '（去年同月为 0、或两期异号），<b>不含近零基数</b>。'
-        + ('⚠️ 所以本月这 %d 条里有 %d 条在汇总表 y/y 列印出了读数，'
+        + ('⚠️ 所以本月这 %d 条里%s在汇总表 y/y 列印出了读数，'
            '幅度最大的是：%s。这类读数是<b>分母的故事</b>不是量的故事 —— '
            '读这几行时一律回到「本月 / 上月 / 去年同月」三列的绝对值上判断，'
            '不要把它们与页上其余同比放在一起比高低。'
-           % (len(_NEAR_ZERO), len(printed), worst) if printed else
+           % (len(_NEAR_ZERO),
+              '<b>全部</b>' if len(printed) == len(_NEAR_ZERO) else '有 %d 条' % len(printed),
+              worst) if printed else
            '本月这几条在汇总表 y/y 列全部为空（去年同月为 0 或两期异号），无需额外提防。')
         + '它们仍然逐月留在末尾核对表里。'
     )
@@ -1175,14 +1205,17 @@ _NOTE_MOM_WHY = (
     '滚动窗口正好把要看的东西抹平（§6.1 第 2 条举的 <code>cme</code> Ex3 是同一类）。'
     '⑤ <b>LCH ForexClear 两张</b>：这条腿的历史被官方滚动窗口卡住，'
     '短于滚动同比连成线所需的长度（期数现算，写在各图标题里）。'
-    '⑥ <b>Tradeweb 其他政府债 ADV</b>：这一列有 115 期、滚动口径算得出来，'
+    '⑥ <b>Tradeweb 其他政府债 ADV</b>：这一列有 %s 期、滚动口径算得出来，'
     '所以本轮<b>另补了一张滚动同比图</b>放在页尾，单月那张只留作逐月核对。'
-    '⑦ <b>一级市场的增发笔数</b>（主板 / AIM 各 97 期）原先各自单列成柱图、'
+    '⑦ <b>一级市场的增发笔数</b>（主板 %s 期 / AIM %s 期）原先各自单列成柱图、'
     '因而被迫画单月同比，而它们给不出口径上的理由（既不是比率、历史也不短、'
     '命题也不是「一个月之内会怎样」）—— 本轮把两列并成同单位的一张折线图，'
     '页面上不再出现那两条无法辩护的单月同比线。'
     '<b>存量列的次轴同比不在本条范围内</b>：那是点对点同比，'
     '按 §6.1 第 4 条本来就是存量的默认口径，不需要辩护。'
+    % (_n_obs('tradeweb_adv_other_govt_bonds_usd_bn') or '？',
+       _n_obs('mm_further_issues_count') or '？',
+       _n_obs('aim_further_issues_count') or '？')
 )
 
 
