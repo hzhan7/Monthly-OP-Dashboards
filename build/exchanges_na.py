@@ -906,34 +906,74 @@ def share_stack(pool, xl, xstep):
     }
 
 
-def start_end_bars(pool):
-    """起止对照：期初 vs 期末，各家 + 残差桶并排（口径 = 4 年同月窗口，见 Win）。
+# 年份色阶：旧→新。首尾沿用「期初 GRAY / 期末 NAVY」的既有语义（与 Δ 图、桥图同锚），
+# 中间三年从其余数据色里取。不是严格的明度渐变 —— 引擎数据色只有六个，凑不出五档
+# 单色渐变；年份身份由图例与柱值标签承载，色阶只需彼此可分。
+YEAR_RAMP = ['GRAY', 'BLUE', 'GOLD', 'MBLUE', 'NAVY']
 
-    类别轴上的残差桶用**短名**：长名（「场外与其他（TRF 内化 / MEMX / IEX 等）」）
-    横排时会与左右邻居压字。长名照旧写在图注与图例里，信息一个字没少。
+
+def start_end_bars(pool):
+    """同月逐年路径：窗口内每个七月一组柱，各家 + 残差桶并排（口径 = 4 年同月窗口，见 Win）。
+
+    2026-08-07 改版：原来只画期初/期末两根柱，用户点名「哪里变 4 年了」——
+    窗口拉长了但**中间三年在图上不存在**，「份额是单调走的还是拐过弯」这个信息被扔掉了
+    （现货池 NYSE 就是先跌后收复：19.3 → 18.7 → 19.3 → 18.7 → 19.1，两点对比读成横盘）。
+    现在把窗口内的每个同月都画出来，路径可见；期初期末两根与 Δ 图、桥图仍然同锚。
+
+    类别轴上的残差桶用**短名**：长名横排时会与左右邻居压字。长名照旧写在图注与图例里。
     x 标签水平排的理由见 CAT_XROT。
     """
+    pers = [pd.Period(f'{pool.end.year - k}-{pool.end.month:02d}', 'M')
+            for k in range(pool.years, -1, -1)]
     names = [m.short for m in pool.members] + [pool.other_short]
-    keys = [m.key + '_s' for m in pool.members] + ['other_s']
-    v0 = [float(pool.df[k].iloc[0]) for k in keys]
-    v1 = [float(pool.df[k].iloc[-1]) for k in keys]
+    den = LONG_DEN[pool.pid]
+    cols, gaps = [], []
+    for p_ in pers:
+        one, tot, ok = [], 0.0, True
+        d_ = float(den.get(p_, np.nan))
+        for m in pool.members:
+            v = float(LONG_NUM[(pool.pid, m.key)].get(p_, np.nan))
+            s = v / d_ * 100.0 if np.isfinite(v) and np.isfinite(d_) and d_ else np.nan
+            one.append(s)
+            if np.isfinite(s):
+                tot += s
+            else:
+                ok = False
+                gaps.append((m.disp, mlab(p_)))
+        # 残差桶 = 100 − 已列成员之和：任一成员缺，这一年的桶就算不出来，留空不硬凑
+        one.append(100.0 - tot if ok else np.nan)
+        cols.append(one)
+    ramp = YEAR_RAMP[-len(pers):]
+    gmap = {}
+    for d_, mm in gaps:
+        gmap.setdefault(d_, []).append(mm)
     return {
-        'kind': 'grouped_bars', 'height': 300,
+        'kind': 'grouped_bars', 'full': True, 'height': 320,
         'fmt': 'f1', 'label_fmt': 'f1', 'bar_labels': True,
         'xlabels': names, 'xrot': CAT_XROT,
-        'title': (f'{pool.en}: share at {mlab(pool.start)} vs {mlab(pool.end)} '
-                  f'({pool.years} years, same month)'),
+        'title': (f'{pool.en}: same-month share, every {MONTHS[pool.end.month - 1]} '
+                  f'{mlab(pers[0])} → {mlab(pers[-1])} ({pool.years} years)'),
         'ylab': '% of official industry total',
-        'groups': [{'name': f'{mlab(pool.start)}（期初）', 'color': 'GRAY', 'values': L(v0)},
-                   {'name': f'{mlab(pool.end)}（期末）', 'color': 'NAVY', 'values': L(v1)}],
-        'src_extra': ('Both bars use the same official industry denominator of their own month; '
-                      'the two months are the same calendar month four years apart'),
-        'note': ('两根柱各自除以<b>本月的</b>官方行业总量，所以柱高差就是真份额的变化，'
-                 '与池子本身涨了多少无关（池的变化见下一张桥图）。'
+        'groups': [{'name': mlab(p_), 'color': c, 'values': L(cols[k])}
+                   for k, (p_, c) in enumerate(zip(pers, ramp))],
+        'src_extra': ('Each bar divides that firm\'s volume in that single month by the official '
+                      'industry total of the same month; same-month comparison removes the '
+                      'month-of-year effect'),
+        'note': (f'窗口内<b>每个 {MONTHS[pool.end.month - 1]} 月一组柱</b>（共 {len(pers)} 个年份），'
+                 '每根柱各自除以<b>该月的</b>官方行业总量 —— 同月比同月，季节性整个消掉，'
+                 '柱与柱之间的差就是结构性变化，还能看出份额是单调走的还是中途拐过弯'
+                 '（两点对比看不出这一层）。'
+                 '<b>颜色表示年份</b>（图例从旧到新），首尾两色沿用期初 GRAY / 期末 NAVY，'
+                 '与下两张 Δ 图、桥图的窗口完全同锚。'
                  + win_span(pool)
                  + f'期初池总量 {num(float(pool.df["pool"].iloc[0]) / pool.unit_div)} → '
                  + f'期末 {num(float(pool.df["pool"].iloc[-1]) / pool.unit_div)} {pool.unit_lab}'
                  + f'（{pct(float(pool.df["pool"].iloc[-1] / pool.df["pool"].iloc[0] - 1) * 100)}）。'
+                 + (f'<b>缺柱点名</b>：'
+                    + '、'.join(f'{d_}（{"、".join(v)} 无月度披露）' for d_, v in gmap.items())
+                    + f'；{pool.other_short}那一格因此也算不出来（它要 100 减各家之和），'
+                      '对应年份一并留空。'
+                    if gmap else '')
                  + pool.drop_note),
     }
 

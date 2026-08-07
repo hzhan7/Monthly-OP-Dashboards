@@ -379,7 +379,13 @@ def check_exhibit(tag, ex, short, long_):
             warn(where, f'{kind} 有 {len(ser)} 条线，数据色只有 6 个 —— '
                         f'必然有线同色，该换 heat_matrix（身份靠行标签，不靠颜色）')
     if kind == 'grouped_bars' and len(ex.get('groups') or []) > 4:
-        warn(where, f'grouped_bars 有 {len(ex["groups"])} 组，缺省色只有 4 个，第 5 组起重色')
+        # 只有依赖缺省配色时才是问题：每组显式给了 color 且互不相同，5-6 组是合法的
+        # （年份色阶就是这种用法）。数据色一共 6 个，超过 6 组连显式配色也救不了。
+        gcols = [g.get('color') for g in ex['groups']]
+        if None in gcols or len(set(gcols)) < len(gcols):
+            warn(where, f'grouped_bars 有 {len(ex["groups"])} 组，缺省色只有 4 个，第 5 组起重色')
+        elif len(ex['groups']) > 6:
+            warn(where, f'grouped_bars 有 {len(ex["groups"])} 组，数据色只有 6 个，显式配色也必然重复')
     if kind == 'diverging_bars':
         warn(where, 'diverging_bars 的图例与表格列名在引擎里写死成 COST 的'
                     '「Reported > Core（油汇顺风）」，交易所页会印出「油汇」字样'
