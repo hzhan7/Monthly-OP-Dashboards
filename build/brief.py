@@ -193,7 +193,12 @@ def peak_scan(months, stocks, i, inverse=False, skip_monotonic=True):
             continue
         if not np.isfinite(a[i]):
             continue
-        k = int(np.nanargmin(a) if inverse else np.nanargmax(a))
+        # 「峰值停在 X 月」的语义是**最近一次**触及极值 —— nanargmax/nanargmin 返回的是
+        # **第一次**。披露值常带舍入（AXP 逾期率 1.3% 在 2024 年三个月里三次触底），
+        # 取第一次会让读者以为此后再没到过。所以先取极值、再取命中集合的最后一个。
+        ext = np.nanmin(a) if inverse else np.nanmax(a)
+        hits = np.flatnonzero(np.isfinite(a) & (a == ext))
+        k = int(hits[-1])
         (at if k == i else off).append(nm if k == i else (nm, months[k]))
     return {'at_peak': at, 'off_peak': off, 'skipped': skipped}
 

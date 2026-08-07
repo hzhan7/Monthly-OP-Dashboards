@@ -19,7 +19,7 @@
 欧洲三家争的是同一批订单流，占比有内容；亚太几家法域隔离，占比没有外部指涉。
 删除那张页的实际步骤见 docs/DELIVERY.md §4.4。
 
-**现有 /exchanges/（CME / Cboe / HKEX 三家版）的外壳不动。** 它仍由 make_shells.py
+**/exchanges/（CME / Cboe / HKEX 三家版）已于 2026-08-07 删除。** 老 13 页仍由 make_shells.py
 负责，本脚本的 TICKERS 里也没有它 —— 两张页在过渡期并存，等 12 家版跑稳之后再谈迁移。
 
 外壳里没有任何页面专属内容：抬头、标题、口径说明、exhibit 全部由 data/<t>.js 注入，

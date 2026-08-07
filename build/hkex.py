@@ -618,7 +618,10 @@ def main():
     # 三段分解要三条腿都在：日均成交股数 + 日均成交笔数（金额那条 adt_hkdbn 一直都在）。
     # 两者由同一次抓取一起入库，所以这里要求**同时**存在 —— 只有其中一条时退回两段分解
     # 会多出一条永远走不到的分支，而分支写了不跑就是坏的。
-    HAS_VP = {'adv_shares_mn', 'adt_trades'} <= set(RAW_COLS)
+    # 2026-08-07 起交易日数也是硬输入：分解图改成日历年桶后，金额腿的年度合计要靠
+    # 「日均 × 当月交易日数」还原当月合计（日均列不许直接跨月相加），没有交易日数
+    # 这张图就不具备数据条件 —— 与股数/笔数一样走「有列就画、没列就如实说」。
+    HAS_VP = {'adv_shares_mn', 'adt_trades', 'trading_days_cash'} <= set(RAW_COLS)
     HAS_TD = 'trading_days_cash' in RAW_COLS
     SHARE_COLS = [c for c in RAW_COLS
                   if 'share' in c.lower() or 'volume' in c.lower() or 'shr' in c.lower()]
@@ -1184,62 +1187,148 @@ def main():
     #   所以三条腿是同一套逐日底稿，不是「口径相近」。
     # 反例（本页拒绝做的那种）：拿南向 ADT 或衍生品张数当分子分母，那是跨市场相除。
     #
-    # 口径纪律与 CME / Cboe 两页同一套，跨页可比：
-    # （1）每一层的「单位量」一律用「合计 ÷ 合计」（TTM 金额 ÷ TTM 股数、TTM 股数 ÷ TTM 笔数），
+    # 口径纪律与 CME / Cboe 两页及 build/single.py 的 ex_decomp 同一套（2026-08-07 三路
+    # 统一改造），跨页可比：
+    # （1）横轴 = **日历年桶**：最近 4 个完整日历年（每格 = 该年 Jan–Dec 三条腿的年度合计
+    #      vs 上一年同口径）+ 1 根**当年 YTD**。YTD 的同比基期**对齐到去年同期月份** ——
+    #      两侧月份集合逐月相同，取三条腿两侧都齐的月份并在图注写明实际截至月；
+    #      不对齐就是拿 7 个月比 12 个月，柱高毫无意义。
+    # （2）年度桶只加**当月合计**：股数与笔数用主板 + GEM 的当月合计列直接相加；
+    #      成交金额列是日均（HK$bn/日），**不许直接跨月相加**（各月交易日 17–23 天，直接
+    #      相加给交易日多的月配错权重）—— 先 × 当月交易日数还原当月合计再相加。这正是
+    #      single.py 的 granularity 两分支（monthly_total / daily_avg）在本页的对应物。
+    # （3）每一层的「单位量」一律用「合计 ÷ 合计」（Σ金额 ÷ Σ股数、Σ股数 ÷ Σ笔数），
     #      不是「逐月比率的平均」—— 后者对每月等权而各月量差着数倍，且均值之积 ≠ 积之均值，
     #      分解会不闭合，而图上完全看不出来。
-    # （2）端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，不做点对点。
-    # （3）图上用**对数分解**：ln(额比) = ln(笔数比) + ln(每笔股数比) + ln(单价比)，
-    #      天然可加、对称、零残差，不必选「交叉项归谁」。算术分解必须选一个替换次序，
-    #      交叉项会整段压进最后替换的那一块；三段的交叉项比两段更大，方向对冲的年份
-    #      画出来就是错的。算术版仍照算，两者的差写进图注。
-    # （4）单位是**对数点**（100 × ln），不是百分点：不把对数贡献按总增长等比缩放回百分点，
-    #      是因为那要除以 ln(额比)，净增长近零的月份分母也近零，同一个病又回来了。
+    # （4）图上画**对数分解、按总增长重标定**（对数权重）：
+    #      ln(额比) = ln(笔数比) + ln(每笔股数比) + ln(单价比) 天然可加、无交叉项；
+    #      再乘 w = 总增长 ÷ ln(额比) 把三块换算成百分点，三块相加逐格等于菱形标的总增长。
+    #      旧口径（逐月 TTM 端点）不敢做这次重标定，因为滚动净增长频繁穿零、w 的分母也近零；
+    #      年度桶没有这个病 —— 真撞上「两期几乎持平」的桶时按 |ln(额比)| < DEC_LN_MIN
+    #      **整根柱留空**（w 是 0/0，算出来没有有效位），与 single.py 的 DECOMP_LN_MIN
+    #      同值同义。算术分解仍照算、只进图注（交叉项整段压进最后替换的单价块）。
     # 三条腿齐了才画这两张；缺任何一条就整段跳过，页面照常建得出来（见上面 HAS_VP 那段）。
+    DEC_EPS = 1e-9           # 分解残差硬上限（= single.py 的 DECOMP_EPS，三路统一）
+    DEC_LN_MIN = 1e-6        # |ln(额比)| 低于它整根柱留空（= single.py 的 DECOMP_LN_MIN）
+    DEC_YEARS = 4            # 完整日历年柱数（数据允许时取最近 4 个）
     if HAS_VP:
-        df['ttm_shares'] = roll_mean(df['adv_shares_mn'])                  # mn 股/日
-        df['ttm_trades'] = roll_mean(df['adt_trades'])                     # 笔/日
-        df['ttm_spt'] = df['ttm_shares'] * 1e6 / df['ttm_trades']          # 股/笔 = 合计 ÷ 合计
-        df['ttm_px'] = df['ttm_adt'] * 1e9 / (df['ttm_shares'] * 1e6)      # HK$/股 = 合计 ÷ 合计
-        _vp = df[['ttm_adt', 'ttm_shares', 'ttm_trades', 'ttm_spt', 'ttm_px']].dropna()
-        _a1, _a0 = _vp['ttm_adt'], _vp['ttm_adt'].shift(ROLL)
-        _t1, _t0 = _vp['ttm_trades'], _vp['ttm_trades'].shift(ROLL)
-        _s1, _s0 = _vp['ttm_spt'], _vp['ttm_spt'].shift(ROLL)
-        _x1, _x0 = _vp['ttm_px'], _vp['ttm_px'].shift(ROLL)
-        _rt, _rs, _rx = _t1 / _t0, _s1 / _s0, _x1 / _x0
-        _dec = pd.concat({
-            'tot': np.log(_a1 / _a0) * 100,
-            'trd': np.log(_rt) * 100,
-            'spt': np.log(_rs) * 100,
-            'px': np.log(_rx) * 100,
-            # 算术分解：按「笔数 → 每笔股数 → 单价」的次序逐层替换，望远镜式相加恒等于总增长；
-            # 代价是交叉项全部落在最后替换的单价那一块，所以它只进图注、不画。
-            'arith_tot': (_a1 / _a0 - 1) * 100,
-            'arith_trd': (_rt - 1) * 100,
-            'arith_spt': (_rs - 1) * _rt * 100,
-            'arith_px': (_rx - 1) * _rt * _rs * 100,
-        }, axis=1).dropna()
+        df['ttm_shares'] = roll_mean(df['adv_shares_mn'])                  # mn 股/日，Ex20 用
 
-        # 硬护栏：分解是恒等式，不是近似。对不上说明某处 shift / 口径写错了，必须停在这里 ——
-        # 「三块加起来不等于总数」的分解图，读者是看不出来的。两种分解各查各的。
-        for _tag, _pp3, _pt in (('对数', ('trd', 'spt', 'px'), 'tot'),
-                                ('算术', ('arith_trd', 'arith_spt', 'arith_px'), 'arith_tot')):
-            _res = float((sum(_dec[c] for c in _pp3) - _dec[_pt]).abs().max())
-            if not np.isfinite(_res) or _res > 1e-9:
-                raise SystemExit(f'Exhibit {EX_VP} {_tag}分解不闭合：'
-                                 f'max|笔数+每笔股数+单价−总| = {_res:.3e}（上限 1e-9）')
+        # ── 三条腿的**当月合计**（granularity 分支，见上（2））──
+        _val_m = df['adt_hkdbn'] * df['trading_days_cash']                 # HK$bn/月（日均还原）
+        _val_how = ('日均列 <code>adt_hkdbn</code> × 当月交易日数还原当月合计'
+                    '（「日均 ≡ 合计 ÷ 交易日」在本脚本里有 1e-4 硬检验）')
+        if {'vol_shares_mb_mn', 'vol_shares_gem_mn'} <= set(RAW_COLS):
+            _shr_m = df['vol_shares_mb_mn'] + df['vol_shares_gem_mn']      # mn 股/月
+            _shr_how = '主板 + GEM 的当月合计列直接相加（本身即当月合计口径，不涉交易日权重）'
+        else:
+            _shr_m = df['adv_shares_mn'] * df['trading_days_cash']
+            _shr_how = '日均 × 当月交易日数还原当月合计'
+        if {'trades_mb_total', 'trades_gem_total'} <= set(RAW_COLS):
+            _trd_m = df['trades_mb_total'] + df['trades_gem_total']        # 笔/月
+            _trd_how = '主板 + GEM 的当月合计列直接相加（本身即当月合计口径，不涉交易日权重）'
+        else:
+            _trd_m = df['adt_trades'] * df['trading_days_cash']
+            _trd_how = '日均 × 当月交易日数还原当月合计'
+        _qty_how = (f'成交股数与成交笔数都用{_shr_how}' if _shr_how == _trd_how
+                    else f'成交股数用{_shr_how}、成交笔数用{_trd_how}')
+        _mt = pd.concat({'val': _val_m, 'shr': _shr_m, 'trd': _trd_m}, axis=1).dropna()
 
-        # 两种分解在「单价」那一块差最多 —— 交叉项全压在它身上，正是不画算术版的理由
-        _lgap = float((_dec['px'] - _dec['arith_px']).abs().max())
-        _lgap_at = (_dec['px'] - _dec['arith_px']).abs().idxmax()
-        # 「算术分解里交叉项占净增长多大」的实测值：总增长 − 三段各自的独立变化率
-        _cross = _dec['arith_tot'] - ((_rt - 1) + (_rs - 1) + (_rx - 1)).reindex(_dec.index) * 100
-        _csh = (_cross / _dec['arith_tot']).abs().replace([np.inf, -np.inf], np.nan).dropna() * 100
-        CROSS_MED, CROSS_MAX = float(_csh.median()), float(_csh.max())
+        # ── 分桶：完整日历年（本年与上一年 12 个月三条腿全齐才算）+ 当年 YTD ──
+        def _yr_ms(y):
+            return pd.period_range(f'{y}-01', f'{y}-12', freq='M')
+
+        _full = [y for y in range(_mt.index[0].year, _mt.index[-1].year + 1)
+                 if _yr_ms(y).isin(_mt.index).all()]
+        _bar_years = [y for y in _full if y - 1 in _full][-DEC_YEARS:]
+        if not _bar_years:
+            raise SystemExit(f'Exhibit {EX_VP}：三条腿都齐的月份画不出任何一根'
+                             f'「完整年 vs 上一年」的柱（可用 {_mt.index[0]}–{_mt.index[-1]}）')
+        # YTD 桶：只取「本年该月与去年同月**两侧都齐**」的月份 —— 某条腿滞后（当前就是
+        # ADT 比股数/笔数晚一个月）时窗口自动缩短，图注写实际截至月，不硬凑。
+        _cy = _mt.index[-1].year
+        _ytd_cov = []
+        if _cy > _bar_years[-1]:
+            _ytd_cov = [p for p in pd.period_range(f'{_cy}-01', _mt.index[-1], freq='M')
+                        if p in _mt.index and (p - 12) in _mt.index]
+        if _ytd_cov and _ytd_cov != list(pd.period_range(
+                f'{_cy}-01', freq='M', periods=len(_ytd_cov))):
+            # 覆盖必须是从 Jan 起的连续段，否则「vs 去年同期」这句话就不成立
+            raise SystemExit(f'Exhibit {EX_VP}：YTD 覆盖月份不连续：{_ytd_cov}')
+        _bkts = [(f'{y}', _yr_ms(y), _yr_ms(y - 1)) for y in _bar_years]
+        if _ytd_cov:
+            _bkts.append((f'{_cy} YTD', pd.PeriodIndex(_ytd_cov),
+                          pd.PeriodIndex([p - 12 for p in _ytd_cov])))
+
+        # ── 逐桶分解 + 硬护栏：分解是恒等式，不是近似。对不上说明某处取错列 / 分桶串了
+        #    一格，必须停在这里 ——「三块加起来不等于总数」的分解图，读者是看不出来的。──
+        _xl, _cT, _cS, _cX, _net = [], [], [], [], []
+        _rows, _blanks = [], []
+        for _lab, _ms, _bs in _bkts:
+            _xl.append(_lab)
+            A1 = float(_mt['val'].reindex(_ms).sum()); A0 = float(_mt['val'].reindex(_bs).sum())
+            S1 = float(_mt['shr'].reindex(_ms).sum()); S0 = float(_mt['shr'].reindex(_bs).sum())
+            T1 = float(_mt['trd'].reindex(_ms).sum()); T0 = float(_mt['trd'].reindex(_bs).sum())
+            if not all(v > 0 for v in (A1, A0, S1, S0, T1, T0)):
+                raise SystemExit(f'Exhibit {EX_VP} {_lab} 桶的合计不是正数：'
+                                 f'金额 {A1:g}/{A0:g}、股数 {S1:g}/{S0:g}、笔数 {T1:g}/{T0:g}，'
+                                 f'比值与对数都没有定义')
+            _rt = T1 / T0
+            _rs = (S1 / T1) / (S0 / T0)
+            _rx = (A1 / S1) / (A0 / S0)
+            gV = A1 / A0 - 1
+            lV, lT, lS, lX = (float(np.log(r)) for r in (A1 / A0, _rt, _rs, _rx))
+            # 算术分解：按「笔数 → 每笔股数 → 单价」的次序逐层替换，望远镜式相加恒等于
+            # 总增长；代价是交叉项全部落在最后替换的单价那一块，所以它只进图注、不画。
+            aT, aS, aX = _rt - 1, (_rs - 1) * _rt, (_rx - 1) * _rt * _rs
+            _cross = gV - ((_rt - 1) + (_rs - 1) + (_rx - 1))
+            for _tag, _res in (('算术（望远镜）', gV - (aT + aS + aX)),
+                               ('对数', lV - (lT + lS + lX))):
+                if not abs(_res) <= DEC_EPS:
+                    raise SystemExit(f'Exhibit {EX_VP} {_lab} {_tag}分解不闭合：'
+                                     f'残差 {_res:+.3e} > {DEC_EPS:.0e}')
+            if abs(lV) < DEC_LN_MIN:
+                # 整根柱留空：重标定权重 w = 总增长 ÷ ln(额比) 此时是 0/0，没有有效位
+                _blanks.append(_lab)
+                _cT.append(np.nan); _cS.append(np.nan); _cX.append(np.nan)
+                _net.append(np.nan)
+                _rows.append((_lab, gV, aT, aS, aX, _cross,
+                              np.nan, np.nan, np.nan, S1 * 1e6 / T1, A1 * 1e9 / (S1 * 1e6)))
+                continue
+            w = gV / lV
+            cT, cS, cX = w * lT * 100, w * lS * 100, w * lX * 100
+            # 画在图上的三块也要闭合：重标定只是乘同一个 w，破了就是代码错
+            _res3 = gV * 100 - (cT + cS + cX)
+            if not abs(_res3) <= DEC_EPS:
+                raise SystemExit(f'Exhibit {EX_VP} {_lab} 重标定后不闭合：'
+                                 f'{cT:+.9f} + {cS:+.9f} + {cX:+.9f} ≠ {gV * 100:+.9f}，'
+                                 f'残差 {_res3:+.3e} > {DEC_EPS:.0e}')
+            _cT.append(cT); _cS.append(cS); _cX.append(cX)
+            _net.append(gV * 100)
+            _rows.append((_lab, gV, aT, aS, aX, _cross,
+                          cT, cS, cX, S1 * 1e6 / T1, A1 * 1e9 / (S1 * 1e6)))
+        if not any(np.isfinite(v) for v in _net):
+            raise SystemExit(f'Exhibit {EX_VP}：{len(_xl)} 个桶全部落在 |ln(额比)| < '
+                             f'{DEC_LN_MIN:.0e} 的留空区间，没有一根柱画得出来')
+
+        # 交叉项与两法差异的实测（进图注与页尾说明；桶太少不足以谈分布，给中位 + 最大）
+        _fin = [r for r in _rows if np.isfinite(r[6])]
+        _csh = [abs(r[5] / r[1]) * 100 for r in _rows if abs(r[1]) > 0]
+        CROSS_MED, CROSS_MAX = float(np.median(_csh)), float(np.max(_csh))
+        _lgap = max(abs(r[4] * 100 - r[8]) for r in _fin)
+        _lgap_at = max(_fin, key=lambda r: abs(r[4] * 100 - r[8]))[0]
+        _big = max(_rows, key=lambda r: abs(r[5]))          # 交叉项绝对值最大的桶
+
+        # 三条腿各自披露到哪个月：滞后的那条决定 YTD 的实际截至月，图注点名
+        _leg_last = {'成交金额（ADT）': _val_m.dropna().index[-1],
+                     '成交股数': _shr_m.dropna().index[-1],
+                     '成交笔数': _trd_m.dropna().index[-1]}
+        _lead_m = max(_leg_last.values())
+        _lags = {k: v for k, v in _leg_last.items() if v < _lead_m}
 
         # 交易日加权 vs 不加权：现在 series 里有 trading_days_cash 了，这个取舍可以实测而不是
-        # 靠推理。仍然沿用不加权 —— Exhibit 7 早就定过「ADT 已是每日口径，合计会失真」——
-        # 但把加权口径的差算出来写进图注，读者才能判断这个取舍值不值。
+        # 靠推理。次轴滚动同比仍沿用不加权 —— Exhibit 7 早就定过「ADT 已是每日口径，合计会
+        # 失真」—— 但把加权口径的差算出来写进页尾说明，读者才能判断这个取舍值不值。
         _wsum = (df['adt_hkdbn'] * df['trading_days_cash']).rolling(ROLL).sum()
         _dsum = df['trading_days_cash'].rolling(ROLL).sum()
         _wadt = _wsum / _dsum                                   # 交易日加权的 TTM 日均成交额
@@ -1249,21 +1338,30 @@ def main():
         DAYW_GAP = float((_cmp['u'] - _cmp['w']).abs().max())
         DAYW_SAME = bool(((_cmp['u'] * _cmp['w']) > 0).all())
 
-        _DW = _dec.index[-13:]
-        _dw = _dec.loc[_DW]
+        _cov_s = f'{mlab(_ytd_cov[0])} – {mlab(_ytd_cov[-1])}' if _ytd_cov else ''
+        _covb_s = (f'{mlab(_ytd_cov[0] - 12)} – {mlab(_ytd_cov[-1] - 12)}'
+                   if _ytd_cov else '')
+        _last = _rows[-1]
+        VP_LINE = (f'Exhibit {EX_VP} 量价分解桶：{" | ".join(_xl)}'
+                   + (f' | YTD 覆盖 {_cov_s}（{len(_ytd_cov)} 个月）vs {_covb_s}' if _ytd_cov
+                      else ' | 本年尚无两侧都齐的月份，无 YTD 柱')
+                   + (('，滞后腿：' + '、'.join(f'{k}到 {mlab(v)}' for k, v in _lags.items()))
+                      if _lags else '，三条腿同月截止')
+                   + (f' | 留空桶：{"、".join(_blanks)}' if _blanks else ''))
         ex.append({
-            'n': EX_VP, 'kind': 'bridge_bar', 'fmt': 'f1', 'xlabels': [mlab(p) for p in _DW],
-            'xrot': 0,
+            'n': EX_VP, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
+            'xlabels': _xl, 'xrot': 0,
             'title': 'Cash turnover growth split: trades x shares per trade x price per share',
-            'ylab': 'log points of TTM turnover growth',
+            'ylab': '% vs prior-year period',
             'stacks': [
-                {'name': 'Number of trades', 'color': 'NAVY', 'values': LN(_dw['trd'].values)},
-                {'name': 'Shares per trade', 'color': 'MBLUE', 'values': LN(_dw['spt'].values)},
-                {'name': 'Price per share', 'color': 'GOLD', 'values': LN(_dw['px'].values)},
+                {'name': 'Number of trades', 'color': 'NAVY', 'values': LN(_cT)},
+                {'name': 'Shares per trade', 'color': 'MBLUE', 'values': LN(_cS)},
+                {'name': 'Price per share', 'color': 'GOLD', 'values': LN(_cX)},
             ],
-            'net': {'name': 'TTM turnover growth', 'values': LN(_dw['tot'].values)},
+            'net': {'name': 'Turnover growth', 'values': LN(_net)},
             'net_color': 'INK',
-            'src_extra': 'Identity: turnover value = trades x shares per trade x price per share. '
+            'src_extra': 'Identity: turnover value = trades x shares per trade x price per share; '
+                         'log-weight decomposition of calendar-year totals (last bar = YTD). '
                          'All three legs are HKEX monthly disclosures for the same market '
                          '(Main Board + GEM cash) over the same trading days',
             'note': (f'<b>恒等式：成交额 ≡ 成交笔数 × 每笔股数 × 每股单价</b> —— 定义式，'
@@ -1271,28 +1369,51 @@ def main():
                      f'成交股数，代回去逐项抵消）。<b>为什么分三段</b>：两段（股数 × 单价）'
                      f'会把「有多少人在交易」与「同一批人把单子拆得多碎」揉进同一块，'
                      f'而港股这两年正是二者反向 —— 笔数在涨、每笔股数在跌，合起来看就丢了信息。'
-                     f' <b>三条腿同口径</b>：成交金额（ADT）、成交股数、成交笔数都来自 HKEX 月度'
-                     f'披露、同一个现货证券市场（主板 + GEM）、同一批交易日、同一个「日均」基准；'
-                     f'股数与笔数实测 ≡（主板 + GEM 月度合计）÷ 当月交易日数，生成脚本对这条'
-                     f'恒等式设了 1e-4 的硬门槛，破了直接退出。'
+                     f'<b>横轴 = 日历年桶</b>：{len(_bar_years)} 个完整日历年'
+                     f'（{_bar_years[0]} – {_bar_years[-1]}，每格 = 该年 Jan–Dec 三条腿的'
+                     f'年度合计 vs 上一年同口径，基期 {_bar_years[0] - 1} 年）'
+                     + (f'，外加一根 <b>{_cy} YTD</b>：{_cov_s} 的合计 vs '
+                        f'去年同期同月集合（{_covb_s}），两侧月份逐月相同 —— 不对齐月份集合'
+                        f'就是拿 {len(_ytd_cov)} 个月比 12 个月，柱高毫无意义。'
+                        + (('三条腿披露进度不齐（'
+                            + '、'.join(f'{k}到 {mlab(v)}' for k, v in _lags.items())
+                            + f'，其余到 {mlab(_lead_m)}），YTD 只取三条腿两侧都齐的月份，'
+                              f'实际截至 {mlab(_ytd_cov[-1])}。')
+                           if _lags else
+                           f'三条腿同月截止，YTD 截至 {mlab(_ytd_cov[-1])}。')
+                        + f'<b>YTD 柱与完整年柱不可直接比大小</b>'
+                          f'（覆盖 {len(_ytd_cov)} 个月 vs 12 个月）—— 它回答的是'
+                          f'「今年到目前为止相对去年同期」，不是「今年全年」。'
+                        if _ytd_cov else
+                        f'；{_cy} 年尚无三条腿两侧都齐的月份，所以没有 YTD 柱。')
+                     + f'<b>年度桶只加当月合计</b>：{_qty_how}；'
+                     f'成交金额{_val_how} —— 日均列不许直接跨月相加，各月交易日 '
+                     f'{int(df["trading_days_cash"].min())}–{int(df["trading_days_cash"].max())} '
+                     f'天，直接相加会给交易日多的月配错权重。每一层的单位量都是'
+                     f'「合计 ÷ 合计」（年度每笔股数 = Σ股数 ÷ Σ笔数、年度单价 = Σ金额 ÷ '
+                     f'Σ股数），不是逐月比率的平均 —— 均值之积 ≠ 积之均值，后者分解不闭合。'
+                     f' <b>三条腿同口径</b>：三条都来自 HKEX 月度披露、同一个现货证券市场'
+                     f'（主板 + GEM）、同一批交易日；股数与笔数实测 ≡（主板 + GEM 月度合计）'
+                     f'÷ 当月交易日数，生成脚本对这条恒等式设了 1e-4 的硬门槛，破了直接退出。'
                      f'<b>本页拒绝的凑法</b>：南向 ADT 与衍生品张数分属另外两个市场，'
                      f'拿它们当现货的分子分母是跨市场相除，商出来的「单价」方向与大小都不可知。'
-                     f' <b>口径</b>：端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，'
-                     f'与本页各图次轴同比一致；每一层的单位量都用「合计 ÷ 合计」'
-                     f'（TTM 金额 ÷ TTM 股数、TTM 股数 ÷ TTM 笔数），不是逐月比率的平均。'
-                     f' <b>用对数分解</b>：ln(额比) = ln(笔数比) + ln(每笔股数比) + ln(单价比)，'
-                     f'天然可加、对称、零残差，不必选「交叉项归谁」；算术分解必须选一个替换次序，'
-                     f'交叉项会整段压进最后替换的那一块，本页实测交叉项占净增长中位 '
-                     f'{CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%，两种分解的「单价」这一块'
-                     f'最大相差 {_lgap:.1f}（出现在 {mlab(_lgap_at)}）。'
-                     f' <b>单位是对数点</b>（100 × ln），不是百分点：小幅变化时两者近似相等，'
-                     f'大幅时不等。{mlab(_DW[-1])}：笔数 {float(_dw["trd"].iloc[-1]):+.1f}、'
-                     f'每笔股数 {float(_dw["spt"].iloc[-1]):+.1f}、'
-                     f'单价 {float(_dw["px"].iloc[-1]):+.1f}，合计 '
-                     f'{float(_dw["tot"].iloc[-1]):+.1f} 对数点，对应算术总增长 '
-                     f'{pctf(float(_dw["arith_tot"].iloc[-1]) / 100.0, 1)}；'
-                     f'水平值 TTM 每笔 {float(_vp["ttm_spt"].iloc[-1]):,.0f} 股、'
-                     f'TTM 单价 HK${float(_vp["ttm_px"].iloc[-1]):.4f}/股。'
+                     f' <b>图上画对数分解、按总增长重标定</b>：ln(额比) = ln(笔数比) + '
+                     f'ln(每笔股数比) + ln(单价比) 天然可加、无交叉项；再乘 w = 总增长 ÷ '
+                     f'ln(额比) 把三块换算成百分点，<b>三块相加逐格等于</b>菱形标的总增长'
+                     f'（残差 ≤ {DEC_EPS:.0e}，超了直接不出图）。w 对三块一视同仁，'
+                     f'不含分配假设；|ln(额比)| < {DEC_LN_MIN:.0e} 的桶（两期几乎持平）'
+                     f'w 是 0/0，整根留空而不是印一个算不准的数'
+                     + (f'（本图留空：{"、".join(_blanks)}）。' if _blanks
+                        else f'（本图 {len(_xl)} 个桶都没触发）。')
+                     + f'<b>算术分解只进图注</b>：必须选替换次序（笔数 → 每笔股数 → 单价），'
+                     f'交叉项整段压进最后替换的单价块 —— 逐桶实测交叉项占净增长中位 '
+                     f'{CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%（{_big[0]}），'
+                     f'「单价」块两种口径最大差 {_lgap:.1f}pp（{_lgap_at}）。'
+                     f'{_last[0]}：笔数 {_last[6]:+.1f}pp、每笔股数 {_last[7]:+.1f}pp、'
+                     f'单价 {_last[8]:+.1f}pp，合计 {pctf(_last[1], 1)}'
+                     f'（算术口径：笔数 {pctf(_last[2], 1)}、每笔股数 {pctf(_last[3], 1)}、'
+                     f'单价 {pctf(_last[4], 1)}）；该窗口每笔 {_last[9]:,.0f} 股、'
+                     f'单价 HK${_last[10]:.4f}/股（Σ ÷ Σ）。'
                      f' <b>三块各读什么</b>：笔数 = 交易活动的广度；'
                      f'每笔股数 = <b>订单碎片化程度</b>，与价格无关（算法单把大单拆小，'
                      f'这一块就往下走）；单价 = <b>加权平均成交价</b>，'
@@ -1303,6 +1424,19 @@ def main():
                      f'<b>它更不是 Exhibit 10 / 13 那种费率分解</b>：那里的「费率」是 HKEX 向'
                      f'客户收的交易费，本图的「单价」是标的资产的成交价格，两者不可混为一谈。'),
         })
+        # 写进 payload 的那组数也要闭合：LN() 舍到 6 位小数，3 块 + 净额各 ≤ 5e-7 —— 大于
+        # 2.5e-6 就是序列化环节动了数（与 single.py 的护栏④同一条理由）。
+        _pay = ex[-1]
+        for _i, _x in enumerate(_pay['net']['values']):
+            _parts = [st['values'][_i] for st in _pay['stacks']]
+            if _x is None:
+                if any(p is not None for p in _parts):
+                    raise SystemExit(f'Exhibit {EX_VP} {_xl[_i]} 净额留空但堆叠段有值 —— '
+                                     f'菱形不见了、柱子还在，读者会当成「净额为 0」')
+                continue
+            if not abs(sum(_parts) - _x) <= 2.5e-6:
+                raise SystemExit(f'Exhibit {EX_VP} {_xl[_i]} 写进 payload 的三块相加 '
+                                 f'{sum(_parts):.9f} ≠ 净额 {_x:.9f}')
 
         # ══════════ Exhibit 20：量本身（TTM 水平值 + 同源增速曲线）══════════
         # 「量的数据 + 量的增速曲线」单独成图 —— 分解图里的「量」那一块自己的水平线。
@@ -1534,10 +1668,9 @@ def main():
            if DAYW_GAP is not None else
            '（本仓的月度序列里目前没有现货交易日数，即便想加权也没有数据。）'),
 
-        f'<b>本页有四种变化率口径，已逐处点名，不要跨口径比高低。</b>'
+        f'<b>本页有{"五" if HAS_VP else "四"}种变化率口径，已逐处点名，不要跨口径比高低。</b>'
         f'（a）<b>流量</b>序列（Exhibit 2 / 6 / 10 / 13'
-        + (f' / {EX_TTMVOL} 的次轴金色折线与 Exhibit {EX_VP} 的分解）：'
-           if HAS_VP else ' 的次轴金色折线）：')
+        + (f' / {EX_TTMVOL} 的次轴金色折线）：' if HAS_VP else ' 的次轴金色折线）：')
         + f'12 个月滚动合计同比；'
         f'（b）<b>存量与比率</b>序列（Exhibit 8 市值的次轴、Exhibit 9 换手率的次轴）：'
         f'<b>点对点</b>同比 —— 存量不可加总（把 12 个月末的市值加起来不是任何东西），'
@@ -1550,7 +1683,13 @@ def main():
         f'（d）Exhibit 3 是<b>环比</b>（本月 vs 上月），汇总表（Exhibit 1）的 m/m 与 y/y 列'
         f'是单月口径 —— 环比回答的是当月动能这个运营问题，平滑掉就什么也不剩；'
         f'汇总表三列写死的就是「本月 / 上月 / 去年同月」三个具名月份，'
-        f'放滚动值进去与列头自相矛盾。',
+        f'放滚动值进去与列头自相矛盾'
+        + ((f'；（e）Exhibit {EX_VP} 的量价分解：<b>日历年桶</b>—— '
+            f'{len(_bar_years)} 个完整日历年（该年 Jan–Dec 合计 vs 上一年同口径）'
+            + (f'+ 1 根当年 YTD（vs 去年同期同月集合，覆盖月份与实际截至月在该图图注里'
+               f'现算写明），与（a）的滚动折线不是一个口径，YTD 柱与完整年柱也不可直接比大小'
+               if _ytd_cov else '，与（a）的滚动折线不是一个口径'))
+           if HAS_VP else '') + '。',
 
         # ── 量价分解：两条腿是不是同口径，是这张图唯一值得担心的事，逐条写清 ──
         # 没有成交股数列时这一整条换成「不具备数据条件」，把缺的是什么、在哪、什么形态
@@ -1561,6 +1700,17 @@ def main():
         f'<b>为什么是三段不是两段</b>：两段（股数 × 单价）会把「有多少人在交易」与'
         f'「同一批人把单子拆得多碎」揉进「股数」同一块里，而港股这两年恰恰是二者反向 —— '
         f'笔数在涨、每笔股数在跌，只看合成的股数增速就丢掉了这层信息。'
+        f'<b>桶结构（2026-08 起与 CME / Cboe 两页统一）</b>：横轴不再是逐月 TTM 端点，'
+        f'而是日历年桶 —— {len(_bar_years)} 个完整日历年（每格 = 该年 Jan–Dec 三条腿的'
+        f'年度合计 vs 上一年同口径）'
+        + (f'+ 1 根当年 YTD；YTD 的同比基期对齐到<b>去年同期同月集合</b>，'
+           f'两侧月份逐月相同，某条腿滞后时窗口取两侧都齐的月份、实际截至月在图注现算写明。'
+           f'YTD 柱与完整年柱<b>不可直接比大小</b>（覆盖月数不同），它回答的是'
+           f'「今年到目前为止 vs 去年同期」。' if _ytd_cov else
+           f'；本年尚无三条腿两侧都齐的月份，暂无 YTD 柱。')
+        + f'年度桶只加当月合计：股数与笔数用主板 + GEM 的'
+        f'当月合计列直接相加，金额列是日均、先 × 当月交易日数还原当月合计再相加 —— '
+        f'日均列不许直接跨月相加。'
         f'它做得成的<b>唯一</b>前提是三条腿同口径，这一点逐条核对过：成交金额（ADT，'
         f'HK$bn/日）、成交股数（主板 + GEM，mn 股/日）、成交笔数（主板 + GEM，笔/日）'
         f'都来自 HKEX 自己的月度披露、同一个现货证券市场、同一批交易日、同一个「日均」基准；'
@@ -1580,17 +1730,23 @@ def main():
         f'客户收的<b>交易费率</b>，不是标的资产的成交价格，两者不可混为一谈；'
         f'跨页看也一样 —— CME / Cboe 两页做的是「收入 = 张数 × 每张费率」的<b>收入分解</b>，'
         f'与本页的成交额量价分解不可并读。'
-        f'分解本身有硬护栏：三块相加逐月等于总增长，生成脚本对<b>对数与算术两种分解</b>的'
+        f'分解本身有硬护栏：三块相加逐桶等于总增长，生成脚本对<b>对数与算术两种分解</b>的'
         f'残差都设了 1e-9 的门槛，超了直接退出、不出图。图上画对数分解（ln 天然可加、对称、'
-        f'零残差，不必选交叉项归谁），算术分解只进图注 —— 算术版必须选一个替换次序、'
-        f'交叉项整段压进最后那一块，本页实测交叉项占净增长中位 {CROSS_MED:.1f}%、'
+        f'零残差，不必选交叉项归谁）并按总增长重标定成百分点（w = 总增长 ÷ ln(额比)，'
+        f'重标定后三块相加逐格 = 菱形的总增长；|ln(额比)| 低于 1e-6 的桶 w 是 0/0，'
+        f'整根柱留空），算术分解只进图注 —— 算术版必须选一个替换次序、'
+        f'交叉项整段压进最后那一块，本页逐桶实测交叉项占净增长中位 {CROSS_MED:.1f}%、'
         f'最大 {CROSS_MAX:.0f}%。'
         + (f'（另注：<code>series/hkex.csv</code> 里与股数相关的列为 '
            f'{"、".join(f"<code>{c}</code>" for c in SHARE_COLS)}，'
            f'本页用的是其中的日均口径列 <code>adv_shares_mn</code>。）' if SHARE_COLS else '')
          if HAS_VP else
          '<b>📌 现货的「成交额 = 成交量 × 均价」分解：目前不具备数据条件。</b>'
-         '本仓的 <code>series/hkex.csv</code> 里现货只有成交<b>金额</b>（ADT，HK$bn/日），'
+         + ('当前缺列：'
+            + '、'.join(f'<code>{c}</code>'
+                        for c in ('adv_shares_mn', 'adt_trades', 'trading_days_cash')
+                        if c not in RAW_COLS) + '。')
+         + '本仓的 <code>series/hkex.csv</code> 里现货只有成交<b>金额</b>（ADT，HK$bn/日），'
          '没有成交<b>股数</b> —— 而均价 = 成交额 ÷ 成交量，缺了分母就算不出均价。'
          '能凑的替代品一个都不能用：南向 ADT 与衍生品张数分属另外两个市场，'
          '拿它们当现货的分子分母是跨市场相除，商出来的「均价」方向与大小都不可知，'
@@ -1681,7 +1837,7 @@ def main():
     # 取各序列自己的末值会串到 NEWEST（衍生品与南向比现货多披露一个月），
     # 于是同一页对同一指标给出两个互斥读数（衍生品 1,731 vs 1,926、南向 129.2 vs 130.0），
     # 与本页 Exhibit 1 直接打架（原 /exchanges/ 三家横截面页 2026-08-07 已删，职能并入 exchanges12 与地理轴各页）。
-    # 领先一个月的读数不会丢：Exhibit 6 / 18 / 19 逐点带月份标签地展示它们。
+    # 领先一个月的读数不会丢：Exhibit 6 / 18 逐点带月份标签地展示它们。
     # 月份对不上时：**只有 ADT 硬失败**，其余指标那一段整段略过。
     # ADT 是 data_through 的定义者，它对不上说明管道自相矛盾，必须响。其余指标只是
     # 「本月还没披露」——南向就停发过 40 个月，若为此抛异常退出，那一天起这一页永久停更
@@ -1787,6 +1943,8 @@ def main():
           f'（{len(adt_long)} 个月）')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张图）+ '
           f'Exhibit {table["n"]} 核对表')
+    if HAS_VP:
+        print(VP_LINE)
     print(f'写出 {path}  ({os.path.getsize(path) / 1024:.1f} KB)')
     print(headline)
 

@@ -804,6 +804,8 @@ class Page:
 
         # 窗口内恒为 0 的图由各 ex_* 自己判（flat0_skip），这里只开账本。
         self.flat0 = []
+        # decomp 的自检行（柱构成 + YTD 覆盖月份）：ex_decomp 记账、build() 打印。
+        self.decomp_report = []
         # 同比口径账本：各 ex_* 每画一条同比就记一笔 (图号, 口径类别)，
         # 页尾「同比口径」条目从这本账现算点名文案（见 log_yoy 与 notes()）。
         # payload() 组装前会再清一遍 —— 这里先建着，免得单测直接调 ex_* 时炸。
@@ -1326,8 +1328,45 @@ class Page:
             run.insert(0, out[k])
         return run
 
+    def _ytd(self, start_month, series_list, run):
+        """最新一个**不完整**年度的 YTD 桶 → (年份, 当年月份, 去年同月月份)；凑不出返回 None。
+
+        `_years` 只收完整年度，最新年不满 12 个月时整年被丢掉 —— 于是「今年到目前
+        为止发生了什么」在分解图上是空白。这个方法把那半年捡回来，但**同比基期必须
+        对齐到去年同期月份**：基期 = 当年每个入选月各自减 12 个月，两侧月份集合
+        **逐月相同**。不对齐就是拿 k 个月比 12 个月，柱高毫无意义。
+
+        窗口从该年首月（start_month）起逐月推进，**任一侧**（当月或去年同月）任一列
+        缺值即止 —— 某条腿滞后一个月时，YTD 就停在两侧数据都齐的最后一个月，
+        实际截至月由图注现算写明。首月就不齐则没有 YTD 桶（从年中起算的「YTD」是假话）。
+
+        只对 run 的下一年找 YTD：基期月份因此全部落在最后一个完整年里（该年 12 个月
+        各列都验过有值），不会拿一个自身带洞的年份当基期。
+        """
+        if not run:
+            return None
+        y = run[-1][0] + 1
+        idx = set(self.df.index)
+        ms = []
+        p = pd.Period(f'{y}-{start_month:02d}', freq='M')
+        while p in idx and len(ms) < 12:
+            q = p - 12
+            if q not in idx:
+                break
+            if not all(np.isfinite(float(s.get(p, np.nan)))
+                       and np.isfinite(float(s.get(q, np.nan))) for s in series_list):
+                break
+            ms.append(p)
+            p += 1
+        if not ms or len(ms) == 12:
+            # 12 个月齐 = 那本来就是完整年，_years 会收；能走到这里而 run 没收它，
+            # 说明有别的洞 —— 宁可不出 YTD，也不造一根冒充完整年的柱。
+            return None
+        return y, ms, [m - 12 for m in ms]
+
     def ex_decomp(self, n, d):
-        """金额增长 → 量的贡献 + 派生量的贡献。横轴一格 = 一个完整年度。
+        """金额增长 → 量的贡献 + 派生量的贡献。横轴一格 = 一个完整年度；
+        最新年不完整时**末格追加一根 YTD 柱**（同比基期对齐到去年同期月份，见 _ytd）。
 
         恒等式 **金额 ≡ 数量 × 派生量**（派生量 ≡ 金额 ÷ 数量）是定义式，零假设零误差。
         由它能写出两种分解，本方法**两种都算**：
@@ -1373,35 +1412,55 @@ class Page:
         start = d['year_start_month']
         run = self._years(start, need)
         sel = run[-(d['years'] + 1):]
-        if len(sel) < 2:
+        # YTD 桶**只对日历年**追加（start == 1）。本仓的 YTD 口径按用户指令
+        # （2026-08-07）定义在日历年上：「按日历年 Jan–Dec……今年数据出到 7 月，
+        # 用 YTD 表示」。财年制的页不自动加 —— 比如 7 月制财年在 8 月的「FYTD」
+        # 只有 1 个月，那正是本图注明确反对的「拿单月当端点」；财年页要加 YTD，
+        # 得先对「FYTD 从几个月起才有意义」另定口径，不许在这里顺手继承。
+        ytd = self._ytd(start, need, run) if start == 1 else None
+        if len(sel) < 2 and ytd is None:
             return None, (f'{d["zh"]}：完整年度只有 {len(run)} 个（起始月 {start}），'
-                          f'画不出任何一根「相对上一年」的柱')
+                          f'画不出任何一根「相对上一年」的柱，也凑不出两侧月份对齐的 YTD 桶')
 
-        # 年度合计的单位**不是**展示列的单位（日均列的 12 个月合计是「兆円/年」，
-        # 不是「兆円/日」），拿展示单位去标它就是印错单位。所以图注里报的是把年度合计
-        # 除回展示口径的**年内均值**：有权重列就除以该年权重合计（= 年内日均，与日均列
-        # 同单位），没有就除以 12（= 年内月均，与月合计列同单位）。两种都回到展示单位。
+        # 每格合计的单位**不是**展示列的单位（日均列的 12 个月合计是「兆円/年」，
+        # 不是「兆円/日」），拿展示单位去标它就是印错单位。所以图注里报的是把该格合计
+        # 除回展示口径的**窗口内均值**：有权重列就除以同窗口权重合计（= 窗口内日均，
+        # 与日均列同单位），没有就除以窗口月数（完整年 = 12，YTD = 实际月数；
+        # = 窗口内月均，与月合计列同单位）。两种都回到展示单位。
         wcol = self.df[d['weight_col']].astype(float) if d['weight_col'] else None
-        agg = []
-        for y, ms in sel:
+
+        def agg_one(y, label, ms):
+            """一个桶（完整年或 YTD 窗口）→ 行 tuple 或 (None, 原因)。
+
+            行结构 (年份, V, Q, P, V均, Q均, BV, BQ, 月数)：完整年月数恒为 12，
+            YTD 桶是实际入选月数 —— 图注报「窗口内均值」时要用它当除数。
+            """
             V = float(v_s.reindex(ms).values.astype(float).sum())
             Q = float(q_s.reindex(ms).values.astype(float).sum())
             if not (V > 0 and Q > 0):
-                return None, (f'{d["zh"]}：{y} 年的合计不是正数（金额 {V:g}、数量 {Q:g}），'
+                return None, (f'{d["zh"]}：{label}的合计不是正数（金额 {V:g}、数量 {Q:g}），'
                               f'比值与对数都没有定义，不出这张图')
-            div = float(wcol.reindex(ms).values.astype(float).sum()) if wcol is not None else 12.0
+            div = (float(wcol.reindex(ms).values.astype(float).sum())
+                   if wcol is not None else float(len(ms)))
             if not div > 0:
-                return None, (f'{d["zh"]}：{y} 年的 {d["weight_col"]} 合计为 {div:g}，'
+                return None, (f'{d["zh"]}：{label}的 {d["weight_col"]} 合计为 {div:g}，'
                               f'除不回展示口径')
-            row = [y, V, Q, V / Q * d['price_scale'], V / div, Q / div, None, None]
+            row = [y, V, Q, V / Q * d['price_scale'], V / div, Q / div, None, None, len(ms)]
             if bench:
                 BV = float(bv_s.reindex(ms).values.astype(float).sum())
                 BQ = float(bq_s.reindex(ms).values.astype(float).sum())
                 if not (BV > 0 and BQ > 0):
-                    return None, (f'{d["zh"]}：{y} 年的行业合计不是正数'
+                    return None, (f'{d["zh"]}：{label}的行业合计不是正数'
                                   f'（金额 {BV:g}、数量 {BQ:g}），份额与相对价没有定义')
                 row[6], row[7] = BV, BQ
-            agg.append(tuple(row))
+            return tuple(row), None
+
+        agg = []
+        for y, ms in sel:
+            row, err = agg_one(y, f'{y} 年', ms)
+            if err:
+                return None, err
+            agg.append(row)
 
         # 年度 → 柱标签只此一处映射。早先「基期」那句直接印了原始桶年（2015），
         # 而同一句里其余标签是 FY 制（FY2016…），读者会以为基期是日历 2015 年。
@@ -1411,11 +1470,29 @@ class Page:
                 return f'{y}'
             return f'FY{y + (1 if d["year_label"] == "end" else 0)}'
 
+        # 柱 = 相邻两个完整年的对比，末尾可追加一根 YTD 柱。**YTD 的基期不是上一根
+        # 完整年柱**，而是去年同一批月份（_ytd 已保证两侧逐月对齐）—— 所以这里改成
+        # 显式的 (标签, 本期行, 基期行) 三元组，不再用 zip(agg[1:], agg[:-1]) 隐含
+        # 「基期 = 前一行」：那个隐含对 YTD 是错的，而图上完全看不出来。
+        pairs = [(ylab(r1[0]), r1, r0) for r1, r0 in zip(agg[1:], agg[:-1])]
+        ytd_info = None
+        if ytd is not None:
+            y_t, ms_cur, ms_prev = ytd
+            lab_t = f'{ylab(y_t)} YTD'
+            cur, err = agg_one(y_t, f'{lab_t}（{ms_cur[0]}…{ms_cur[-1]}）', ms_cur)
+            if err:
+                return None, err
+            base, err = agg_one(y_t - 1, f'{lab_t} 的同比基期（{ms_prev[0]}…{ms_prev[-1]}）',
+                                ms_prev)
+            if err:
+                return None, err
+            pairs.append((lab_t, cur, base))
+            ytd_info = (y_t, ms_cur, ms_prev, lab_t)
+
         xl, c_q, c_p, net, rows, blanks = [], [], [], [], [], []
         c_b, c_s, c_m = [], [], []
-        for (y, V1, Q1, P1, Va1, Qa1, BV1, BQ1), \
-                (_, V0, Q0, P0, _Va0, _Qa0, BV0, BQ0) in zip(agg[1:], agg[:-1]):
-            lab = ylab(y)
+        for lab, (_y1, V1, Q1, P1, Va1, Qa1, BV1, BQ1, nm1), \
+                (_y0, V0, Q0, P0, _Va0, _Qa0, BV0, BQ0, _nm0) in pairs:
             xl.append(lab)
             gV, gQ, gP = V1 / V0 - 1, Q1 / Q0 - 1, P1 / P0 - 1
             cross = gQ * gP
@@ -1447,7 +1524,7 @@ class Page:
                 c_s.append(np.nan)
                 c_m.append(np.nan)
                 net.append(np.nan)
-                rows.append((lab, Va1, Qa1, P1, gV, gQ, gP, cross, np.nan, np.nan))
+                rows.append((lab, Va1, Qa1, P1, gV, gQ, gP, cross, np.nan, np.nan, nm1))
                 continue
             w = gV / lV
             cq, cp = w * lQ * 100, w * lP * 100
@@ -1484,7 +1561,7 @@ class Page:
                 c_b.append(cb)
                 c_s.append(cs_)
                 c_m.append(cm)
-            rows.append((lab, Va1, Qa1, P1, gV, gQ, gP, cross, cq, cp))
+            rows.append((lab, Va1, Qa1, P1, gV, gQ, gP, cross, cq, cp, nm1))
 
         if not any(np.isfinite(x) for x in net):
             return None, (f'{d["zh"]}：{len(xl)} 个年度全部落在 |ln(V₁/V₀)| < '
@@ -1496,7 +1573,9 @@ class Page:
         ex = {
             'n': n, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
             'xlabels': xl, 'xrot': 0,          # 年度类别轴：标签不斜排
-            'title': f'{d["zh"]}：增长的量价分解（一格 = 一个完整年度）',
+            'title': (f'{d["zh"]}：增长的量价分解'
+                      + ('（一格 = 一个完整年度，末格 = 当年 YTD）' if ytd_info
+                         else '（一格 = 一个完整年度）')),
             'ylab': '% y/y', 'net_color': 'INK',
             'stacks': ([
                 {'name': f'{d["bench_value"]["zh"]}的贡献', 'color': 'NAVY', 'values': LN(c_b)},
@@ -1528,26 +1607,77 @@ class Page:
         fin = [r for r in rows if np.isfinite(r[8])]
         per = ('日历年' if start == 1 else
                f'财年（{start} 月—次年 {start - 1 if start > 1 else 12} 月；'
-               f'{xl[-1]} = {agg[-1][0]} 年 {start} 月起的 12 个月，'
+               f'{ylab(agg[-1][0])} = {agg[-1][0]} 年 {start} 月起的 12 个月，'
                f'本页财年按{"结束" if d["year_label"] == "end" else "起始"}年命名）')
         last = rows[-1]
         idx_all = list(self.df.index)
-        tail = [p for p in idx_all if p > sel[-1][1][-1]]
-        tail_n, tail_from = len(tail), (tail[0] if tail else None)
-        # 「年内均值」叫日均还是月均，由**列的粒度**决定，不由有没有 weight_col 决定：
-        #   有 weight_col → Σ金额 ÷ Σ交易日 = 年内日均
-        #   无 weight_col + 月合计列 → Σ月合计 ÷ 12 = 年内月均
-        #   无 weight_col + 日均列 → Σ日均 ÷ 12 = 年内日均（12 个月日均的等权平均）
-        # 第三种早先被印成「年内月均」——把一个日均数说成月均，量级差二十几倍。
-        if d['weight_col']:
-            avg_zh = '年内日均'
-            avg_how = f'年度合计 ÷ 该年 <code>{d["weight_col"]}</code> 合计'
-        elif gran == 'daily_avg':
-            avg_zh = '年内日均'
-            avg_how = '12 个月日均的等权平均，即年度合计 ÷ 12'
+        # ── 横轴怎么读 + 末端到哪。YTD 桶在场时这两段必须换一套说法：
+        # 「每个端点都是 12 个月的合计」对 YTD 那一格是假话，
+        # 「尚未凑满一个完整年度、不在本图上」对已进 YTD 窗口的月份也是假话。
+        n_full = len(xl) - (1 if ytd_info else 0)
+        if ytd_info:
+            y_t, ms_cur, ms_prev, lab_t = ytd_info
+            axis_txt = (
+                f'横轴共 {len(xl)} 格：'
+                + (f'前 {n_full} 格各 = 一个完整{per}（{xl[0]} … {xl[n_full - 1]}，'
+                   f'首格 {xl[0]} 的同比基期是 {ylab(agg[0][0])}），' if n_full else '')
+                + f'最后一格 {lab_t} 是<b>年初至今（YTD）</b>。'
+                  '完整年各格的端点都是<b>整整 12 个月的合计</b>，不是某一个月的点值 —— '
+                  '拿单月当端点，挑到一个异常月就能把归因整个说反。'
+                + f'<b>{lab_t} 覆盖 {ms_cur[0]} … {ms_cur[-1]} 共 {len(ms_cur)} 个月</b>，'
+                  f'同比基期取<b>去年同一批月份</b>（{ms_prev[0]} … {ms_prev[-1]}），'
+                  f'两侧月份集合逐月相同 —— 不对齐就是拿 {len(ms_cur)} 个月比 12 个月，'
+                  f'柱高毫无意义。'
+                  f'<b>⚠️ YTD 柱与完整年柱不可直接比大小</b>（覆盖月数不同：'
+                  f'{len(ms_cur)} vs 12），它回答的是「今年到目前为止 vs 去年同期」，'
+                  f'不是「今年全年」。')
+            last_plot = ms_cur[-1]
+            tail = [p for p in idx_all if p > last_plot]
+            tail_n, tail_from = len(tail), (tail[0] if tail else None)
+            tail_txt = (
+                (f'{lab_t} 实际截至 {last_plot}；其后的 {tail_n} 个月'
+                 f'（{tail_from} … {idx_all[-1]}）当月或其去年同月在本图所用的列上'
+                 f'仍有缺值，两侧对不齐，不进 YTD 窗口、<b>不在本图上</b> —— '
+                 f'本页其余各图画到各自最新月，两者末端不同不是错。') if tail_n else
+                f'{lab_t} 截至 {last_plot}，与本表最新月同期。')
         else:
-            avg_zh = '年内月均'
-            avg_how = '年度合计 ÷ 12'
+            axis_txt = (
+                f'横轴一格 = 一个完整{per}，共 {len(xl)} 格（{xl[0]} … {xl[-1]}，'
+                f'基期 {ylab(agg[0][0])}）。每个端点都是<b>整整 12 个月的合计</b>，'
+                f'不是某一个月的点值 —— 拿单月当端点，挑到一个异常月就能把归因整个说反。')
+            last_plot = sel[-1][1][-1]
+            tail = [p for p in idx_all if p > last_plot]
+            tail_n, tail_from = len(tail), (tail[0] if tail else None)
+            tail_txt = (
+                (f'最新一格 {xl[-1]} 到 {last_plot} 收官；'
+                 f'其后的 {tail_n} 个月（{tail_from} … {idx_all[-1]}）'
+                 f'尚未凑满一个完整年度，<b>不在本图上</b> —— 本页其余各图画到最新月，'
+                 f'两者末端不同不是错。') if tail_n else
+                f'最新一格 {xl[-1]} 到 {last_plot} 收官，与本页数据月同期。')
+        # 「均值」叫日均还是月均，由**列的粒度**决定，不由有没有 weight_col 决定：
+        #   有 weight_col → Σ金额 ÷ Σ交易日 = 日均
+        #   无 weight_col + 月合计列 → Σ月合计 ÷ 月数 = 月均
+        #   无 weight_col + 日均列 → Σ日均 ÷ 月数 = 日均（各月日均的等权平均）
+        # 第三种早先被印成「月均」——把一个日均数说成月均，量级差二十几倍。
+        # 除数用**被报告那一格自己的月数**（完整年 = 12，YTD = 实际入选月数），
+        # 写死 12 会把 YTD 格的均值算小一截。
+        # ── 措辞随「图上有没有 YTD 格」二选一，两套都由同一批判据推导 ──
+        # 有 YTD 格时「年度合计 / 年内均值」是假话（末格不是一年），要说「该格」；
+        # 没有 YTD 格时保持原措辞逐字不动 —— 未切日历年、没有 YTD 的财年页
+        # （如 ASX）不因本轮加 YTD 能力而产生任何字节变化。
+        nm_last = last[10]
+        cell_zh = '该格' if ytd_info else '年度'
+        if d['weight_col']:
+            avg_zh = '窗口内日均' if ytd_info else '年内日均'
+            avg_how = (f'该格合计 ÷ 同窗口 <code>{d["weight_col"]}</code> 合计' if ytd_info
+                       else f'年度合计 ÷ 该年 <code>{d["weight_col"]}</code> 合计')
+        elif gran == 'daily_avg':
+            avg_zh = '窗口内日均' if ytd_info else '年内日均'
+            avg_how = (f'{nm_last} 个月日均的等权平均，即该格合计 ÷ {nm_last}' if ytd_info
+                       else '12 个月日均的等权平均，即年度合计 ÷ 12')
+        else:
+            avg_zh = '窗口内月均' if ytd_info else '年内月均'
+            avg_how = f'该格合计 ÷ {nm_last}' if ytd_info else '年度合计 ÷ 12'
         # 「还原」这一步只有日均列才需要做。列本身就是当月合计时说「先还原」是假话。
         restored = bool(d['weight_col'] or d['value_total_col'] or d['qty_total_col']
                         or gran == 'daily_avg')
@@ -1562,21 +1692,16 @@ class Page:
         ex['note'] = (
             f'<b>恒等式：{d["value"]["zh"]} ≡ {d["qty"]["zh"]} × {d["price_zh"]}</b>，'
             f'其中 {d["price_zh"]} ≡ {d["value"]["zh"]} ÷ {d["qty"]["zh"]}。'
-            f'这是<b>定义式</b>，不含任何模型假设，两边逐年恒等。'
-            f'横轴一格 = 一个完整{per}，共 {len(xl)} 格（{xl[0]} … {xl[-1]}，'
-            f'基期 {ylab(agg[0][0])}）。每个端点都是<b>整整 12 个月的合计</b>，不是某一个月的'
-            f'点值 —— 拿单月当端点，挑到一个异常月就能把归因整个说反。'
-            # 「最新一格是哪一个月收官、后面还剩几个月没进图」必须说出来：
-            # 本页别处的图画到最新月，这张只画完整年度，两者末端不一样。
-            # 不说的话，读者会以为这张图也含最新月，把「还没发生」当成「没有增长」。
-            + (f'最新一格 {xl[-1]} 到 {sel[-1][1][-1]} 收官；'
-               f'其后的 {tail_n} 个月（{tail_from} … {list(self.df.index)[-1]}）'
-               f'尚未凑满一个完整年度，<b>不在本图上</b> —— 本页其余各图画到最新月，'
-               f'两者末端不同不是错。' if tail_n else
-               f'最新一格 {xl[-1]} 到 {sel[-1][1][-1]} 收官，与本页数据月同期。')
+            f'这是<b>定义式</b>，不含任何模型假设，两边{"逐格" if ytd_info else "逐年"}恒等。'
+            + axis_txt
+            # 「最新一格覆盖到哪个月、后面还剩几个月没进图」必须说出来：
+            # 本页别处的图画到最新月，这张的末端由完整年度 / 两侧对齐的 YTD 窗口决定。
+            # 不说的话，读者会以为这张图也含最新月，把「还没发生 / 没进窗口」当成「没有增长」。
+            + tail_txt
 
-            + f'<b>年度合计怎么加。</b>金额：{v_how}；数量：{q_how}。'
-            f'{agg_how}，年度{d["price_zh"]} = Σ金额 ÷ Σ数量。'
+            + f'<b>{"各格的合计" if ytd_info else "年度合计"}怎么加。</b>'
+            f'金额：{v_how}；数量：{q_how}。'
+            f'{agg_how}，{cell_zh}{d["price_zh"]} = Σ金额 ÷ Σ数量。'
             + ('直接把「日均」跨月相加会给交易日多的月份配错权重。'
                if gran == 'daily_avg' else
                '两列都是当月合计，跨月相加不涉及交易日权重。')
@@ -1627,12 +1752,22 @@ class Page:
 
               f'{last[0]} 的{avg_zh}：{d["value"]["zh"]} {unit_txt(last[1], d["value"])}、'
               f'{d["qty"]["zh"]} {unit_txt(last[2], d["qty"])}；'
-              f'年度{d["price_zh"]}（Σ金额 ÷ Σ数量）'
+              f'{cell_zh}{d["price_zh"]}（Σ金额 ÷ Σ数量）'
               f'{fmt_val(last[3], d["price_fmt"])} {d["price_unit"]}。'
-              f'前两个数是<b>年度合计除回展示口径</b>的结果（{avg_how}）—— '
-              f'年度合计本身的单位是「{d["value"]["unit"]} × 期数」，'
+              f'前两个数是<b>{cell_zh}合计除回展示口径</b>的结果（{avg_how}）—— '
+              f'{cell_zh}合计本身的单位是「{d["value"]["unit"]} × 期数」，'
               f'拿展示单位去标它就是印错单位。'
             + (' ' + md_bold(d['note']) if d['note'] else ''))
+
+        # ── 自检行：柱的构成（几根完整年 + YTD 覆盖哪些月）由 build() 打印 ──
+        # 一个数都不写死：spec 改口径 / 数据多一个月，这行自己变。
+        self.decomp_report.append(
+            f'decomp「{d["zh"]}」：共 {len(xl)} 根柱 = '
+            + (f'{n_full} 根完整年柱（{xl[0]} … {xl[n_full - 1]}，'
+               f'基期 {ylab(agg[0][0])}）' if n_full else '0 根完整年柱')
+            + (f' + 1 根 YTD 柱（{ytd_info[3]}：{ytd_info[1][0]}…{ytd_info[1][-1]} '
+               f'共 {len(ytd_info[1])} 个月，同比基期 {ytd_info[2][0]}…{ytd_info[2][-1]}）'
+               if ytd_info else '，无 YTD 桶（最新年已收官，或次年凑不出两侧对齐的月份）'))
         return ex, None
 
     def ex_ttm(self, n, t):
@@ -1893,6 +2028,7 @@ class Page:
         newest = idx[-1]
         ex, n = [], 2
         self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
+        self.decomp_report = []  # decomp 自检行同理，从零记
 
         for c in self.head:                                   # ① 长历史 + 3Y 分位带
             ex.append(self.ex_history(n, c)); n += 1
@@ -2244,6 +2380,9 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     for why in (getattr(page, 'skipped', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 派生图未出：{why}')
+    for line in (getattr(page, 'decomp_report', None) or []):
+        if not quiet:
+            print(f'[{t}] {line}')
     for n_, sym, det in (getattr(page, 'tight', None) or []):
         # 不硬失败：压 1px 的图仍然读得出来，而硬失败会让 monthly_run 停更整页。
         # 但必须响 —— 这是 VISUAL_QA §3.F 那 18 处压字唯一的自动化哨兵。

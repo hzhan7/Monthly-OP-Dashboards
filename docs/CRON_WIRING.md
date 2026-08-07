@@ -22,7 +22,7 @@ for t in TICKERS:      21 家，逐家隔离：not_due? → fetch → build
 fee_rates()            季度费率表（六个单公司页共用）→ 有新季度就重跑那六页
 fx()                   月度汇率表（横截面页共用）    → 不重跑任何页，见下
                        ↓
-build_cross()          7 张横截面页，**无条件全跑**（它们没有闸门）
+build_cross()          6 张横截面页，**无条件全跑**（它们没有闸门）
 roster()               重建 data/roster.js（首页与导航目录）
                        ↓
 data_changed()?        忽略首行构建日期的正文比较 → 有变化才 commit + push
@@ -37,8 +37,9 @@ data_changed()?        忽略首行构建日期的正文比较 → 有变化才 
   而 `build_cross()` 紧接其后、每轮无条件全跑一遍。再喊一次是重复劳动。
   `fee_rates` 不一样 —— 读它的是**单公司页**，那六家这一轮可能整轮都没被碰过。
 
-**两张公共表都不是 ticker，也都不进 `TICKERS`**：一张表被六页 / 七页共用，挂在某一家的
-ticker 下面，那一家被删掉时另外几页的分母就跟着消失了。
+**两张公共表都不是 ticker，也都不进 `TICKERS`**：一张表被六页 / 六页共用（费率六个
+单公司页、汇率六张横截面页），挂在某一家的 ticker 下面，那一家被删掉时另外几页的
+分母就跟着消失了。
 
 ---
 
@@ -143,8 +144,8 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 
 | 顺序 | 找什么 | 谁在用 |
 |---|---|---|
-| 1 | `build/<t>.py` | 既有 14 页，一家一份手写生成器 |
-| 2 | `build/<t 下划线版>.py` | 横截面页：目录 `exchanges-na` ↔ 生成器 `build/exchanges_na.py`（连字符不能做模块名） |
+| 1 | `build/<t>.py` | 12 家老单公司页，一家一份手写生成器；名字里没有连字符的两张横截面（`wealth` / `exchanges12`）也命中这条 |
+| 2 | `build/<t 下划线版>.py` | 带连字符的 4 张横截面：目录 `exchanges-na` ↔ 生成器 `build/exchanges_na.py`（连字符不能做模块名），`-eu` / `-apac` / `-products` 同理 |
 | 3 | `build/single.py <t>`（需 `build/specs/<t>.py`） | 9 家新交易所，通用底座 + 一家一份配置 |
 
 这是「删得干净」的关键：`builder()` 不认得任何一家的名字，删掉 `build/specs/sgx.py`
@@ -176,7 +177,7 @@ rm -rf sgx/                    # 页面壳
 #   build/roster.py  EXCH 里的       'sgx',  这一行
 #   build/roster.py  LAG 里的        'sgx':  这一行
 #   build/roster.py  META 里的       'sgx':  这一行
-#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（只有 enx / sgx / ndaq 有）
+#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / ndaq 四家，交易所是后三家）
 
 # ③ 抓取侧（可留可删；留着不会被任何东西调用）
 rm fetch/sgx.py series/sgx.csv  # 想彻底清掉历史数据时才删
@@ -188,7 +189,8 @@ python3 build/roster.py         # 应打印少一页，且不报 KeyError
 python3 build/make_shells12.py  # 应少写一个壳
 ```
 
-**横截面页里若还引用被删的那家**（比如删了 `sgx` 而 `exchanges-apac` 的成员里有它），
+**横截面页里若还引用被删的那家**（删 `sgx` 时 `exchanges-apac` 与 `exchanges-products`
+的成员里都有它 —— 一家交易所通常同时出现在地理轴和标的轴两张页上，两张都要查），
 那张页的生成器会自己打印「成员没齐」并以退出码 0 结束 —— 不会让整轮变 PARTIAL，
 但那张页会停更。要么同时删掉那张横截面页（同样是删 `build/exchanges_apac.py` +
 `data/` + 目录 + `roster.GROUPS['cross']` 那一行 + `monthly_run.CROSS` 那一行），
@@ -238,7 +240,7 @@ python3 build/make_shells12.py  # 应少写一个壳
 ```
 第 1 行   券商与财富管理 · 数据与指数 · 消费与信贷 · 半导体            [总览]
 第 2 行   交易所（12 家，北美 6 → 欧洲 2 → 亚太 4）
-第 3 行   横截面（7 张页）
+第 3 行   横截面（6 张页）
 ```
 
 原来整条导航是一个 flex 容器靠 `flex-wrap` 自动折行。交易所从 3 家扩到 12 家之后，
@@ -256,7 +258,7 @@ python3 build/make_shells12.py  # 应少写一个壳
 
 | 事项 | 影响 | 归属 |
 |---|---|---|
-| `series/contract_specs.csv` 74 行里 33 行没填基期价，其中 **7 个 product_id 卡住 `/exchanges12/`**（2026-08-06 实测，清单见 `docs/DELIVERY.md` §3.1） | `/exchanges12/` 的水平值图少几家，`build_cross` 里它每轮打印阻塞清单并退出码 0（增长图照出，见该页降级规则） | 补常数那一步 |
+| `series/contract_specs.csv` 74 行里 33 行没填基期价，其中 **7 个 product_id 的缺口落在 `/exchanges12/` 的成员腿上**（清单见 `docs/DELIVERY.md` §3.1） | 页已上线（按降级规则生成 `data/exchanges12.js`）：水平值与占比图只画常数齐备的家，增长类图 12 家全上 —— 缺常数的多块家给紧上下界而不是点值；缺口清单由运行时算出并打进页面正文（`build/exchanges12.py` 的 GAP_REASONS） | 补常数那一步 |
 | ⛔ **不是待办**：`ICE_STIR` / `ICE_MLTIR` 的基期价**永远留空** | 两者已在 `build/pools.py` 用 `contracts_only=True` 显式声明为永久张数口径；理由见 `docs/DELIVERY.md` §3.2。**不要再去撞 ICE 的 reCAPTCHA** | 已定案 |
 | `ndaq` 的 headline 在慢腿上（见 §2.2 注） | 红点与闸门被迫拆成两条腿；改法是动 spec，不是动接线 | 页面口径 |
 | `--only` 不跳过 `fee_rates` / `fx` / `build_cross` | 调试单家时仍会打 ECB 与费率源（各一个站） | 沿用既有行为，未改 |

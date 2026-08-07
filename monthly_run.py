@@ -10,7 +10,7 @@
 跑的东西分三类，删一家只动第一类的一行（完整清单见 docs/CRON_WIRING.md）：
     TICKERS   21 家有自己数据源的公司（12 家其它 + 9 家新交易所），逐家抓 → 逐家生成
     公共表    fee_rates（季度费率，六页共用）与 fx（月度汇率，横截面页共用）
-    CROSS     7 张横截面页，没有自己的数据源，等成员更新完之后无条件重生成
+    CROSS     6 张横截面页，没有自己的数据源，等成员更新完之后无条件重生成
 
 输出：每家一行 "<ticker> <状态> <说明>"，stdout **最后一行**是总状态，供调度任务判断：
     NOTHING_TO_DO                 所有家都没有新数据（正常，等下次）
@@ -33,7 +33,7 @@
 不会让另外二十家停发。
 
 护栏保持不变，且仍然是「宁可不发也不发错」:
-  · 提交范围只有 `data/`；`data/` 以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
+  · 提交范围只有 `data/` 与 `series/`；`data/` 以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
   · 任何一家的 fetch 解析出缺列 / 月份对不上，由该家的 fetch 模块抛异常 → 记 FAIL，不写数据
   · 页面的新鲜度只绑 payload 的 data_through（构建日期只写 data/*.js 首行注释，不进 payload）。
     抓取失败那家不写 series、不重生成，data_through 原地不动，首页按 roster 的 LAG + GRACE

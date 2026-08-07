@@ -324,7 +324,9 @@ _NOTE_PRICE = (
     + (('两块乘上与本图同一个重标定权重 w，因此<b>逐年相加恰好等于上面「均价的贡献」'
         '那一块</b>，可以直接对上（单位同为百分点）：'
         + '；'.join(f'{y} 价 {_pp(p)} = 市场 {_pp(i)} + 结构 {_pp(m)}'
-                    for y, p, i, m in _IDX) + '。')
+                    for y, p, i, m in _IDX)
+        + '。以上逐年对账只覆盖<b>完整日历年</b>；末尾的 YTD 格窗口与此不同，'
+          '其「均价的贡献」以图上读数为准，这里不另拆市场/结构。')
        if _IDX else
        '（本次未能从 CSV 算出逐年读数，此处只给方法不给数字。）')
     + '<b>⚠️ 这一层只对 TSX 成立。</b>S&P/TSX Composite 不含 TSX Venture，'
@@ -343,7 +345,9 @@ _NOTE_TRADE = (
     '<b>图注说假话的代价高于少画一块柱</b>，所以拆成两张两分法，三项读数在这里报全'
     '（同一个重标定权重 w，三项相加逐年等于菱形上的总增长）：'
     + ('；'.join(f'{y} 总 {g:+.1f}% = 笔数 {_pp(t)} + 每笔股数 {_pp(s)} + 均价 {_pp(p)}'
-                 for y, g, t, s, p in _3F) + '。' if _3F else
+                 for y, g, t, s, p in _3F)
+       + '。以上三因子读数只覆盖<b>完整日历年</b>；末尾的 YTD 格不在此列，'
+         '两张图各自 YTD 格的读数以图上为准。' if _3F else
        '（本次未能从 CSV 算出逐年读数。）')
     + '<b>⚠️「每笔平均成交额」不是价。</b>它衡量的是订单碎片化程度 —— '
       '同一笔母单被切成更多子单，笔数上升、每笔金额下降，而成交额与股价一点没变。'
@@ -642,9 +646,11 @@ SPEC = {
          # 日历年下 year_label 只能是 'start'（底座硬失败挡 'end'），
          # 而且日历年的柱标签直接印年份、不带 FY 前缀，不存在偏一年的风险。
          'year_start_month': 1, 'year_label': 'start',
-         # 现货只有 2021-08 起的历史 ⇒ 完整日历年 2022…2025 共 4 个 ⇒ 3 根柱。
-         # 这里仍写 5：底座取 `run[-(years+1):]`，够几根画几根，明年自动多一根。
-         'years': 5,
+         # 用户指令（2026-08-07）：四家分解图统一「4 根完整日历年柱 + 1 根当年 YTD」。
+         # 现货只有 2021-08 起的历史 ⇒ 完整日历年 2022…2025 共 4 个 ⇒ 目前画得出
+         # 3 根完整年柱（底座取 run[-(years+1):]，够几根画几根，明年自动多一根）；
+         # 最新年不完整时底座自动补 YTD 柱（两侧月份对齐去年同期，见 single._ytd）。
+         'years': 4,
          'note': _NOTE_PRICE},
 
         # ── 图 B：笔数 × 每笔金额。派生量是每笔平均成交额 ⇒ kind='per_trade'。
@@ -662,7 +668,8 @@ SPEC = {
          'price_zh': '每笔平均成交额',
          'price_unit': 'C$/trade',
          'price_fmt': 'f0c', 'price_scale': 1e3,
-         'year_start_month': 1, 'year_label': 'start', 'years': 5,
+         # years=4：同图 A（4 根完整日历年柱 + YTD，数据够时）。
+         'year_start_month': 1, 'year_label': 'start', 'years': 4,
          'note': _NOTE_TRADE},
 
         # ── 图 C：三分法。bench = TMX 集团合计，子集关系逐月精确成立（见 _NOTE_SHARE）。
@@ -686,7 +693,8 @@ SPEC = {
          'price_zh': '加权平均成交价',
          'price_unit': 'C$/share',
          'price_fmt': 'f2',
-         'year_start_month': 1, 'year_label': 'start', 'years': 5,
+         # years=4：同图 A（4 根完整日历年柱 + YTD，数据够时）。
+         'year_start_month': 1, 'year_label': 'start', 'years': 4,
          'note': _NOTE_SHARE},
     ],
 

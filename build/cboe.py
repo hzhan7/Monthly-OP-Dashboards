@@ -1069,61 +1069,168 @@ def main():
     # （adv_us_equities_matched_shares_bn）—— 跨法域跨市场，相除得到的「均价」不对应
     # 任何真实价格。宁可不做，也不拿口径不一致的分子分母凑一个均价。
     #
-    # 四条口径纪律（与 CME 页同一套，跨页可比）：
-    # （1）均价用「合计 ÷ 合计」（TTM 收入 ÷ TTM 张数），不是「逐月 RPC 的均值」——
-    #      后者对每月等权而各月量差着一倍以上，且均值之积 ≠ 积之均值，分解会不闭合。
-    # （2）端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，不做点对点。
-    # （3）图上用**对数分解**：ln(R1/R0) = ln(Q1/Q0) + ln(P1/P0)，天然可加、对称，
-    #      不必选「交叉项归谁」。算术分解必须选约定，交叉项整段压进费率那一块；量与费率
-    #      方向对冲的年份，交叉项能大到净增长的数倍，那时算术堆叠柱画出来就是错的。
-    #      算术版仍然照算，两者的差写进图注。
-    # （4）单位是**对数点**（100 × ln），不是百分点。不把对数贡献按总增长等比缩放回百分点，
-    #      是因为那要除以 ln(R1/R0)，净增长近零的月份分母也近零，同一个病又回来了。
-    _q = roll_mean(df['adv_us_options_kcontracts'])          # TTM 平均 ADV（千张/日）
-    _r = roll_mean(df['opt_rev_day_usdmn'])                  # TTM 平均收入（$mn/日）
-    _p = _r / _q * 1000.0                                    # TTM 混合 RPC（$/张）= 合计÷合计
-    _dec = pd.concat({
-        'tot': np.log(_r / _r.shift(ROLL)) * 100,
-        'vol': np.log(_q / _q.shift(ROLL)) * 100,
-        'rate': np.log(_p / _p.shift(ROLL)) * 100,
-        'arith_tot': (_r / _r.shift(ROLL) - 1) * 100,
-        'arith_vol': (_q / _q.shift(ROLL) - 1) * 100,
-        'arith_rate': (_p / _p.shift(ROLL) - 1) * (_q / _q.shift(ROLL)) * 100,
-    }, axis=1).dropna()
+    # 2026-08 改横轴：由「近 13 个月的 TTM 滚动端点」改成「4 个完整日历年 + 1 根当年
+    # YTD」，方法与护栏对齐全站其余 decomp（build/single.py 的 ex_decomp），跨页可比：
+    # （1）**桶**：一格 = 一个完整日历年（Jan–Dec vs 上一年同 12 个月）；末格 = 当年 YTD，
+    #      基期取去年**同一组月份**，两侧月份集合逐月相同 —— 不对齐就是拿 6 个月比
+    #      12 个月，柱高毫无意义。
+    #      ⚠ RPC 是三个月滚动平均、**滞后一个月发布**（最新月天然为空），所以 YTD 窗口取
+    #      「张数与 RPC 两条腿在两侧都齐」的连续前缀，实际截至月由代码算出写进 x 标签与
+    #      图注，不写死。
+    # （2）**年度桶怎么聚合**：Cboe 不披露每月交易日数，ADV / 收入两列都是**日均值**，
+    #      年度桶取 12 个月日均的等权合计（granularity = daily_avg 的既定语义，除以月数
+    #      即回到日均口径，比值不受影响）；年度 RPC = Σ(当月 ADV × 当月 RPC) ÷ Σ当月 ADV
+    #      （合计 ÷ 合计），费率不做二次平均 —— 「逐月 RPC 的简单平均」对每月等权而各月量
+    #      差着一倍以上，且均值之积 ≠ 积之均值，分解会不闭合。
+    # （3）**图上画对数分解按总增长重标定后的两块**：w = g_V ÷ ln(V₁/V₀)，
+    #      贡献_量 = w·ln(Q₁/Q₀)、贡献_价 = w·ln(P₁/P₀)，两块相加逐格 = 算术总增长，
+    #      纵轴回到 %。对数分解天然可加、无交叉项；算术分解的交叉项在量价对冲的年份能
+    #      大到净增长的数倍，堆叠柱画出来就是错的 —— 算术版照算，只进图注。
+    # （4）|ln(V₁/V₀)| < DEC_LN_MIN 的那一格**整根留空**：重标定权重 w 数值上是 0/0
+    #      （解析上 → 1），算出来的两块没有有效位，不印一个算不准的数。
+    # （5）分解是恒等式不是近似：算术闭合、对数闭合、重标定闭合三道检查残差 > DEC_EPS
+    #      一律 raise —— 「两块加起来不等于总数」的分解图，读者是看不出来的。
+    DEC_EPS = 1e-9      # 残差硬上限（与 build/single.py 的 DECOMP_EPS 同值同义）
+    DEC_LN_MIN = 1e-6   # |ln(V₁/V₀)| 低于它整根柱留空（重标定权重 w 数值上是 0/0）
 
-    # 硬护栏：分解是恒等式，不是近似。对不上说明某处 shift/口径写错了，必须停在这里 ——
-    # 「两块加起来不等于总数」的分解图，读者是看不出来的。两种分解各查各的。
-    for _tag, _a, _b, _t in (('对数', 'vol', 'rate', 'tot'),
-                             ('算术', 'arith_vol', 'arith_rate', 'arith_tot')):
-        _res = float((_dec[_a] + _dec[_b] - _dec[_t]).abs().max())
-        if not np.isfinite(_res) or _res > 1e-9:
-            raise SystemExit(f'Exhibit {EX_DECOMP} {_tag}分解不闭合：'
-                             f'max|量+价−总| = {_res:.3e}（上限 1e-9）')
+    _vol_m = df['adv_us_options_kcontracts']   # 日均张数（千张/日）
+    _rev_m = df['opt_rev_day_usdmn']           # 日均收入（$mn/日）= ADV × 三个月滚动 RPC
 
-    _lgap = float((_dec['vol'] - _dec['arith_vol']).abs().max())
-    _lgap_at = (_dec['vol'] - _dec['arith_vol']).abs().idxmax()
+    def _dec_bucket(months):
+        """一组月份 → (Σ日均收入, Σ日均张数)；任一月任一腿缺值、或合计非正 → None。"""
+        v = _rev_m.reindex(months).astype(float)
+        q = _vol_m.reindex(months).astype(float)
+        if len(v) == 0 or v.isna().any() or q.isna().any():
+            return None
+        V, Q = float(v.sum()), float(q.sum())
+        return (V, Q) if (V > 0 and Q > 0) else None
+
+    # 完整日历年：本桶与基期桶（上一年同 12 个月）都齐才画得出柱；数据允许时取最近 4 个。
+    _YTD_Y = LATEST.year
+    _dec_bars = []                          # (柱标签, 本期月份, 基期月份)
+    for _y in sorted({p.year for p in df.index}):
+        if _y >= _YTD_Y:
+            continue
+        _m1 = pd.period_range(f'{_y}-01', f'{_y}-12', freq='M')
+        if _dec_bucket(_m1) and _dec_bucket(_m1 - 12):
+            _dec_bars.append((str(_y), list(_m1), list(_m1 - 12)))
+    _dec_bars = _dec_bars[-4:]
+    if not _dec_bars:
+        raise SystemExit(f'Exhibit {EX_DECOMP}：没有任何一个「本年与上一年都齐」的完整'
+                         f'日历年，一根柱都画不出来')
+
+    # 当年 YTD：今年 1 月起、两侧（今年该月与去年同月）两条腿都齐的**连续前缀** ——
+    # 跳月拼出来的「YTD」两侧月份集合就不再是「1–N 月」。RPC 滞后一个月发布，
+    # 所以 YTD 的实际截至月通常比成交量的最新月早一个月，由数据自己决定。
+    _ytd1 = []
+    for _p in [q for q in df.index if q.year == _YTD_Y]:
+        if _dec_bucket([_p]) and _dec_bucket([_p - 12]):
+            _ytd1.append(_p)
+        else:
+            break
+    if not _ytd1:
+        raise SystemExit(f'Exhibit {EX_DECOMP}：{_YTD_Y} 年没有一个两侧都齐的月份，'
+                         f'YTD 柱画不出')
+    _ytd_cov = (f'{_ytd1[0].month}–{_ytd1[-1].month} 月' if len(_ytd1) > 1
+                else f'{_ytd1[0].month} 月')
+    # RPC 滞后 ⇒ 覆盖月份写进 x 标签本身（统一口径的要求：截至月由代码算出，不写死）
+    YTD_LAB = f'{_YTD_Y} YTD（{_ytd_cov}）'
+    _dec_bars.append((YTD_LAB, _ytd1, [p - 12 for p in _ytd1]))
+
+    _dxl, _dq, _dp, _dnet, _drows, _dblanks = [], [], [], [], [], []
+    for _lab, _m1, _m0 in _dec_bars:
+        _V1, _Q1 = _dec_bucket(_m1)
+        _V0, _Q0 = _dec_bucket(_m0)
+        _P1, _P0 = _V1 / _Q1 * 1000.0, _V0 / _Q0 * 1000.0    # $mn/日 ÷ 千张/日 × 1000 = $/张
+        _gV, _gQ, _gP = _V1 / _V0 - 1, _Q1 / _Q0 - 1, _P1 / _P0 - 1
+        _crs = _gQ * _gP
+        _lV = float(np.log(_V1 / _V0))
+        _lQ = float(np.log(_Q1 / _Q0))
+        _lP = float(np.log(_P1 / _P0))
+        # 硬护栏①：算术分解闭合（三项，含交叉项）。残差只应是 float64 舍入（~1e-16）。
+        if not abs(_gV - (_gQ + _gP + _crs)) <= DEC_EPS:
+            raise SystemExit(f'Exhibit {EX_DECOMP} {_lab} 算术分解不闭合：'
+                             f'残差 {_gV - (_gQ + _gP + _crs):+.3e} > {DEC_EPS:.0e}')
+        # 硬护栏②：对数分解闭合（本来就该零残差，没有交叉项）。
+        if not abs(_lV - (_lQ + _lP)) <= DEC_EPS:
+            raise SystemExit(f'Exhibit {EX_DECOMP} {_lab} 对数分解不闭合：'
+                             f'残差 {_lV - (_lQ + _lP):+.3e} > {DEC_EPS:.0e}')
+        _dxl.append(_lab)
+        _row = {'lab': _lab, 'V1': _V1, 'Q1': _Q1, 'P1': _P1,
+                'V0': _V0, 'Q0': _Q0, 'P0': _P0,
+                'gV': _gV, 'gQ': _gQ, 'gP': _gP, 'cross': _crs,
+                'cq': np.nan, 'cp': np.nan}
+        if abs(_lV) < DEC_LN_MIN:
+            # 整根柱留空：w = g_V/ln(V₁/V₀) 此时是 0/0，算出来的两块没有有效位。
+            _dblanks.append(_lab)
+            _dq.append(np.nan)
+            _dp.append(np.nan)
+            _dnet.append(np.nan)
+        else:
+            _w = _gV / _lV
+            _cq, _cp = _w * _lQ * 100, _w * _lP * 100
+            # 硬护栏③：**画在图上的那两块**相加 == 总增长。
+            if not abs(_gV * 100 - (_cq + _cp)) <= DEC_EPS:
+                raise SystemExit(f'Exhibit {EX_DECOMP} {_lab} 重标定后不闭合：'
+                                 f'残差 {_gV * 100 - (_cq + _cp):+.3e} > {DEC_EPS:.0e}')
+            _row['cq'], _row['cp'] = _cq, _cp
+            _dq.append(_cq)
+            _dp.append(_cp)
+            _dnet.append(_gV * 100)
+        _drows.append(_row)
+
+    if not any(np.isfinite(x) for x in _dnet):
+        raise SystemExit(f'Exhibit {EX_DECOMP}：{len(_dxl)} 根柱全部落在 |ln(V₁/V₀)| < '
+                         f'{DEC_LN_MIN:.0e} 的留空区间，没有一根画得出来')
+
     # 「算术分解里交叉项占净增长多大」正是不用算术分解的理由，数字现算，不照抄别页
-    _cross = _dec['arith_rate'] - (_p / _p.shift(ROLL) - 1).reindex(_dec.index) * 100
-    _csh = (_cross / _dec['arith_tot']).abs().replace([np.inf, -np.inf], np.nan).dropna() * 100
-    CROSS_MED, CROSS_MAX = float(_csh.median()), float(_csh.max())
+    _x_sh = [abs(r['cross'] / r['gV']) * 100 for r in _drows if r['gV'] != 0]
+    if not _x_sh:
+        raise SystemExit(f'Exhibit {EX_DECOMP}：所有柱的净增长都恰为零，交叉项占比没有定义')
+    CROSS_MED, CROSS_MAX = float(np.median(_x_sh)), float(max(_x_sh))
+    _fin_rows = [r for r in _drows if np.isfinite(r['cq'])]
+    _lgap = max(abs(r['gQ'] * 100 - r['cq']) for r in _fin_rows)
+    _lgap_at = max(_fin_rows, key=lambda r: abs(r['gQ'] * 100 - r['cq']))['lab']
 
-    _DW = _dec.index[-WIN_SHORT:]
-    _dw = _dec.loc[_DW]
+    # 硬护栏④：**写进 payload 的那组数**（round 到 6 位后）也要闭合；留空柱两段必须同空。
+    for _i, (_xn, _xq, _xp) in enumerate(zip(L(_dnet), L(_dq), L(_dp))):
+        if _xn is None:
+            if _xq is not None or _xp is not None:
+                raise SystemExit(f'Exhibit {EX_DECOMP} {_dxl[_i]} 净额留空但堆叠段有值 —— '
+                                 f'菱形不见了、柱子还在，读者会当成「净额为 0」')
+            continue
+        if not abs((_xq + _xp) - _xn) <= 2e-6:
+            raise SystemExit(f'Exhibit {EX_DECOMP} {_dxl[_i]} 写进 payload 的两块相加 '
+                             f'{_xq + _xp:.9f} ≠ 净额 {_xn:.9f}')
+
+    _ytd_row = _drows[-1]
+    decomp_check = (f'Exhibit {EX_DECOMP} 量价分解：柱 = {"、".join(_dxl)}；'
+                    f'YTD 覆盖 {_YTD_Y} 年 {_ytd_cov}（vs {_YTD_Y - 1} 年同月组，'
+                    f'RPC 滞后一个月故截至 {mlab(_ytd1[-1])}，成交量已到 {mlab(LATEST)}）；'
+                    f'YTD 日均收入 Σ={_ytd_row["V1"]:.4f} vs {_ytd_row["V0"]:.4f} $mn/日、'
+                    f'日均张数 Σ={_ytd_row["Q1"]:,.0f} vs {_ytd_row["Q0"]:,.0f} k/日、'
+                    f'RPC ${_ytd_row["P1"]:.4f} vs ${_ytd_row["P0"]:.4f}；'
+                    f'三道闭合残差 ≤ {DEC_EPS:.0e} 全过'
+                    + (f'；留空柱 {"、".join(_dblanks)}' if _dblanks else ''))
+
+    _last = _drows[-1]
     ex.append({
-        'n': EX_DECOMP, 'kind': 'bridge_bar', 'fmt': 'f1',
-        'xlabels': [mlab(p) for p in _DW], 'xrot': 0,
-        'title': 'Implied options revenue growth split: contracts vs. RPC '
+        'n': EX_DECOMP, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
+        'xlabels': _dxl, 'xrot': 0,
+        'title': 'Implied options revenue growth split by calendar year: contracts vs. RPC '
                  '(a revenue split, NOT a turnover split)',
-        'ylab': 'log points of TTM revenue growth',
+        'ylab': '% y/y',
         'stacks': [
-            {'name': 'Contracts (ADV)', 'color': 'NAVY', 'values': L(_dw['vol'].values)},
-            {'name': 'Revenue per contract (RPC)', 'color': 'GOLD', 'values': L(_dw['rate'].values)},
+            {'name': 'Contracts (ADV)', 'color': 'NAVY', 'values': L(_dq)},
+            {'name': 'Revenue per contract (RPC)', 'color': 'GOLD', 'values': L(_dp)},
         ],
-        'net': {'name': 'TTM implied revenue growth', 'values': L(_dw['tot'].values)},
+        'net': {'name': 'Implied revenue growth', 'values': L(_dnet)},
         'net_color': 'INK',
         'src_extra': 'Identity: options transaction revenue = contracts x revenue per contract. '
                      'Both legs are officially disclosed monthly — Cboe is the only name in this '
-                     'set where that is true. This decomposes REVENUE, not notional turnover',
+                     'set where that is true. Log-weight decomposition, one bar = one calendar '
+                     'year (last bar = YTD vs. same months a year ago). This decomposes REVENUE, '
+                     'not notional turnover',
         'note': (f'<b>这是收入的量费分解，不是成交额的量价分解。</b>恒等式是「隐含期权交易收入 = '
                  f'成交张数 × 每张收入(RPC)」。RPC 是 Cboe 向客户收的<b>每张费用</b>，'
                  f'不是标的资产的成交价格 —— 不要和别的页上真正的「成交额 = 成交量 × 均价」'
@@ -1132,23 +1239,38 @@ def main():
                  f' <b>美股与欧股那两块做不了</b>：本页的成交<b>金额</b>列是欧洲的'
                  f'（Exhibit 11），成交<b>股数</b>列是美国的（Exhibit 9a），跨法域跨市场，'
                  f'相除得到的「均价」不对应任何真实价格 —— <b>不具备数据条件</b>，本页不做。'
-                 f' <b>口径</b>：端点用 TTM12（截至该月的 12 个月）对比 12 个月前的 TTM12，'
-                 f'与本页各图次轴同比一致，不做点对点；混合 RPC 用「TTM 收入 ÷ TTM 张数」，'
-                 f'不是逐月 RPC 的简单平均。'
-                 f' <b>用对数分解</b>：ln(收入比) = ln(张数比) + ln(RPC 比)，天然可加、对称，'
-                 f'不必选「交叉项归谁」；算术分解要把交叉项整段压进费率那一块，'
-                 f'本页实测交叉项占净增长中位 {CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%。'
-                 f'两种分解的「量」这一块最大相差 {_lgap:.1f}（出现在 {mlab(_lgap_at)}）。'
-                 f' <b>单位是对数点</b>（100 × ln），不是百分点：小幅变化时两者近似相等，'
-                 f'大幅时不等。{mlab(_DW[-1])}：张数 {float(_dw["vol"].iloc[-1]):+.1f}、'
-                 f'RPC {float(_dw["rate"].iloc[-1]):+.1f}，合计 '
-                 f'{float(_dw["tot"].iloc[-1]):+.1f} 对数点，对应算术总增长 '
-                 f'{pctf(float(_dw["arith_tot"].iloc[-1]) / 100.0, 1)}。'
-                 f' <b>RPC 那一块读的是「结构 + 定价」</b>：自有指数期权的 RPC 约为多重挂牌的 '
-                 f'{ratio:.0f} 倍（Exhibit 3），所以总量不变、只要 mix 位移（Exhibit 5 / 12），'
-                 f'这一段就会动，它不是一个纯粹的价格变量。'
-                 f'另：RPC 本身是三个月滚动平均、滞后一个月发布，本图窗口因此止于 '
-                 f'{mlab(LATEST_RPC)}，比成交量图少一个月。'),
+                 f' <b>横轴一格 = 一个完整日历年</b>（该年 12 个月 vs 上一年同 12 个月），'
+                 f'共 {len(_dxl) - 1} 格（{_dxl[0]} … {_dxl[-2]}）；末柱 <b>{YTD_LAB}</b> '
+                 f'覆盖 {_YTD_Y} 年 <b>{_ytd_cov}</b>（{mlab(_ytd1[0])} – {mlab(_ytd1[-1])}），'
+                 f'基期是 {_YTD_Y - 1} 年<b>同一组月份</b> —— 两侧月份集合逐月相同，'
+                 f'不是拿 {len(_ytd1)} 个月去比 12 个月。实际截至月是 {mlab(_ytd1[-1])} '
+                 f'而不是成交量的最新月 {mlab(LATEST)}：RPC 是三个月滚动平均、'
+                 f'<b>滞后一个月发布</b>，YTD 窗口只取张数与 RPC 两条腿在两侧都齐的月份。'
+                 f'<b>{_YTD_Y} YTD 柱与完整年柱不可直接比大小</b>（覆盖月数不同）：'
+                 f'它回答的是「今年到目前为止 vs 去年同期」，不是「{_YTD_Y} 全年会怎样」。'
+                 f' <b>年度桶的聚合</b>：Cboe 不披露每月交易日数，ADV 与收入两列都是日均值，'
+                 f'年度桶取月度日均的等权合计；年度 RPC = Σ(当月 ADV × 当月 RPC) ÷ Σ当月 ADV'
+                 f'（合计 ÷ 合计），费率不做二次平均 —— 逐月 RPC 的简单平均对每月等权而'
+                 f'各月量差着一倍以上，均值之积 ≠ 积之均值，分解会不闭合。'
+                 f'RPC 进桶时保持公司披露的三个月滚动口径，不再另做平滑。'
+                 f' <b>图上画的是对数分解按总增长重标定后的两块</b>：ln(V₁/V₀) = ln(Q₁/Q₀)'
+                 f' + ln(P₁/P₀) 天然可加、无交叉项；再乘 w = g<sub>收入</sub> ÷ ln(V₁/V₀) '
+                 f'换算回百分点，深蓝 + 金色<b>逐格等于</b>菱形标的总增长（三道闭合检查残差'
+                 f'上限 {DEC_EPS:.0e}，超了本页直接不出图）。w 对量与价一视同仁，'
+                 f'不含分配假设。'
+                 f' <b>算术分解只进图注</b>：g<sub>收入</sub> = g<sub>张数</sub> + '
+                 f'g<sub>RPC</sub> + 交叉项，而交叉项不是可忽略的余项 —— 本窗口实测交叉项'
+                 f'占净增长中位 {CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%，量价对冲的年份'
+                 f'堆叠柱画出来就是错的。{_dxl[-1]} 的算术读数：张数 {pctf(_last["gQ"], 1)}、'
+                 f'RPC {pctf(_last["gP"], 1)}、交叉项 {nz(_last["cross"] * 100, 1):+.1f}pp，'
+                 f'合计 {pctf(_last["gV"], 1)}；两种口径对「量」贡献的读数最大差 '
+                 f'{_lgap:.1f}pp（{_lgap_at}）。'
+                 + (f' <b>留空的柱</b>：{"、".join(_dblanks)} 的 |ln(V₁/V₀)| < '
+                    f'{DEC_LN_MIN:.0e}（两期几乎持平），重标定权重 w 是 0/0、算出来没有'
+                    f'有效位，整根留空而不是印一个假的分解。' if _dblanks else '')
+                 + f' <b>RPC 那一块读的是「结构 + 定价」</b>：自有指数期权的 RPC 约为'
+                 f'多重挂牌的 {ratio:.0f} 倍（Exhibit 3），所以总量不变、只要 mix 位移'
+                 f'（Exhibit 5 / 12），这一段就会动，它不是一个纯粹的价格变量。'),
     })
 
     # ══ Exhibit EX_TTMVOL：量本身（TTM 水平值 + 同源增速曲线）══
@@ -1306,14 +1428,17 @@ def main():
         f'<b>不乘交易日数</b>：Cboe 的月度披露里没有交易日数这一列，本页也不去别处凑一个 —— '
         f'而 12 个月窗口里交易日效应本来就基本自抵。',
 
-        f'<b>本页有三种同比口径，已逐处点名，不要跨口径比高低。</b>'
-        f'（a）Exhibit 2 / 4 / 10 / 11 的次轴金色折线，以及 Exhibit {EX_DECOMP} / {EX_TTMVOL}：'
+        f'<b>本页有四种同比口径，已逐处点名，不要跨口径比高低。</b>'
+        f'（a）Exhibit 2 / 4 / 10 / 11 的次轴金色折线，以及 Exhibit {EX_TTMVOL}：'
         f'12 个月滚动合计同比；'
         f'（b）Exhibit 8 的绿线：本季 3 个月 vs 上年同季（柱是季度的，线只能与柱同期）；'
         f'（c）汇总表（Exhibit 1）的 y/y 列：单月同比 —— 该表三列写死的就是「本月 / 上月 / '
         f'去年同月」三个具名月份，放滚动值进去与列头自相矛盾，所以保留单月口径并在此点名。'
         f'各图图注里凡写「单月同比」的读数都同属（c）；顶部「本月读数怎么读」一段的 '
-        f'm/m 与标明「单月同比」的读数与汇总表同口径，同属（c）—— 都与折线不是一回事。',
+        f'm/m 与标明「单月同比」的读数与汇总表同口径，同属（c）—— 都与折线不是一回事；'
+        f'（d）Exhibit {EX_DECOMP}：日历年合计同比 —— 整年 12 个月 vs 上一年同 12 个月，'
+        f'末柱为当年 YTD（{_YTD_Y} 年 {_ytd_cov}）vs 去年<b>同一组月份</b>，一格 = 一年，'
+        f'既不要与（a）的滚动折线对读，也不要拿 YTD 柱去比完整年柱（覆盖月数不同）。',
 
         f'<b>Exhibit {EX_DECOMP} 分的是收入，不是成交额；本页做不了成交额的量价分解。</b>'
         f'恒等式「期权交易收入 = 成交张数 × 每张收入(RPC)」两边都是公司按月官方披露的，'
@@ -1323,9 +1448,15 @@ def main():
         f'欧洲的（欧股 ADNV，EUR bn/日），成交<b>股数</b>列是美国的（美股撮合，bn 股/日），'
         f'两者分属不同法域、不同市场、不同货币，相除得到的「均价」不对应任何真实价格，'
         f'方向与大小都不可知而图上完全看不出来 —— 宁可不做。'
-        f'分解本身是恒等式而非估算：两块相加逐月等于总增长，生成脚本对<b>对数与算术两种</b>'
-        f'分解的残差都设了 1e-9 的硬门槛，超了直接退出、不出图。'
-        f'图上画对数分解，算术分解只进图注 —— 算术版必须把交叉项整段压进 RPC 那一块，'
+        f'横轴是「4 个完整日历年 + 当年 YTD」（与全站其余 decomp 同口径）：整年 12 个月对'
+        f'上一年同 12 个月；YTD 柱对去年<b>同一组月份</b>（{_YTD_Y} 年 {_ytd_cov}，'
+        f'RPC 滞后一个月发布，实际截至月由数据算出写在柱标签上），两侧月份集合逐月相同，'
+        f'且 YTD 柱与完整年柱不可直接比大小。年度 RPC = Σ(当月 ADV × 当月 RPC) ÷ '
+        f'Σ当月 ADV，费率不做二次平均。'
+        f'分解本身是恒等式而非估算：图上两块相加逐格等于总增长，生成脚本对算术闭合、'
+        f'对数闭合、重标定闭合三道检查都设了 1e-9 的硬门槛，超了直接退出、不出图。'
+        f'图上画对数分解按总增长重标定后的两块（w = g<sub>收入</sub> ÷ ln(V₁/V₀)，'
+        f'纵轴回到 %），算术分解只进图注 —— 算术版必须把交叉项整段压进 RPC 那一块，'
         f'本页实测交叉项占净增长中位 {CROSS_MED:.1f}%、最大 {CROSS_MAX:.0f}%。',
 
         '<b>Implied options transaction revenue（Exhibit 4）是推导值，不是披露值。</b>'
@@ -1449,6 +1580,7 @@ def main():
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张图）'
           f' + Exhibit {table["n"]} 核对表')
     print(f'写出 {OUT}  ({os.path.getsize(OUT) / 1024:.1f} KB)')
+    print(decomp_check)
     print(headline)
 
 
