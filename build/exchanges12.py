@@ -645,6 +645,47 @@ def contract_products(key, specs):
     return {lg.product for lg in LEGS[key] if specs[lg.product]['kind'] == 'contract'}
 
 
+def fx_only_legs(key, specs):
+    """这家有哪几条腿是 kind='notional' —— 即 notional.py 说的 deflator='fx_only'。
+
+    notional.py 的三源表（那里是本仓对这件事的唯一定义）：
+      · kind='contract' / 'share' → 价格项是**基期常数**，完全定基；
+      · kind='notional'           → 源列本来就是本币成交额，multiplier 与 base_price_local
+                                     恒为 1，我们拿不到股数所以剥不出价格项 ⇒ **只锁了汇率，
+                                     价格是当期**。
+    所以这类腿的增长里含标的涨跌，「增长率＝张数增长率」对它们不成立。本页把两类腿加在
+    同一个总额里（HKEX / SGX 甚至只有这一类），注 1 因此必须按腿分别表述，不能一句话
+    盖住全页 —— 这正是 pools.py:49 与 notional.py:31-32 立的规矩（图注必须写明「已剔汇率、
+    未剔标的涨跌」），本页此前漏接。
+    """
+    return [lg for lg in LEGS[key] if specs[lg.product]['kind'] == 'notional']
+
+
+def fx_only_weight(BLK, kconst, specs, months):
+    """每家在 months 各月里，来自 fx_only 腿的定基名义额占比（0–1）。
+
+    只有常数齐备的家算得出占比（分母要完整）；缺常数的家返回 None，但**是否含 fx_only 腿**
+    与占比无关，那个由 fx_only_legs() 单独回答，缺常数也照样点名。
+    """
+    out = {}
+    for k in BLK:
+        if any(p not in kconst for p in BLK[k]):
+            out[k] = None
+            continue
+        tot = sum(BLK[k][p] * kconst[p] for p in BLK[k])
+        num_parts = [BLK[k][p] * kconst[p] for p in BLK[k]
+                     if specs[p]['kind'] == 'notional']
+        if not num_parts:
+            out[k] = tuple(0.0 for _ in months)
+            continue
+        num = sum(num_parts)
+        out[k] = tuple(
+            float(num[m] / tot[m])
+            if (m in tot.index and np.isfinite(tot[m]) and tot[m]) else float('nan')
+            for m in months)
+    return out
+
+
 # ────────────────────────── 门槛：成员是否都能换算 ──────────────────────────
 def readiness(raw, specs, fx):
     """逐腿检查「列在不在、基期价有没有、基期窗口内有没有数」，返回 (报告行, 阻塞项)。"""
@@ -1716,11 +1757,52 @@ def build_payload(raw, specs, fx, kconst, source_date):
             tier.setdefault(nsrc.get(p) or '（未标注）', []).append(p)
     tier_txt = '、'.join(f'{t} {len(v)} 个' for t, v in sorted(tier.items()))
 
+    # ── 注 1 的分腿口径：fx_only 腿不满足「增长率＝张数增长率」，必须点名 ──
+    # 见 fx_only_legs() 的 docstring：kind='notional' 的腿只锁了汇率，价格是当期。
+    # 权重按 BASE / LATEST 两个时点给，好让读者自己判断这家的读数受不受影响。
+    fxo_leg = {k: fx_only_legs(k, specs) for k in MEM_KEYS}
+    fxo_w = fx_only_weight(BLK, kconst, specs, (BASE, LATEST))
+    fxo_keys = [k for k in MEM_KEYS if fxo_leg[k]]
+    pure_keys = [k for k in MEM_KEYS if not fxo_leg[k]]
+    all_fxo = [k for k in fxo_keys if not contract_products(k, specs)
+               and not any(specs[p]['kind'] == 'share' for p in BLK[k])]
+
+    def _fxo_one(k):
+        w = fxo_w.get(k)
+        cols = '、'.join(lg.col for lg in fxo_leg[k])
+        if w is None or not np.isfinite(w[0]) or not np.isfinite(w[1]):
+            tail = '（常数未齐，占比算不出）' if k not in all_fxo else '（<b>整家都是</b>）'
+            return f'<b>{DISP[k]}</b> {cols}{tail}'
+        return (f'<b>{DISP[k]}</b> {cols}'
+                f'（占该家名义额 {mlab(BASE)} {w[0] * 100:.1f}% → {mlab(LATEST)} {w[1] * 100:.1f}%'
+                + ('，<b>整家都是</b>' if k in all_fxo else '') + '）')
+
+    fxo_txt = '；'.join(_fxo_one(k) for k in fxo_keys)
+
     notes = [
         f'<b>主口径：定基名义额。</b>定基名义额 = 张数 × 乘数 × <b>{mlab(BASE)} 基期价格</b>，'
-        f'汇率同样锁在 {mlab(BASE)}。价格项与汇率项都是常数，所以每一条序列的'
+        f'汇率同样锁在 {mlab(BASE)}。'
+        f'对<b>合约腿与股数腿</b>（规格表 kind=contract / share，本页 {len(pure_keys)} 家'
+        f'{"全部" if not fxo_keys else "的全部腿与另 %d 家的部分腿" % len(fxo_keys)}属于这一类），'
+        '价格项与汇率项都是常数，所以这些序列的'
         '<b>增长率与它自己的张数增长率完全相同</b> —— 常数只改变产品之间与交易所之间的'
         '相对权重，不把标的涨跌与汇率波动混进增长里。',
+
+        ('<b>但有一类腿只剔掉了汇率、没剔掉标的涨跌，读增长时必须先看这一条。</b>'
+         '源头只披露本币成交额（HKEX 的 ADT、Euronext 的 ADNV、JPX/SGX/ASX 的现货成交额）时，'
+         '金额 ≡ 股数 × <b>当期</b>价格，我们拿不到股数就没法把价格项剥出来'
+         '（📌 未找到：这几家的月度报表都不披露成交股数）。规格表把这类源标 kind=notional、'
+         'multiplier 与基期价格恒为 1，notional.py 称其 deflator=<code>fx_only</code>。'
+         f'<br>本页有 <b>{len(fxo_keys)} 家</b>含这类腿：{fxo_txt}。'
+         '<br><b>对这些腿，上一条的「增长率＝张数增长率」不成立</b>：它们的增长 = 成交量增长 '
+         '+ 标的涨跌。所以 Exhibit 2 的指数线、Exhibit 4 的同比带里，这几家的读数含股价/指数'
+         '涨幅，与纯合约腿的家<b>不是同一个口径</b>，跨家比增长时必须把这件事算进去。'
+         + (f'<br>其中 <b>{"、".join(DISP[k] for k in all_fxo)}</b> 一条合约腿都没有，'
+            f'整家读数都是 fx_only —— 这几家的指数线只能读作「本币成交额的定基指数」，'
+            f'不能读作成交量。' if all_fxo else '')
+         + '<br>本页不因此拒收这些腿：拒了就等于把 4 家亚太所与 Euronext 的现货业务整块删掉，'
+           '那比口径混杂更失真。但<b>混了 deflator 的池不许算份额</b>（notional.py:32），'
+           '所以本页任何一处都没有把 Exhibit 3 的水平值读成市场份额。'),
 
         ('<b>缺基期常数怎么办：降级到图，不拖垮整页（这一条是本页最需要先读懂的）。</b>'
          f'本页用到 {len(used_prods)} 个 product_id，其中 <b>{len(gap_prods)} 个</b>填不出基期常数。'
