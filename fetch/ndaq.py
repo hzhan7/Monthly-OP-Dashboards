@@ -461,6 +461,17 @@ def _write_bytes(path, data):
         f.write(data)
 
 
+def _rawkeep():
+    """按路径加载 fetch/rawkeep.py（本模块被 monthly_run 以文件路径加载，裸 import 不可用）。"""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        'rawkeep', os.path.join(here, 'rawkeep.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _fetch_ir_pdf(cache_dir):
     """下载当期 Monthly Reporting Sheet，返回 (本地路径, Content-Disposition 里的月份或 None)。
 
@@ -498,6 +509,14 @@ def _fetch_ir_pdf(cache_dir):
                                     datetime.strptime(cdm.group(1), '%B').month)
         except ValueError:
             cd_month = None          # 文件名里那个词不是月名 → 放弃交叉校验，不猜
+
+    # ── 存证：这份 PDF 是本仓最典型的「原地覆盖且历史取不回」源件 ──────────────
+    # 上面那个 ndaq_monthly_reporting_sheet.pdf 是固定名工作副本，下一期直接覆盖它。
+    # 存证按 <月>-<sha256 前 12> 另存一份、永不覆盖；理由与紧迫性见 fetch/rawkeep.py
+    # 的模块 docstring（要点：series/ndaq.csv 的四个 IR 列现在正好 19 个月 = 当期 PDF
+    # 的跨度，2027-01 版一出 2025-01 就掉出窗口，那之后这些月永久不可复核）。
+    # cd_month 拿不到时照样存，文件名里落 'nomonth-'。
+    _rawkeep().keep('ndaq', pdf, 'pdf', cd_month)
     return path, cd_month
 
 

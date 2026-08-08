@@ -574,12 +574,48 @@ def _check_landing(cache_dir):
     return False
 
 
+def _rawkeep():
+    """按路径加载 fetch/rawkeep.py。
+
+    不能裸 import：本模块被 monthly_run 用 spec_from_file_location 加载，
+    那时 sys.path 上既没有 fetch/ 也没有仓库根（同 _source_dates 的坑）。
+    """
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        'rawkeep', os.path.join(here, 'rawkeep.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _lm_month(last_modified):
+    """把 Last-Modified 头折成 'YYYY-MM'，只给存证文件名当标签用；拿不到就 None。
+
+    刻意用 Last-Modified 而不是数据月：本文件是**滚动全历史**，没有「属于哪个月」这回事，
+    唯一有意义的标签是「这一版是什么时候挂上去的」。
+    """
+    if not last_modified:
+        return None
+    try:
+        return datetime.datetime.strptime(
+            last_modified, '%a, %d %b %Y %H:%M:%S %Z').strftime('%Y-%m')
+    except (ValueError, TypeError):
+        return None
+
+
 def _download(cache_dir, name):
     os.makedirs(cache_dir, exist_ok=True)
     data, headers = _http_get(STATS_BASE + name)
     path = os.path.join(cache_dir, name)
     _write_bytes(path, data)
-    return path, headers.get('Last-Modified')
+    last_modified = headers.get('Last-Modified')
+    # ── 存证：模块 docstring 第 21 行已记「文件名固定、不带月份，每月原地覆盖」──
+    # 上面这个 cache/<name> 是工作副本，下一期直接盖掉，历史版本官方一份都不留。
+    # 按 <Last-Modified 月>-<sha256 前 12> 另存一份、永不覆盖，理由见 fetch/rawkeep.py。
+    # 同一版重复下载只落一个文件（内容寻址），所以每天跑也不会膨胀。
+    _rawkeep().keep('enx', data, 'xlsx', _lm_month(last_modified))
+    return path, last_modified
 
 
 # ══════════════════════════════════════════════════════════════════════
