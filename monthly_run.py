@@ -41,6 +41,8 @@
 """
 import argparse
 import datetime
+import glob
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -410,11 +412,52 @@ def builder(t):
     return None
 
 
+def series_fingerprint(t):
+    """这家全部 series CSV 的内容指纹；文件不存在时那一份记为空。
+
+    为什么按内容 hash 而不是 mtime：每个 fetch 模块都保证「没有新东西时输出字节完全
+    不变」（fetch/ndaq.py、fetch/cboe.py、fetch/db1.py 的 update() 都写明了这一点），
+    所以内容变了就是真的变了，而 mtime 每次改写都会动，判不出来。
+
+    glob 而不是写死 `<t>.csv`：ndaq 写两张、lseg 写五张。
+    排除 source_dates.csv —— 它是全仓共用的发布日台账，任何一家记一条都会让它变，
+    拿它当触发器等于每家每天都重建。
+    """
+    h = hashlib.sha256()
+    for p in sorted(glob.glob(os.path.join(SERIES, f'{t}*.csv'))):
+        if os.path.basename(p) == 'source_dates.csv':
+            continue
+        h.update(os.path.basename(p).encode())
+        with open(p, 'rb') as f:
+            h.update(f.read())
+    return h.hexdigest()
+
+
 def one(t, force):
-    """跑一家：抓取 → 有新月份（或 --force）就重生成 data/<t>.js。
+    """跑一家：抓取 → series 内容变了（或 --force）就重生成 data/<t>.js。
 
     返回 (状态串, 说明)。异常一律在这里吃掉转成 FAIL —— 调用方要保证一家的故障
     不影响其余各家。
+
+    ## 触发器为什么是「指纹变了」而不是「update() 返回了新月份」（2026-08-08 改）
+
+    旧写法 `if not added` 有一个不出声的漏洞：**慢腿回补不算「新月份」**。
+    两腿源（一腿早、一腿晚，同一行的不同列）在回补那一轮里只是把已存在行的空格填上，
+    `update()` 返回空 list，于是这里 return NOCHANGE，页面不重建 —— 而数据已经在
+    series 里了。fetch/ndaq.py:1053 与 fetch/db1.py:1114 都明写「回补不计入返回值」。
+
+    实测当时的现场（2026-08-08）：series/ndaq.csv 的 2026-07 行已有四个 IR 快腿列
+    （402 / 4.1 / 56161 / 88），九个 nasdaqtrader 慢腿列空着，data/ndaq.js 的
+    data_through 停在 2026-06，而运行结果是 `ndaq NOCHANGE`。ndaq 尤其糟，因为
+    build/specs/ndaq.py:141 把头条指标定在**慢腿**上（share_us_cash_matched_*），
+    所以页面的月份是被慢腿推动的 —— 偏偏慢腿没有触发器。
+
+    这类停更的可怕之处是它**长得和健康的安静日一模一样**：fetch 成功所以没有 FAIL，
+    没有 FAIL 就没有 3 天连击推送，roster 的红点又要等 LAG+GRACE 才亮。
+    fetch/lseg.py:454 早先遇到同一个坑，是在那个模块内部返回「新建行 ∪ 本轮被回补的行」
+    解决的；放在这里是同一个修法的模块无关版本，一次覆盖 ndaq、db1 与以后任何双腿源。
+
+    代价：多算一次全文件 hash（series 里最大的一家几百 KB，可忽略）。
     """
     if not force and not_due(t):
         return 'NOCHANGE', '未到披露期，跳过下载'
@@ -423,6 +466,7 @@ def one(t, force):
     if cmd is None:
         return 'FAIL', f'缺生成器：build/{t}.py 与 build/specs/{t}.py 都不存在'
 
+    before = series_fingerprint(t)
     added = []
     if os.path.exists(fp):
         try:
@@ -431,14 +475,20 @@ def one(t, force):
             return 'FAIL', f'{type(e).__name__}: {e}'
     else:
         return 'FAIL', f'缺 fetch/{t}.py（无法自动更新，需人工补数据）'
+    touched = series_fingerprint(t) != before
 
-    if not added and not force:
+    if not added and not touched and not force:
         return 'NOCHANGE', ''
     try:
         out = sh(cmd)
     except Exception as e:
         return 'FAIL', f'build 失败: {e}'
-    return 'NEW' if added else 'REBUILT', (','.join(added) if added else out.splitlines()[-1][:60])
+    if added:
+        return 'NEW', ','.join(added)
+    # 指纹变了但没有新月份 = 慢腿回补（或发布方改了历史值）。单独标一个状态，
+    # 因为这两件事在运行日志里必须能分开看：一个是「本月数据到了」，
+    # 一个是「上个月的数据后来才补齐」。
+    return 'REBUILT', ('慢腿回补/历史改数' if touched else out.splitlines()[-1][:60])
 
 
 def fee_rates():
