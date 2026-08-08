@@ -52,9 +52,10 @@ DEFAULT_OUT = "/tmp/visual_qa"
 # 每一条都有几何推导或实测依据；改之前先读 docs/VISUAL_QA_RUNNER.md §阈值推导。
 THRESH = {
     # 1) SVG 图元越出画布。
-    #    本底噪声：txt() 默认给每个字加 2.4px 白色描边（charts.js:140-148）→ 单边 1.2px；
+    #    本底噪声：txt() 默认给每个字加 2.4px 白色描边（charts.js 的 txt()）→ 单边 1.2px；
+    #    描边宽随 charts.js 的 FS 缩放（FS=1.30 → 3.12px，单边 1.56px）。
     #    图元最粗 stroke-width 1.8 → 单边 0.9px；再加 ~0.5px 抗锯齿与字形右侧承。
-    #    本底 ≈ 1.2+0.9+0.5 ≈ 2.6px，取 6px 留 2.3 倍余量（实测全站无一张干净图超过 4px）。
+    #    本底 ≈ 1.56+0.9+0.5 ≈ 3.0px，取 6px 仍留 2 倍余量（实测全站无一张干净图超过 4px）。
     "overflow_floor": 6.0,
     #    🔴 线：24px。半栏图高 228–360px，24px ≈ 一行 12px 正文的两倍，
     #    到这个量级必然压到卡片下方的 Note 或隔壁栏；或占画布高 ≥10%（页面级破相，
@@ -430,9 +431,11 @@ function checkOne(R, card, svg, ctx, ex){
   axisChecks(R, svg, ctx, ex, texts);
 }
 
-/* 轴刻度定位：charts.js 里 font-size=9 只出现在左右轴刻度这两处
-   （724 行 anchor='end'、749 行 anchor='start'）。txt() 默认字号也是 9，
-   所以再按「同一个 x 属性上至少 3 个」聚类，并取最靠右的那一列 ——
+/* 轴刻度定位：charts.js 在左右轴刻度上打了 data-tick（'l' / 'r'）。
+   原先是按「font-size == 9」筛的，而字号现在按卡片宽度在 FS_MIN..FS_MAX 之间变，
+   没有一个固定的数可筛；更要命的是那种筛法一旦失配是**静默漏报**，不是报错。
+   老引擎（没有 data-tick）走 font-size == '9' 的回退分支，保持可比。
+   再按「同一个 x 属性上至少 3 个」聚类，并取最靠右的那一列 ——
    lines_endlabels 的左端标签（anchor='end'，x = M.l-10-tickW）在刻度列**左**边，
    末点读数（anchor='start'，x = Xc(last)+5）在右轴刻度列**左**边，都被排除。 */
 function pickCol(arr){
@@ -446,9 +449,10 @@ function pickCol(arr){
 
 function axisChecks(R, svg, ctx, ex, texts){
   var L = [], Rr = [], i;
+  var tagged = svg.querySelector('text[data-tick]') !== null;
   for (i = 0; i < texts.length; i++){
     var t = texts[i];
-    if (t.getAttribute('font-size') !== '9') continue;
+    if (tagged ? !t.hasAttribute('data-tick') : t.getAttribute('font-size') !== '9') continue;
     if (t.getAttribute('transform')) continue;          // 轴刻度不带 transform
     var an = t.getAttribute('text-anchor');
     var x = parseFloat(t.getAttribute('x'));

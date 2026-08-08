@@ -79,6 +79,78 @@
   var BREAK = '#C00000';        // 断点/截轴标注专用红，与 gsx.py 的 RED 同一角色
   var uid = 0;                  // 一页多张图共存，pattern 之类的 id 必须全局唯一
 
+  /* ── 屏幕字号缩放 ──────────────────────────────────────────────────────
+     各处 size: 的数值照搬 PDF exhibit，而 PDF 的一页宽 ≈ 屏幕上半栏卡片的两倍，
+     缩到 web 上就偏小。这里 1 SVG user unit = 1 CSS px（viewBox 的 W 直接取自
+     host.clientWidth），所以 size: 6.6 就是屏幕上实打实的 6.6px —— 用户看不清的
+     正是这批。
+
+     所有文字统一乘 FS，凡是「为放文字而留的空」（边距、标签行距、竖排标签长度、
+     热力图格高）也按它缩放，否则字变大而空间没变，只会把 thinLabels 逼着多抽掉
+     标签、把刻度顶出画布。不随字号变的量（网格线宽、柱宽、点半径）一律不动。
+
+     ── FS 跟卡片宽度走，不是全站一个数 ──────────────────────────────────
+     半栏卡片（~571px）和通栏卡片（~1172px）画的是同样多的点，通栏那张每个点分到
+     的横向空间是前者的两倍 —— 同一个字号在通栏上显得更小、而且它明明放得下更大的字。
+     所以按 W 在 [FS_MIN, FS_MAX] 之间线性插值：窄卡克制，宽卡放开。
+     这也是压住重叠的关键：挤的是窄卡，而窄卡拿的正好是下界。
+
+     FS_MIN = FS_MAX 就退化成全站统一一个数；两个都设 1 则全站输出逐字节退回改前。
+
+     辅助函数别取名 fsz：draw() 里 seasonality 那一支有个局部的
+     `var fsz = fmtOf(...)`（数值格式器）。var 是函数作用域且会提升，那一个 var
+     就把**整个 draw()** 里的外层同名函数遮成 undefined，每张图都会在 draw 里炸掉。 */
+  var FS_MIN = 1.45, FS_MAX = 1.70;
+  var W_NARROW = 571, W_WIDE = 1172;   // 实测：1280px 视口下的半栏 / 通栏卡片宽度
+  var FS = FS_MIN;                     // 每张图开画前由 setFS(W) 定，画的过程中不变
+  function setFS(W) {
+    var t = (W - W_NARROW) / (W_WIDE - W_NARROW);
+    FS = FS_MIN + (FS_MAX - FS_MIN) * Math.max(0, Math.min(1, t));
+  }
+  function fscale(v) { return Math.round((v == null ? 9 : v) * FS * 100) / 100; }
+
+  /* 「基线 → 放大」的统一模板，全文件所有受几何硬约束的字号都走它：
+       base  基线字号（一个字节不动，保证退回时输出相同）
+       capW  由可用宽度/格宽推出的**硬上界**，它不随 FS 长
+     返回值还要经 txt() 再乘一次 FS，所以这里先除回去。
+     语义：放得下就长到 base*FS，放不下就退回 base —— 永不小于基线。 */
+  function fitSize(base, capW) {
+    return Math.max(base, Math.min(base * FS, capW)) / FS;
+  }
+
+  /* 一段文字有多宽，以 em 计（乘上字号就是 px）。汉字与全角标点按 1 em，其余按 0.55 em。
+     为什么要分开：x 轴标签在多数图上是「Jul-24」这种拉丁短串，但有的图上是
+     「新台币汇率 vs 假设（升值为逆风）」这种中英混排长短语，两者每字宽度差近一倍，
+     用同一个系数估，长中文标签会被严重低估、算出来的留白根本不够。
+     这是**估算**不是实测 —— 实测要元素进了渲染树才行，而这里在建 SVG 之前就要用它
+     定标签带高度。只用来定上界，估宽一点只会让字保守一点，不会造成越界。 */
+  function emWidth(s) {
+    var w = 0, k, ch;
+    s = String(s == null ? '' : s);
+    for (k = 0; k < s.length; k++) {
+      ch = s.charCodeAt(k);
+      w += (ch >= 0x2e80 && ch <= 0x9fff) || (ch >= 0xff00 && ch <= 0xffef) ||
+           (ch >= 0x3000 && ch <= 0x303f) ? 1 : 0.55;
+    }
+    return w || 1;
+  }
+
+  /* 竖排长标签的**实测**收缩：把已经画出来的文字缩到不超过 maxLen（user 单位）。
+     这里能实测（元素已经在渲染树里了），就不用 emWidth 估 —— getComputedTextLength()
+     是浏览器算好的真实长度，中英混排也准。
+     下界是基线字号：基线本来就放得下，没有理由缩得比基线还小。
+     量不到（卡片 display:none）时什么都不做。 */
+  function fitVertical(node, maxLen, baseSize) {
+    var len, cur, want;
+    if (!node || !(maxLen > 0)) return;
+    try { len = node.getComputedTextLength(); } catch (e) { return; }
+    if (!len || len <= maxLen) return;
+    cur = parseFloat(node.getAttribute('font-size'));
+    if (!(cur > 0)) return;
+    want = Math.max(baseSize, cur * maxLen / len);
+    if (want < cur) node.setAttribute('font-size', +want.toFixed(2));
+  }
+
   /* 数值格式 —— 逐个对应 build_report.py 里的 lambda */
   function comma(v, d) {
     var s = Math.abs(v).toFixed(d), p = s.split('.');
@@ -140,11 +212,12 @@
   function txt(parent, x, y, s, o) {
     o = o || {};
     var t = el('text', {
-      x: x, y: y, fill: o.fill || C.INK, 'font-size': o.size || 9,
+      x: x, y: y, fill: o.fill || C.INK, 'font-size': fscale(o.size),
       'text-anchor': o.anchor || 'middle', 'font-weight': o.weight || null,
       'font-style': o.style || null, transform: o.transform || null,
       stroke: o.halo === false ? null : C.WHITE,
-      'stroke-width': o.halo === false ? null : (o.halo_w || 2.4),
+      /* 描边宽度跟着字号走：字大了而描边不变，等于打底变薄，均线穿过标签又会糊。 */
+      'stroke-width': o.halo === false ? null : fscale(o.halo_w || 2.4),
       'stroke-linejoin': o.halo === false ? null : 'round',
       'paint-order': o.halo === false ? null : 'stroke fill',
     }, parent);
@@ -368,11 +441,13 @@
      触发条件纯几何：gs_bar 的气泡定位在 M.l + band*0.75，只要 w > 1.5*band + 12
      就必然伸进刻度栏 —— 25 根柱的窄卡片上 band 只有 10~21px，「-0.5pp y/y」w=74，必中。 */
   function oval(g, x, y, s, arrowTo, xlo) {
-    var w = Math.max(28, s.length * 6.2 + 12);
+    /* 气泡是「文字的外壳」：宽高全由文案长度和字号定，所以整体随 FS 放大，
+       否则 size:10 的字变大而 17px 的壳不变，字直接顶出壳外。 */
+    var w = Math.max(fscale(28), s.length * fscale(6.2) + fscale(12));
     if (xlo != null && x - w / 2 < xlo) x = xlo + w / 2;
-    el('rect', { x: x - w / 2, y: y - 8, width: w, height: 17, rx: 5,
+    el('rect', { x: x - w / 2, y: y - fscale(8), width: w, height: fscale(17), rx: 5,
       fill: '#fff', stroke: '#555555', 'stroke-width': 0.9 }, g);
-    txt(g, x, y + 3.6, s, { size: 10, style: 'italic', fill: '#000' });
+    txt(g, x, y + fscale(3.6), s, { size: 10, style: 'italic', fill: '#000' });
     if (arrowTo) {
       el('path', { d: 'M' + (x + w / 2 + 2) + ' ' + y + 'L' + arrowTo[0] + ' ' + arrowTo[1],
         stroke: '#444444', 'stroke-width': 0.9, fill: 'none', 'stroke-dasharray': '3 2',
@@ -569,12 +644,17 @@
      它不吃 band/y 轴那一整套，所以在 draw() 里提前分流，自己排版。
      色标取 5/95 分位：一两个离群月不该把整张表压成一片白。 */
   function drawHeat(host, ex, W) {
+    setFS(W);
     var rows = ex.rows || [], cols = ex.cols || MONTHS, m = ex.matrix || [];
     if (!rows.length || !cols.length) { host.innerHTML = '<p class="note">无数据</p>'; return; }
     var fmt = fmtOf(ex.fmt || 'f1'), i, j, v;
-    var M = { t: 3, r: 6, b: 15, l: ex.row_lab_w || 32 };
+    /* 行标签列、底部月份带、格高都是「装文字的盒子」，随 FS 放大；
+       格宽 cw 是**硬约束** —— 它 = 卡片宽度 ÷ 列数，列数由数据定（12 或 24 个月），
+       放不宽。所以格内数字与列标签的字号只能在 cw 允许的范围里长，见下面两处 capW。 */
+    var M = { t: 3, r: 6, b: fscale(15), l: fscale(ex.row_lab_w || 32) };
     var pw = Math.max(60, W - M.l - M.r), cw = pw / cols.length;
-    var chh = Math.max(13, Math.min(26, ex.cell_h || 19));
+    var chh0 = Math.max(13, Math.min(26, ex.cell_h || 19));   // 基线格高，算基线字号要用
+    var chh = fscale(chh0);
     var ph = rows.length * chh, H = M.t + ph + M.b;
     var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
       'aria-label': 'Exhibit ' + ex.n + ': ' + ex.title }, host);
@@ -585,8 +665,10 @@
         v = (m[i] || [])[j];
         if (isNum(v)) maxLen = Math.max(maxLen, fmt(+v).length);
       }
-    /* 字号按格宽收缩：半栏 12 列时一格只有 ~38px，宁可字小也不能让数字压出格子 */
-    var fs = Math.max(4.6, Math.min(9, (cw - 5) / (maxLen * 0.58), chh * 0.52));
+    /* 字号按格宽收缩：半栏 12 列时一格只有 ~38px，宁可字小也不能让数字压出格子。
+       走 fitSize 模板 —— capW 是格宽给的硬上界（cw = 卡片宽 ÷ 列数，放不宽）。 */
+    var fs = fitSize(Math.max(4.6, Math.min(9, (cw - 5) / (maxLen * 0.58), chh0 * 0.52)),
+                     (cw - 5) / (maxLen * 0.58));
     var tip = host.parentElement ? host.parentElement.querySelector('.tip') : null;
     var name = ex.legend || ex.ylab || '数值', pf = precise(fmt);
 
@@ -614,11 +696,17 @@
           });
         }(rc, rows[i] + ' · ' + cols[j], ok ? +v : null, fc, x + cw / 2));
       }
-      txt(g, M.l - 5, M.t + i * chh + chh / 2 + 3, rows[i], { size: 8, anchor: 'end' });
+      txt(g, M.l - 5, M.t + i * chh + chh / 2 + fscale(3), rows[i], { size: 8, anchor: 'end' });
     }
-    var cfs = Math.max(5, Math.min(8, cw / 3.4));
+    /* 列标签同一个模板。注意 capW 必须按**最长列名的字数**算：原来的 cw/3.4 是照
+       3 个字的月名（Jan/Feb）定的经验值，24 列的「Aug-24」有 6 个字，基线上是靠
+       风格上界 8 挡住的 —— 风格上界一随 FS 抬高，就没人挡了（实测这一条自己贡献了
+       全站 184 条 TEXT_OVERLAP）。 */
+    var cmax = 1;
+    for (j = 0; j < cols.length; j++) cmax = Math.max(cmax, String(cols[j]).length);
+    var cfs = fitSize(Math.max(5, Math.min(8, cw / 3.4)), (cw - 2) / (cmax * 0.56));
     for (j = 0; j < cols.length; j++)
-      txt(g, M.l + (j + 0.5) * cw, M.t + ph + 11, cols[j], { size: +cfs.toFixed(2) });
+      txt(g, M.l + (j + 0.5) * cw, M.t + ph + fscale(11), cols[j], { size: +cfs.toFixed(2) });
     if (tip) g.addEventListener('mouseleave', function () { tip.style.opacity = 0; });
   }
 
@@ -627,13 +715,26 @@
     opt = opt || {};
     var W = host.clientWidth || 520, i, s;
     if (ex.kind === 'heat_matrix') { drawHeat(host, ex, W); return; }
+    setFS(W);                          // 字号档位只跟画布宽度有关，先定下来再排版
     var labels = ex.xlabels || opt.xlabels || [], n = labels.length;
     if (!n) { host.innerHTML = '<p class="note">无数据</p>'; return; }
     var kind = ex.kind;
     /* x 标签角度：COST 月份标签 90°、IBKR 月份标签 45°、COST Ex12 年份水平（同 PDF）。
        year_lines 的 x 是 Jan..Dec 十二格，PDF 里是水平标的，默认跟着走。 */
     var rot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45));
-    var XB = rot === 90 ? 48 : (rot === 0 ? 22 : 36);
+    /* x 标签带：90° 时带高 = 标签**文字长度**，45° 是它的斜边投影，0° 只是一个行高 ——
+       三种都正比于字号，所以整条按 FS 缩放。 */
+    var XB = fscale(rot === 90 ? 48 : (rot === 0 ? 22 : 36));
+    /* 但 48/36/22 是照「Jul-24」这种 3~4 个拉丁字符的月份标签定的常数。x 轴是**长短语**
+       时（「新台币汇率 vs 假设（升值为逆风）」20+ em）标签远比这个带高，多出来的部分
+       会伸出卡片、盖在下面的 Note / Source 正文上 —— 这不是重叠，是跑到别人的地盘上。
+       所以按最长标签反算一次需要的带高，**只增不减**：月份标签的图算出来比常数小，
+       走 max 之后一个像素都不变；只有长标签的图会把带子撑开到真正够用。 */
+    var xstep = ex.xstep || 1, xlEm = 1;
+    for (i = 0; i < n; i += xstep)
+      if (labels[i] != null) xlEm = Math.max(xlEm, emWidth(labels[i]));
+    if (rot !== 0)
+      XB = Math.max(XB, xlEm * fscale(8.2) * (rot === 90 ? 1 : 0.707) + fscale(10));
     /* 新图型里 qtr_bar / grouped_bars 的右轴（y/y、误差）是可选的：payload 没给 ex.line
        就退化成单轴柱图，不画空的右刻度。gs_bar 的 ex.yoy 同理（默认不给 = 维持现状）。 */
     var dual = kind === 'bar_line_dual' || kind === 'stacked_dual' ||
@@ -642,18 +743,26 @@
                          kind === 'stacked_dual' || kind === 'lines_endlabels' ||
                          kind === 'qtr_bar' || kind === 'seasonality' || kind === 'bridge_bar' ||
                          kind === 'grouped_bars' || kind === 'range_band' || kind === 'year_lines';
-    var H = (opt.height || (perPointLabels ? 268 : 248)) + XB;
+    /* 绘图区高度（ph）跟字号无关，但**逐点标签**是竖着排在数据点上方的，字大了就要
+       多留一点，否则 spreadY 会把整列往下压、末点标签贴着轴走。只给带逐点标签的图型
+       按 FS 补一次高，不带的（纯折线/柱）维持原高，免得一整页凭空长高。 */
+    var H = (opt.height || (perPointLabels ? 268 : 248)) +
+            (perPointLabels ? Math.round(26 * (FS - 1)) : 0) + XB;
     /* 截轴时真值标注竖排在图顶之上，顶边距要留够一行竖排文字（约 22px）；
-       右轴有标题时右边距要在刻度数字之外再让出一列。 */
+       右轴有标题时右边距要在刻度数字之外再让出一列。
+       ── 这四个数全是「为放某段文字留的空」，一律随 FS 缩放：
+          t 是一行竖排真值、r 是刻度数字（+ 可选轴标题）、b 是 x 标签带（已缩过）、
+          l 是刻度数字（+ 可选轴标题 + lines_endlabels 的左端标签列）。
+          M.r 的 14 与 M.l 的基数留的是「半个刻度数字的溢出」，同样正比于字号。 */
     var capOn = ex.ycap != null || ex.yfloor != null;
-    var M = { t: capOn ? 30 : 14,
-              r: dual ? (ex.ylab2 ? 56 : 42)
+    var M = { t: fscale(capOn ? 30 : 14),
+              r: fscale(dual ? (ex.ylab2 ? 56 : 42)
                       : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ||
-                         kind === 'year_lines' ? 42 : 14),
+                         kind === 'year_lines' ? 42 : 14)),
               b: XB,
               /* lines_endlabels 的左端标签要有自己的一列：不加这 30px 就只能挤在
                  Xc(0)-7，正好压在 y 轴刻度栏上（右端早就有 42px 的专列了）。 */
-              l: (ex.ylab ? 56 : 46) + (kind === 'lines_endlabels' ? 30 : 0) };
+              l: fscale((ex.ylab ? 56 : 46) + (kind === 'lines_endlabels' ? 30 : 0)) };
     var pw = Math.max(60, W - M.l - M.r), ph = Math.max(80, H - M.t - M.b);
 
     var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
@@ -835,17 +944,35 @@
     for (i = 0; i < tk.length; i++) {
       if (tk[i] < y0 - 1e-9 || tk[i] > y1 + 1e-9) continue;
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(tk[i]), y2: Y(tk[i]), stroke: C.GRID, 'stroke-width': 1 }, svg);
-      var tkn = txt(svg, M.l - 6, Y(tk[i]) + 3.2, yf(tk[i]), { size: 9, anchor: 'end' });
+      var tkn = txt(svg, M.l - fscale(6), Y(tk[i]) + fscale(3.2), yf(tk[i]), { size: 9, anchor: 'end' });
+      /* 打个标记给 tools/visual_qa.py 认轴刻度。原先它靠「font-size == 9」筛，
+         而字号现在按卡片宽度变，没有一个固定的数可筛了 —— 而且那种筛法失效的表现
+         是整节静默漏报，不是报错。属性是显式契约，改字号不会把它弄丢。 */
+      tkn.setAttribute('data-tick', 'l');
       try { tickW = Math.max(tickW, tkn.getComputedTextLength()); } catch (e) { }
     }
     if (y0 < -1e-9 && y1 > 1e-9)
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(0), y2: Y(0), stroke: C.AXIS, 'stroke-width': 0.9 }, svg);
 
-    var step = ex.xstep || 1;
+    var step = xstep;
+    /* x 标签的字号上界 —— 两条约束取严的那条（xlEm 在上面算 XB 时已求过，不重复扫）：
+
+       轴向：相邻两个标签不许互压。竖排只占一个行高（与文字长度无关），横排要整条塞进
+             一格，45° 占的是斜边投影。exchanges12 的 x 是交易所名（「Deutsche Börse」
+             14 字），基线字号下差之毫厘躲过去了，一放大就实打实压 94px。
+
+       纵深：标签不许伸出标签带 XB。月份标签上从不触发（「Jul-24」才 3.3 em），但 x 是
+             长中文短语时（「新台币汇率 vs 假设（升值为逆风）」20+ em）它是唯一挡得住
+             的约束 —— 伸出去就直接盖在卡片下面的 Note / Source 正文上。
+
+       两条都是几何硬约束，不随 FS 长。 */
+    var xlCapAxis = rot === 90 ? band / 1.15 : (rot === 0 ? band : band * 1.414) / xlEm;
+    var xlCapDepth = rot === 0 ? Infinity : (rot === 90 ? XB : XB * 1.414) / xlEm;
+    var xlfs = fitSize(8.2, Math.min(xlCapAxis, xlCapDepth));
     for (i = 0; i < n; i++) {
       if (i % step) continue;
-      var xx = Xc(i), yy = M.t + ph + (rot === 0 ? 13 : 9);
-      txt(svg, xx, yy, labels[i], { size: 8.2, anchor: rot === 0 ? 'middle' : 'end',
+      var xx = Xc(i), yy = M.t + ph + fscale(rot === 0 ? 13 : 9);
+      txt(svg, xx, yy, labels[i], { size: +xlfs.toFixed(2), anchor: rot === 0 ? 'middle' : 'end',
         transform: rot === 0 ? null : 'rotate(' + (-rot) + ' ' + xx + ' ' + yy + ')' });
     }
 
@@ -859,12 +986,14 @@
       var rtc = (kind === 'gs_bar') ? col(rc.color || 'GOLD') : C.INK;
       for (i = 0; i < rtk.length; i++) {
         if (rtk[i] < r0 - 1e-9 || rtk[i] > r1 + 1e-9) continue;   // 对齐后量程会窄于刻度序列
-        rtickEls.push(txt(svg, M.l + pw + 6, Y2(rtk[i]) + 3.2, rf(rtk[i]),
-          { size: 9, anchor: 'start', fill: rtc }));
+        var rtkn = txt(svg, M.l + pw + fscale(6), Y2(rtk[i]) + fscale(3.2), rf(rtk[i]),
+          { size: 9, anchor: 'start', fill: rtc });
+        rtkn.setAttribute('data-tick', 'r');          // 同左轴，见上面的说明
+        rtickEls.push(rtkn);
       }
       /* 右轴标题：否则「哪条系列读右轴」全靠 legend 里「(RHS)」三个字 */
       if (ex.ylab2) {
-        var cy2 = M.t + ph / 2, xr = W - 11;
+        var cy2 = M.t + ph / 2, xr = W - fscale(11);
         txt(svg, xr, cy2, ex.ylab2, { size: 8.4, transform: 'rotate(90 ' + xr + ' ' + cy2 + ')' });
       }
     }
@@ -1022,7 +1151,7 @@
     /* 一列标签的竖向避让：按最小行距推开，整列超出下界就整体上移，
        上下都顶满时从上边界顺排。lines_endlabels 与 lines 的末点标注共用。 */
     function spreadY(arr, gap) {
-      gap = gap || 9.6;
+      gap = fscale(gap || 9.6);        // 行距 = 字高，字大了不跟着放就是让标签互相压
       var lo = M.t + 7, hi = M.t + ph + 3, k, over;
       arr.sort(function (a, b) { return a.y - b.y; });
       for (k = 1; k < arr.length; k++)
@@ -1036,7 +1165,7 @@
 
     /* 竖排数值标签（qtr_bar 用）：柱很高时把标签压回画布内，不许越过 viewBox 顶 */
     function vLabel(x, yTop, s, o) {
-      var need = s.length * (o.size || 8) * 0.62;
+      var need = s.length * fscale(o.size || 8) * 0.62;   // 竖排长度 = 字数 × 实际字号
       var yy = Math.max(yTop, need + 2);
       txt(g, x, yy, s, { size: o.size || 8, anchor: 'start', fill: o.fill || C.INK,
         transform: 'rotate(-90 ' + x.toFixed(2) + ' ' + yy.toFixed(2) + ')' });
@@ -1062,14 +1191,18 @@
       if (kind === 'bar_line') polyline(ex.line.values, col(ex.line.color), 1.6, false, false);
       if (kind === 'bar_line_dual') polyline(ex.line.values, col(ex.line.color), 1.6, false, false, Y2);
       if (kind === 'bars_labeled') {
-        var lf = fmtOf(ex.label_fmt || 'f1');
+        var lf = fmtOf(ex.label_fmt || 'f1'), labb = [];
         for (i = 0; i < n; i++) {
           if (vals[i] == null) continue;
           /* 柱被截过时数值标签跟着柱端走，否则会跑到画布外 */
           var yl = ex.ycap != null ? Math.min(vals[i], y1) : vals[i];
           if (yl !== vals[i]) continue;             // 真值已由 capLabel 竖排标出，别重复
-          txt(g, Xc(i), Y(yl) - 5, lf(vals[i]), { size: 8.5 });
+          labb.push({ i: i, el: txt(g, Xc(i), Y(yl) - fscale(5), lf(vals[i]), { size: 8.5 }) });
         }
+        /* 本图型原先没接 thinLabels —— 它是「一个 x 一个标签」，正是 thinLabels 的适用面，
+           只是基线字号下恰好不撞才一直没暴露（lseg Ex38/53/54 的 '6.96' 与 '6.91'
+           在放大后互压 8–18px）。这里补上，别再靠字号碰巧不撞。 */
+        thinLabels(labb);
       }
     } else if (kind === 'lines') {
       /* end_label ← gsx.long_line 的 n_label：长历史图上标出最新一点。
@@ -1446,9 +1579,14 @@
         var bs = bLb.length === 1 ? bLb[0] : bLb[i];
         /* 标签照老位置先画出来，但**最终落位推迟到 draw 末尾**统一做：它要避的柱值标签
            这时才刚画完，而「左右轴零点不同高」「annot」两条说明还没画。详见末尾那段。 */
-        brks.push({ x: bx, ax: bx - 3, ay: M.t + 3,
-          el: bs ? txt(g, bx - 3, M.t + 3, bs, { size: 7, fill: BREAK, anchor: 'end',
-            transform: 'rotate(-90 ' + (bx - 3) + ' ' + (M.t + 3) + ')' }) : null });
+        var bel = bs ? txt(g, bx - 3, M.t + 3, bs, { size: 7, fill: BREAK, anchor: 'end',
+          transform: 'rotate(-90 ' + (bx - 3) + ' ' + (M.t + 3) + ')' }) : null;
+        /* 这条标签是 rotate(-90) 从图顶往下挂的，长度就是文字长度。文案由 payload 给，
+           放大后会**比绘图区还长**，多出来的部分不是「和别的字重叠」，是直接盖到
+           x 轴月份标签上。所以先按绘图区高度实测收缩，再进下面的避让流程 ——
+           顺序不能反：避让是拿它的外接框找空档，框还没定住就找不准。 */
+        fitVertical(bel, ph - 6, 7);
+        brks.push({ x: bx, ax: bx - 3, ay: M.t + 3, el: bel });
       }
     }
     /* 截轴说明贴右上角：被截的通常是早期的低基数尖峰（图左侧），
@@ -1474,8 +1612,8 @@
     }
 
     if (ex.ylab) {
-      var cy = M.t + ph / 2;
-      txt(svg, 13, cy, ex.ylab, { size: 8.4, transform: 'rotate(-90 13 ' + cy + ')' });
+      var cy = M.t + ph / 2, xl = fscale(13);
+      txt(svg, xl, cy, ex.ylab, { size: 8.4, transform: 'rotate(-90 ' + xl + ' ' + cy + ')' });
     }
     if (ex.annot) {
       if (kind === 'bars_labeled')
@@ -1868,6 +2006,10 @@
       render();
     },
     redrawAll: function () { registry.forEach(function (f) { f(); }); },
+    /* 对外只读：字号缩放的两个端点（窄卡 / 通栏）。轴刻度不再靠字号识别，
+       改由 text 上的 data-tick 属性标记，见 draw() 里画刻度那两处。 */
+    FS_MIN: FS_MIN,
+    FS_MAX: FS_MAX,
   };
 
   var t;
