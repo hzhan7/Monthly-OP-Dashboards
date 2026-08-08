@@ -66,6 +66,7 @@ cache/              下载来的原始文件（gitignore）
 monthly_run.py      月度入口（cron 跑的就是它）
 tools/check_yoy_caliber.py  同比口径判据（机检 CONTRACT §6，改生成器后跑）
 tools/visual_qa.py          整站视觉 QA（截图 + 机器判据，页名自动取自 data/roster.js）
+tools/prune_cache.py        cache/ 分级清理（白名单制，dry-run 默认；见「cache 怎么清」）
 docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉一家」
 ```
 
@@ -153,6 +154,35 @@ commit，也不会把页面的新鲜度信号刷成当天。**构建日期不进
 - 节奏表 `build/roster.py` 的 `LAG` 是 `(常规月, 季末月)` 两个值。SCHW / LPLA / HOOD /
   SPGI 的**季末月（3/6/9/12）没有独立月报**，数值随当季财报走，晚 2-4 周；用同一个
   日子判断会每季度误报一次红点，而每季度假一次的警报，人很快就学会无视了。
+
+## cache 怎么清
+
+`cache/` 是 gitignore 的，但它只增不减：2026-08 首次盘点时 711 MB。
+清理走 `python3 tools/prune_cache.py`（**默认 dry-run，加 `--apply` 才真删**）。
+
+**判据是「谁会再读它」，不是「它有多老」。** 按 mtime 一刀切会同时犯两个方向的错：
+删掉再也拿不回来的东西，同时留着明天就会自己长回来的东西。四种性质分开处理：
+
+| 性质 | 是谁 | 体积 | 处理 |
+|---|---|---|---|
+| 不可重下 | `basefill/` | 245 MB | **永不清理**，且是唯一需要异地备份的部分 |
+| 热工作集 | `axp/`、`*_rates/` | 172 MB | 永不清理：`fetch/rates_*.py` 的 `rows()` 每次全量重放做重述对账，删了每月重打几百个 SEC 请求 |
+| 删了会回来 | `lseg_primary_*.xlsx` | 38 MB | 不清理：`fetch/lseg_primary.py:843` 每次跑全月份区间，本地没有就重下 |
+| 冷档 | `POLICY` 表登记的族 | 139 MB | 按期次保留最近 N 期 |
+
+`basefill/` 里有三类无人值守拿不回来的东西：只存在于 archive.org 的 CME 规则手册、
+CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜像恒 400，
+那条 FTP 是唯一还活着的通道，见 `build/basefill/cme2.py` 模块头）、
+以及 ICE reCAPTCHA 墙后只能人工导出的报表（`build/basefill/ice_enx2.py`）。
+它的备份在 private 仓 `hzhan7/dashboards-data-archive`，用那边的 `backup.sh` 刷新。
+
+**`POLICY` 是白名单，不是黑名单。** 新加数据源之后它的 cache 文件族默认不在表里、
+不会被动；报告末尾单列「未登记的散文件」体积，超过 50 MB 会警告 —— 看见它涨了，
+就去核一遍那个 fetcher 的读取语义（`update()` 是只处理 CSV 里没有的期次，
+还是每次全区间重放），再决定要不要登记进来。登记时**必须**在表里写下依据那一句。
+
+⚠ 跑完 `--apply` 之后 `cache/` 是 gitignore 的所以工作树不脏，但**改这个工具本身要提交** ——
+`monthly_run.py` 的第一道闸是「工作树不干净就拒跑」，留着未提交的改动会让第二天的 cron 直接停摆。
 
 ## 数据源
 
