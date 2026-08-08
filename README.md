@@ -3,7 +3,7 @@
 22 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
 数据全部来自公司官网 IR 或 SEC 申报的原始披露，不含任何券商研报的观点或数据。
 
-**看板地址：** https://hzhan7.github.io/monthly-op-dashboards/
+**看板地址：** https://hzhan7.github.io/Monthly-OP-Dashboards/
 
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 

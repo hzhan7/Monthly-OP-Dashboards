@@ -639,7 +639,7 @@ def main():
         print(f'FAILED push 失败: {r.stderr[-400:]}')
         sys.exit(1)
     sha = sh(['git', 'rev-parse', '--short', 'HEAD'])
-    print('已推送：https://hzhan7.github.io/monthly-op-dashboards/')
+    print('已推送：https://hzhan7.github.io/Monthly-OP-Dashboards/')
     if fails:
         print(f'PARTIAL {sha} {len(ok)} ok / {len(fails)} fail: {",".join(fails)}')
     else:
