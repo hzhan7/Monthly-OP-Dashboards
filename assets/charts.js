@@ -205,7 +205,7 @@
      均线虚线、折线、断点竖线。均线尤其致命 —— 它按构造就落在柱子中段附近，凡是当月值
      接近 12 个月均值的月份，标签必然被一条横线拦腰划掉，数字糊成黑白相间的一团。
      两轮独立的人眼审查都把这一条列为 blocker，且同一根因还制造了十几条
-     「折线划穿自己的端点标签」（IBKR Ex3/5/7、HKEX Ex3、MSCI Ex3、HOOD Ex9/16/25、TSM Ex5…）。
+     「折线划穿自己的端点标签」（IBKR Ex3/5/7、HKEX Ex3、MSCI Ex3、HOOD Ex9/16/25、TSM Ex6…）。
 
      描边比「把线画在标签下面」更彻底：z 序只能解决同一图元的先后，解决不了
      两个标签互相压、也解决不了标签压坐标轴刻度。 */
@@ -284,7 +284,7 @@
        0%（15 张，f=0，两轴本来就同零点 —— 含 IBKR Ex8/Ex18 与 COST Ex4，
            所以这条规矩碰不到那两个已上线的站）
        13% hood Ex15 / 14% lpla Ex11 / 17% spgi Ex5·msci Ex5·hood Ex3·hood Ex22 /
-       20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex5 / 33% cme Ex7
+       20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex6 / 33% cme Ex7
        ── 空档 ──
        40% schw Ex11 / 44% axp Ex8 / 50% hood Ex4 / 50% hood Ex14
      33% 与 40% 之间是空的，阈值放在这段空档里对数据抖动最不敏感；
@@ -1208,7 +1208,7 @@
       /* end_label ← gsx.long_line 的 n_label：长历史图上标出最新一点。
          那是这类图上**唯一的绝对水平锚点** —— 不标的话读者只能从轴刻度目测，
          而长历史图的轴刻度间隔往往就是几百个单位（SCHW Ex7/10/14/15、LPLA Ex8/17、
-         MSCI Ex4/11、TSM Ex3/10/12、CBOE Ex6 全丢了这个标注）。
+         MSCI Ex4/11、TSM Ex7/11、CBOE Ex6 全丢了这个标注）。
          默认关闭：既有的 kind:'lines' 图（含 COST/IBKR 两个已上线站）不给就一个都不画。 */
       var fle = fmtOf(ex.label_fmt || ex.fmt || ex.yfmt || 'f1'), LB = [];
       for (s = 0; s < ex.series.length; s++) {
@@ -1236,7 +1236,7 @@
          「次轴画的是同比而不是滚动均线 —— 均线只是把柱子再平滑一遍、不带新信息，
          同比才回答『相对去年这个月是好是坏』」；build_hood.py 记的用户既定规范第 1 条
          也是「全部换成 y/y」。网页版一律画成了 12 个月均线，把这条规矩丢了
-         （MSCI Ex2/7/8、SPGI Ex2/3、TSM Ex7/9 等 8 页 29 张图都受影响）。
+         （MSCI Ex2/7/8、SPGI Ex2/3、TSM Ex4/9 等 8 页 29 张图都受影响）。
 
          给了 ex.yoy 就画 y/y 折线并**不画均线** —— 两条一起画太挤，而且它们回答的是
          同一个问题的两种说法，读者要在同一张图上分辨两条横向线的含义。
