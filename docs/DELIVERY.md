@@ -45,7 +45,7 @@ JPX 的列数从 40 到 42 是补抓了内国株金额两列）。
 | `ndaq` | Nasdaq                       | 2005-09 → 2026-07 | 251  | 13       | 13       | 份额腿次月第 10 个工作日     |
 
 加上原有 12 家（COST / IBKR / SCHW / LPLA / HOOD / CME / CBOE / HKEX / MSCI / SPGI /
-AXP / TSM），单公司页共 **21 张**。全站 `data/*.js` 合计 **586 张图**
+AXP / TSM），单公司页共 **21 张**。全站 `data/*.js` 合计 **584 张图**
 （2026-08-11 重新实测，28 个 payload，只数 `exhibits` 数组里带 `kind` 的图，
 不含每页的汇总表与核对表）。上一版写的「529 张 / 27 个 payload / 含 HTML 表」
 两处都不准：那次实测漏了 lseg（59 张），而两张表本来就不在 `exhibits` 里。
