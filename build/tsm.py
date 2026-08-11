@@ -1067,7 +1067,13 @@ def main():
     cur_mom = float(mom_all.iloc[-1])
     cur_q = qsum.index[-1]
     cur_q_bn = float(qsum.iloc[-1])
-    cur_q_yoy = float(qyoy[-1])
+    # 抬头的当季 y/y 必须与 Exhibit 1 的 Quarter-to-date 行同口径：当季已公布的 n 个月，
+    # 比上年同季的**同样前 n 个月**（qtd_bn 是季内逐月累计，同一日历月天然是同一个 n，
+    # n=3 时退化成整季比整季，与 qyoy[-1] 相等）。qyoy[-1] 在季内第 1/2 个月是
+    # 「n 个月 vs 上年完整 3 个月」，会把 +44.7% 的 Jul-26 印成 −53% 并涂红，
+    # 与同页表格自相矛盾 —— Ex5 右轴末点早已因此被图表引擎作废，抬头当时漏了同样处理。
+    q_now, q_yag = float(qtd_bn.get(cur, np.nan)), float(qtd_bn.get(yag, np.nan))
+    cur_q_yoy = (q_now / q_yag - 1) * 100 if np.isfinite(q_yag) and q_yag else float('nan')
     ytd_now = float(ytd_bn.iloc[-1])
     ytd_prev = float(ytd_bn.get(ALL[-1] - 12, np.nan))
     ytd_yoy = (ytd_now / ytd_prev - 1) * 100 if np.isfinite(ytd_prev) and ytd_prev else float('nan')
@@ -1080,7 +1086,7 @@ def main():
 
     headline = (f'{mlab(cur)} 合并营收 NT${cur_rev_bn:,.1f}bn（{sgn(cur_yoy)} y/y、{sgn(cur_mom)} m/m）'
                 f' · {cur_q} 累计 NT${cur_q_bn:,.0f}bn（{sgn(cur_q_yoy, 0)} y/y，'
-                f'{n_in_last} of 3 months）'
+                f'{n_in_last} of 3 months' + ('' if n_in_last >= 3 else '，比上年同季前同样月数') + '）'
                 f' · YTD NT${ytd_now:,.0f}bn（{sgn(ytd_yoy, 0)} y/y）'
                 f' · 美元口径 y/y {sgn(cur_usd_yoy, 0)}，汇率贡献 {sgn(cur_fx_pp, 1, "pp")}')
     hub_line = f'{mlab(cur)} 营收 NT${cur_rev_bn:,.0f}bn，{sgn(cur_yoy, 0)} y/y；YTD {sgn(ytd_yoy, 0)} y/y'
