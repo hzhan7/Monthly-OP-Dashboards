@@ -50,7 +50,18 @@ Akamai / PerimeterX 拦截。所以本模块**不依赖浏览器**，可无人�
    打 warning 到 stderr，但**不覆盖** series/msci.csv（仓库约定：CSV 是真值，
    重述要人工确认后再改）。
 6. 月份写法在表格里混用直角撇 ' (U+0027) 和弯撇 ’ (U+2019)、混用 &nbsp;、
-   月份后还挂 <sup>脚注号</sup>——解析器必须全都容忍，不能按固定字符串切。
+   月份后还挂脚注号——解析器必须全都容忍，不能按固定字符串切。
+   ⚠ **脚注号有两种写法，而且同一张表里会混用**：绝大多数行是标签
+   `<td>Jun’26 <sup>3</sup></td>`（_clean 删得掉），但 2026-08 实测 Jul'26 那一行
+   写成了**裸文本** `<td>Jul’26 3</td>`（删不掉）。原来的 _MONTH_RE 结尾锚 `$`
+   不容忍尾随字符，于是这一行被当说明行 continue 掉 —— 源上明明有 7 月，
+   latest_month() 却返回 6 月，fetch 干净地报 NOCHANGE，**没有任何报错**。
+   这个坏法比抓取失败危险得多：它不产生 FAIL，连续失败计数、红点、断档哨兵
+   全都抓不到它，页面就一直挂着旧数据。修法是两条一起：
+     (a) _MONTH_RE 容忍尾随的裸脚注尾巴（见该常量旁注）；
+     (b) parse() 增加**行数对账**——凡是「长得像数据行」（后两格都是金额）却
+         没能解析出月份的行，一律抛异常。(a) 只挡住已知的这一种变体，
+         (b) 才是挡住下一种没见过的变体的那道。别只留 (a)。
 
 ═══ 接口 ═══
     latest_month(cache_dir) -> "YYYY-MM"        官方源当前最新月；抓不到抛异常
@@ -95,8 +106,16 @@ _TABLE_RE = re.compile(
     r'<table[^>]*class="[^"]*nirtable[^"]*"[^>]*>(.*?)</table>', re.S | re.I)
 _ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S | re.I)
-# 月份格：三字母月 + 任意撇号 + 两位年
-_MONTH_RE = re.compile(r"^([A-Za-z]{3})[’'‘ʼ`]\s*(\d{2})$")
+# 月份格：三字母月 + 任意撇号 + 两位年 + **可选的裸脚注尾巴**
+#
+# 尾巴那一段是为 `Jul’26 3` 这种写法加的（见文件头口径坑 6）。它被刻意限死成
+# 「数字 / 逗号 / 空白 / 星号剑标」这几类字符，不是写成 `.*$`：
+# 放开成任意尾随字符，说明行（"Dec'08 onwards, source: …"）也会被当成月份行吃进来，
+# 那是比漏一行更坏的错——漏行只是数据旧了，错行会把说明文字变成一个月度数据点。
+_MONTH_RE = re.compile(
+    r"^([A-Za-z]{3})[’'‘ʼ`]\s*(\d{2})"      # Jul’26
+    r"(?:[\s,]*[\d*†‡§¶]+)*"                # 可选：裸脚注号，可有多个（"3"、"1,2"）
+    r"\s*$")
 
 
 # ────────────────────────────── 下载 ──────────────────────────────
@@ -177,19 +196,26 @@ def parse(html_text):
 
     只要有一行的月份能解析、数值却解析不出来，就抛异常——宁可整次失败，
     也不能把半张表写进序列（那会在图上留一个假的断崖）。
+
+    反过来那半边（月份解析不出来、数值好好的）同样抛异常，见下面的「行数对账」。
     """
     m = _TABLE_RE.search(html_text)
     if not m:
         raise RuntimeError("没找到 nirtable 表格")
 
     out = {}
+    unmatched = []          # 长得像数据行、却没解析出月份的行；循环末尾一起抛
     for row in _ROW_RE.findall(m.group(1)):
         cells = [_clean(c) for c in _CELL_RE.findall(row)]
         if len(cells) < 3:
             continue
         mm = _MONTH_RE.match(cells[0])
         if not mm:
-            continue  # 表头行 / 说明行
+            # 表头行 / 说明行本该在这里被安静丢掉。但**后两格都是金额**的行不是
+            # 说明行，它就是一行数据，只是首格的月份写法我们没见过。记下来。
+            if _num(cells[1]) is not None and _num(cells[2]) is not None:
+                unmatched.append(cells[0])
+            continue
         mon = _MON.get(mm.group(1).lower())
         if mon is None:
             raise RuntimeError(f"月份缩写不认识：{cells[0]!r}")
@@ -203,6 +229,19 @@ def parse(html_text):
         if month in out:
             raise RuntimeError(f"页面里 {month} 出现两次，源异常")
         out[month] = {"eop": eop, "avg": avg}
+
+    # ── 行数对账：挡住「源改了月份写法 → 静默漏月」的那道闸 ──
+    # 2026-08 的 `Jul’26 3`（裸脚注号）就是从这里漏过去的：当时没有这道检查，
+    # 表现是 parse() 少产出一行、latest_month() 悄悄停在上个月、fetch 干净返回
+    # NOCHANGE。没有 FAIL、没有断档（断档只看已入库月份之间的洞，管不到表尾少一行），
+    # 所以连续失败计数与红点全都抓不到它。**下一次源换写法时，靠的是这一段，
+    # 不是上面那条正则**——正则只认识已经见过的变体。
+    if unmatched:
+        raise RuntimeError(
+            f"表里有 {len(unmatched)} 行后两格都是金额、首格却不像月份："
+            f"{unmatched[:5]!r}——多半是月份写法又变了（脚注号、空格、撇号）。"
+            "宁可整次失败也不静默漏月；请对照 cache/msci_aum_latest.html "
+            "确认写法后改 _MONTH_RE")
 
     if len(out) < 100:
         raise RuntimeError(f"只解析出 {len(out)} 行，远少于预期（应 >200 行）")
