@@ -16,12 +16,12 @@ deck 的「逐年 YTD 累计」改成 Exhibit 10 的「进度 vs 指引」（原
     月营收 NT$bn / 3 个月移动平均 / QTD / YTD / 占 TTM 比重全部由它派生。
   · **同比口径本页并存两种，页尾「口径与方法说明」里逐处点名**（CONTRACT.md §6）：
     Exhibit 2 的右轴金线是 **12 个月滚动合计同比**（营收是流量、可加总，这个「合计」
-    指代的是真实的一年营收）；其余每一处 —— Ex3、Ex4、Ex6 季度、Ex9、Ex12 热力矩阵、
+    指代的是真实的一年营收）；其余每一处 —— Ex3 季度、Ex5、Ex6、Ex9、Ex12 热力矩阵、
     汇总表与核对表的 y/y 列，以及页顶 brief 里标明「单月」的读数 —— 都是**单月同比**。
     理由逐条不同，写在那条说明里，
-    不在这里重复；要紧的是**不要拿 Ex2 的金线去和 Ex3 的深藏青线对读**。
+    不在这里重复；要紧的是**不要拿 Ex2 的金线去和 Ex5 的深藏青线对读**。
   · 单月同比又有两个来源：公司随营收一并公告的 yoy_pct（用于热力矩阵与核对表），
-    以及本脚本自算的 y/y（用于 Ex3 / Ex6）。两者极小差异来自公司口径的四舍五入，
+    以及本脚本自算的 y/y（用于 Ex3 / Ex5）。两者极小差异来自公司口径的四舍五入，
     不做人工对齐，差多少由运行时现算并印在口径说明里。
   · 同比的算式一律走 build/yoy.py（全站唯一实现），本文件不再自己写 pct_change(12)：
     同比曾在 15+ 个 builder 里各实现一遍，那正是全站口径出错的根因。
@@ -38,7 +38,7 @@ Deck（build/build_tsm.py）对齐记录 —— 这一轮补回三处「deck 有
   · Exhibit 2 改用 kind='gs_bar' + 次轴 y/y（金色）：bar_line_dual 在引擎里没有柱值标签
     分支，deck 的 rev_bar_yoy 每隔一根柱标 NT$bn、并在 y/y 末点标 +68%，这些以前全丢了。
   · Exhibit 7 / 11 打开 end_label（deck 的 long_line n_label），Ex7 另开 zero_base。
-  · Exhibit 9 / 4 补回 deck 的次轴同比线（gsx.lvl_bar 的 pct_series=True → 百分点差，
+  · Exhibit 6 补回 deck 的次轴同比线（gsx.lvl_bar 的 pct_series=True → 百分点差，
     季度序列 lag=4、月度序列 lag=12）。这两张仍用 grouped_bars 而不是 gs_bar：
     gs_bar 纵轴强制自 0 起，会把 −14.1pp 那根负柱画到画布外（详见各图 note）。
 
@@ -239,7 +239,7 @@ def compose_brief(ALL, rev, yoy, fx_al, fx, mom_all, qsum_bn, qcnt, fxq, g, g_mi
       远端写这一段时全页还是单月同比；本地 Exhibit 2 的右轴金线已改
       **12 个月滚动合计同比**，页尾点名条把两种口径的当期读数并排现算
       （本轮：单月 +67.9% vs 滚动 +30.6% 那一条）。适配照 CONTRACT §6 与
-      cboe / ibkr 的先例：brief 引用的同比一律标「单月」（与汇总表、Exhibit 3
+      cboe / ibkr 的先例：brief 引用的同比一律标「单月」（与汇总表、Exhibit 5
       同口径，可逐格对上），只作**位置与基数**陈述；s3 的名次陈述把滚动读数
       并排印出并点名 Exhibit 2 口径 —— 单月 +67.9% 的「历史第几」若不带滚动
       读数，读者会拿它去对 Exhibit 2 的金线（+30.6% 量级），对不上还以为哪边
@@ -375,9 +375,9 @@ def compose_brief(ALL, rev, yoy, fx_al, fx, mom_all, qsum_bn, qcnt, fxq, g, g_mi
 
     # ── R4：单位恒等。US$ 营收 = NT$ 营收 ÷ 汇率（推导值），其同比是两个同比之**商**；
     #    页面各处的「汇率贡献」是两者之**差**（pp），恒等于 汇率同比 ×（1+美元同比）。
-    #    口径适配：本段同比全部是**单月**（与 Exhibit 3 同一张脸），措辞逐处标明 ——
+    #    口径适配：本段同比全部是**单月**（与 Exhibit 5 同一张脸），措辞逐处标明 ——
     #    它讲的是「公司这个月报出来的增速里有多少是汇率」，换成 Exhibit 2 右轴的滚动
-    #    口径就不再是公司报的那个数（页尾点名条对 Ex3/4 的豁免理由，同一条）。
+    #    口径就不再是公司报的那个数（页尾点名条对 Ex5/6 的豁免理由，同一条）。
     pu = B.per_unit(rv, fx_al.values.astype(float), i)
     dy, uy = pu.get('den_yoy'), pu.get('yoy')
     # R5：「（推导值）」要挂在真正推导出来的那个量上 —— 是**美元营收**（NT$ ÷ 月均汇率），
@@ -531,7 +531,7 @@ def main():
     yoy_usd = Y.mom_yoy(rev_usdmn, Y.FLOW)
     fx_contrib = yoy - yoy_usd                           # 同比之差 = 汇率贡献（pp）
 
-    # 本脚本自算的单月同比（Ex3 的 NT$ 线、Ex12 校验用）与 12 个月滚动合计同比（Ex2 右轴）
+    # 本脚本自算的单月同比（Ex5 的 NT$ 线、Ex12 校验用）与 12 个月滚动合计同比（Ex2 右轴）
     yoy_self = Y.mom_yoy(rev, Y.FLOW)
     yoy_ttm = Y.ttm_yoy(rev, Y.FLOW)
 
@@ -707,7 +707,7 @@ def main():
                  f'<b>{Y.TTM_WIN} 个月滚动合计的同比</b>（最近 {Y.TTM_WIN} 个月营收合计 ÷ '
                  f'上一个 {Y.TTM_WIN} 个月合计 − 1）。'
                  '<b>所以不要拿相邻两根柱去除，除出来的是单月同比、跟这条线不是一个数。</b>'
-                 '单月同比仍在页内可读：汇总表的 y/y 列、Exhibit 3 的深藏青线、'
+                 '单月同比仍在页内可读：汇总表的 y/y 列、Exhibit 5 的深藏青线、'
                  'Exhibit 12 的热力矩阵，以及页顶 brief 里标明「单月」的读数。' + Y.describe(CAL2)
                  + '台湾月营收的单月同比同时被三件事推着走 —— 当月天数、农历年在 1 月还是 '
                  '2 月、以及去年同月那一个数本身的高低；任意连续 '
@@ -724,91 +724,7 @@ def main():
                  '浅蓝 —— 那仍是本套色板里的柱色，只是与 PDF 的深藏青不同，是本图唯一的偏离。'),
     })
 
-    # ── Exhibit 3：汇率贡献拆分 —— NT$ vs US$ 增速，win=25 ──
-    W8 = 25
-    # 本图保留单月口径，但**理由要拿数据说**（不是「存量不能滚动」那类一般性说辞）：
-    # 下面这一次实测直接印进图注，读者能看到放弃滚动口径的代价有多大。
-    CAL8 = Y.caliber_diff(rev, Y.FLOW, win=W8)
-    ex.append({
-        'n': 3, 'kind': 'lines_endlabels', 'fmt': 'pct0',
-        'title': 'Revenue growth: NT$ vs. US$（单月同比 / single-month y/y）',
-        'xlabels': win_labels(W8), 'xrot': 90, 'ylab': '% y/y（单月）',
-        'series': [
-            {'name': 'NT$ revenue y/y (as reported)', 'color': 'NAVY', 'values': L(yoy.iloc[-W8:].values)},
-            {'name': 'US$ revenue y/y (converted)', 'color': 'MBLUE', 'values': L(yoy_usd.iloc[-W8:].values)},
-        ],
-        'src_extra': 'The gap between the two lines is the currency contribution. ' + ASSUMP,
-        'note': ('US$ 线是<b>推导值（Implied）</b>：NT$ 月营收 ÷ 当月平均 NTD/USD，'
-                 '不是公司披露的美元营收。假设：全部营收按当月平均汇率一次性折算，'
-                 '忽略月内汇率路径、对冲与递延收款，因此这条线只能看方向与量级。'
-                 f'<b>本图两条线都是单月同比</b>，与 Exhibit 2 右轴的 {Y.TTM_WIN} 个月滚动口径'
-                 '<b>不是一个数</b>：本图讲的是「公司这个月报出来的增速里有多少是汇率」，'
-                 'NAVY 线的线名写着 as reported，换成滚动口径它就不再是公司报的那个数了。'
-                 f'口径差异用本序列自己实测（{CAL8["n"]} 个两种同比都有值的月份）：'
-                 f'NT$ 单月同比逐月标准差 {CAL8["std_mom"]:.1f}pp、'
-                 f'{Y.TTM_WIN} 个月滚动 {CAL8["std_ttm"]:.1f}pp，'
-                 f'相邻月跳变中位 {CAL8["medjump_mom"]:.1f}pp vs {CAL8["medjump_ttm"]:.1f}pp，'
-                 f'窗口内两者<b>符号相反的月份 {CAL8["opposite_n"]} 个</b>'
-                 + ('（'
-                    + '；'.join(f'{m} 单月 {a:+.1f}% vs 滚动 {b:+.1f}%'
-                               for m, a, b in CAL8['opposite'][:3]) + '）。'
-                    if CAL8['opposite_n'] else '。')
-                 + f'当期并排：单月 {sgn(float(yoy.iloc[-1]))}、滚动 '
-                 f'{sgn(float(yoy_ttm.iloc[-1]))}。'),
-    })
-
-    # ── Exhibit 4：汇率对报表增速的贡献，win=25 ──
-    W9 = 25
-    fcd = fx_contrib.iloc[-W9:]
-    # 同 Ex9：pct_series 的同比是百分点差，月度序列 ⇒ lag = 12。
-    # 走 yoy.mom_yoy(kind=RATIO)：比率序列的同比是 a − b（百分点），不是 (a/b−1)。
-    # 自己写 .diff(12) 也得同一个数，但口径判断从此只有一处定义。
-    fcd_yoy = Y.mom_yoy(fx_contrib, Y.RATIO).iloc[-W9:]
-    ex.append({
-        'n': 4, 'kind': 'grouped_bars',
-        'title': 'Currency contribution to reported growth（单月同比之差）',
-        'xlabels': win_labels(W9), 'xrot': 90,
-        'groups': [{'name': 'Currency contribution', 'color': 'BLUE', 'values': L(fcd.values)}],
-        'line': {'name': 'y/y change (pp, RHS)', 'color': 'GOLD',
-                 'values': L(fcd_yoy.values), 'yfmt': 'pp0'},
-        # 25 根柱在半栏卡片上 band 只有 20px、窄屏更掉到 10px 出头，而「+10.6pp」实测宽
-        # 22px —— 逐柱标签必然连成一串（人眼审查把「+6.3pp+6.4pp」列为整页最扎眼的一处）。
-        # 引擎的标签抽稀只对「一个 x 一个标签」的图型生效，并排柱图型按步长抽不掉，
-        # 所以这里按 PDF 版的做法收手：deck 在 win>14 时本来也只标每隔一根，
-        # 网页版「25 根全标」是它自己加的，正是压字的来源。数值改由 tooltip 与「表格」视图给全。
-        'bar_labels': False, 'fmt': 'pp1', 'label_fmt': 'pp1',
-        'ylab': 'pp of y/y', 'ylab2': 'pp y/y',
-        'src_extra': ('NT$ y/y less US$ y/y. Positive = a weaker NT dollar flattered the reported '
-                      'number. ' + ASSUMP),
-        'note': ('本图是 Exhibit 3 两条线之差，单位是百分点，不是百分比；'
-                 '<b>两条线都是单月同比，所以本图也是单月口径</b>'
-                 f'（与 Exhibit 2 右轴的 {Y.TTM_WIN} 个月滚动口径不可直接对读）。'
-                 '右轴金线是 PDF 版就有的次轴同比，本轮补回 —— 柱本身已是比率之差，'
-                 '所以它的同比同样取<b>百分点差</b>（当月贡献 − 去年同月贡献），'
-                 f'读作「汇率这条腿比一年前多贡献/少贡献了几个点」（本月 {sgn(float(fcd_yoy.iloc[-1]), 1, "pp")}）。'
-                 '柱顶不再逐根标数值：25 根柱的 band 只有 20px 上下，'
-                 '而「+10.6pp」这样的标签就有 22px 宽，全标必然叠字；'
-                 'PDF 版在窗口超过 14 期时也只标每隔一根。'
-                 '逐月读数请点右上角「表格」，或把鼠标停在任意一列上。'
-                 'PDF 版同样是 gsx.lvl_bar；网页 gs_bar 纵轴自 0 起会把 −14.1pp 那根柱'
-                 '画到画布外，故与后面的 Exhibit 9 一样柱仍用单组 grouped_bars。'),
-    })
-
-    # ── Exhibit 5：环比变化率（与 Ex2 成对），win=25 ──
-    W4 = 25
-    mom_all = rev.pct_change(1) * 100
-    ex.append({
-        'n': 5, 'kind': 'gs_line', 'fmt': 'pct1',
-        'title': 'Month-on-month revenue change',
-        'xlabels': win_labels(W4), 'xrot': 90,
-        'ylab': '% m/m', 'zero_line': True,
-        'values': L(mom_all.iloc[-W4:].values),
-        'note': ('环比不做季节调整。台湾半导体的月营收有很强的日历效应（2 月天数少、'
-                 '农历年错位），单月 m/m 不能当趋势读 —— 要判断「这个季走得快还是慢」，'
-                 '看 Exhibit 10 的进度差（已把日历位置和指引目标都归一掉）。'),
-    })
-
-    # ── Exhibit 6：月度 → 季度桥（当季未满月份浅色），win=14 ──
+    # ── Exhibit 3：月度 → 季度桥（当季未满月份浅色），win=14 ──
     W5 = 14
     qsum = (rev_bn.groupby(qkey).sum())
     qcnt = rev_bn.groupby(qkey).count()
@@ -818,7 +734,7 @@ def main():
     n_in_last = int(qcnt.iloc[-1])
     qd = qsum.iloc[-W5:]
     ex5 = {
-        'n': 6, 'kind': 'qtr_bar',
+        'n': 3, 'kind': 'qtr_bar',
         'title': 'Monthly revenue aggregated to quarters',
         'xlabels': [str(p) for p in qd.index], 'xrot': 90,
         'values': L(qd.values), 'fmt': 'f0c', 'label_fmt': 'f0c',
@@ -858,6 +774,90 @@ def main():
             f'<b>所以本图两轴各自缩放、零点不同高</b>，引擎已在绘图区左上角标出。'
             f'读柱与读点时不要假设「都在零线同一侧就是同号」。')
     ex.append(ex5)
+
+    # ── Exhibit 4：环比变化率（与 Ex2 成对），win=25 ──
+    W4 = 25
+    mom_all = rev.pct_change(1) * 100
+    ex.append({
+        'n': 4, 'kind': 'gs_line', 'fmt': 'pct1',
+        'title': 'Month-on-month revenue change',
+        'xlabels': win_labels(W4), 'xrot': 90,
+        'ylab': '% m/m', 'zero_line': True,
+        'values': L(mom_all.iloc[-W4:].values),
+        'note': ('环比不做季节调整。台湾半导体的月营收有很强的日历效应（2 月天数少、'
+                 '农历年错位），单月 m/m 不能当趋势读 —— 要判断「这个季走得快还是慢」，'
+                 '看 Exhibit 10：它把已公布月份按典型季节形状外推成全季落点，直接对指引中值。'),
+    })
+
+    # ── Exhibit 5：汇率贡献拆分 —— NT$ vs US$ 增速，win=25 ──
+    W8 = 25
+    # 本图保留单月口径，但**理由要拿数据说**（不是「存量不能滚动」那类一般性说辞）：
+    # 下面这一次实测直接印进图注，读者能看到放弃滚动口径的代价有多大。
+    CAL8 = Y.caliber_diff(rev, Y.FLOW, win=W8)
+    ex.append({
+        'n': 5, 'kind': 'lines_endlabels', 'fmt': 'pct0',
+        'title': 'Revenue growth: NT$ vs. US$（单月同比 / single-month y/y）',
+        'xlabels': win_labels(W8), 'xrot': 90, 'ylab': '% y/y（单月）',
+        'series': [
+            {'name': 'NT$ revenue y/y (as reported)', 'color': 'NAVY', 'values': L(yoy.iloc[-W8:].values)},
+            {'name': 'US$ revenue y/y (converted)', 'color': 'MBLUE', 'values': L(yoy_usd.iloc[-W8:].values)},
+        ],
+        'src_extra': 'The gap between the two lines is the currency contribution. ' + ASSUMP,
+        'note': ('US$ 线是<b>推导值（Implied）</b>：NT$ 月营收 ÷ 当月平均 NTD/USD，'
+                 '不是公司披露的美元营收。假设：全部营收按当月平均汇率一次性折算，'
+                 '忽略月内汇率路径、对冲与递延收款，因此这条线只能看方向与量级。'
+                 f'<b>本图两条线都是单月同比</b>，与 Exhibit 2 右轴的 {Y.TTM_WIN} 个月滚动口径'
+                 '<b>不是一个数</b>：本图讲的是「公司这个月报出来的增速里有多少是汇率」，'
+                 'NAVY 线的线名写着 as reported，换成滚动口径它就不再是公司报的那个数了。'
+                 f'口径差异用本序列自己实测（{CAL8["n"]} 个两种同比都有值的月份）：'
+                 f'NT$ 单月同比逐月标准差 {CAL8["std_mom"]:.1f}pp、'
+                 f'{Y.TTM_WIN} 个月滚动 {CAL8["std_ttm"]:.1f}pp，'
+                 f'相邻月跳变中位 {CAL8["medjump_mom"]:.1f}pp vs {CAL8["medjump_ttm"]:.1f}pp，'
+                 f'窗口内两者<b>符号相反的月份 {CAL8["opposite_n"]} 个</b>'
+                 + ('（'
+                    + '；'.join(f'{m} 单月 {a:+.1f}% vs 滚动 {b:+.1f}%'
+                               for m, a, b in CAL8['opposite'][:3]) + '）。'
+                    if CAL8['opposite_n'] else '。')
+                 + f'当期并排：单月 {sgn(float(yoy.iloc[-1]))}、滚动 '
+                 f'{sgn(float(yoy_ttm.iloc[-1]))}。'),
+    })
+
+    # ── Exhibit 6：汇率对报表增速的贡献，win=25 ──
+    W9 = 25
+    fcd = fx_contrib.iloc[-W9:]
+    # 口径同 deck 的 lvl_bar：pct_series 的同比是百分点差，月度序列 ⇒ lag = 12。
+    # 走 yoy.mom_yoy(kind=RATIO)：比率序列的同比是 a − b（百分点），不是 (a/b−1)。
+    # 自己写 .diff(12) 也得同一个数，但口径判断从此只有一处定义。
+    fcd_yoy = Y.mom_yoy(fx_contrib, Y.RATIO).iloc[-W9:]
+    ex.append({
+        'n': 6, 'kind': 'grouped_bars',
+        'title': 'Currency contribution to reported growth（单月同比之差）',
+        'xlabels': win_labels(W9), 'xrot': 90,
+        'groups': [{'name': 'Currency contribution', 'color': 'BLUE', 'values': L(fcd.values)}],
+        'line': {'name': 'y/y change (pp, RHS)', 'color': 'GOLD',
+                 'values': L(fcd_yoy.values), 'yfmt': 'pp0'},
+        # 25 根柱在半栏卡片上 band 只有 20px、窄屏更掉到 10px 出头，而「+10.6pp」实测宽
+        # 22px —— 逐柱标签必然连成一串（人眼审查把「+6.3pp+6.4pp」列为整页最扎眼的一处）。
+        # 引擎的标签抽稀只对「一个 x 一个标签」的图型生效，并排柱图型按步长抽不掉，
+        # 所以这里按 PDF 版的做法收手：deck 在 win>14 时本来也只标每隔一根，
+        # 网页版「25 根全标」是它自己加的，正是压字的来源。数值改由 tooltip 与「表格」视图给全。
+        'bar_labels': False, 'fmt': 'pp1', 'label_fmt': 'pp1',
+        'ylab': 'pp of y/y', 'ylab2': 'pp y/y',
+        'src_extra': ('NT$ y/y less US$ y/y. Positive = a weaker NT dollar flattered the reported '
+                      'number. ' + ASSUMP),
+        'note': ('本图是 Exhibit 5 两条线之差，单位是百分点，不是百分比；'
+                 '<b>两条线都是单月同比，所以本图也是单月口径</b>'
+                 f'（与 Exhibit 2 右轴的 {Y.TTM_WIN} 个月滚动口径不可直接对读）。'
+                 '右轴金线是 PDF 版就有的次轴同比，本轮补回 —— 柱本身已是比率之差，'
+                 '所以它的同比同样取<b>百分点差</b>（当月贡献 − 去年同月贡献），'
+                 f'读作「汇率这条腿比一年前多贡献/少贡献了几个点」（本月 {sgn(float(fcd_yoy.iloc[-1]), 1, "pp")}）。'
+                 '柱顶不再逐根标数值：25 根柱的 band 只有 20px 上下，'
+                 '而「+10.6pp」这样的标签就有 22px 宽，全标必然叠字；'
+                 'PDF 版在窗口超过 14 期时也只标每隔一根。'
+                 '逐月读数请点右上角「表格」，或把鼠标停在任意一列上。'
+                 'PDF 版同样是 gsx.lvl_bar；网页 gs_bar 纵轴自 0 起会把 −14.1pp 那根柱'
+                 '画到画布外，故与 Exhibit 9 一样柱仍用单组 grouped_bars。'),
+    })
 
     # ── Exhibit 7：GS HKEX 式超长历史层 ──
     ex.append({
@@ -914,39 +914,52 @@ def main():
     # ── Exhibit 9：实际 vs 指引中值，win=14 ──
     W7 = 14
     bd = beat_s.iloc[-W7:]
-    # deck 的 lvl_bar(pct_series=True) 次轴：比率序列的「同比」是**百分点差**（不是百分比的
-    # 百分比变化），滞后期数按序列步长定 —— 季度序列步长 3 个月 ⇒ lag = 12/3 = 4 期。
-    bd_yoy = beat_s.diff(4).iloc[-W7:]
     mae = float(np.mean(np.abs(bd.values)))
     hit = int((bd.values > 0).sum())
+    # 右轴金线（deck lvl_bar 的次轴 = beat_s.diff(4)，比率序列取百分点差）2026-08 按用户要求删除。
+    # 删的理由不是图型限制，是它不该被读：柱本身已逐根标了数值，金线只是 bar[i]−bar[i−4]，
+    # 不含任何新数据；而 actual_rev_usdbn 是「三个月 NT$ 合计 ÷ 公司披露的当季汇率」（推导值），
+    # 所以「偏离」里混着汇率假设的误差 —— 2025Q2 的 +4.4% 偏离拆开是新台币口径 −0.2%、
+    # 汇率腿 +4.7%，对这样一个量再做四期差分，最醒目的读数会跟着汇率走而不是经营。
+    # 统计上也站不住：10 个点、σ=2.4pp、均值 +0.7pp（t=0.91），与白噪声的四期差分难以区分。
+    # 引擎的 grouped_bars 右轴本来就是可选的（见 build/engine_kinds.md §6），删掉即可。
     ex.append({
         'n': 9, 'kind': 'grouped_bars',
         'title': 'Actual vs. guidance midpoint',
         'xlabels': [mlab(p) for p in bd.index], 'xrot': 90,
         'groups': [{'name': 'Actual vs. guided midpoint', 'color': 'BLUE', 'values': L(bd.values)}],
-        'line': {'name': 'y/y change (pp, RHS)', 'color': 'GOLD',
-                 'values': L(bd_yoy.values), 'yfmt': 'pp0'},
         'bar_labels': True, 'fmt': 'pct1', 'label_fmt': 'pct1',
-        'ylab': '% vs midpoint', 'ylab2': 'pp vs. 4 qtrs ago',
+        'ylab': '% vs midpoint',
         'src_extra': SRC_G + ' 上一行的月营收公告不是本图的数据源。',
         'note': ('Positive = came in above the midpoint of the guided range. A persistent positive '
                  'bias is the company guiding conservatively, not a series of surprises。'
                  f'窗口内 {len(bd)} 个季度里有 {hit} 个高于中值，平均绝对偏离 {mae:.1f}%。'
                  'x 轴标的是该季的最后一个月（Mar-23 = 2023Q1）。'
-                 '右轴金线是 PDF 版就有的次轴同比，本轮补回：柱本身是比率，'
-                 '所以它的「同比」按 PDF 口径取<b>百分点差</b>（本季偏离 − 四个季度前的偏离），'
-                 '回答的是「这一季的保守程度比去年同期更保守还是更激进」，'
-                 '不是把一个百分比再除一次。'
+                 '<b>柱高不是纯经营偏离</b>：公司披露的季度美元营收本身是'
+                 '「三个月 NT$ 合计 ÷ 当季汇率」的推导值，而指引是按业绩会写明的<b>假设</b>汇率给的，'
+                 '所以每根柱里都含一条汇率腿。最极端的是 2025Q2 的 +4.4%：'
+                 '新台币口径其实是 −0.2%（低于按假设汇率折出的隐含中值），'
+                 '整个超额来自假设 32.5 而当季实际 31.054。剔掉汇率的那一版在 Exhibit 10。'
                  'PDF 版这张是 gsx.lvl_bar（浅蓝柱 + 右轴金色 y/y-pp 线）；网页的 gs_bar 纵轴强制'
                  '自 0 起，会把 2023Q1 的负值柱画到画布外，故柱仍用单组 grouped_bars'
-                 '（含负值、带柱顶数值标签），次轴挂在 grouped_bars 自己的右轴上。'),
+                 '（含负值、带柱顶数值标签）。'
+                 '<b>右轴那条金色次轴线 2026-08 已删</b>：它是「本季偏离 − 四个季度前的偏离」，'
+                 '不含柱以外的新数据，且同样被上面那条汇率腿污染 —— '
+                 '最近一点 −2.9pp 拆开是汇率 −4.3pp、新台币经营 +1.4pp，两条腿方向相反，'
+                 '图上最醒目的读数会把人带反。'),
     })
 
-    # ── Exhibit 10：季度至今的进度 vs 指引（进度差，pp）──
-    # 画的是「差」而不是「占指引中值的百分比」本身：后者从季内第 1 个月到第 3 个月天然
-    # 从 ~36% 爬到 ~102%，六十多 pp 的斜坡会把季与季之间那几 pp 的差压成几个像素 ——
-    # 那正是这张图原先（逐年 YTD 累计）「每年斜率都高一点、看不出东西」的同一个毛病。
-    # 减掉「历史同一位置的中位数」之后，剩下的全是「这季比典型节奏快多少、慢多少」。
+    # ── Exhibit 10：按当前进度外推的全季落点 vs 指引中值（pp）──
+    # 口径经过一次返工，返工的理由要留在这里，否则下次会有人改回去：
+    # 第一版画的是「pace − 历史同一位置的中位数」。算术没错，但零线成了「典型的超额」——
+    # 而台积电的中位季末落在指引中值的 102.19%（它基本季季 beat），于是 2026Q1 实际
+    # beat +1.96% 被画成 −0.23pp，2026Q2 beat +1.20% 画成 −0.99pp；14 个完整季里有
+    # 6 个「确实 beat 却显示为负」。图与事实打架，读者第一眼就会抓住（本轮正是这样被逮到的）。
+    # 现在改成除以「典型完成度」再减 100：v[k] = pace[k] / share[k] − 100，
+    # 其中 share[k] = 各完整季「前 k 个月占该季三个月合计」的中位数（share[3] ≡ 1）。
+    # 于是 **第 3 个月那一点就是该季相对指引中值的超额本身**，与 Exhibit 9 的柱同一个概念；
+    # 前两个月读作「若余下月份按典型季节形状走，全季会落在中值上下几个点」。
+    # 代价：M1 要除以 ~0.35，误差同样放大约 3 倍，这一条写进图注，别当精确预测读。
     # 分母按公司自己在业绩说明会写明的**假设汇率**折成新台币，所以本图全程不折算汇率：
     # 分子分母都是新台币，只讲经营节奏，不含新台币涨跌（与 Exhibit 8／9 的口径差见图注）。
     PACE_NQ = 4                    # 只画最近 4 个已完结指引季：正好一轮日历，配色也还分得开
@@ -975,11 +988,13 @@ def main():
     # 参照只取「已完结」的季：三个月全部公布、且不是当季 —— 当季进了参照就成了自己跟自己比。
     done_q = [q for q in g.index
               if pd.Period(q, freq='Q-DEC') != CQP and all(v is not None for v in pace[q])]
-    med_pace = [float(np.median([pace[q][k] for q in done_q])) for k in range(3)]
-    dev = {q: [None if v is None else v - med_pace[k] for k, v in enumerate(pace[q])]
+    # 典型完成度：前 k 个月占该季三个月合计的比例，取各完整季的中位数。share[2] 恒等于 1，
+    # 所以第 3 个月那一点除下来就是「全季相对指引中值的超额」本身。
+    share = [float(np.median([pace[q][k] / pace[q][2] for q in done_q])) for k in range(3)]
+    dev = {q: [None if v is None else v / share[k] - 100 for k, v in enumerate(pace[q])]
            for q in g.index}
 
-    # 同一日历季的历史均值：本季第 1 个月比全体中位低多少，有一半是日历结构而不是经营。
+    # 同一日历季的历史均值：本季第 1 个月比全体典型形状慢多少，有一部分是日历结构不是经营。
     same_q = [q for q in done_q if pd.Period(q, freq='Q-DEC').quarter == CQP.quarter]
     gray = ([float(np.mean([dev[q][k] for q in same_q])) for k in range(3)]
             if same_q else None)
@@ -999,10 +1014,23 @@ def main():
     _p_cur = float(rev_bn.iloc[-1])                 # 当月营收 NT$bn（抬头段的 cur_rev_bn 还没算到）
     P_SE = (1.2533 * float(np.std([dev[q][0] for q in done_q], ddof=1))
             / np.sqrt(len(done_q))) if len(done_q) > 1 else float('nan')
-    P_SPREAD = (max(d for q in done_q for d in dev[q] if d is not None)
-                - min(d for q in done_q for d in dev[q] if d is not None))
-    # 起跑落后能不能收回来：开局落后 1.5pp 以上的季，到第 3 个月各自收在哪
+    # 外推有多准：第 1／2 个月的外推值离最终落点的中位绝对差（这就是「打折扣读」的量化依据）
+    P_MAE1 = float(np.median([abs(dev[q][0] - dev[q][2]) for q in done_q]))
+    P_MAE2 = float(np.median([abs(dev[q][1] - dev[q][2]) for q in done_q]))
+    # 多少个完整季最终 beat 了中值（正号），用来说明零线不是「典型超额」而是中值本身
+    P_BEAT = sum(1 for q in done_q if dev[q][2] > 0)
+    # 前两点到底有没有预测力 —— 结论写进图注，别让读者以为「开局负=要 miss」。
+    # 实测：M1 与最终落点符号相反 7/14、相关系数 −0.19（负的）；开局为负的 5 个季最后全部 beat。
+    _m = np.array([[dev[q][k] for k in range(3)] for q in done_q], dtype=float)
+    P_SIGN1 = int(np.sum(np.sign(_m[:, 0]) != np.sign(_m[:, 2])))
+    P_R1 = float(np.corrcoef(_m[:, 0], _m[:, 2])[0, 1])
+    P_NEG1 = [q for q in done_q if dev[q][0] < 0]
+    P_NEG1_BEAT = sum(1 for q in P_NEG1 if dev[q][2] > 0)
+    P_MED = [float(np.median(_m[:, k])) for k in range(3)]          # 典型季在本轴上的位置
+    P_CONST = float(np.median(np.abs(_m[:, 2] - P_MED[2])))         # 「总是 +2.2pp」这种常数预测的误差
+    # 起跑落后能不能收回来：开局外推落在中值以下 1.5pp 以上的季，到第 3 个月各自收在哪
     P_BEHIND = [(q, dev[q][0], dev[q][2]) for q in done_q if dev[q][0] < -1.5]
+    P_BEHIND_IN = sum(1 for q, _, _ in P_BEHIND if q in set(done_q[-PACE_NQ:]))
     # 与 Exhibit 8／9 的口径分歧：同一个季，按假设汇率折 vs 按公司季报口径折，差最大的那个
     P_CLASH = []
     for q in done_q:
@@ -1022,26 +1050,43 @@ def main():
         # 当季线，跟下面 annot 的「本季无当季线」正好自相矛盾。故没有当季时钉在最近一个完结季。
         'series': pseries, 'highlight': (len(pseries) - 1 if has_cq
                                          else max(0, len(done_q[-PACE_NQ:]) - 1)),
-        'fmt': 'pp1', 'label_fmt': 'pp1', 'ylab': 'pp vs. typical pace',
+        'fmt': 'pp1', 'label_fmt': 'pp1', 'ylab': 'pp vs. guided midpoint',
         'src_extra': (SRC_G + ' 分子是上一行的月营收公告，指引区间与假设汇率来自季度业绩说明会。'
-                      f' Quarter-to-date NT$ revenue as a % of the guided midpoint converted at '
-                      f"TSMC's own guidance FX assumption, less the median of the {len(done_q)} "
-                      'completed guided quarters at the same month-of-quarter. '
+                      ' Quarter-to-date NT$ revenue as a % of the guided midpoint (converted at '
+                      "TSMC's own guidance FX assumption), divided by the typical share of the "
+                      f'quarter completed by that month across the {len(done_q)} completed guided '
+                      'quarters, less 100. The 3rd-month point is therefore the full-quarter '
+                      'result vs. the midpoint; earlier points project it. '
                       'Red = current quarter, drawn only as far as reported.'),
     }
     if not has_cq:
         ex10['annot'] = f'{CQ_LAB}：指引区间尚未录入，本季无当季线'
     _p_note = [
-        f'纵轴不是营收，是<b>「该季至今累计营收占指引中值的百分比」减去 {len(done_q)} 个'
-        f'已完结指引季在同一个位置的中位数</b>，单位百分点：0 = 与典型进度分毫不差，负 = 落后。'
-        f'不直接画那个百分比，是因为它从第 1 个月的 {med_pace[0]:.1f}% 爬到第 3 个月的 '
-        f'{med_pace[2]:.1f}%（{med_pace[2] - med_pace[0]:.0f}pp 的斜坡），'
-        f'而季与季之间的差合计只有 {P_SPREAD:.0f}pp —— 同轴画就是原先那张'
-        '「每年斜率都高一点」的图，看不出东西；减掉中位数才把后者放大到满屏。',
+        f'纵轴是<b>按当前进度外推的全季落点，相对指引中值差几个百分点</b>：'
+        f'0 = 正好落在中值上，正 = 超出中值（beat），负 = 低于中值。'
+        f'<b>第 3 个月那一点就是该季的实际超额本身</b>（该季三个月合计 ÷ 指引中值 − 1），'
+        f'与 Exhibit 9 的柱是同一个概念；前两个月是把已公布月份除以「典型完成度」外推 —— '
+        f'{len(done_q)} 个完整季的中位完成度是第 1 个月 {share[0] * 100:.1f}%、'
+        f'第 2 个月 {share[1] * 100:.1f}%。',
         f'分母按公司自己的口径折：{CQ_LAB} 指引中值 US${float(g_mid.get(CQ_LAB, np.nan)):.1f}bn ×'
         f' 业绩会写明的假设汇率 {float(gfx_g.get(CQ_LAB, np.nan)):.1f} = '
         f'NT${tgt_ntd.get(CQ_LAB, float("nan")):,.0f}bn；分子是已公布月份的 NT$ 营收直接相加。'
         '<b>全程不折算汇率</b>，分子分母都是新台币，所以这条线只讲经营节奏。',
+        f'<b>前两个月那两点不要当预测读，连方向都别读。</b>除以 {share[0] * 100:.1f}% 等于把'
+        f'当月偏差放大约 {1 / share[0]:.1f} 倍；实测 {len(done_q)} 个完整季，第 1 个月外推值与'
+        f'最终落点的中位绝对差 {P_MAE1:.1f}pp、第 2 个月 {P_MAE2:.1f}pp，而且'
+        f'<b>符号都对不上</b>：第 1 个月与最终落点符号相反的有 {P_SIGN1}/{len(done_q)} 个季，'
+        f'相关系数 {P_R1:+.2f}（是负的）；开局外推为负的 {len(P_NEG1)} 个季'
+        f'（{"、".join(P_NEG1)}）最终 <b>{P_NEG1_BEAT} 个全部 beat 了中值</b>。'
+        f'拿「台积电总是比中值高 {P_MED[2]:+.1f}pp」这种常数去猜，中位绝对误差 {P_CONST:.1f}pp，'
+        f'反而比第 2 个月的 {P_MAE2:.1f}pp、第 1 个月的 {P_MAE1:.1f}pp 都小。'
+        f'所以本图能用的是<b>第 3 个月那一点（实测，不是外推）与季间对比</b>，'
+        f'前两点只回答「到今天为止完成了多少」。',
+        f'<b>零线只在第 3 个月正好等于「打平指引中值」。</b>前两个月要跟典型路径比，'
+        f'不是跟 0 比：{len(done_q)} 个完整季的中位落点是第 1 个月 {P_MED[0]:+.2f}pp、'
+        f'第 2 个月 {P_MED[1]:+.2f}pp、第 3 个月 {P_MED[2]:+.2f}pp'
+        f'（台积电基本季季 beat，所以典型路径整条在零线之上）。'
+        f'同一日历季的典型路径就是图上那条灰线。',
     ]
     if has_cq:
         _p_rank = 1 + sum(1 for q in g.index
@@ -1049,9 +1094,12 @@ def main():
         _p_need = float(tgt_ntd[CQ_LAB]) - float(qsum.get(CQP, np.nan))
         _p_note.append(
             f'本季 {CQ_LAB}：{mlab(cur)} 累计 NT${float(qsum.get(CQP, np.nan)):,.0f}bn ='
-            f' 中值的 {pace[CQ_LAB][KPOS - 1]:.2f}%，比 {len(done_q)} 季中位'
-            f' {med_pace[KPOS - 1]:.2f}% {"低" if dev[CQ_LAB][KPOS - 1] < 0 else "高"}'
-            f' {abs(dev[CQ_LAB][KPOS - 1]):.2f}pp，在有指引的 {len(done_q) + 1} 个季里第 {_p_rank} 低。'
+            f' 中值的 {pace[CQ_LAB][KPOS - 1]:.2f}%，而第 {KPOS} 个月的典型完成度是'
+            f' {share[KPOS - 1] * 100:.1f}%，照此外推全季'
+            f'{"低于" if dev[CQ_LAB][KPOS - 1] < 0 else "高于"}中值'
+            f' {abs(dev[CQ_LAB][KPOS - 1]):.2f}pp，在有指引的 {len(done_q) + 1} 个季里第 {_p_rank} 低'
+            f'（{len(done_q)} 个已完结季里有 {P_BEAT} 个最终 beat 了中值，'
+            f'所以零线以下并不常见）。'
             + (f'剩余 {3 - KPOS} 个月月均需 NT${_p_need / (3 - KPOS):,.0f}bn，'
                f'比本月{"高" if _p_need / (3 - KPOS) >= _p_cur else "低"}'
                f'{abs(_p_need / (3 - KPOS) / _p_cur - 1) * 100:.1f}%'
@@ -1059,7 +1107,8 @@ def main():
     if gray and has_cq:
         _p_note.append(
             f'但这 {abs(dev[CQ_LAB][KPOS - 1]):.2f}pp 不能整口吞：灰线是日历修正 —— '
-            f'第 {CQP.quarter} 季的第 {KPOS} 个月结构性地就比全部季度的中位'
+            f'第 {CQP.quarter} 季的第 {KPOS} 个月结构性地就比全季度的典型形状'
+            f'{"慢" if gray[KPOS - 1] < 0 else "快"}，外推值平均'
             f'{"低" if gray[KPOS - 1] < 0 else "高"} {abs(gray[KPOS - 1]):.2f}pp'
             f'（{len(same_q)} 个同季观测：{"、".join(same_q)}），'
             f'扣掉之后真正属于经营的缺口是 {dev[CQ_LAB][KPOS - 1] - gray[KPOS - 1]:+.2f}pp，'
@@ -1068,8 +1117,8 @@ def main():
     if P_BEHIND:
         _p_note.append(
             f'起跑落后也不等于收不回来：有指引的 {len(done_q)} 个完整季里，'
-            f'{len(P_BEHIND)} 个开局落后 1.5pp 以上（多数不在本图画的 {PACE_NQ} 季窗口内），'
-            f'到第 3 个月的收敛情况是 '
+            f'{len(P_BEHIND)} 个第 1 个月外推到中值以下 1.5pp 以上'
+            f'（其中 {P_BEHIND_IN} 个画在本图的 {PACE_NQ} 季窗口里），到第 3 个月的实际落点是 '
             + '；'.join(f'{q} {a:+.2f}→{b:+.2f}pp' for q, a, b in P_BEHIND) + '。')
     if P_CLASH:
         _d, _q, _pg, _pr = P_CLASH[0]
@@ -1082,8 +1131,10 @@ def main():
             f'各自回答的问题不同：Exhibit 8／9 是「报出来的美元有没有落进区间」，本图是'
             '「新台币业务有没有跟上折成新台币的目标」。')
     _p_note.append(
-        f'参照本身也有误差：{len(done_q)} 个完整季的中位数标准误约 {P_SE:.2f}pp，'
-        '1pp 以内的偏离不要当信号读。'
+        f'两条误差别混用：典型完成度取自 {len(done_q)} 个完整季，它自身的中位数标准误约 '
+        f'{P_SE:.2f}pp（这是「参照线画在哪」的误差）；而「第 1 个月外推离最终落点多远」是'
+        f'另一回事，中位 {P_MAE1:.1f}pp —— 判断当季快慢要用后者这把尺。'
+        f'第 3 个月是实测值，两条误差都不适用。'
         f'指引表自 {g.index[0]} 起，此前 {len(rev) - sum(len(qmonths(q)) for q in g.index)} '
         '个月的月营收没有区间可对，一律不进本图；'
         '本图对的是指引表里<b>当前</b>那一行，公司若中途改区间或改假设汇率，历史读数会随之重算。')
@@ -1182,7 +1233,7 @@ def main():
     # 比上年同季的**同样前 n 个月**（qtd_bn 是季内逐月累计，同一日历月天然是同一个 n，
     # n=3 时退化成整季比整季，与 qyoy[-1] 相等）。qyoy[-1] 在季内第 1/2 个月是
     # 「n 个月 vs 上年完整 3 个月」，会把 +44.7% 的 Jul-26 印成 −53% 并涂红，
-    # 与同页表格自相矛盾 —— Ex6 右轴末点早已因此被图表引擎作废，抬头当时漏了同样处理。
+    # 与同页表格自相矛盾 —— Ex3 右轴末点早已因此被图表引擎作废，抬头当时漏了同样处理。
     q_now, q_yag = float(qtd_bn.get(cur, np.nan)), float(qtd_bn.get(yag, np.nan))
     cur_q_yoy = (q_now / q_yag - 1) * 100 if np.isfinite(q_yag) and q_yag else float('nan')
     ytd_now = float(ytd_bn.iloc[-1])
@@ -1224,12 +1275,12 @@ def main():
         + '这一句由本页 payload 现读生成，不是写死的说明文字 —— '
           '哪天真加了断点或截轴，它会自己改口，'
           '所以本页不会出现「图注说画了断点线、图上其实没有」这种自相矛盾。'
-        # 这句括注原先写死成「Ex6 左轴扩到负区是零点对齐的结果」，可 align_sim 现在算出
-        # waste=50%（超过引擎 38% 兜底），引擎早已改走两轴各自缩放那一支 —— 与 Ex6 自己
+        # 这句括注原先写死成「Ex3 左轴扩到负区是零点对齐的结果」，可 align_sim 现在算出
+        # waste=50%（超过引擎 38% 兜底），引擎早已改走两轴各自缩放那一支 —— 与 Ex3 自己
         # 那条现读生成的图注正好打架。既然上一句刚说过「不写死」，这里也跟着 payload 走。
-        + ('（Exhibit 6 左轴向下扩到负区是双轴零点对齐的结果，不是截轴：没有任何点被截掉，'
+        + ('（Exhibit 3 左轴向下扩到负区是双轴零点对齐的结果，不是截轴：没有任何点被截掉，'
            '所以图上也不该出现断轴符号或红色空心圈。）' if _a5['aligned'] else
-           f'（Exhibit 6 的两轴零点<b>没有</b>对齐：对齐要把左轴一路扩到 '
+           f'（Exhibit 3 的两轴零点<b>没有</b>对齐：对齐要把左轴一路扩到 '
            f'{_a5["alo"]:,.0f}、浪费掉 {_a5["waste"]:.0%} 量程，超过引擎兜底阈值，'
            '故两轴各自缩放，引擎已在绘图区左上角标出 —— 这同样不是截轴，没有任何点被截掉。）'))
 
@@ -1247,35 +1298,35 @@ def main():
          f'<b>{Y.TTM_WIN} 个月滚动合计同比</b>只有一处 —— <b>Exhibit 2</b> 的右轴金线'
          f'（最近 {Y.TTM_WIN} 个月营收合计 ÷ 上一个 {Y.TTM_WIN} 个月合计 − 1）；'
          '营收是流量、可加总，这个「合计」指代的是真实的一年营收，所以对它合法。'
-         '<b>单月同比</b>（当月 ÷ 去年同月 − 1）用在 <b>Exhibit 3</b>（NT$ 与 US$ 两条线）、'
-         '<b>Exhibit 4</b>（两者之差，取百分点）、'
-         '<b>Exhibit 6</b>（季度口径，3 个月比 3 个月）、'
-         '<b>Exhibit 9</b>（季度偏离的百分点差，比的是 4 个季度前）、'
+         '<b>单月同比</b>（当月 ÷ 去年同月 − 1）用在 <b>Exhibit 3</b>（季度口径，3 个月比 3 个月）、'
+         '<b>Exhibit 5</b>（NT$ 与 US$ 两条线）、'
+         '<b>Exhibit 6</b>（两者之差，取百分点）、'
+         '<b>Exhibit 9</b>（季度偏离，比的是指引中值）、'
          '<b>Exhibit 12</b> 热力矩阵，汇总表与核对表的 y/y 列，'
          '以及页顶「本月读数怎么读」一段（brief）里标明「单月」的读数 —— '
          'brief 与汇总表同口径、可逐格对上，它引用的滚动读数已在句内点名 Exhibit 2 口径。'
-         '这几处保留单月<b>不是漏改</b>，理由逐条不同：Exhibit 3／4 回答的是'
+         '这几处保留单月<b>不是漏改</b>，理由逐条不同：Exhibit 5／6 回答的是'
          '「公司这个月报出来的那个增速里有多少是汇率」，线名写着 as reported，'
          '换成滚动口径印出来的就不再是公司报的那个数；Exhibit 12 是热力矩阵、'
-         'Exhibit 6／9 是季度对照，逐格与逐季的波动本身就是题眼；'
+         'Exhibit 3／9 是季度对照，逐格与逐季的波动本身就是题眼；'
          '两张表的 y/y 列必须恒等于「本月 ÷ 去年同月」的表内算术 —— '
          '读者拿第一列除第三列得到的必须是同一个数，表内自相矛盾比口径混用更糟。'
          f'两种口径的当期读数并排在这里，省得跨图对：{mlab(cur)} 单月 {sgn(cur_yoy)}、'
          f'{Y.TTM_WIN} 个月滚动 {sgn(cur_ttm_yoy)}，差 {sgn(cur_yoy - cur_ttm_yoy, 1, "pp")}。'),
         ('<b>单月 y/y 有两个来源，数值上几乎重合</b>：Exhibit 12 热力矩阵与核对表用公司随公告'
-         '给出的 <code>yoy_pct</code> 原值；Exhibit 3／6 由本脚本按序列自算'
+         '给出的 <code>yoy_pct</code> 原值；Exhibit 3／5 由本脚本按序列自算'
          '（口径实现统一走 <code>build/yoy.py</code>，本页不再自己写 <code>pct_change(12)</code>）。'
          f'两者在 {SELF_N} 个可比月份上最大差 {SELF_MAXD:.2f}pp、中位差 {SELF_MEDD:.2f}pp，'
          '来自公司口径的四舍五入，未做人工对齐。'),
         ('<b>美元口径全部是推导值（Implied）</b>：US$ 营收 = NT$ 营收 ÷ 当月平均 NTD/USD。'
          '假设全部营收按当月平均汇率一次性折算，忽略月内汇率路径、对冲与递延收款。'
-         '汇率贡献（Exhibit 4）= NT$ y/y − US$ y/y，单位是百分点。'),
+         '汇率贡献（Exhibit 6）= NT$ y/y − US$ y/y，单位是百分点。'),
         ('<b>汇率序列口径</b>：月均 NTD/USD，等价于 FRED 的 EXTAUS（该月全部营业日美联储 H.10 '
          '台湾牌价的算术平均）。TSMC 约七成营收以美元计价却以新台币入账，所以这条线直接推动报表增速。'),
         ('<b>指引 vs 实际（Exhibit 8-9）与月营收不同源</b>：这两张图的美元数来自季度业绩说明会的'
          '指引区间与实际披露，季度营收口径含非月营收项；与月营收累加值之间的差额同时含汇率与口径差，'
          '不可直接相减。'),
-        ('<b>未满季提示</b>：Exhibit 6 的末季不足 3 个月时会画成浅蓝柱，且右轴 y/y 会被图表引擎强制'
+        ('<b>未满季提示</b>：Exhibit 3 的末季不足 3 个月时会画成浅蓝柱，且右轴 y/y 会被图表引擎强制'
          '作废 —— 拿 2 个月累计去比上年完整 3 个月必然砸出一个假坑。'
          f'本期 {cur_q} 已含 {n_in_last} 个月，'
          + ('为完整季度，无此标记。' if n_in_last >= 3 else '故末柱与末点按上述规则处理。')),
@@ -1285,11 +1336,12 @@ def main():
          '在末点标出读数，绝对水平不至于只能靠刻度目测；(2) Exhibit 2 由 '
          '<code>bar_line_dual</code> 换成 <code>gs_bar</code>，为的是把 PDF 有、网页一直没有的'
          '柱值标签与 y/y 末点读数补回来，代价是柱色从深藏青变成 gs_bar 固定的浅蓝；'
-         '(3) Exhibit 4 与 Exhibit 9 在 PDF 里是 <code>gsx.lvl_bar</code>，网页对应的 '
-         '<code>gs_bar</code> 纵轴强制自 0 起会把负值柱画到画布外（Ex4 的 2025-07 −14.1pp、'
-         'Ex9 的 2023Q1 −2.2%），故柱仍用单组 <code>grouped_bars</code>，'
-         '但 PDF 版的次轴同比线本轮已按原口径（比率序列取百分点差）补回，'
-         '不再是「换图型顺带删掉一整条序列」；(4) Exhibit 4 的柱顶不逐根标数值'
+         '(3) Exhibit 6 与 Exhibit 9 在 PDF 里是 <code>gsx.lvl_bar</code>，网页对应的 '
+         '<code>gs_bar</code> 纵轴强制自 0 起会把负值柱画到画布外（Ex6 的 2025-07 −14.1pp、'
+         'Ex9 的 2023Q1 −2.2%），故柱仍用单组 <code>grouped_bars</code>；'
+         'PDF 版的次轴同比线 Exhibit 6 保留、<b>Exhibit 9 的于 2026-08 删除</b>'
+         '（它是柱与柱之差、不含新数据，且与柱一样被指引汇率假设污染，理由见该图图注）；'
+         '(4) Exhibit 6 的柱顶不逐根标数值'
          '（25 根柱必然叠字，PDF 版在窗口 >14 期时同样只标每隔一根），读数走「表格」视图。'
          '此外 y/y 线的金色 GOLD #BF9000 已经在网页色板里，Exhibit 2 用回金色，'
          '早前那句「网页没有金色、改用绿色」已不成立，一并更正。'),
