@@ -116,6 +116,7 @@ hkex,2026-06,2026-07-07,"xlsx 直链 HTTP Last-Modified: Tue, 07 Jul 2026 10:24:
 hkex,2026-07,2026-08-07,"xlsx 直链 HTTP Last-Modified: Fri, 07 Aug 2026 08:05:28 GMT（= 2026-08-07 16:05 HKT）；工作簿 docProps/core.xml dcterms:modified=2026-08-07T08:03:38Z 同日，互为印证。HKEX 的工作簿与落地页都不写发布日，落地页只写数据月 ""Updated to …"""
 hood,2026-05,2026-06-09,"IR 静态文件「Robinhood Markets, Inc. May 2026 Monthly Metrics.xlsx」的 HTTP Last-Modified: Tue, 09 Jun 2026 16:19:38 GMT（取 GMT 日历日）"
 hood,2026-06,2026-07-29,"IR 静态文件「Q2'26 Earnings Supplement.xlsx」的 HTTP Last-Modified: Wed, 29 Jul 2026 15:56:23 GMT（取 GMT 日历日）"
+hood,2026-07,2026-08-12,"IR 静态文件「Robinhood Markets, Inc. July 2026 Monthly Metrics.xlsx」的 HTTP Last-Modified: Wed, 12 Aug 2026 16:05:41 GMT（取 GMT 日历日）"
 ibkr,2026-04,2026-05-01,"新闻稿 pr_202604.pdf 电头 ""May 1, 2026"""
 ibkr,2026-05,2026-06-01,"新闻稿 pr_202605.pdf 电头 ""GREENWICH, CT, June 1, 2026"""
 ibkr,2026-06,2026-07-01,"新闻稿 pr_202606.pdf 电头 ""July 1, 2026"""
