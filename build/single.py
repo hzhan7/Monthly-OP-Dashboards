@@ -2423,6 +2423,36 @@ def main(argv=None):
     ts = list(dict.fromkeys(ts))
     if not ts:
         ap.error('至少给一个 ticker，或 --all')
+
+    # ── 反向守卫：别把已经归 mrbase 的那几页打回旧图列 ──────────────────────────
+    # 2026-08 起 7 家台湾半导体走 build/mrbase.py + build/mrspecs/<t>.py（TSM 图列），
+    # 入口是 build/<t>.py 薄壳。monthly_run.builder() 认薄壳优先、走不到本脚本，
+    # **但本脚本的 `--all` 会枚举 build/specs/ 全量**，而那 6 家的旧 spec 还躺在那里
+    # （它们作为页面配置已经死了，只被 make_shells12.singles() 当枚举源用）。
+    # 于是人手跑一次 `python3 build/single.py --all`（docs/SINGLE_SPEC.md §0 与
+    # docs/VISUAL_QA.md 的幂等核对那一步都在教这条命令）就会**静默**把 6 页的
+    # payload 覆盖回 decomp/ttm_yoy/seasonality 那套旧图列 —— 页面不报错、闸门也全过，
+    # 只是图列悄悄换了一套。这是本轮路由审计查出的唯一真撞车口子，故在这里单向堵死。
+    # 判据与 mrbase.owned_elsewhere() 同源：看 build/<t>.py 里有没有 mrbase 字样。
+    owned = []
+    for t in ts:
+        shell = os.path.join(HERE, f'{t}.py')
+        try:
+            with open(shell, encoding='utf-8') as fh:
+                if 'mrbase' in fh.read():
+                    owned.append(t)
+        except OSError:
+            pass
+    if owned:
+        for t in owned:
+            print(f'[{t}] 跳过：本页已归 build/mrbase.py（build/{t}.py 是薄壳），'
+                  f'用 `python3 build/{t}.py` 重建，不要走 single.py')
+        ts = [t for t in ts if t not in owned]
+        if not ts:
+            # 显式点名给的 ticker 全被挡下 ⇒ 是用错命令了，非零退出把它喊出来。
+            # `--all` 展开后全被挡下不可能发生（specs/ 里还有 10 家交易所）。
+            return 1
+
     for t in ts:
         build(load_spec(t))
     return 0

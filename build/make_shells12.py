@@ -57,11 +57,21 @@ def singles():
 
     （壳目录本身要人去 `rm -rf`：本脚本只写不删，不会替人判断一个目录该不该消失。）
     """
-    d = os.path.join(HERE, 'specs')
-    if not os.path.isdir(d):
-        return []
-    return sorted(f[:-3] for f in os.listdir(d)
-                  if f.endswith('.py') and not f.startswith('_'))
+    # 枚举源是**两个**目录的并集，不是只有 specs/：
+    #   build/specs/<t>.py    → build/single.py 那条路（10 家交易所）
+    #   build/mrspecs/<t>.py  → build/mrbase.py 那条路（7 家台湾半导体，TSM 图列）
+    # 2026-08 接入 mrbase 之后只扫 specs/ 会漏掉后者。漏掉的后果不是报错而是
+    # **静默少铺 6 张壳** —— 已提交的 index.html 不会消失，所以平时看不出来，
+    # 只有改版式重铺时才会发现 6 页停在旧版式。tsm 不在这里，它的壳由
+    # build/make_shells.py 的硬编码 TICKERS 兜着（历史原因，两处都要在才算齐）。
+    out = []
+    for sub in ('specs', 'mrspecs'):
+        d = os.path.join(HERE, sub)
+        if not os.path.isdir(d):
+            continue
+        out += [f[:-3] for f in os.listdir(d)
+                if f.endswith('.py') and not f.startswith('_')]
+    return sorted(dict.fromkeys(out))
 
 
 TICKERS = CROSS + singles()
