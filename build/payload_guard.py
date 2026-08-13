@@ -60,6 +60,19 @@ import re
 # 见模块头「字符串匹配的误伤边界」。infinity 必须排在 inf 前面，否则 inf 先匹配上再回溯失败。
 _BAD = re.compile(r'(?<![A-Za-z_])(?:nan|infinity|inf)(?:[A-Za-z]{1,2})?(?![A-Za-z_])', re.I)
 
+# 模块头预告过的那次误报真的来了：**整词**恰好长成「nan/inf + 1-2 个字母」的专有名词。
+# 目前只有一个 —— 南亚科技的 ticker `nanya`（2408.TW，build/specs/nanya.py）。
+# 它出现在 payload.ticker / title / source / footer 等 9 处，而 ticker 是页面目录名，
+# 改措辞解决不了。
+#
+# 放行判据必须是**整词逐字相等**，不是「包含」：
+#   · 格式化产物永远是 `nan` + 单位（bn/mn/tn/k/pp/bp/x/%），凑不出 `nanya`
+#     —— 本仓 18 个格式器一个都不以 y 或 ya 结尾（见 docs/SINGLE_SPEC.md §4）；
+#   · 反过来，`$nanbn` / `nan%` / `+nanpp` 这些真·坏串一个都不在这张表里，照样被拦。
+# 加词的门槛：只有当某个**整词**同时满足「是专有名词」与「不可能由 f-string 造出来」
+# 时才允许加，并在这里写清是哪一家、为什么改不了措辞。
+_ALLOW_WORDS = frozenset({'nanya'})
+
 
 class PayloadGuardError(SystemExit):
     """既是异常也是非零退出 —— raise 出来只打一行原因、exit 1，
@@ -95,11 +108,15 @@ def _scan(node, path, out):
         elif node in (float('inf'), float('-inf')):
             out.append((path, f'{node}'))
     elif isinstance(node, str):
-        hit = _BAD.search(node)
-        if hit:
+        # finditer 而不是 search：放行了白名单词还要继续往后扫，
+        # 否则 '南亚科…$nanbn' 这种「白名单词在前、坏串在后」会被整串放过。
+        for hit in _BAD.finditer(node):
+            if hit.group(0).lower() in _ALLOW_WORDS:
+                continue
             i = max(0, hit.start() - 28)
             s = ('…' if i else '') + node[i:hit.end() + 28] + ('…' if hit.end() + 28 < len(node) else '')
             out.append((path, f'展示串里出现 {hit.group(0)!r}：{s}'))
+            break
 
 
 def check(payload):
