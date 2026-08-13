@@ -32,11 +32,22 @@
     全程 UA 带邮箱，无 Cookie、无登录态、无验证码，可无人值守。
 
 ═══ 每份新闻稿给多少期 ═══
-    Table「AUM in ETFs Linked to MSCI Equity Indexes」：**5 个季度**（滚动窗口）
-        → 平均 AUM、Period-End Basis Point Fee 各 5 期
-    Table 1A（Index Segment: Results）：**2 个季度**（本季 + 去年同季）
-        → asset-based fee 收入只有 2 期
+    AUM 表（新版「AUM in ETFs Linked to MSCI Equity Indexes」／
+            2017-08-03 及更早叫「Table 7: ETF Assets Linked to MSCI Indexes」）：
+        **5 个季度**（滚动窗口）→ 平均 AUM、Period-End Basis Point Fee 各 5 期
+    收入表：**两种版式**，本模块 Table 1A 优先、Table 5 兜底
+        Table 1A（Index Segment: Results，2020-01-30 起）：**2 期**（本季 + 去年同季）
+        Table 5（Operating Results by Segment and Revenue Type，全期都有）：
+            **3 期**（本季 + 去年同季 + 上一季）—— 2019-10-31 及更早唯一的来源
     所以 revenue 是最稀缺的那一维，全量历史必须逐份新闻稿扫过去。
+    Table 5 在新版新闻稿里也还在，但只作兜底：新版走 Table 1A 就够，两条路都解析
+    只会往 restatements() 里灌一堆「同一个数出现两次」，还会改掉既有行的 source_url。
+
+═══ 覆盖到哪一季 ═══
+    2015-Q1 – 最新季（submissions.json 的 recent 段回溯到 2016-04-28 那份 8-K，
+    它的 AUM 表给 2015-Q1 – 2016-Q1、Table 5 给 2015-Q1）。
+    METRIC_BP 只有 2019-Q2 起才有（见口径坑 4：更早的新闻稿印的是另一个口径，
+    宁可缺一期也不混）。build/msci.py 不读 METRIC_BP 的历史值，只用最新季那一个。
 
 ═══ 口径坑（每一条都踩过，删任何一条都会静默出错）═══
 1. **列顺序不固定**。2021-07 / 2021-10 / 2022-01 三份是**新到旧**
@@ -52,9 +63,17 @@
      · 必须从表头读 thousands/millions，不能写死；
      · 2026 起的期数精度天然比老期数低，**这是 MSCI 改了披露精度，不是解析错**。
 4. **"Period-End Basis Point Fee" 与 "Avg. Basis Point Fee" 是两个东西**。
-   2020-07 之前那一行叫 "Avg. Basis Point Fee"。CSV 里的 metric 名叫
+   2019-08 之前那一行叫 "Avg. Basis Point Fee"。CSV 里的 metric 名叫
    disclosed_period_end_basis_point_fee_etf，只能接前者。本模块对后者**不产出**
-   该 metric（宁可缺一期，不可混口径）。这也是 START_FILING_DATE 的下界之一。
+   该 metric（宁可缺一期，不可混口径），所以 2019-Q1 及更早没有这个 metric ——
+   这是**设计结果不是缺失**。曾经拿它当 START_FILING_DATE 的下界，那是搞混了：
+   拦口径的是解析器里的 _AUM_BP_PE，不是起点日期（见 START_FILING_DATE 的注释）。
+
+4b. **老版 AUM 表叫另一个名字**。2017-08-03 及更早是 "Table 7: ETF Assets Linked to
+   MSCI Indexes (unaudited)"，行标签是 "Period-Average AUM"（带连字符）。表体结构
+   与新版逐行一致，重叠季度数值逐格相同。_AUM_CAPTION_OLD 只作兜底。
+   老版表头还有一处不同：月-日与年份是**交替排**的（"Mar. 31, 2016 Dec. 31, 2015 …"）
+   而不是分两段。_columns() 用 findall + zip，两种排法都还原得对，不用改。
 5. **表格标签会被数字截断**。个别年份的 HTML 把标签折行成
    "Beginning Period AUM in ETFs linked to $ 1,336.2 … MSCI equity indexes"，
    数字插在标签中间。所以只能「锚定标签前缀 → 往后取 N 个数字」，
@@ -114,10 +133,18 @@ TIMEOUT = 90
 RETRIES = 4
 SLEEP = 0.35            # SEC 公开限速 10 req/s，这里留足余量
 
-# 起点：2020-04-28 那份（2020-Q1 业绩）。选它的原因见口径坑 4 和 7 ——
-# 再往前 AUM 表标签是 "Avg. Basis Point Fee" 和非 equity 口径，混进来就串味。
-# 这份能给到 2019-Q1 的平均 AUM 与 2019-Q1 的 ABF 收入。
-START_FILING_DATE = '2020-04-01'
+# 起点：2016-04-28 那份（2016-Q1 业绩）。原来是 2020-04-01，那时把口径坑 4 和 7
+# 当成了「不能往前取」的理由，其实两条都只是**metric 覆盖面**的问题而不是串味：
+#   · 坑 4（"Avg. Basis Point Fee" ≠ "Period-End Basis Point Fee"）：解析器本来就只认
+#     后者，老新闻稿里没有那一行 → 老季度天然不产出 METRIC_BP。缺一期，不混口径，
+#     这正是坑 4 要的行为，不需要靠起点日期兜。实测老季度 METRIC_BP 全部为空。
+#   · 坑 7（"ETFs linked to MSCI indexes" → "…MSCI equity indexes"）：官方自己确认是
+#     纯改名，重叠季度数值逐格相同。METRIC_AUM 的名字带 equity 而 2019-10 之前的
+#     披露标题不带 —— 这是**名字**与披露字面的出入，不是口径的出入；这张 AUM 表
+#     从来就只含股票 ETF。下面 _AUM_CAPTION_OLD 的注释里记了这笔账。
+# 换起点是为了让 build/msci.py 的 Exhibit 8 / 10 / 11 能和同页其余各图一样从 2016 起
+# （费率序列是那三张图唯一的左边界）。这份能给到 2016-Q1 的平均 AUM 与 ABF 收入。
+START_FILING_DATE = '2016-04-01'
 
 SUB_DIR = 'msci_rates'          # cache_dir 下的子目录
 SUBMISSIONS_TTL = 6 * 3600      # submissions.json 缓存 6 小时；EX-99.1 是不可变文件，永久缓存
@@ -287,6 +314,14 @@ def _numbers(text, start, count, decimals_only=False):
 # 重叠季度数值完全一致（2020-Q4 平均 AUM 两份都是 999.2），是纯改写法。
 _AUM_CAPTION = re.compile(
     r'AUM in (?:equity )?ETFs linked to MSCI (?:equity )?indexes\s*\(unaudited\)', re.I)
+# 2017-08-03 及更早的新闻稿里这张表根本不叫这个名字，叫 "Table 7: ETF Assets Linked to
+# MSCI Indexes (unaudited)"（2017-11-02 那份起才改成上面那种写法）。行标签也不同：
+# "Period-Average AUM"（带连字符）、"Avg. Basis Point Fee"（不是 Period-End）。
+# 表体结构完全一样：5 个季度列、Beginning / Appreciation / Inflows / Period-End /
+# Period-Average 五行，重叠季度数值逐格相同（2016-Q3 467.3、2016-Q4 471.1 两版一致）。
+# 只作**兜底**：新写法匹配得上就绝不走这条，保证 2017-11 之后的既有行逐字节不变。
+_AUM_CAPTION_OLD = re.compile(
+    r'Table\s*\d+[A-Z]?\s*:\s*ETF Assets Linked to MSCI Indexes\s*\(unaudited\)', re.I)
 _AUM_AVG = re.compile(r'Period[-\s]Average AUM in')
 _AUM_BP_PE = re.compile(r'Period-End Basis Point Fee')
 _AUM_BP_AVG = re.compile(r'Avg\.\s*Basis Point Fee')
@@ -295,7 +330,7 @@ _AUM_BEGIN = re.compile(r'Beginning Period AUM in')
 
 def _parse_aum_table(text):
     """→ {period: {'avg': float, 'bp': float|None}}，5 期。"""
-    cap = _AUM_CAPTION.search(text)
+    cap = _AUM_CAPTION.search(text) or _AUM_CAPTION_OLD.search(text)
     if not cap:
         return {}
     begin = _AUM_BEGIN.search(text, cap.end())
@@ -329,24 +364,49 @@ _T1A_ALT = re.compile(r'Operating Results \(unaudited\)\s*Index\b')
 _OPREV = re.compile(r'Operating revenues\s*:')
 _ABF = re.compile(r'Asset-based fees\b')
 
+# 2020-01-30 之前没有 Table 1A。同一份数据在
+# "Table 5: Operating Results by Segment and Revenue Type (unaudited)" 的 Index 段里，
+# 而且给的是**三列**（本季 / 去年同季 / 上一季），比 Table 1A 还多一期。
+# 锚点必须一直吃到 "Index" 那个分段小标题：这张表按 Index / Analytics / All Other 依次排，
+# 只锚表名会让下面的 _OPREV 落到 Index 段的表头里没问题，但表名与 Index 之间偶尔夹一个
+# 脚注号（"(unaudited) 1 Index"），所以中间允许一小段非字母。
+_T5 = re.compile(
+    r'Table\s*\d+[A-Z]?\s*:\s*Operating Results by Segment[^()]*\(unaudited\)'
+    r'[^A-Za-z]*Index\b', re.I)
+
+
+def _qi(p):
+    y, q = p.split('-Q')
+    return int(y) * 4 + int(q)
+
 
 def _parse_index_revenue(text):
-    """Index 分部 Table 1A → {period: revenue_USDmn}，本季 + 去年同季共 2 期。"""
-    anchor = _T1A.search(text) or _T1A_ALT.search(text)
+    """Index 分部的 asset-based fee 收入 → {period: revenue_USDmn}。
+
+    两种版式，**Table 1A 优先**（2020-01-30 起）：
+      Table 1A  2 列：本季、去年同季
+      Table 5   3 列：本季、去年同季、上一季（2016-04 – 2019-10 唯一的来源）
+    Table 5 在新版新闻稿里也还在，但这里只把它当兜底 —— 新版走 Table 1A 就够，
+    多解析一份只会往 restatements() 里灌进一堆「同一个数出现两次」的噪音，
+    而且会动到既有 CSV 行的 source_url。
+    """
+    anchor, want = _T1A.search(text) or _T1A_ALT.search(text), 2
+    if not anchor:
+        anchor, want = _T5.search(text), 3
     if not anchor:
         return {}
     head_end = _OPREV.search(text, anchor.end())
     if not head_end:
         return {}
     header = text[anchor.end():head_end.start()]
-    cols = _columns(header, 2)
+    cols = _columns(header, want)
     if not cols:
         return {}
-    # 本季与去年同季必须正好差 4 个季度，差了说明表头认错了
-    def qi(p):
-        y, q = p.split('-Q')
-        return int(y) * 4 + int(q)
-    if qi(cols[0]) - qi(cols[1]) != 4:
+    # 本季与去年同季必须正好差 4 个季度，差了说明表头认错了；
+    # 三列版还要求第三列正好是上一季（Table 5 的列序固定，错位就是解析出了岔子）。
+    if _qi(cols[0]) - _qi(cols[1]) != 4:
+        return {}
+    if want == 3 and _qi(cols[0]) - _qi(cols[2]) != 1:
         return {}
 
     low = header.lower()
@@ -360,14 +420,14 @@ def _parse_index_revenue(text):
     abf = _ABF.search(text, head_end.end())
     if not abf:
         return {}
-    vals = _numbers(text, abf.end(), 2)
+    vals = _numbers(text, abf.end(), want)
     if not vals:
         return {}
     return {p: round(v * scale, 3) for p, v in zip(cols, vals)}
 
 
 def _own_quarter(revenue_cols):
-    """Table 1A 第一列就是新闻稿自己那一季。"""
+    """Table 1A / Table 5 的第一列都是新闻稿自己那一季。"""
     return revenue_cols[0] if revenue_cols else None
 
 
