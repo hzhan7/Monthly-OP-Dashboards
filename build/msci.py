@@ -404,8 +404,11 @@ def main():
     # 不适用本口径的两张：Exhibit 4 本来就画全历史（2008-12 起），
     # Exhibit 9 是逐年路径图（x 轴是 Jan..Dec，窗口由「最近 6 年」定义，没有连续时间轴）。
     #
-    # 费率派生的四张（Exhibit 7 / 8 / 10 / 11）够不到 2016：有效费率序列最早只到 2019Q1，
-    # 它们各自取「2016 起 ∩ 数据可得」= 全序列。这不是漏改，页尾 note 里明说了原因。
+    # 费率派生的四张（Exhibit 7 / 8 / 10 / 11）以前够不到 2016 —— 有效费率序列只回溯到
+    # 2019Q1。2026-08 把 fetch/rates_msci.py 的抓取起点从 2020-04 下压到 2016-04 并补上
+    # 老版式解析（Table 5 三列收入 + Table 7 老 AUM 表），费率序列现已自 2015Q1 起，
+    # 这四张因此和其余各图一样真的从 2016 起。2015 那四季不是多余的：Exhibit 8 / 10 的
+    # 同比要往前借 4 个季度、Exhibit 11 的同比要借 12 个月，没有它们 2016 年会是空的。
     WIN0 = '2016-01'                                     # 短窗口图的起点（含）
     QWIN0 = qof(WIN0)                                    # 同一个起点的季度写法（'2016Q1'）
     if WIN0 < months[0]:
@@ -640,8 +643,8 @@ def main():
     }, WM, BRK, BRK_CN_M))
 
     # ══════════════════════════ Exhibit 7：隐含 asset-based fee（月） ══════════════════════════
-    # 窗口口径同 Exhibit 2（2016 起），但费率序列最早只到 qs[0]（2019Q1），
-    # 所以这里实际取的是「2016 起 ∩ 可得」= 隐含序列全长。图注与页尾 note 都写明了。
+    # 窗口口径同 Exhibit 2（2016 起）。费率序列现已自 qs[0] = 2015Q1 起（抓取起点下压后
+    # 补齐，见窗口那一段的说明），所以这条隐含序列在 2016-01 之前也有值，切窗口切得实。
     WMa = [k for k in abf_months if k >= WIN0]
     XLMa = [mlab(k) for k in WMa]
     yoy7 = (abf[LATEST] / abf[ym(li - 12)] - 1) * 100
@@ -659,15 +662,15 @@ def main():
         'yoy': {'name': 'y/y (RHS)', 'color': 'GOLD', 'values': RL(yoy7_s), 'yfmt': 'pct0'},
         'src_extra': BR_NOTE + ' ' + FEE_Q_EN,
         'note': ('<b>Implied</b>：不是公司披露的月度值。' + BR_NOTE +
-                 f' 本页短窗口图一律自 {mlab(WM[0])} 起，但本图只能自 {mlab(WMa[0])} 起 ——'
-                 f'费率最早只回溯到 {qs[0]}，更早的月份没有费率可乘，'
-                 '不是数据缺失也不是窗口漏改。'
+                 f' 本图与本页其余短窗口图同起点（{mlab(WMa[0])}）：费率序列自 {qs[0]} 起，'
+                 f'隐含序列因此覆盖 {mlab(abf_months[0])} 起共 {len(abf_months)} 个月，'
+                 '够得到窗口起点。'
                  '金色线是<b>右轴同比</b>（%），不是滚动均线。' + FEE_Q_CN),
     }, WMa, BRK, BRK_CN_M))
 
     # ══════════════════════════ Exhibit 8：有效费率（季度） ══════════════════════════
-    # 窗口口径同 Exhibit 5（2016Q1 起），但费率序列本身最早只到 qs[0]（2019Q1），
-    # 于是这里取到的就是全序列 —— 与同页 Ex10 覆盖同一段，两张图仍可逐季对读。
+    # 窗口口径同 Exhibit 5（2016Q1 起）。费率全序列自 qs[0] = 2015Q1 起，比窗口还早
+    # 4 个季度 —— 正好够下面 bp_yoy() 给窗口第一格算出同比，不会开头空一年。
     QS8 = [q for q in qs if q >= QWIN0]
     bpq = [BP_Q[q] for q in QS8]
     XLbp = [mlab(qlab_month(q)) for q in QS8]
@@ -695,9 +698,9 @@ def main():
                  'This is the bridge\'s real uncertainty: AUM compounded but the rate compressed from '
                  f'{bpq[0]:.2f}bp to {bpq[-1]:.2f}bp over the {len(QS8)} quarters shown. '
                  f'The period-end ETF fee of {DISC_Q[last_q]:.2f}bp is lower as it also covers '
-                 f'non-ETF licensing. 本页短窗口图一律自 {QWIN0} 起，'
-                 f'但费率序列本身最早只到 {qs[0]}，所以本图画的就是全序列（{len(QS8)} 季，'
-                 f'{QS8[0]} → {QS8[-1]}）—— 左侧没有更早的柱不是窗口漏改，是没有数据。'
+                 f'non-ETF licensing. 本图窗口同本页其余短窗口图，自 {QS8[0]} 起共 {len(QS8)} 季'
+                 f'（费率全序列自 {qs[0]} 起共 {len(qs)} 季，窗口外的 {qi(QWIN0) - qi(qs[0])} 季'
+                 '不画，但右轴的同比要借它们才算得出窗口第一格）。'
                  '柱子从 0 起（柱图不许截基线），所以 4.1bp → 3.4bp 这段压缩在柱高上看不出来 —— '
                  '要看压缩请读<b>金色的右轴线</b>：它画的是逐季基点差，'
                  f'最近一季 {yoy8:+.2f}bp。y 轴刻度就是 bp，故同比用<b>基点差（bp）</b>，'
@@ -777,11 +780,18 @@ def main():
     yw = [k for k in abf_months if ym(mi(k) - 12) in abf and k >= WIN0]
     yv = [(abf[k] / abf[ym(mi(k) - 12)] - 1) * 100 for k in yw]
     aum_yoy = yoy(AVG, LATEST)
-    # add_brk 在这里必然是空操作（本图自 2020-01 起，断点不在窗口内），仍然照调：
-    # 判据只有一处，别在这张图上另写一句「本图无需断点线」的人肉结论。
+    # 费率序列补到 2015Q1 之后，abf 自 2015-01 起，同比让掉 12 个月仍落在 2016-01，
+    # 所以本图窗口与其余短窗口图对齐，2019-04 的断点也回到了窗口内（add_brk 会画）。
     ex.append(add_brk({
+        # 通栏，同 Exhibit 3 / 7：窗口拉到 2016 之后这条线是 127 个点，半栏里 band 只有
+        # 3.6px，**首点的数值标签**（居中落在 Xc(0)）会整块压进左轴刻度栏 ——
+        # 实测「10.5%」与刻度「20」水平重叠 5.9px。引擎那边 thinLabels 只解标签之间的
+        # 冲突、解不了标签压刻度，而 charts.js 是 28 个页面共用的，不为一页去动它。
+        # 通栏后 band 8.3px，实测本页全图零重叠。
+        # ⚠️ 这条冲突是**值相关**的（首点标签正好落在某根刻度的高度上才撞），
+        # 不是通栏就结构性免疫；每月重跑后仍要看一眼回归（同页 Exhibit 3 同理）。
         'n': 11, 'kind': 'gs_line', 'fmt': 'pct1', 'xlabels': [mlab(k) for k in yw],
-        'xstep': MSTEP, 'xrot': 90,
+        'full': True, 'xstep': MSTEP, 'xrot': 90,
         'title': (f'Implied fee revenue, y/y — {mlab(LATEST)} {sgn_pct(yv[-1])}，'
                   f'慢于平均 AUM 的 {sgn_pct(aum_yoy)}'),
         'ylab': '% y/y', 'values': RL(yv),
@@ -790,8 +800,8 @@ def main():
         'note': ('增速慢于 AUM，差额就是有效费率的压缩（见 Exhibit 8）。'
                  f'{mlab(LATEST)}：隐含费收 {sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
                  f'缺口 {yv[-1] - aum_yoy:+.1f}pp。'
-                 f'本图自 {mlab(yw[0])} 起：隐含序列本身自 {mlab(abf_months[0])} 起（费率最早覆盖 '
-                 f'{qs[0]}），同比还要再往后让 12 个月，够不到本页 {mlab(WM[0])} 的窗口起点。'
+                 f'本图自 {mlab(yw[0])} 起，与本页其余短窗口图同起点：隐含序列自 '
+                 f'{mlab(abf_months[0])} 起（费率覆盖 {qs[0]} 起），同比让掉 12 个月之后仍够得到。'
                  + FEE_Q_CN),
     }, yw, BRK, BRK_CN_M))
 
@@ -908,7 +918,13 @@ def main():
         f'最新已知季度（{last_q} = {last_bp:.3f}bp）之后的月份沿用该值，那一段才是真正的估计 —— '
         + (f'本次有 {n_ffill} 个月落在这一段。' if n_ffill else
            f'本次费率已覆盖到最新月 {mlab(LATEST)}，沿用段为空，桥全程是分摊。')
-        + f'隐含序列只回溯到 {mlab(abf_months[0])}（费率最早覆盖 {qs[0]}）。',
+        + f'隐含序列自 {mlab(abf_months[0])} 起共 {len(abf_months)} 个月（费率覆盖 {qs[0]} 起'
+        f'共 {len(qs)} 季）——'
+        f'2026-08 把 SEC 8-K 的抓取起点从 2020-04 下压到 2016-04 并补上老版式解析'
+        f'（Table 5 三列收入表 + Table 7 老 AUM 表），费率序列因此由 30 季扩到 {len(qs)} 季，'
+        '这四张桥图才和同页其余各图一样从 2016 起。'
+        '新补的季度逐季与 MSCI 官网月度 AUM 页的季度均值对过账（46 季全部落在 ±0.35% 内，'
+        '典型 ±0.05%），既有季度的数值一格未动。',
         # 核对表（Exhibit 13）的渲染器只吃 cols/rows，挂不上 note；它的「有效费率」列
         # 里同一季的三个月是同一个数，读者最容易把它误读成月度披露值 —— 所以这条必须在。
         '<b>费率的期间口径（Exhibit 7 / 8 / 10 / 11 与核对表的「有效费率」列）</b>：' + FEE_Q_BODY
@@ -930,10 +946,13 @@ def main():
         '<b>两张不适用</b>：Exhibit 4 本来就画全历史（'
         f'{mlab(months[0])} 起 {len(months)} 个月），Exhibit 9 是逐年路径图（x 轴是 Jan–Dec，'
         '窗口由「最近 6 年」定义，没有连续时间轴）。'
-        f'<b>四张够不到 {WIN0}</b>：Exhibit 7 / 8 / 10 / 11 都由有效费率派生，而费率序列最早只到 '
-        f'{qs[0]}，于是 Exhibit 7 自 {mlab(WMa[0])}、Exhibit 8 / 10 自 {QS8[0]}、'
-        f'Exhibit 11 自 {mlab(yw[0])}（同比再让 12 个月）起 —— 各自取「{WIN0} 起 ∩ 数据可得」，'
-        '左侧空着是没有数据，不是窗口漏改。'
+        f'<b>费率派生的四张也够到了</b>：Exhibit 7 / 8 / 10 / 11 由有效费率派生，费率序列原先'
+        f'只回溯到 2019Q1，这四张只能从 2019 起。本轮把 SEC 8-K 的抓取起点下压到 2016-04 并'
+        f'补上老版式解析，费率序列现自 {qs[0]} 起共 {len(qs)} 季，于是 Exhibit 7 自 '
+        f'{mlab(WMa[0])}、Exhibit 8 / 10 自 {QS8[0]}、Exhibit 11 自 {mlab(yw[0])} 起 —— '
+        f'与其余各图同起点。{qs[0]}–{qname(qi(QWIN0) - 1)} 那几季不画但要留着：'
+        'Exhibit 8 / 10 的同比往前借 4 季、Exhibit 11 的同比借 12 个月，'
+        '没有它们窗口开头会空一年。'
         f'热力矩阵（Exhibit 12）同口径取 {hyears[0]}–{hyears[-1]} 共 {len(hyears)} 个年度行；'
         '核对表仍是最近 13 个月的相对窗口 —— 它是「最近一年逐月核对」的工具，不是趋势图。'
         f'月度图的 x 轴每 {MSTEP} 格标一次（每年 1 月）、季度图每 {QSTEP} 格标一次（每年 Q1），'
