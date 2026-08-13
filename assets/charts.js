@@ -1726,6 +1726,58 @@
       });
     }
 
+    /* 左轴刻度 vs 逐点数值标签：同上一条规矩的另一半 —— 冲突时让刻度让位。
+
+       上面那段只管住了「次轴末点读数 vs 右轴刻度」，可**左轴**有结构完全一样的问题：
+       gs_line / gs_line_avg 的逐点标签是**居中**落在 Xc(i) 上的，i = 0 时它有一半宽度
+       伸进左边的刻度栏；band 一小（长窗口）就实打实压上刻度。thinLabels() 只解标签
+       之间的冲突，压刻度它管不着，于是读者看到的是一团糊在一起的字。
+
+       实测（28 个页面 / 583 张图 / 3821 根左轴刻度，卡片宽 1240px 的设计宽度下）：
+       21 处刻度被数值标签压住，散在 10 个页面，**每张图最多 1 根**（axp Ex8、
+       db1 Ex31/34/35/37、enx Ex33、exchanges12 Ex9、hkex Ex3/Ex20、ice Ex15/19/20/22、
+       lpla Ex16、lseg Ex10/Ex50、sgx Ex7/8/27/28、tmx Ex25）。窗口更窄时更多
+       （msci Ex3 在 1000px 下「-6.6%」整块压在刻度「0」上）。
+
+       判断谁让位与右轴同理，且理由是同一条：**数值标签是真实数据，刻度只是标尺**，
+       少一格刻度读者照样读得出量级，糊成一团则两个数都读不出来。
+
+       两条保险：
+         · 只删**真的重叠**的那一根（同 hit() 的 1px 容差），不做预防性删除；
+         · 至少留 2 根刻度 —— 一根不剩就没有量纲了，那比叠字更糟。
+           实测下界从未被触发（每图最多删 1 根，而最少的图也有 4 根）。 */
+    (function () {
+      var lticks = [], dlabs = [];
+      svg.querySelectorAll('[data-tick="l"]').forEach(function (t) { lticks.push(t); });
+      if (lticks.length < 3) return;              // 本来就两根，删了等于没刻度
+      /* 只跟**画在数据层 g 里的非旋转文字**比：旋转的是截轴真值/断点标签（竖排，
+         本来就在别的地方），刻度自己带 data-tick 不会自比。 */
+      g.querySelectorAll('text').forEach(function (t) {
+        if (!t.getAttribute('data-tick') &&
+            (t.getAttribute('transform') || '').indexOf('rotate') < 0) dlabs.push(t);
+      });
+      if (!dlabs.length) return;
+      var bbox = function (e) { try { return e.getBBox(); } catch (err) { return null; } };
+      var over = function (a, b) {
+        return a.x < b.x + b.width + 1 && b.x < a.x + a.width + 1 &&
+               a.y < b.y + b.height + 1 && b.y < a.y + a.height + 1;
+      };
+      var left = lticks.length, i, j, tb, lb;
+      for (i = 0; i < lticks.length && left > 2; i++) {
+        tb = bbox(lticks[i]);
+        if (!tb) continue;
+        for (j = 0; j < dlabs.length; j++) {
+          if (!dlabs[j].parentNode) continue;     // 已被 thinLabels 抽掉的不算
+          lb = bbox(dlabs[j]);
+          if (lb && over(tb, lb)) {
+            lticks[i].parentNode.removeChild(lticks[i]);
+            left--;
+            break;
+          }
+        }
+      }
+    })();
+
     /* hover：整段 band 命中，tooltip 列出该期全部系列 */
     var tip = host.parentElement.querySelector('.tip');
     if (tip) {
