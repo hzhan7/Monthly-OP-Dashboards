@@ -82,7 +82,7 @@ EXCHANGES = [
 ]
 # 顺序 = 首页与导航的展示顺序，也是这里的执行顺序（无依赖，纯为日志好读）
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
-           'msci', 'spgi', 'axp', 'guc', 'tsm'] + EXCHANGES
+           'msci', 'spgi', 'axp', 'guc', 'umc', 'tsm'] + EXCHANGES
 # 横截面页没有自己的数据源，等成员都更新完之后再生成。
 # 这里的名字是**目录名 / data 文件名**（连字符）；生成器文件名是下划线的
 # build/exchanges_na.py —— 两者的对应由 builder() 负责，不在这张表里体现。
