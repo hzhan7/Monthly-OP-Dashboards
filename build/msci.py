@@ -779,27 +779,57 @@ def main():
     # 网页的 gs_line 走平滑曲线，吃不了 null，所以直接取 24 个有值的点 —— 画面内容一致。
     yw = [k for k in abf_months if ym(mi(k) - 12) in abf and k >= WIN0]
     yv = [(abf[k] / abf[ym(mi(k) - 12)] - 1) * 100 for k in yw]
+    # 平均 AUM 的同比要**画在同一张图上**：本图标题说的是「费收增速慢于平均 AUM 增速」，
+    # 只画费收那一条，读者没有任何办法验证这句话，也看不出缺口是在扩大还是在收敛 ——
+    # 而那个缺口正是本页的核心算术（费收 ≈ 平均 AUM × 有效费率）里费率压缩的那一项。
+    # 同窗口、同口径（都是点对点单月同比），所以两条线可以逐格相减。
+    av = [yoy(AVG, k) for k in yw]
     aum_yoy = yoy(AVG, LATEST)
+    gap = [a_ - b_ for a_, b_ in zip(yv, av)]          # 缺口（pp）= 费率压缩那一项
     # 费率序列补到 2015Q1 之后，abf 自 2015-01 起，同比让掉 12 个月仍落在 2016-01，
     # 所以本图窗口与其余短窗口图对齐，2019-04 的断点也回到了窗口内（add_brk 会画）。
     ex.append(add_brk({
-        # 通栏，同 Exhibit 3 / 7：窗口拉到 2016 之后这条线是 127 个点，半栏里 band 只有
-        # 3.6px，**首点的数值标签**（居中落在 Xc(0)）会整块压进左轴刻度栏 ——
-        # 实测「10.5%」与刻度「20」水平重叠 5.9px。引擎那边 thinLabels 只解标签之间的
-        # 冲突、解不了标签压刻度，而 charts.js 是 28 个页面共用的，不为一页去动它。
-        # 通栏后 band 8.3px，实测本页全图零重叠。
-        # ⚠️ 这条冲突是**值相关**的（首点标签正好落在某根刻度的高度上才撞），
-        # 不是通栏就结构性免疫；每月重跑后仍要看一眼回归（同页 Exhibit 3 同理）。
-        'n': 11, 'kind': 'gs_line', 'fmt': 'pct1', 'xlabels': [mlab(k) for k in yw],
+        # 改成双线（原来是单线 gs_line）：见上面 av 那段的理由。
+        # 换 kind 的代价是没有了 gs_line 的逐点数值标签 —— 两条线各标一遍 127 个点本来
+        # 也读不了，而 lines_endlabels 给的两端读数正好回答「起点什么样、现在什么样」。
+        # 附带好处：gs_line 的首点标签居中落在 Xc(0)、band 一小就压进左轴刻度栏
+        # （实测半栏下「10.5%」压刻度「20」5.9px），而 lines_endlabels 的端点标签有
+        # 自己的一列（引擎给 M.l 多留了 30px），这条冲突从结构上就没有了。
+        # 通栏保留：127 个点 × 2 条线，半栏挤不开。
+        'n': 11, 'kind': 'lines_endlabels', 'fmt': 'pct1',
+        'xlabels': [mlab(k) for k in yw],
         'full': True, 'xstep': MSTEP, 'xrot': 90,
-        'title': (f'Implied fee revenue, y/y — {mlab(LATEST)} {sgn_pct(yv[-1])}，'
-                  f'慢于平均 AUM 的 {sgn_pct(aum_yoy)}'),
-        'ylab': '% y/y', 'values': RL(yv),
-        'src_extra': ('Grows more slowly than AUM because the effective rate has been compressing. '
+        'title': (f'Implied fee revenue vs. average AUM, y/y — {mlab(LATEST)} 费收 '
+                  f'{sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
+                  f'缺口 {gap[-1]:+.1f}pp'),
+        'ylab': '% y/y',
+        'series': [
+            # 颜色沿用 Exhibit 6 的分工：NAVY = 本图主角，MBLUE = 平均 AUM。
+            # 平均 AUM 在这一页从头到尾都是 MBLUE，两张图可以对着看。
+            {'name': 'Implied fee revenue (y/y)', 'color': 'NAVY', 'values': RL(yv)},
+            {'name': 'Average AUM (y/y)', 'color': 'MBLUE', 'values': RL(av)},
+        ],
+        'src_extra': ('Both lines are point-to-point y/y on the same window, so the vertical '
+                      'distance between them is the effective-rate effect. '
                       + FEE_Q_EN),
-        'note': ('增速慢于 AUM，差额就是有效费率的压缩（见 Exhibit 8）。'
-                 f'{mlab(LATEST)}：隐含费收 {sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
-                 f'缺口 {yv[-1] - aum_yoy:+.1f}pp。'
+        'note': ('<b>两条线的垂直距离就是有效费率那一项</b>：本页的核心算术是'
+                 '「费收 ≈ 平均 AUM × 有效费率」，所以深蓝（费收同比）低于中蓝（平均 AUM 同比）'
+                 '多少，就是费率压缩吃掉了多少增长（费率本身见 Exhibit 8）。'
+                 '两条线同窗口、同口径（都是点对点单月同比），可以逐格相减。'
+                 f'{mlab(LATEST)}：费收 {sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
+                 f'缺口 {gap[-1]:+.1f}pp。'
+                 # 「差额就是费率压缩」这句原文案不精确，改这张图时一并纠正：
+                 # abf = AVG × rate ⇒ (1+费收同比) = (1+AUM同比) × (1+费率同比)，
+                 # 精确的费率同比是两条曲线的**比值**，不是差。两者在增速大的时候差得不小
+                 # （本轮 -10.9pp vs -8.0%），印错一个读者会拿去对 Exhibit 8 却对不上。
+                 f'注意<b>缺口（pp）不等于费率的同比</b>：由 abf = 平均 AUM × 费率 得'
+                 f'（1 + 费收同比）=（1 + AUM 同比）×（1 + 费率同比），'
+                 f'精确的费率同比是两条曲线的<b>比值</b>而不是差 —— {mlab(LATEST)} 为 '
+                 f'{((1 + yv[-1] / 100) / (1 + av[-1] / 100) - 1) * 100:+.1f}%，'
+                 f'而图上看到的垂直缺口是 {gap[-1]:+.1f}pp。缺口用来看趋势（在扩大还是收敛），'
+                 '要精确的费率读数请看 Exhibit 8。'
+                 f'窗口内缺口从 {gap[0]:+.1f}pp 走到 {gap[-1]:+.1f}pp，'
+                 f'{sum(1 for g in gap if g < 0)}/{len(gap)} 个月为负（即费收跑输 AUM）。'
                  f'本图自 {mlab(yw[0])} 起，与本页其余短窗口图同起点：隐含序列自 '
                  f'{mlab(abf_months[0])} 起（费率覆盖 {qs[0]} 起），同比让掉 12 个月之后仍够得到。'
                  + FEE_Q_CN),
@@ -997,9 +1027,10 @@ def main():
          f'噪声用轴范围解决，不换口径。<br>'
          f'② <b>隐含费收（Exhibit 7 / 10 / 11）是流量</b>，按契约默认本该用 '
          f'{Y.TTM_WIN} 个月滚动合计。这里仍用点对点，理由是<b>它必须与 AUM 同口径</b>：'
-         f'本页的核心算术是「费收 ≈ 平均 AUM × 有效费率」，Exhibit 11 的标题'
-         f'（费收 {sgn_pct(yv[-1])} 慢于平均 AUM {sgn_pct(aum_yoy)}，缺口 '
-         f'{yv[-1] - aum_yoy:+.1f}pp）就是这条算术的读数。'
+         f'本页的核心算术是「费收 ≈ 平均 AUM × 有效费率」，而 Exhibit 11 把费收同比与'
+         f'平均 AUM 同比<b>画在同一张图上</b>（{mlab(LATEST)} {sgn_pct(yv[-1])} vs '
+         f'{sgn_pct(aum_yoy)}，缺口 {gap[-1]:+.1f}pp），两条线的垂直距离就是这条算术的读数 ——'
+         f'读者要能逐格相减，前提就是两条线同口径。'
          f'把费收换成滚动、AUM 留在点对点，这个缺口立刻变成两种口径相减，'
          f'读者按字面理解会把「口径差」读成「费率压缩」。'
          f'代价可以量出来：那 {_CAL_ABF["n"]} 个共同月份上，费收点对点同比标准差 '
