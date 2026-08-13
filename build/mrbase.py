@@ -11,15 +11,28 @@
     Ex2  gs_bar          月营收柱 + 右轴 12 个月滚动合计同比
     Ex3  qtr_bar         月度聚合到季（当季未满月份浅色）
     Ex4  gs_line         环比 m/m
-    Ex5  lines_endlabels 本币同比 vs 美元同比（单月口径）        【需 fx】
-    Ex6  grouped_bars    汇率对报表增速的贡献（之差，pp）        【需 fx】
+    Ex5  lines_endlabels 本币同比 vs 美元同比（单月口径）  【需 fx + 页上有美元腿】
+    Ex6  grouped_bars    汇率对报表增速的贡献（之差，pp）  【需 fx + 页上有美元腿】
     Ex7  lines           全历史（可叠分部）
-    Ex8  lines           月均汇率                                【需 fx】
-    Ex9  heat_matrix     逐年 × 逐月同比热力
+    Ex8  lines           月均汇率                                【只需 fx】
+    Ex9  heat_matrix     逐年 × 逐月热力（口径见 `window.heat_metric`）
     Ex10 核对表          近 N 个月，官方原始单位未换算
 
-**编号是算出来的，不是写死的**：没有汇率腿就整体跳过 Ex5/6/8，后面的图**顺次前移**，
+**编号是算出来的，不是写死的**：画不出来的图整体跳过，后面的图**顺次前移**，
 页内所有互指（图注里的「见 Exhibit X」）都走 `EX[slug]` 查表，不会指到不存在的图。
+
+━━ Ex8 与 Ex5/Ex6 要的**不是同一件事**，不许捆在一起跳（§1.5）━━━━━━━━━━━
+Ex8 画的是**汇率本身**（`ds.fx`）—— 一条宏观序列，挂了同一份汇率的每一页上逐点相同，
+不需要公司披露任何东西。Ex5/Ex6 画的是**这家公司的美元营收**，那需要公司真有官方
+美元数；没有就只能拿本币 ÷ 外部牌价折一条分析师构造值出来冒充官方值，所以那两张该跳。
+⇒ 「有汇率线、没有美元腿」的家，正确写法是 `fx` 照给 +
+`skip: ['fx_lines', 'fx_contrib']`（附 `skip_note` 理由），Ex8 照出。
+
+⚠️ 由此而来的硬规矩：**页上任何一处关于「美元营收 / 汇率贡献」的措辞、数字、表列，
+判据一律是 `usd_leg_shown(EX)`（那两张图在不在），不是 `ds.fx is not None`。**
+本文件里曾有七处写成后者（brief 的 s1 峰值扫描与 s4 恒等句、页尾的两条汇率说明与
+数据源一条、核对表的 Implied 列、抬头的「美元口径 y/y」），在只出 Ex8 的家上会
+`KeyError: 'fx_contrib'`，或印出一个页面根本没画、也没有官方数可核的推导值。
 
 ━━ 现状：迁上来的只有 TSM ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `build/mrspecs/` 下现在只有 `tsm.py`，`build/tsm.py` 是指向本底座的薄壳。
@@ -317,7 +330,13 @@ _FX = {'csv', 'col', 'quote', 'src', 'usd_share_note', 'assumption', 'usd_label'
                        #      默认 True（如 TSM：美元线是本币 ÷ 外部牌价的推导值）。
                        #      给 False = 两条腿都是官方申报值，页面不再印「推导值(Implied)」。
        }
-_WINDOW = {'x_from', 'heat_years', 'check_rows'}
+_WINDOW = {'x_from', 'heat_years', 'check_rows',
+           # 'heat_metric' —— Ex9 的格里画哪一个量（§1.6）：
+           #   'yoy'（默认，单月同比）/ 'mom'（环比）/ 'log_yoy'（100×ln(1+y/y)）。
+           #   ⚠️ 这是 **mrbase 的一个字段，不是 assets/charts.js 的改动**：引擎一格不动。
+           #   加它的理由见 §1.6 —— 引擎的线性色阶限制属实，但「那就整张跳过」不成立，
+           #   本仓对同类情况的既定做法是「照出 + 加告诫」。
+           'heat_metric'}
 _SEG = {'col', 'zh', 'label'}
 
 
@@ -382,6 +401,15 @@ def validate(spec):
                 '给不出出处就把措辞改成不带数字的定性版本，别在页上留一个没人能核的百分比。')
 
     _chk(spec['window'], _WINDOW, 'SPEC[window]')
+    hm = spec['window'].get('heat_metric', _HEAT_DEFAULT)
+    if hm not in _HEAT_TXT:
+        # 拼错了**不许**静默退回默认：退回之后页面画的是同比、spec 作者以为是环比，
+        # 而两张矩阵长得一模一样（同样 9×12 的格子），肉眼分不出来。
+        raise SpecError(
+            f'SPEC[window].heat_metric = {hm!r} 不认得；可选 '
+            f'{sorted(_HEAT_TXT)}（不给 = {_HEAT_DEFAULT!r}）。'
+            '换口径是**口径判断**：标题、图注、页尾的口径点名条都由底座跟着改，'
+            '不要在 spec 里另写一份说法（两份说法迟早对不上）。')
     if 'x_from' not in spec['window']:
         # 显式 None 是合法的（= 用序列自己的起点）；**没写**才是漏了。
         # 这两者必须分开：这一轮有实现把六家的柱图悄悄砍到 2016-01，而它们的数据
@@ -426,6 +454,195 @@ def validate(spec):
 
 # 图的 slug（= 稳定标识）。编号 n 是**算出来的**，slug 才是页内互指的键。
 _SLUGS = ['rev_bar', 'qtr', 'mom', 'fx_lines', 'fx_contrib', 'hist', 'fx_rate', 'heat']
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §1.5 汇率的**两个**判据 —— 全文件唯一入口，别再写 `ds.fx is not None`
+# ══════════════════════════════════════════════════════════════════════════════
+# 本轮之前，「有 fx 序列」与「页上有美元腿」被当成同一件事，于是七处代码共用一个
+# `ds.fx is not None`。它们其实是两件不同的事：
+#
+#   · **fx 序列**（`_FX_SLUGS`）—— series/*.csv 里那条 NTD/USD。它是一条**宏观**序列，
+#     谁挂上它都是逐点相同的同一条线，不需要任何一家公司披露任何东西。
+#     Ex8（`fx_rate`，汇率线本身）画的就是它。
+#   · **美元腿**（`_USD_SLUGS`）—— 本币 ÷ 汇率折出来的那条**公司**序列。没有官方美元
+#     实绩的家，这条线是分析师构造值：不许上图（Ex5/Ex6）、不许进 brief 的恒等式句、
+#     不许进抬头、不许进核对表。
+#
+# 判据一律**看 EX 里有没有那张图**，不看 ds.fx：
+#   · 看 ds.fx，「挂了 fx 但 skip 掉 Ex5/Ex6」的家会在 `R('fx_contrib')` 上 KeyError
+#     （页尾两处），或印出一条页上根本不存在、也没有官方数可对账的美元线；
+#   · 看 EX，则「哪几张图出不出」这个决定只有一份，跳图与没有 fx 两条路自动同解。
+_USD_SLUGS = ('fx_lines', 'fx_contrib')                 # 要「本币 ÷ 汇率」这条构造腿
+_FX_SLUGS = ('fx_lines', 'fx_contrib', 'fx_rate')       # 要 fx 序列（含只画汇率线本身）
+
+
+def usd_leg_shown(EX):
+    """页上是否真的出现了美元（外币）腿。**所有关于美元营收的话都问它。**"""
+    return any(s in EX for s in _USD_SLUGS)
+
+
+def fx_used(EX):
+    """fx 序列是否在页上被用到（只画 Ex8 汇率线本身的家也算）。"""
+    return any(s in EX for s in _FX_SLUGS)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §1.6 热力矩阵的口径（`window.heat_metric`）
+# ══════════════════════════════════════════════════════════════════════════════
+# 引擎的限制属实：`assets/charts.js` 的 `heatScale()` 只读 `matrix` / `reverse` 两个
+# 入口，色标是**线性**的（t =（v − p5）/（p95 − p5），红→白→绿），而且**色阶与格内数字
+# 读同一份 matrix** —— 「色阶取对数、格内印原值」在结构上做不到。
+#
+# 但「那就整张跳过」不成立。本仓对同类情况的既定做法是**照出 + 加告诫**
+# （mrspecs/mtk.py 就是这么处理它 38% 拥挤度的：矩阵照出，图注写「请按格内数字读，
+# 不要只看颜色排序」）。跳掉的是一整张按年 × 按月的季节性视图，而它读不出来的原因不在
+# 图型上，在**喂给它的那个量**上：换一个在 t 轴上摊得开的口径，同一张图就活了。
+#
+# 三个口径都合法，各自回答不同的问题：
+#   'yoy'      单月同比（%）      —— 默认。命题是「今年这个月 vs 去年这个月」。
+#   'mom'      环比（%）          —— 命题是「季节性与转折点」。它同样是「一格 = 一个月的
+#                                   读数」，没有违背 heat_matrix 的本性（CONTRACT §6.2
+#                                   豁免该图型走滚动口径，正是因为这一点）。
+#   'log_yoy'  同比的对数增速     —— **仍然是单月同比**，只是把倍数关系压成等距：
+#              100×ln(1+g)         +69 ≈ 翻倍、−69 ≈ 腰斩，涨十倍与跌九成在色轴上对称。
+#
+# 选哪一个**不靠感觉**：`heat_crowding()` 拿实际进 payload 的那张 matrix 现算「最宽 20%
+# 色带里塞了几格」，三个口径各算一遍，数直接写进图注（构建期现算，不写死）。
+_HEAT_DEFAULT = 'yoy'
+
+
+def heat_values(ds, metric):
+    """metric → 喂进矩阵的那条序列。三条都由已有派生量出，本函数不新写口径。"""
+    if metric == 'mom':
+        return ds.mom
+    if metric == 'log_yoy':
+        # 100 × ln(1 + g)。g ≤ −100% 时无定义 —— 营收非负，只有分子为 0 才碰得到，
+        # 那种月份留 NaN（= 空格），不许钳到一个假值上（−inf 会毒掉整条色阶）。
+        r = 1.0 + ds.yoy.astype(float) / 100.0
+        return np.log(r.where(r > 0)) * 100.0
+    return ds.yoy
+
+
+def heat_matrix_of(series, years):
+    """(matrix, rows) —— 建矩阵**只有这一段代码**，口径对照现算也复用它。
+
+    `|v| < 0.5` 的格子统一写成正零：`toFixed(0)` 会把 −0.1 印成「-0」，在一整片两位
+    整数里那是个纯格式化产物，读者会停下来判断它是不是缺失值。
+    """
+    sv = series.dropna()
+    if not len(sv):
+        return [], []
+    yrs = sorted({p.year for p in sv.index})[-int(years):]
+    mat = []
+    for y in yrs:
+        row = [None] * 12
+        for p, x in sv.items():
+            if p.year == y:
+                fv = float(x)
+                row[p.month - 1] = num(0.0 if abs(fv) < 0.5 else fv, 4)
+        mat.append(row)
+    return mat, yrs
+
+
+def heat_crowding(matrix):
+    """把 `assets/charts.js` 的 `heatScale()` 在构建期复算一遍，量这张矩阵摊不摊得开。
+
+    ⚠️ **必须拿实际进 payload 的那张 `matrix` 算，不能拿全序列算。** 引擎的 5/95 分位
+    只看 `ex.matrix`（`heat_years` 截出来的那几年 × 12 列）。拿全序列算出来的分位与
+    拥挤格数**不是引擎会得到的那一组数** —— 图注里引一个引擎算不出来的分位，读者照着
+    去核会对不上，而页面看上去一切正常。
+
+    返回 None（有限格 < 8，算不出可信分位）或
+    `{n, lo, hi, p5, p95, dull, share}`：`dull` = 最宽 20% 色带里最多塞了几格。
+    判据的依据：色标线性 ⇒ 两格的色差 ≈ 它们 t 值之差；t 差不到 0.20 就是「色差不到
+    两成、肉眼分不开」。超出 p5/p95 的格子在引擎里钳到端点色，所以这里也钳。
+    """
+    fin = sorted(float(v) for row in matrix for v in row
+                 if v is not None and np.isfinite(float(v)))
+    n = len(fin)
+    if n < 8:
+        return None
+
+    def q(p):
+        k = (n - 1) * p
+        lo, hi = int(k), min(int(k) + 1, n - 1)
+        return fin[lo] + (fin[hi] - fin[lo]) * (k - lo)
+
+    p5, p95 = q(0.05), q(0.95)
+    span = (p95 - p5) or 1.0
+    ts = sorted(min(max((v - p5) / span, 0.0), 1.0) for v in fin)
+    best, j = 0, 0
+    for i in range(n):
+        while ts[i] - ts[j] > 0.20:
+            j += 1
+        best = max(best, i - j + 1)
+    return {'n': n, 'lo': fin[0], 'hi': fin[-1], 'p5': p5, 'p95': p95,
+            'dull': best, 'share': best / n * 100.0}
+
+
+# 三个口径各自的措辞。**标题里的口径声明在这里，不在调用处** —— CONTRACT §6 第 2 条
+# 要求单月同比写进标题，把这句话和「取哪条序列」放在同一张表里，换口径时不可能只改一半
+# （图画了环比、标题还写着单月同比，那是最难发现的一类错）。
+#
+# `is_yoy` 回答的是「这张矩阵算不算单月同比」，页尾的同比口径点名条与 Ex2 图注的
+# 「单月同比仍在页内可读：…」都用它判 —— 判据是**那张矩阵画的是不是单月同比**，
+# 不是「页上有没有矩阵」。log_yoy 是同比的单调变换，仍然算；mom 不算。
+_HEAT_TXT = {
+    'yoy': {
+        'title': 'Monthly revenue y/y growth (%)（单月同比 / single-month）',
+        'legend': 'Revenue y/y (%)',
+        'unit': '%',
+        'zh': '单月同比',
+        'zero': '|y/y| 不足 0.5pp',
+        'is_yoy': True,
+        'named_extra': '',
+        'src_en': ('Green = faster y/y growth, red = slower; blanks are months not '
+                   'yet reported. 色标取全部有限值的 5/95 分位。'),
+        'caliber': '',                      # 默认口径不必为自己辩护
+    },
+    'mom': {
+        'title': 'Monthly revenue m/m change (%)（环比 / month-on-month）',
+        'legend': 'Revenue m/m (%)',
+        'unit': '%',
+        'zh': '环比（当月 ÷ 上月 − 1）',
+        'zero': '|m/m| 不足 0.5pp',
+        'is_yoy': False,
+        'named_extra': '',
+        'src_en': ('Green = a stronger month than the one before, red = weaker; '
+                   'blanks are months not yet reported. 色标取全部有限值的 5/95 分位。'),
+        'caliber': (
+            '<b>本表是环比，不是同比 —— 这是本页唯一一处换过口径的地方。</b>'
+            '换口径不改变这张图的本性：一格仍然是一个月的读数，按年 × 按月排布仍然读的是'
+            '季节性与转折点（CONTRACT §6.2 豁免 <code>heat_matrix</code> 走滚动口径，'
+            '正是因为「每一格就是一个月的读数」是它的题眼）。换掉的只是这个读数取哪一种'
+            '增速。<b>代价要说清楚</b>：环比读不出「比去年同月好还是坏」，那个问题请看'
+            '核对表的 y/y 列与汇总表的 y/y 行；而环比自己带着日历效应（2 月天数少、'
+            '农历年错位），不做季节调整，同一列（同一个月份）上下逐年对读才是它的正确'
+            '用法。'),
+    },
+    'log_yoy': {
+        'title': ('Monthly revenue y/y growth, log scale — 100 × ln(1 + y/y)'
+                  '（单月同比 / single-month）'),
+        'legend': 'Revenue y/y, log (100 × ln(1+g))',
+        'unit': ' 对数点',
+        'zh': '单月同比的对数增速 100×ln(1+y/y)',
+        'zero': '|100×ln(1+y/y)| 不足 0.5',
+        'is_yoy': True,
+        'named_extra': '（格内取 100×ln(1+y/y)，仍是单月同比，只是压成等距）',
+        'src_en': ('Cells are 100 × ln(1 + y/y), not per-cent; green = faster, '
+                   'red = slower; blanks are months not yet reported. '
+                   '色标取全部有限值的 5/95 分位。'),
+        'caliber': (
+            '<b>格内不是百分比，是对数增速</b> 100×ln(1+y/y)（单位「对数点」）：'
+            '<b>+69 ≈ 翻倍、−69 ≈ 腰斩</b>，+900%（涨十倍）印成 +230、'
+            '−90%（跌九成）印成 −230，两者在色轴上对称。口径仍然是<b>单月同比</b>，'
+            '只是把倍数关系压成等距 —— 这是一个<b>单调变换</b>，正负号与逐格排序与'
+            '百分比口径完全一致，换回百分比不会改变任何一格的方向。'
+            '<b>代价</b>：格内数字不能当百分比读，要百分比请看核对表的 y/y 列'
+            '（那一列是原值，未做变换）。'),
+    },
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -764,7 +981,11 @@ def compose_brief(ds, spec, EX):
 
     # ── s1：R1 峰值扫描。水平序列逐条列出；有汇率腿才多一条「外币营收」。
     lv = [('月营收', rv)]
-    if ds.usd is not None:
+    # ⚠️ 判据是 `usd_leg_shown(EX)` 而不是 `ds.usd is not None`（§1.5）：挂了 fx 只为画
+    #    汇率线、页上并没有美元腿的家（Ex5/Ex6 被 skip 掉），这里若照旧按 ds.usd 判，
+    #    第 1 句会去数一条页面上根本不存在的「美元营收」有没有见顶，还会改掉
+    #    「几条水平序列同时见顶」这个计数的分母。
+    if ds.usd is not None and usd_leg_shown(EX):
         _LG = legs(spec)
         if _LG['split']:
             # 主序列**就是**外币腿（功能货币非本币的家）。再列一遍 ds.usd 等于
@@ -862,9 +1083,13 @@ def compose_brief(ds, spec, EX):
         else:
             s3 = f'{head}，去年同月的前后两月还不在样本里，基数效应暂时还原不了。'
 
-    # ── s4：R4 单位恒等。**只有汇率腿在场才有这一句。**
+    # ── s4：R4 单位恒等。**只有美元腿真的画在页上才有这一句。**
+    #    判据是 usd_leg_shown(EX)，不是 ds.fx（§1.5）：这一句整句在讲「美元营收 =
+    #    本币 ÷ 汇率」，主语是一条**公司**序列。只挂了宏观汇率线（Ex8）的家页上没有那条
+    #    序列，写这句等于凭空引入一个页面别处查不到、也不是公司披露的数。
+    #    这一句落空之后，下面那两级替补（分部构成 / 季内进度）会自动接上，字数不会塌。
     s4 = ''
-    if ds.fx is not None:
+    if ds.fx is not None and usd_leg_shown(EX):
         LG = legs(spec)
         # 恒等式的分子永远是**本币腿**：本币 ÷ 汇率 = 外币。主序列已经是外币的家
         # （功能货币非本币）这里必须取 ds.loc，取 rv 会算成「外币 ÷ 汇率」。
@@ -1076,21 +1301,49 @@ def build_exhibits(ds, spec, breaks):
     has_fx = ds.fx is not None
 
     # ── 哪些 slug 真的出图。编号在这里一次性算完，后面所有互指都查 EX。
+    #
+    # 这一行只回答一个问题：**画得出来吗**（没有 fx 序列，三张汇率图一格都没有）。
+    # 「画得出来但不该画」是另一个问题，由 spec 的 `skip` 回答，两者不许混在一行里 ——
+    # 原来这里把 Ex5/Ex6/Ex8 捆成一束，于是「没有官方美元营收实绩」的家连**汇率线本身**
+    # 也一起跳掉了。但 Ex8 画的是 ds.fx（NTD/USD 这条宏观序列），不是任何营收量，
+    # 公司披不披露美元营收与它无关（§1.5）。
     order = [s for s in _SLUGS
              if s not in skip
-             and (has_fx or s not in ('fx_lines', 'fx_contrib', 'fx_rate'))]
+             and (has_fx or s not in _FX_SLUGS)]
     EX = {s: i + 2 for i, s in enumerate(order)}
     n_table = len(order) + 2
 
     def R(slug):
         return f'Exhibit {EX[slug]}'
 
+    # 热力矩阵的口径（§1.6）。EX 里没有 heat 时也算得出来，页内几处点名都要用它判。
+    HM_KEY = spec['window'].get('heat_metric', _HEAT_DEFAULT)
+    HM = _HEAT_TXT[HM_KEY]
+    heat_is_single_yoy = 'heat' in EX and HM['is_yoy']
+
     ex = []
     ctx = {'EX': EX, 'order': order, 'n_table': n_table, 'want_from': want_from,
-           'brk_drawn': {}}
+           'brk_drawn': {},
+           # 页尾要用的口径事实：矩阵画的是哪个量、算不算单月同比（§1.6）。
+           'heat_txt': HM, 'heat_is_single_yoy': heat_is_single_yoy}
+
+    # 画的**不是这家公司的量**的图，不许套这家公司的口径断点。
+    # 目前只有一张：fx_rate（NTD/USD 汇率）是一条宏观序列，七页上逐点相同，
+    # 与公司的并表/处分/重述没有任何关系。
+    #
+    # 这条为什么以前没暴露：现网唯二有 fx 的两页（tsm / alchip）breaks 都是空的，
+    # apply_breaks 在这张图上一次都没真正执行过。本轮五家挂 fx 之后，
+    # 其中四家（ase/mtk/nanya/umc）的 breaks 非空，实测汇率图当场拿到
+    # break_at=[35,37,78] 之类，图注还把理由整句印上去 —— 页面等于声称
+    # 「联发科的并购把新台币兑美元汇率的口径打断了」。
+    # 它不报错、三道闸门全绿，属于「页面在说谎」那一类，必须在这里堵死。
+    _NO_BREAKS = ('fx_rate',)
 
     def push(slug, d, months):
         d['n'] = EX[slug]
+        if slug in _NO_BREAKS:
+            ex.append(d)
+            return
         hits = apply_breaks(d, months, breaks)
         if hits:
             ctx['brk_drawn'][slug] = hits
@@ -1128,7 +1381,11 @@ def build_exhibits(ds, spec, breaks):
                       '<b>所以不要拿相邻两根柱去除，除出来的是单月同比、跟这条线不是一个数。</b>'
                       '单月同比仍在页内可读：汇总表的 y/y 列'
                       + (f'、{R("fx_lines")} 的深藏青线' if 'fx_lines' in EX else '')
-                      + (f'、{R("heat")} 的热力矩阵' if 'heat' in EX else '')
+                      # ⚠️ 判据是「那张矩阵画的是不是单月同比」，不是「有没有矩阵」：
+                      #    heat_metric 换成环比之后，把它列进「单月同比可读之处」就是
+                      #    一句假话；对数口径仍是同比，但格内不是百分比，要加括注。
+                      + (f'、{R("heat")} 的热力矩阵' + HM['named_extra']
+                         if heat_is_single_yoy else '')
                       + '，以及页顶 brief 里标明「单月」的读数。' + Y.describe(CAL)
                       + '月营收的单月同比同时被三件事推着走 —— 当月天数、农历年在 1 月还是 '
                       '2 月、以及去年同月那一个数本身的高低；任意连续 '
@@ -1425,44 +1682,121 @@ def build_exhibits(ds, spec, breaks):
                            + '. ' + u['en']),
              'note': ('纵轴按数据范围自适应，未自 0 起 —— 汇率的绝对水平压在 0 起点的轴上'
                       '会变成一条直线，看不出近年的急升。'
-                      '正因为轴不自 0 起，末点的绝对读数已标出，免得只能靠刻度目测水平。')}
+                      '正因为轴不自 0 起，末点的绝对读数已标出，免得只能靠刻度目测水平。'
+                      # 只画汇率线、不画美元腿的家：这张图与本家的披露无关，说清楚，
+                      # 免得读者以为页面在暗示某条美元营收线被藏起来了。
+                      + ('' if usd_leg_shown(EX) else
+                         '<b>本图画的是汇率本身，不是本家的任何营收量</b> —— 它是一条'
+                         '宏观序列，本站挂了同一份汇率的每一页上逐点相同，公司披不披露'
+                         '美元营收与它无关。本页没有「本币 vs 美元」「汇率贡献」两张图，'
+                         '理由见页尾对应的<b>本页不出「…」那张图</b>条目；页上任何一处'
+                         '都不会出现拿本币除以这条汇率折出来、冒充官方值的美元营收线。'))}
         push('fx_rate', d, ALL)
 
-    # ── Ex9：同比热力矩阵 ───────────────────────────────────────────────────
+    # ── Ex9：热力矩阵（口径由 window.heat_metric 定，默认单月同比，见 §1.6）───
     if 'heat' in EX:
         NH = int(spec['window'].get('heat_years', 9))
-        yv = ds.yoy.dropna()
-        hyrs = sorted({p.year for p in yv.index})[-NH:]
+        TX = HM                                  # = _HEAT_TXT[HM_KEY]
+        hv = heat_values(ds, HM_KEY)
+        matrix, hyrs = heat_matrix_of(hv, NH)
+        n_zero = sum(1 for row in matrix for x in row if x == 0)
 
-        def heat_cell(x):
-            # |v| < 0.5 的月份统一写成正零：toFixed(0) 会把 −0.1 印成「-0」，
-            # 在一整片两位整数里那是个纯格式化产物，读者会停下来判断它是不是缺失值。
-            fx_ = float(x)
-            return 0.0 if abs(fx_) < 0.5 else fx_
+        # 「格内那个数是哪来的」跟着口径走：只有单月同比这一种可能取自公司公告的原值，
+        # 环比在本仓的任何一份 series 里都没有登记列，一定是本脚本自算的。
+        if HM_KEY == 'mom':
+            src_zh = ('本脚本按序列自算的环比（当月 ÷ 上月 − 1）'
+                      f'—— series/{spec["csv"]} 里只有水平值，环比与同比都由它派生')
+        else:
+            src_zh = ('公司随月营收公告的 y/y 原值（'
+                      f'series/{spec["csv"]} 的 {spec["official_yoy"]}）'
+                      if spec.get('official_yoy') else
+                      '本脚本按序列自算的单月同比（<code>build/yoy.py</code>，'
+                      f'series/{spec["csv"]} 里没有登记 y/y 列）')
+            src_zh += '，再取 100×ln(1+g)' if HM_KEY == 'log_yoy' else ''
 
-        matrix = []
-        for y in hyrs:
-            row = [None] * 12
-            for p, x in yv.items():
-                if p.year == y:
-                    row[p.month - 1] = num(heat_cell(x), 4)
-            matrix.append(row)
-        src_yoy = ('公司随月营收公告的 y/y 原值（'
-                   f'series/{spec["csv"]} 的 {spec["official_yoy"]}）'
-                   if spec.get('official_yoy') else
-                   '本脚本按序列自算的单月同比（<code>build/yoy.py</code>，'
-                   f'series/{spec["csv"]} 里没有登记 y/y 列）')
+        # ⚠️ 这一段里凡是要点名别的图，都先问 EX 有没有那张 —— 直接 R('mom') 在跳掉
+        #    环比线的家身上就是一个 KeyError（本轮修的正是这一类耦合）。
+        _vs_mom = ('本表与逐月的环比线（' + R('mom') + '）是同一个量的两种排布：'
+                   '那张按时间轴看趋势，本表按「年 × 月」摆开看季节位置'
+                   '（同一列上下比，就是同一个日历月在不同年份的强弱）。'
+                   if HM_KEY == 'mom' and 'mom' in EX else '')
+
+        # ── 色阶实测：**拿刚刚建好的这张 matrix 算**，不是拿全序列算。三个口径在同一段
+        #    窗口上各算一遍，好让「为什么用这个口径」有数撑着，而不是一句形容词。
+        #    算不出来（格子太少）就整段不写，不退回写死的数。
+        crowd = heat_crowding(matrix)
+        alts = {}
+        _keep = set(hyrs)
+        for k in _HEAT_TXT:
+            if k == HM_KEY:
+                continue
+            _m, _y = heat_matrix_of(heat_values(ds, k), NH)
+            # 只留本表实际画出来的那几个年份 —— 三个口径的首个有值年可能差一年
+            # （同比要 12 个月历史、环比只要 1 个），不对齐就不是「同一段窗口」了。
+            c_k = heat_crowding([r for r, y in zip(_m, _y) if y in _keep])
+            if c_k:
+                alts[k] = c_k
+        if crowd:
+            _sh = crowd['share']
+            verdict = ('⇒ 色阶铺得开，颜色排序可以直接读。' if _sh < 25 else
+                       '⇒ 矩阵照出，但<b>请按格内数字读，不要只看颜色排序</b>。'
+                       if _sh < 50 else
+                       '⇒ <b>这张表的颜色几乎不携带信息，请只读格内数字。</b>')
+            cmp_zh = ''
+            if alts:
+                _o = '；'.join(f'{_HEAT_TXT[k]["zh"]} {c["dull"]} 格（{c["share"]:.0f}%）'
+                              for k, c in sorted(alts.items()))
+                _best, _bc = min(list(alts.items()) + [(HM_KEY, crowd)],
+                                 key=lambda kv: kv[1]['share'])
+                # 「换个口径会不会更好读」只在差距**大到不是噪声**时才提。百来个格子上
+                # 的色带占比本身有几个百分点的抖动，拿 33% vs 31% 去建议换口径，是把
+                # 噪声说成结论 —— 而换口径要连带改标题、图注与页尾点名条，不是免费的。
+                _MAT = 10.0                      # 百分点，材料性差距的门槛
+                _gap = _sh - _bc['share']
+                cmp_zh = (f'同一段窗口下另外两个口径实测：{_o}。'
+                          + ('本表用的就是三者里最铺得开的那一个。' if _best == HM_KEY else
+                             f'铺得最开的是{_HEAT_TXT[_best]["zh"]}'
+                             f'（{_bc["share"]:.0f}%），比本表少 {_gap:.0f} 个百分点 —— '
+                             '要换就把该家 spec 的 <code>window.heat_metric</code> 改成 '
+                             f'<code>{_best}</code>，标题、本段与页尾的口径点名条会自己'
+                             '跟着改。' if _gap >= _MAT else
+                             f'铺得最开的是{_HEAT_TXT[_best]["zh"]}'
+                             f'（{_bc["share"]:.0f}%），也只比本表少 {_gap:.0f} 个百分点，'
+                             '属于同一档 —— 这点差距在百来个格子上是抖动不是结论，'
+                             '换口径解决不了任何问题，本表照旧。'))
+            crowd_zh = (
+                '<b>这张表的色阶读不读得出来 —— 本段现算，不是写死的话。</b>'
+                '引擎的色标是<b>线性</b>的（<code>assets/charts.js</code> 的 '
+                '<code>heatScale</code>：t =（v − p5）/（p95 − p5），红→白→绿线性插值，'
+                '<b>没有 log 入口</b>），而且<b>色阶与格内数字读同一份 matrix</b> —— '
+                '「色阶取对数、格内印原值」在结构上做不到（引擎只有 <code>matrix</code> / '
+                '<code>reverse</code> 两个入口）。所以读不读得出来只取决于这些格子在 t 轴上'
+                f'摊不摊得开：本表 <b>{crowd["n"]} 格</b>实测跨 '
+                f'{crowd["lo"]:+.0f} ~ {crowd["hi"]:+.0f}{TX["unit"]}、'
+                f'p5/p95 = {crowd["p5"]:+.0f} / {crowd["p95"]:+.0f}{TX["unit"]}，'
+                f'最宽 20% 的色带里塞了 <b>{crowd["dull"]} 格（{_sh:.0f}%）</b>—— '
+                '它们彼此色差不到两成、肉眼分不开。' + verdict + cmp_zh
+                + f'这几个数在构建期从<b>本表实际用的那张 matrix</b> 现算（{NH} 年 × 12 '
+                  '列），不是从全序列算的 —— 引擎的 5/95 分位只看 matrix，拿全序列算出来'
+                  '的分位读者照着核会对不上。')
+        else:
+            crowd_zh = ('（本表有限格不足 8 个，算不出可信的分位与拥挤度，'
+                        '故本段不给实测数。）')
+
         d = {'kind': 'heat_matrix', 'full': True,
-             'title': 'Monthly revenue y/y growth (%)（单月同比 / single-month）',
+             'title': TX['title'],
              'rows': [str(y) for y in hyrs], 'cols': MONTHS, 'matrix': matrix,
-             'fmt': 'f0', 'legend': 'Revenue y/y (%)', 'row_head': '年', 'cell_h': 21,
-             'src_extra': ('Green = faster y/y growth, red = slower; blanks are months not '
-                           'yet reported. 色标取全部有限值的 5/95 分位。'),
-             'note': (f'格内是{src_yoy}，空格是尚未公布的月份。'
-                      '数值四舍五入到整数；|y/y| 不足 0.5pp 的月份一律写 0，不写「−0」'
-                      f'（本表命中 {sum(1 for p, x in yv.items() if p.year in hyrs and abs(x) < 0.5)} 格）。'
-                      'heat_matrix 没有连续横轴，因此不画断点竖线；'
-                      '本页登记的断点见页尾「口径断点与截轴」一条。')}
+             'fmt': 'f0', 'legend': TX['legend'], 'row_head': '年', 'cell_h': 21,
+             'src_extra': TX['src_en'],
+             # 换过口径的家：口径声明排在最前面 —— 这张图会被单独截图转发，
+             # 「它不是同比」必须跟着图走，不能只写在页尾。
+             'note': (TX['caliber'] + _vs_mom
+                      + f'格内是{src_zh}，空格是尚未公布的月份。'
+                      + '数值四舍五入到整数；' + TX['zero'] + ' 的月份一律写 0，不写「−0」'
+                      + f'（本表命中 {n_zero} 格）。'
+                      + crowd_zh
+                      + 'heat_matrix 没有连续横轴，因此不画断点竖线；'
+                        '本页登记的断点见页尾「口径断点与截轴」一条。')}
         # ⚠️ **不走 push()**：push() 无条件调 apply_breaks()，而 apply_breaks() 干两件事 ——
         #    往 payload 塞 `break_at`（99 个月轴上的下标，这张 8×12 的矩阵根本没有那条轴），
         #    并把「本图上的红色竖虚线是口径断点……」接到本图图注上，正好顶撞上一句
@@ -1592,8 +1926,23 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
         single.append(f'<b>{R("fx_lines")}</b>（本币与美元两条线）')
     if has('fx_contrib'):
         single.append(f'<b>{R("fx_contrib")}</b>（两者之差，取百分点）')
+    # 热力矩阵归哪一类由 `window.heat_metric` 定（§1.6）：'yoy' / 'log_yoy' 是单月同比
+    # （后者只是取了对数，单调变换，仍然是同比）；'mom' 根本不是同比，硬塞进「单月同比
+    # 用在……」那句话里就是一句假话 —— 与本轮已修的「季度桥被列进单月同比」同类错。
+    # 换了口径的矩阵改由下面的 mom_named 单独点名（不点名，读者会默认它是单月同比，
+    # 本仓的矩阵确实大多是）。
+    HTX = ctx['heat_txt']
+    mom_named = ''
     if has('heat'):
-        single.append(f'<b>{R("heat")}</b> 热力矩阵')
+        if ctx['heat_is_single_yoy']:
+            single.append(f'<b>{R("heat")}</b> 热力矩阵' + HTX['named_extra'])
+        else:
+            _mm = ([f'<b>{R("mom")}</b>'] if has('mom') else []) \
+                + [f'<b>{R("heat")}</b> 热力矩阵']
+            mom_named = ('<b>环比（m/m，当月 ÷ 上月 − 1）</b>用在 ' + '、'.join(_mm)
+                         + '，以及汇总表的 m/m 列 —— <b>它既不是同比也不是滚动</b>，'
+                         '不要与上面两种口径并排读。本页的热力矩阵改用环比是口径判断，'
+                         f'理由（含本表实测的色阶拥挤度）写在 {R("heat")} 自己的图注里。')
     cur_yoy = float(ds.yoy.iloc[-1])
     cur_ttm = float(ds.yoy_ttm.iloc[-1])
 
@@ -1603,8 +1952,11 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                  + '本页各图与两张表全部由这一个字段'
                  # 「月均」只对拿外部牌价折推导腿的家成立；implied=False 的家用的是
                  # 公司自己申报的换算汇率，叫它「月均汇率序列」是错的。
+                 # 判据是 fx_used(EX)（§1.5）而不是 ds.fx：挂了 fx 却一张汇率图都不出的
+                 # spec（三张全 skip）身上，「本页由这一个字段加一条汇率序列派生」是假话
+                 # —— 那条序列一格都没进过页面。
                  + (('加一条月均汇率序列' if legs(spec)['implied'] else '加一条官方申报的换算汇率序列')
-                    if ds.fx is not None else '')
+                    if fx_used(EX) else '')
                  + '派生，不引入任何券商预测或外部估计。'
                  + (f'例外的那一张在图脚第二行写明了自己的来源：{R("fx_rate")} 来自 '
                     + spec['fx']['src'] + '。' if has('fx_rate') else ''))
@@ -1619,13 +1971,18 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
            + '汇总表与核对表的 y/y 列，以及页顶 brief 里标明「单月」的读数。')
         + (f'<b>季度同比</b>只有一处 —— {quarterly}，'
            '它既不是单月也不是滚动，当季未满 3 个月时不画。' if quarterly else '')
+        + mom_named
         + f'两种口径的当期读数并排在这里，省得跨图对：{mlab(cur)} 单月 {sgn(cur_yoy)}、'
           f'{Y.TTM_WIN} 个月滚动 {sgn(cur_ttm)}，差 {sgn(cur_yoy - cur_ttm, 1, "pp")}。')
 
     if spec.get('official_yoy'):
         d = (ds.official_yoy - ds.yoy_self).dropna().abs()
         notes.append(
-            '<b>单月 y/y 有两个来源，数值上几乎重合</b>：热力矩阵与核对表用公司随公告'
+            '<b>单月 y/y 有两个来源，数值上几乎重合</b>：'
+            # 「热力矩阵用公告原值」只在矩阵画的就是单月同比时成立；换成环比之后它一格
+            # 都不碰 official_yoy，这句话就得把它去掉（判据同 §1.6）。
+            + ('热力矩阵与核对表' if ctx['heat_is_single_yoy'] else '核对表')
+            + '用公司随公告'
             f'给出的 <code>{spec["official_yoy"]}</code> 原值；其余由本脚本按序列自算'
             '（口径实现统一走 <code>build/yoy.py</code>，本页不再自己写 '
             '<code>pct_change(12)</code>）。'
@@ -1643,14 +2000,23 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                      '<b>「本页没登记」不等于「公司没披露」</b>：后者是一句关于该公司'
                      '公告内容的事实断言，底座读不到，要说请由该家 spec 带出处来说。')
 
-    if ds.fx is not None:
+    # ── 货币腿这一段分**三种**页面形态，判据全在 §1.5 的两个函数上。
+    #    原来只有两支（`ds.fx is not None` 与 else），于是「挂了 fx 只画汇率线」的家会走
+    #    进第一支，撞上两处 R('fx_contrib') —— 那张图不在 EX 里，直接 KeyError。
+    #    这不是「少一句话」，是整条构建挂掉。
+    #      ① usd_leg_shown(EX)        —— 页上有美元腿：讲恒等式与汇率贡献
+    #      ② fx_used(EX) 而无美元腿   —— 只画汇率线本身（Ex8）：讲清它是宏观序列
+    #      ③ 都没有                   —— 页上一点汇率都没有
+    _fx_contrib_txt = (f'汇率贡献（{R("fx_contrib")}）' if has('fx_contrib')
+                       else '汇率贡献')       # 那张图没出就不点编号，只留概念名
+    if usd_leg_shown(EX):
         u = spec['fx']['usd_share_note']
         LG = legs(spec)
         if LG['implied']:
             notes.append('<b>美元口径全部是推导值（Implied）</b>：'
                          f'US$ 营收 = {LG["loc_zh"]}营收 ÷ 当月平均汇率。'
                          '假设全部营收按当月平均汇率一次性折算，忽略月内汇率路径、对冲与递延收款。'
-                         f'汇率贡献（{R("fx_contrib")}）= {LG["loc_zh"]} y/y '
+                         f'{_fx_contrib_txt}= {LG["loc_zh"]} y/y '
                          '− US$ y/y，单位是百分点。')
         else:
             notes.append('<b>本页两条货币腿都是官方申报值，没有一条是折出来的</b>：'
@@ -1659,7 +2025,7 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                          f'「{LG["loc_zh"]}营收 ≡ 功能货币营收 × 本月換算匯率」'
                          '逐月折算得到，換算匯率本身也是官方申报的格子，'
                          '不是 H.10 / FRED / 台银牌价。'
-                         f'汇率贡献（{R("fx_contrib")}）= {LG["loc_zh"]} y/y '
+                         f'{_fx_contrib_txt}= {LG["loc_zh"]} y/y '
                          '− US$ y/y，单位是百分点 —— 它是这个恒等式的代数重排，'
                          f'读作「以{LG["loc_zh"]}计的那个头条数被汇率抬高/压低了多少」，'
                          '<b>不是公司受到的汇率冲击</b>（真正的暴露在成本端与对冲上，'
@@ -1667,8 +2033,28 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
         # ⚠️「外币计价占比」逐家不同，**不许继承**：per-ticker + 出处。
         notes.append(f'<b>汇率序列口径</b>：{spec["fx"]["src"]}。'
                      f'{u["zh"]}（出处：{u["src"]}）。')
+    elif fx_used(EX):
+        # ② 挂了 fx、但美元腿那两张图被显式跳掉：页上只有汇率线本身。
+        #    这一支必须存在 —— 走上面那一支会 KeyError（R('fx_contrib') 查不到），
+        #    走下面那一支则会说「本页没有汇率线」，而 Ex8 就在页上。
+        #    它要说清楚的正是**这一页不是什么**：没有任何一处美元营收数字。
+        u = spec['fx']['usd_share_note']
+        notes.append(
+            '<b>本页有汇率线，但没有美元营收腿</b>：'
+            + (f'{R("fx_rate")} 画的是<b>汇率本身</b>，' if has('fx_rate') else
+               '本页用到的汇率序列画的是<b>汇率本身</b>，')
+            + '一条宏观序列 —— 挂同一份汇率的每一页上它逐点相同，与本公司披露什么无关。'
+              '页上<b>没有</b>「本币 vs 美元」与「汇率贡献」两张图，也没有任何一处'
+              '「美元营收」的数字（抬头、页顶 brief、核对表都没有）：那要拿本币除以这条'
+              '外部牌价折出来，得到的是<b>分析师构造值</b>、不是公司披露值，'
+              '没有任何官方数可以对账。'
+              '两张图不出的逐条理由见页尾「本页不出「fx_lines」/「fx_contrib」那张图」。'
+            + f'<b>那这条线为什么还在页上</b>：{u["zh"]}（出处：{u["src"]}）—— '
+              '本币计价的报表被一条外币汇率推着走，这件事不需要公司披露美元营收也成立，'
+              '所以汇率该画，折出来的美元营收不该画。')
+        notes.append(f'<b>汇率序列口径</b>：{spec["fx"]["src"]}。')
     else:
-        # 同上：旧措辞把「本页没登记 fx」写成了「公司没披露官方美元实绩」。
+        # ③ 同上：旧措辞把「本页没登记 fx」写成了「公司没披露官方美元实绩」。
         # 在 ccy_zh='美元' 的家（功能货币是美元）上它还会自相矛盾：
         # 「月度公告只有美元，没有官方美元实绩」。
         notes.append('<b>本页没有美元折算腿</b>：本页 spec 未登记 <code>fx</code>。'
@@ -1814,19 +2200,27 @@ def build(spec, out_dir=None, quiet=False):
         cols.append([f'{sd["label"]} ({v["raw_label"]})', key])
         for r, p in zip(trows, ALL[-T:]):
             r[key] = f(ss.get(p), rdec)
-    if ds.fx is not None:
+    # 汇率列跟着 fx_used(EX) 走（§1.5）：只画 Ex8 的家也该给出那条线最近 13 个月的逐月
+    # 读数 —— 核对表的作用就是让图上的点能被逐格核对；三张汇率图全跳掉的 spec 则一列都
+    # 不印（表里多一列页面上没有任何图用到的数，读者无从判断它是干什么的）。
+    if fx_used(EX):
         LG = legs(spec)
         cols.append([f'{spec["fx"]["quote"]} '
                      f'({"monthly avg." if LG["implied"] else "as filed"})', 'fx'])
-        # 「Implied revenue」只在外币腿**确实是我们折出来的**时候才有意义。
-        # 主序列本身就是官方外币栏的家（fx.local_col 给了）：那一列已经是本表第一列，
-        # 再印一遍还冠上 Implied，等于把官方申报值说成推导值，还把同一个数印两遍。
-        if not LG['split']:
+        # 「Implied revenue」只在外币腿**确实是我们折出来的、而且真的画在页上**时才有
+        # 意义。两道判据缺一不可：
+        #   · fx.local_col 给了的家（主序列本身就是官方外币栏）：那一列已经是本表第一
+        #     列，再印一遍还冠上 Implied，等于把官方申报值说成推导值，还印两遍同一个数；
+        #   · 美元腿两张图被跳掉的家（§1.5）：页上根本没有这条构造序列，核对表却逐月印
+        #     13 个「Implied revenue」出来 —— 那是把一个页面明确拒绝画的量塞回表里，
+        #     还落进 payload、会被表格视图和下游读走。
+        _usd_col = (not LG['split']) and usd_leg_shown(EX)
+        if _usd_col:
             cols.append([('Implied revenue (US$mn)' if LG['implied']
                           else 'Revenue (US$mn, as filed)'), 'usd'])
         for r, p in zip(trows, ALL[-T:]):
             r['fx'] = f(ds.fx.get(p), 4)
-            if not LG['split']:
+            if _usd_col:
                 r['usd'] = f(ds.usd.get(p), 0)
     table = {'n': ctx['n_table'],
              'title': f'近 {T} 个月核对表（官方原始单位，未换算）',
@@ -1856,7 +2250,10 @@ def build(spec, out_dir=None, quiet=False):
                 f'{n_in_last} of 3 months'
                 + ('' if n_in_last >= 3 else '，比上年同季前同样月数') + '）'
                 f' · YTD {sym}{ytd_now:,.0f}{U}（{sgn(ytd_yoy, 0)} y/y）')
-    if ds.fx is not None:
+    # 抬头是全页最显眼的一行，报的是**美元腿**的两个读数（美元 y/y 与汇率贡献），不是
+    # 汇率本身，所以判据是 usd_leg_shown(EX)（§1.5）。照旧按 ds.fx 判，只画 Ex8 的家会
+    # 在这一行印出两个页内任何一处都查不到、也不是公司披露的数。
+    if usd_leg_shown(EX):
         headline += (f' · 美元口径 y/y {sgn(float(ds.usd_yoy.iloc[-1]), 0)}，'
                      f'汇率贡献 {sgn(float(ds.fx_contrib.iloc[-1]), 1, "pp")}')
     hub_line = (f'{mlab(cur)} 营收 {sym}{cur_bn:,.0f}{U}，{sgn(cur_yoy, 0)} y/y；'

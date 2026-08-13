@@ -62,7 +62,8 @@
      （逐年 diff 在**构建期现算**，不写死）。
      ⇒ `value.summable = True` 有实测撑着，季度桥 / YTD / TTM 同比在本页全部合法。
 
-  ⑤ **没有汇率腿。这一条本轮拿到了比「便利折算」更硬的两句原文。**
+  ⑤ **没有<u>美元营收腿</u>（Ex5/Ex6）—— 注意这一条<u>不</u>等于「没有汇率线」，
+     两者本轮已拆开，见 ⑤b / ⑤c。** 这一条本轮拿到了比「便利折算」更硬的两句原文。
      FY2025 20-F（2026-04-30 报送）附注 4(7) 逐字：
        "Translations of amounts from NTD into U.S. dollars (USD) for the reader's
         convenience were calculated at the rate of USD 1.00 to NTD 31.37 on
@@ -80,9 +81,38 @@
        不能拿它去与 TSMC「约七成营收以美元计价」对举说「正好相反」** —— 晶圆厂完全
        可以用美元开票，同时多数交易笔数（本地薪资、资本支出、供应商付款）以新台币结算，
        两者不互斥。本轮审计判定这条推理不成立，故删。
-     ⇒ 跳过 Ex5/6/8 的理由**只有一条，且与 TSMC 的自述无关**：联电不按月披露美元营收，
-       20-F 里那一列是年末牌价的 convenience translation（2024 用 32.79），
-       拿它或外部牌价折出来的美元线没有任何官方月度数可以对账。`fx` 留空。
+
+  ⑤b **营收计价币别：公司自己有一句直说的，本轮补上（本页 `fx` 因此不再留空）。**
+     同一份 FY2025 20-F 的 Item 3.D「Risk Factors」，风险因子标题
+     "Currency fluctuations could increase our costs relative to our revenues,
+      which could adversely affect our profitability" 项下逐字：
+       "More than half of our operating revenues are denominated in currencies
+        other than New Taiwan dollars, primarily in U.S. dollars. On the other
+        hand, more than half of our costs of direct labor, raw materials and
+        overhead are incurred in New Taiwan dollars."
+     出处（本轮实抓核对，不是照抄）：
+       https://www.sec.gov/Archives/edgar/data/1033767/000119312526193757/d91630d20f.htm
+     同一句在 FY2023（d448612d20f.htm）与 FY2024（d846836d20f.htm）两份 20-F 里
+     **逐字相同**，是公司的常设表述，不是某一年的偶然措辞。
+     ⚠️ 公司**只给这句定性表述、不给百分比** —— 页上因此不许出现任何「联电 X% 营收
+       以美元计价」的数字。底座 `validate()`（mrbase.py:380-385）明写了这条退路：
+       给不出可核的百分比就把措辞改成不带数字的定性版本。本页走的正是这一支。
+     ⇒ 这句话解释的是「为什么这条汇率线该画」（本币计价的报表被一条外币汇率推着走），
+       它**不能**解释「美元营收线该画」—— 那需要官方月度美元实绩，联电没有。
+
+  ⑤c **两件事拆开：汇率线（Ex8）画，美元营收腿（Ex5/Ex6）不画。**
+     Ex8 画的是 `ds.fx` 本身 —— 一条宏观序列，挂同一份 `series/tsm_fx.csv` 的每一页上
+     逐点相同，不需要联电披露任何东西；本轮之前它是被底座和 Ex5/Ex6 捆在一起跳掉的
+     （旧 `mrbase.py:1076` 那一行把「有没有 fx 序列」与「该不该画美元腿」混在一起），
+     底座本轮已按 §1.5 拆成两个判据，本 spec 于是改成 `fx` 照给 +
+     `skip: ['fx_lines', 'fx_contrib']`（逐条理由见 `_SKIP_FX_LINES` / `_SKIP_FX_CONTRIB`）。
+     Ex5/Ex6 不画的理由**只有一条**：联电不按月披露美元营收，20-F 里那一列是年末牌价的
+     convenience translation（2024 用 32.79），拿它或外部牌价折出来的美元线没有任何
+     官方月度数可以对账 —— 与 ⑤b 那句自述不矛盾：**「多数营收以美元计价」是真的，
+     「公司按月公布过美元营收」是假的**，能画的只有前者对应的那条汇率线。
+     数据前提也在本轮才成立：`series/tsm_fx.csv` 原先自 2016-01 起，而本页序列自
+     2013-01 起，底座对汇率缺月是硬失败（`mrbase.py:700`）；该文件本轮已回补到 2013-01
+     （163 个月，与本页营收逐月对齐）。对齐与否不靠本文件断言，底座自己会查。
 
   ⑥ **分部只按季披露，且 FY2025 起只剩一个分部。**
      FY2025 20-F 附注 12 逐字："The Company only has wafer fabrication operating
@@ -110,8 +140,8 @@
      一个自相矛盾的页面**；而这两处对 TSM 的产出逐字节无影响（TSM 无断点）。
   ⑧b `_window_note()` 里「本页把 Ex2–Ex6 的时间轴统一拉到 …」的 `Ex2–Ex6` 是写死的。
      对 TSM 成立（短窗口图正好五张），对本页不成立：本页短窗口图只有 Ex2–Ex4，
-     Ex5（全历史）与 Ex6（热力矩阵）都是全序列，而同一句话后面自己列出的恰恰只有
-     Exhibit 2/3/4。⇒ 本轮已在底座改成按实际入列的图现算首尾编号
+     其后各图（全历史 / 汇率线 / 热力矩阵）都是全序列，而同一句话后面自己列出的恰恰
+     只有 Exhibit 2/3/4。⇒ 本轮已在底座改成按实际入列的图现算首尾编号
      （`_window_note()`，对 TSM 仍渲染成 Ex2–Ex6）。
 
   ⑨ `tools/visual_qa.py --page umc` 在两个视口各报 1 条 🟡 TEXT_OVERLAP（🔴 0）：
@@ -473,24 +503,120 @@ else:
         + '⇒ 2019-10 ~ 2020-09 共 12 个月的同比与前后不可比。数据本身没有问题，'
           '不可比的是同比。（本次未能从 CSV 现算出三段均值，故此处不并列读数。）')
 
-# ── ⑤ 没有美元腿 / 没有指引桥 ────────────────────────────────────────────────
-_NO_USD_NOTE = (
-    '<b>本页没有美元折算腿，这是核过一手申报之后的结论，不是省事。</b>'
-    '联电的月度公告只有新台币一个口径（公告抬头逐字：「1) Sales volume (NT$ Thousand)」）。'
-    '20-F 里那一列美元是<b>便利折算</b>，而且是按<b>年末单一即期牌价</b>整列折的 —— '
-    'FY2025 20-F 附注 4(7) 逐字：「Translations of amounts from NTD into U.S. dollars (USD) '
-    'for the reader’s convenience were calculated at the rate of USD 1.00 to NTD 31.37 on '
-    'December 31, 2025 released by Board of Governors of the Federal Reserve System. '
-    'No representation…」；SEC XBRL 里 2017–2024 八个年度的 TWD ÷ USD 商也逐年是干净的'
-    '年末牌价（29.64 / 30.61 / 29.91 / 28.08 / 27.74 / 30.73 / 30.62 / 32.79）。'
-    '拿月度新台币去除外部月均牌价折出来的「美元营收」，因此没有任何官方月度美元数'
-    '可以对账，只能是分析师构造值。'
-    '更要紧的是方向：同一份 20-F 的「Foreign Currency Risk」一节自述'
-    '「Although the majority of our transactions are in NT dollars, some transactions are '
-    'based in other currencies.」—— <b>与 TSMC「约七成营收以美元计价」正好相反</b>，'
-    '把 <code>/tsm/</code> 页那套汇率叙事搬过来是事实错误陈述。'
-    '⇒ 本页整体没有「本币 vs 美元」「汇率贡献」「NTD/USD 月均汇率」这三张图，'
-    '编号顺次前移。')
+# ── ⑤ 汇率线出、美元营收腿不出 ───────────────────────────────────────────────
+#
+# 这两件事本轮才被拆开（见文件头 ⑤b / ⑤c）。下面三段分工明确，**不重复底座已经说过的**：
+#   · `_SKIP_FX_LINES` / `_SKIP_FX_CONTRIB` → 底座渲染成「本页不出「…」那张图：…」
+#   · `_FX_LEG_NOTE`   → **只**放对本页上一版那句错误推理的更正（一手证据都在上面两条里，
+#                        不在这里重印）
+#   · `_FX_RATE_EXTRA` → 追加到 Ex8 自己的图注：这条线在本页覆盖期内的现算读数
+# 「页上有汇率线但没有美元腿」这句总述、以及那句公司自述本身，由底座按 §1.5 印一次，
+# 这里不再印第二遍（同一件事印两遍，改口径时必然只改得动一遍）。
+_FX_CSV = 'tsm_fx.csv'
+_FX_COL = 'ntd_per_usd'
+
+
+def _fx_series():
+    """series/tsm_fx.csv → {month: rate}。读不到返回 {}，**不抛异常**（import 期）。"""
+    try:
+        p = os.path.join(_facts.SERIES, _FX_CSV)
+        with open(p, encoding='utf-8') as fh:
+            rows = list(csv.DictReader(fh))
+    except Exception:                                            # noqa: BLE001
+        return {}
+    out = {}
+    for r in rows:
+        try:
+            out[r['month']] = float((r[_FX_COL] or '').strip())
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+_FX = _fx_series()
+# 与本页营收序列的交集 —— 图上画的就是这一段（底座把 fx reindex 到营收月份，
+# 缺一格就在 DataSet 加载期硬失败，所以这里算出来的覆盖与图上一致，不是另一套口径）。
+_FXO = {m: _FX[m] for m in _MS if m in _FX} if (_FX and _MS) else {}
+
+# ── 跳掉 Ex5 / Ex6 的理由（两张图各一条，底座要求逐 slug 给）──────────────────
+_SKIP_WHY_CORE = (
+    '联电<b>不按月披露美元营收</b>：月度公告只有新台币一个口径（公告抬头逐字：'
+    '「1) Sales volume (NT$ Thousand)」）。20-F 里那一列美元是<b>便利折算</b>，'
+    '而且是按<b>年末单一即期牌价</b>整列折的 —— FY2025 20-F 附注 4(7) 逐字：'
+    '「Translations of amounts from NTD into U.S. dollars (USD) for the reader’s '
+    'convenience were calculated at the rate of USD 1.00 to NTD 31.37 on December 31, '
+    '2025 released by Board of Governors of the Federal Reserve System. No representation…」；'
+    'SEC XBRL 里 2017–2024 八个年度的 TWD ÷ USD 商也逐年是干净的年末牌价'
+    '（29.64 / 30.61 / 29.91 / 28.08 / 27.74 / 30.73 / 30.62 / 32.79）—— '
+    '<b>年末一个点的牌价，不是逐月</b>，与本页任何一个月的营收都对不上。')
+_SKIP_FX_LINES = (
+    _SKIP_WHY_CORE
+    + '拿本页的月度新台币去除外部月均牌价，折得出一条「US$ 营收」曲线，但它是'
+      '<b>分析师构造值</b>，没有任何官方月度美元数可以对账 —— 而这张图的全部意义'
+      '正是「两条官方腿并排」。⇒ 不画。'
+      '⚠️ 这与公司自述「超过一半营收以美元计价」<b>不矛盾</b>：'
+      '「多数营收以美元计价」是真的，「公司按月公布过美元营收」是假的，'
+      '前者只撑得起一条汇率线（见本页的 NTD/USD 那张），撑不起一条美元营收线。')
+_SKIP_FX_CONTRIB = (
+    '汇率贡献 = 本币 y/y − 美元 y/y，它是<b>上一条那张图两条腿的代数差</b>：'
+    '美元腿既然是构造值，两者的差就是「构造值的同比」减出来的第二层构造值，'
+    '量级正常、正负号也对，图上看不出毛病 —— 正是最难被发现的一类错。'
+    '⇒ 不画。本页对汇率只做一件事：把<b>汇率本身</b>画出来（NTD/USD 那张），'
+    '不与营收线相乘、也不相除。')
+
+# ── 对上一版一句错误推理的更正 ──────────────────────────────────────────────
+# **只写这一件事**：该画汇率线的出处由底座印一次（usd_share_note），不该画美元腿的
+# 逐条理由由 skip_note 印一次（上面两条），这里再印第三遍就是同一段话三份、
+# 而改口径时只改得动一份。这条 note 的唯一内容是「上一版错在哪、据什么撤回」。
+# （上一版的错误陈述已经上过线，所以更正留在页上；等页面滚过几个月、主线程认为
+#  不再需要时可以整条删掉，删它不影响页上任何一个数。）
+_FX_LEG_NOTE = (
+    '<b>更正本页上一版的一句推理 —— 它把汇率线整张挡在了页外。</b>'
+    '上一版引 FY2025 20-F「Foreign Currency Risk」一节的'
+    '「Although the majority of our transactions are in NT dollars…」，'
+    '据此写成「与 TSMC『约七成营收以美元计价』正好相反」，并顺手跳掉了汇率图。'
+    '<b>那句推理不成立</b>：该句讲的是 transactions（结算/交易币别），不是 revenue'
+    '（计价币别）—— 晶圆厂完全可以用美元开票，同时多数交易笔数（本地薪资、资本支出、'
+    '供应商付款）以新台币结算，两者不互斥。同一份 20-F 的 Item 3.D 风险因子一节对 '
+    'revenue 讲得很直接：「More than half of our operating revenues are denominated in '
+    'currencies other than New Taiwan dollars, primarily in U.S. dollars.」'
+    '（逐字出处见上面「本页有汇率线，但没有美元营收腿」一条）。'
+    '⇒ 本页撤回「正好相反」这个结论，把<b>汇率线</b>放回页上；'
+    '<b>美元营收腿仍然不画</b>，理由与那句自述无关，见「本页不出「fx_lines」/'
+    '「fx_contrib」那张图」两条。')
+
+# ── Ex8 图注的本页补注：这条线在本页覆盖期内的现算读数 ────────────────────────
+if _FXO:
+    _FXM = sorted(_FXO)
+    _LO_M = min(_FXM, key=lambda m: _FXO[m])
+    _HI_M = max(_FXM, key=lambda m: _FXO[m])
+    _LAST = _FXO[_FXM[-1]]
+    _Y_AGO = _shift(_FXM[-1], -12)
+    _FX_YOY = ((_LAST / _FXO[_Y_AGO] - 1.0) * 100.0) if _Y_AGO in _FXO else None
+    _FX_RATE_EXTRA = (
+        f'<b>本页覆盖期内的现算读数</b>：这条线在 {_FXM[0]}–{_FXM[-1]} 共 {len(_FXM)} 个月上'
+        f'与本页营收<b>逐月对齐</b>（底座把汇率序列 reindex 到营收月份，缺一格就在加载期'
+        f'硬失败，所以这里的覆盖就是图上的覆盖）；区间低点 {_FXO[_LO_M]:.2f}（{_LO_M}）、'
+        f'高点 {_FXO[_HI_M]:.2f}（{_HI_M}）、末月 {_FXM[-1]} 为 {_LAST:.2f}'
+        + (f'，较 12 个月前{"贬" if _FX_YOY > 0 else "升"}值 {abs(_FX_YOY):.1f}%'
+           if _FX_YOY is not None else '')
+        + '。⚠️ 这几个数说的都是<b>汇率自己</b>（NTD 兑 USD，数字变大 = 新台币贬值），'
+          '<b>不是联电的任何营收量</b>，本页也没有把它与营收线相乘或相除。'
+          '同理，<b>本图上没有红色竖虚线</b>：本页登记的两个口径断点'
+          '（Topcell 除列 / USJC 并表）是<b>联电自己</b>的合并范围变化，'
+          '而这条汇率是宏观序列，不因任何一家公司的并表或除列而换口径，'
+          '<b>它在那两个月的两侧完全可比</b> —— 所以底座不把断点画到这张图上。'
+          '页尾那句「从这一期起与左侧不可比」说的是本页的营收口径，不是这条线。'
+          f'序列文件是 <code>series/{_FX_CSV}</code>，本站挂同一份汇率的每一页共用它 —— '
+          f'其中 2013-01 至 2015-12 那 36 个月是本轮从美联储 H.10 历史页回补的'
+          f'（口径与既有段同一个函数，2016-01 起一格未改），补的原因就是本页营收自 '
+          f'{_MS[0]} 起、比原先的汇率下界早三年。')
+else:
+    _FX_RATE_EXTRA = (
+        '<b>本页覆盖期内的读数本次未能从 CSV 现算</b>，故此处只作定性表述：'
+        '这条线是 NTD 兑 USD 的月均牌价（数字变大 = 新台币贬值），'
+        '与本页营收逐月对齐（缺月会在底座加载期硬失败），'
+        '<b>它不是联电的任何营收量</b>，本页也没有把它与营收线相乘或相除。')
 
 _NO_GUIDANCE_NOTE = (
     '<b>本页没有指引桥，也没有分部线。</b>'
@@ -648,9 +774,53 @@ SPEC = {
     # 不给 official_yoy：公告**有** "Changes %" 列，但 series/umc.csv 没有落库这一列
     # （落库的原因见 _YOY_SRC_NOTE）。硬填一个不存在的列名会在 DataSet 加载期硬失败。
 
-    # 不给 fx：没有官方月度美元数（20-F 那列是年末单一牌价的便利折算），
-    # 且公司自述「majority of our transactions are in NT dollars」。
-    # 底座据此整体跳过 Ex5 / Ex6 / Ex8 并把编号前移 —— 不需要显式 skip。
+    # ── 汇率：**给 fx，但显式跳掉两张美元腿的图**（见文件头 ⑤b / ⑤c）─────────
+    # 「有没有 fx 序列」与「该不该画美元腿」是两件事，底座 §1.5 已把判据拆开：
+    # Ex8 画的是 ds.fx 本身（一条宏观序列，挂同一份汇率的每一页逐点相同，不需要
+    # 联电披露任何东西），Ex5/Ex6 画的是这家公司的美元营收（联电没有官方月度值）。
+    # ⇒ fx 照给 + skip 那两张。skip 掉之后底座不会在抬头、brief、核对表、页尾
+    #   任何一处印出美元营收数字（判据是 usd_leg_shown(EX)，不是 ds.fx）。
+    'fx': {
+        'csv': _FX_CSV, 'col': _FX_COL, 'quote': 'NTD per USD',
+        # 与 /tsm/ 页共用同一个文件、同一个口径 —— 这条序列是宏观数据，不是本家数据。
+        'src': '美联储 H.10 台湾地区日度牌价的月度算术平均（该月全部营业日的算术平均，'
+               '美方假日的 ND 不计入；与 FRED 的 EXTAUS 同源同口径），'
+               f'序列文件 series/{_FX_CSV}，本站挂汇率的各页共用',
+        # ⚠️ per-ticker，**不可继承**：底座对有 fx 却没给这个字段的 spec 硬失败。
+        #    联电官方只给定性表述、**不给百分比** —— 底座 validate() 明写的退路
+        #    （mrbase.py:380-385：核不动的百分比就改成不带数字的定性版本）。
+        #    这里走的正是那一支：一个字的百分比都不编。
+        'usd_share_note': {
+            'en': 'UMC states that more than half of its operating revenues are '
+                  'denominated in currencies other than NT dollars, primarily in U.S. '
+                  'dollars, while revenues are reported in NT$ — so this rate moves the '
+                  'reported growth rate. The company gives no percentage, and none is '
+                  'implied here. This exhibit plots the exchange rate itself; UMC does '
+                  'not disclose monthly U.S. dollar revenues.',
+            'zh': '联电自述「超过一半的营业收入以新台币以外的币别计价，主要是美元」'
+                  '（<b>公司只给这句定性表述、没有给百分比</b>，本页也不编一个），'
+                  '而报表以新台币列报，所以这条汇率线直接推动本页的头条增速；'
+                  '但联电<b>不按月披露美元营收</b>，页上因此只有汇率本身，没有美元营收腿',
+            'src': 'UMC FY2025 Form 20-F（2026-04-30 报送，accession 0001193125-26-193757）'
+                   'Item 3.D「Risk Factors」项下「Currency fluctuations could increase our '
+                   'costs relative to our revenues…」一条，逐字「More than half of our '
+                   'operating revenues are denominated in currencies other than New Taiwan '
+                   'dollars, primarily in U.S. dollars.」（同句在 FY2023 / FY2024 两份 20-F '
+                   '里逐字相同）；'
+                   'https://www.sec.gov/Archives/edgar/data/1033767/000119312526193757/'
+                   'd91630d20f.htm',
+        },
+    },
+
+    # 两张要「本币 ÷ 汇率」这条构造腿的图，显式跳掉（底座要求逐 slug 给理由）。
+    'skip': ['fx_lines', 'fx_contrib'],
+    'skip_note': {
+        'fx_lines': _SKIP_FX_LINES,
+        'fx_contrib': _SKIP_FX_CONTRIB,
+    },
+
+    # 追加到 Ex8 自己的图注末尾：这条线在本页覆盖期内的现算读数（数不写死）。
+    'note_extra': {'fx_rate': _FX_RATE_EXTRA},
 
     # 不给 segments：分部只按季/按年披露，月度公告只有一个数；
     # 且 FY2025 20-F 附注 12 已写明只剩单一分部。
@@ -698,7 +868,7 @@ SPEC = {
         _WINDOW_BREAK_NOTE,
         _NEWBIZ_NOTE,
         _USJC_NOTE,
-        _NO_USD_NOTE,
+        _FX_LEG_NOTE,
         _NO_GUIDANCE_NOTE,
         _YOY_SRC_NOTE,
         _HEAT_SPAN_NOTE,

@@ -4,11 +4,18 @@
 本文件只有**数据与本家专属的事实**，没有一行图型逻辑。位置 `build/mrspecs/mtk.py`。
 
 ━━ 结构：与 /tsm/ 那份 spec 的三处差别 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. **没有 `fx`** ⇒ 底座整体不出 Ex5（NT$ vs US$ 单月同比）/ Ex6（汇率贡献）/
-   Ex8（月均汇率），后面的图编号顺次前移。**不写进 `skip`**：`skip` 是给
-   「腿在、口径上仍决定不画」用的，本页是这条腿根本不存在，底座的 `build_exhibits()`
-   已按 `has_fx` 结构性排除、页尾也已印出「本页没有美元折算腿」那一条通稿；
-   再写一遍 `skip` + `skip_note` 会让同一件事在页尾出现两次。本家专属的证据在 `_N_NOFX`。
+1. **`fx` 照挂，但两张美元图走 `skip`** ⇒ 页上**有**汇率线，**没有**两条美元腿。
+   ⚠️ 下面一律用 slug 指图，别用编号：编号是**算出来的**，同一张图在两页上号不一样。
+   `fx_rate`（汇率线本身）在 /tsm/ 页上是 Ex8，本页因为跳掉两张排在它前面的图而落在
+   **Ex6**；跳掉的两张是 `fx_lines`（/tsm/ 的 Ex5：NT$ vs US$ 单月同比）与
+   `fx_contrib`（/tsm/ 的 Ex6：汇率贡献）。
+   这两件事在底座里是**分开**判的（`mrbase.fx_used` / `mrbase.usd_leg_shown`，见底座
+   §1.5）：汇率线画的是 `ds.fx` 这条**宏观**序列本身 —— 挂同一份汇率的每一页上它逐点
+   相同，不需要本家披露任何东西；美元腿则是「本币 ÷ 汇率」折出来的**公司**序列，
+   本家没有官方美元营收实绩可对账，所以那两张显式 `skip` + 各给一条 `skip_note`。
+   ⚠️ 上一版这里写的是「不给 `fx`，让底座结构性排除三张图」—— 那样连汇率线本身也被
+   一起带掉了，是把「画得出来吗」与「该不该画」压在同一个判据上。本家专属的汇率证据
+   在 `_N_FXLEG`（三份官方 PDF，逐句核过，URL 见该条与 `fx.usd_share_note.src`）。
 2. **没有 `official_yoy`** —— 但**公司其实公告 y/y**（见 `_N_YOY`）。留空的理由是
    `series/mtk.csv` 只存了金额一列，y/y 是它的派生量，不是第二个独立事实。
 3. **没有 `guidance` / `brief_extra`** —— 公司每季给的是新台币绝对区间 + 假设汇率
@@ -32,6 +39,13 @@
   全年备考 530,891,100 vs 实际 530,585,886）。
 · **「2018-01 是 IFRS 15 准则边界」这条站不住**，本轮从 FY2018 转换附注原文证伪，
   见 `_N_START`。上一版 `build/specs/mtk.py` 里那句话是错的，不要再继承。
+· 汇率那三条官方证据本轮各自下载原始 PDF、`pdftotext` 后逐句核过（URL 见 `_FX_SRC_*`）：
+  ① 季度业绩新闻稿的合并损益表**确有** `Average Exchange Rate - USD/NTD` 一行
+  （2Q26 那份：31.60 / 1Q26 31.62 / 2Q25 30.88，与损益各行同表并列）；
+  ② 「nearly all of our revenue is in US dollar」出自 2Q25 法说会讲稿第 4 页，
+  是公司自述、**不带任何百分比**；③ 全年目标的美元口径出自 2Q26 讲稿第 4 页
+  （"high-single digit percentage growth in US dollars"），同页的 3Q26 指引
+  NT$152.2–159.8bn 带「forecasted exchange rate of 32 NT dollars to 1 US dollar」。
 
 ━━ 图注里的数 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 能从 `series/mtk.csv` 算出来的**一个都不写死**，全部 import 期现算；读不到源退回不含
@@ -86,6 +100,38 @@ _ICPLUS_PROFORMA_FY2024_K = 530_891_100
 #: 逐格比对公司 IR 月营收表：金额 0 处不符；官方 YoY Changes% 与自算值最大差 0.0095pp。
 _XCHECK = {'months': 103, 'from': '2018-01', 'to': '2026-07',
            'mismatch': 0, 'yoy_n': 91, 'yoy_max_pp': 0.0095}
+
+#: ── 汇率腿的官方出处 ──────────────────────────────────────────────────────────
+#: 三份 PDF 本轮各自下载原件、pdftotext 后逐句核过，URL 直接可开（都在 mediatek.com
+#: 自己的 hubfs 上）。写成字面量的理由与上面那批一样：它们是**外部披露事实**，
+#: 构建期复算不了。文件名逐季变，所以每条都写清是哪一期 —— 过期时看得出来。
+_FX_SRC_RATE_ROW = (
+    '联发科季度业绩新闻稿（Press Release）的合并损益表末行 '
+    '<code>Average Exchange Rate - USD/NTD</code>（2Q26 那份：31.60，'
+    '1Q26 31.62、2Q25 30.88，与损益各行同表并列）：'
+    'https://www.mediatek.com/hubfs/MediaTek%20Assets/Pdfs/'
+    'Quarterly%20Earnings%20Release/2026/Quarterly%20Earnings%20Release-2026Q2/'
+    'Press%20Release.pdf')
+_FX_SRC_NEARLY_ALL = (
+    '联发科 2Q25 法说会讲稿第 4 页：「As nearly all of our revenue is in US dollar, '
+    'we also provide our third quarter revenue guidance in US dollar to fairly reflect '
+    'the business situation.」：'
+    'https://www.mediatek.com/hubfs/MediaTek%20Assets/Pdfs/'
+    'Quarterly%20Earnings%20Release/2025/Quarterly%20Earnings%20Release-2025Q2/'
+    'Transcript.pdf')
+_FX_SRC_USD_TARGET = (
+    '联发科 2Q26 法说会讲稿（Prepared remarks）第 4 页：全年营收目标 '
+    '"high-single digit percentage growth in US dollars"；同页 3Q26 指引 '
+    'NT$152.2–159.8bn "at a forecasted exchange rate of 32 NT dollars to 1 US dollar"：'
+    'https://www.mediatek.com/hubfs/MediaTek%20Assets/Pdfs/'
+    'Quarterly%20Earnings%20Release/2026/Quarterly%20Earnings%20Release-2026Q2/'
+    'Prepared%20remarks.pdf')
+
+#: 公司自己给的汇率敏感度（2Q25 讲稿，见 _FX_SRC_NEARLY_ALL 同一份 PDF 第 1 页）：
+#: 「for every 1% appreciation of NT dollar, we would have a negative impact on gross
+#: margin of around 0.2 percentage points, and around 0.25 percentage points on
+#: operating margin.」⚠️ 这是**利润率**口径、季度频率，不是月营收的汇率贡献分解。
+_FX_SENS_GM_PP, _FX_SENS_OM_PP = 0.2, 0.25
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -350,20 +396,53 @@ else:
         '不是产出的线性驱动，按天数除一遍会把农历年效应算成「经营性走弱」。'
         '（本次未能从 CSV 现算出斜率，故只作定性表述。）')
 
-_N_NOFX = (
-    '<b>补一句证据：本页「没有美元腿」是核过的「没有」，不是「没找到」。</b>'
-    '联发科从不公告<b>美元营收金额</b> —— 月度营收公告全部只有新台币；季度业绩新闻稿的'
-    '合并损益表里确实有一行 <code>Average Exchange Rate - USD/NTD</code>'
-    '（2Q26 法说会讲稿：「the average exchange rate for the second quarter was NT$31.6 '
-    'to US$1」），但那是<b>汇率</b>不是美元营收；法说会上其余的美元只出现在'
-    '<b>成长率</b>或<b>目标</b>口径里（全年目标是「high-single digit percentage growth '
-    'in US dollars」）。这三样都不是可对账的美元营收实绩。'
-    '⇒ 拿新台币月营收除以外部牌价折出来的是<b>分析师构造值</b>，没有任何官方数可以对账，'
-    '页上任何一处都不会出现那种冒充官方值的线 —— 这与 <code>/tsm/</code> 页不同，'
-    '那家每季自报美元营收，所以那一页才有「NT$ vs US$ 单月同比」「汇率贡献」「月均汇率」'
-    '三张图。MOPS 上 2454 那行的备注「海外子公司之營收係以當月平均匯率換算之」说的是'
+_N_FXLEG = (
+    '<b>补一句证据：本页「有汇率线、没有美元营收腿」是两件分开核过的事。</b>'
+    '<br>① <b>汇率线为什么该有。</b>本家有三条<b>各自独立</b>的官方证据（不是同一句话的'
+    '三种说法，所以出处也分三份）：'
+    '季度业绩新闻稿的<b>合并损益表本身</b>就带一行 '
+    '<code>Average Exchange Rate - USD/NTD</code>（出处：' + _FX_SRC_RATE_ROW + '）；'
+    '季度指引带<b>假设汇率</b>，全年目标干脆<b>直接用美元口径</b>给（出处：'
+    + _FX_SRC_USD_TARGET + '）；公司自述「nearly all of our revenue is in US dollar」'
+    '（出处：' + _FX_SRC_NEARLY_ALL + '，原句不带任何百分比，本页也不替它编一个）。'
+    '要评价一个用美元表述的官方目标，或者读懂新台币头条增速里有多少不是经营性的，'
+    '读者必须看得见这条线。而这条线是一条<b>宏观</b>序列，画它<b>不需要公司披露任何'
+    '东西</b> —— 本站挂同一份汇率的每一页上它逐点相同。'
+    '<br>② <b>美元营收腿为什么不该有。</b>联发科从不公告<b>美元营收实绩</b>：月度营收'
+    '公告全部只有新台币；讲稿里的美元出现在三个地方，没有一个是实绩 —— <b>增速</b>'
+    '（2Q25 讲稿：「in US dollar, second quarter revenue was up 4.4% sequentially」）、'
+    '<b>指引区间</b>（2Q25 给 3Q25 的 US$4.49bn–4.83bn，是前瞻数，而且并非每季都给：'
+    '同一位 IR 在 2Q26 给 3Q26 的指引就只有新台币区间 + 一个假设汇率）、'
+    '<b>全年目标</b>。⇒ 拿新台币月营收除以外部牌价折出来的是<b>分析师构造值</b>，'
+    '没有任何官方数可以对账，所以「本币 vs 美元」与「汇率贡献」两张走 <code>skip</code>'
+    '（逐条理由见页尾对应的两条「本页不出「…」那张图」），页上任何一处都不会出现那种'
+    '冒充官方值的线。'
+    '<br>③ 与 <code>/tsm/</code> 页的差别只在<b>这一层</b>：那家每季自报美元营收金额，'
+    '所以那一页三张汇率图全出；本页出汇率线、不出两条美元腿。'
+    '<br>④ MOPS 上 2454 那行的备注「海外子公司之營收係以當月平均匯率換算之」说的是'
     '海外子公司那一层的折算，不代表公司按美元计价；上面逐年对账的残差只有舍入量级，'
     '正说明这层折算<b>不产生</b>月度与年度之间的口径缺口。')
+
+# ── 两条 skip 的理由（底座逐条印成「本页不出「<slug>」那张图」）。
+#    ⚠️ 这两条讲的是「腿在、口径上仍决定不画」，与「本页根本没有 fx 序列」是两回事 ——
+#    本页的 fx 序列在，Ex_fx_rate（汇率线本身）也在，跳的只有这两张需要美元营收的。
+_SKIP_FX_LINES = (
+    '这张要把<b>本币单月同比</b>与<b>美元单月同比</b>两条线画在一张图上，而美元那条只能'
+    '拿 NT$ 月营收 ÷ 外部月均牌价折出来。联发科只公告新台币月营收，从不公告美元营收'
+    '<b>实绩</b>（逐条证据见页尾「本页「有汇率线、没有美元营收腿」」那条的第 ② 段）。'
+    '折出来的那条线是<b>分析师构造值</b>，却会与一条官方线并排、同线型、同图例 —— '
+    '这是本页最容易被读成「公司披露值」的一种画法，而且没有任何官方数可以对账。'
+    '⇒ 这张不出；汇率线<b>本身</b>照出，它不需要任何公司披露就成立。')
+
+_SKIP_FX_CONTRIB = (
+    '这张画的是「本币 y/y − 美元 y/y」这个差，减数正是上一条里那条构造出来的美元 y/y：'
+    '被减数是官方的、减数不是，差出来的「汇率贡献 pp」会被读成一条<b>公司披露过的'
+    '分解量</b>。公司确实给过汇率敏感度，但口径对不上：2Q25 法说会讲稿说「每 1% 新台币'
+    f'升值，毛利率约 −{_FX_SENS_GM_PP:.1f}pp、营业利益率约 −{_FX_SENS_OM_PP:.2f}pp」，'
+    '那是<b>利润率</b>口径、<b>季度</b>频率，而这张图是<b>营收增速</b>口径、<b>月度</b>'
+    '频率 —— 两者不能互相替代，更不能拿这张图去冒充它。'
+    '（那句敏感度的出处与「nearly all of our revenue is in US dollar」同一份 PDF：'
+    + _FX_SRC_NEARLY_ALL + '）⇒ 这张不出。')
 
 _N_NOGUIDE = (
     '<b>本页没有指引桥，尽管公司给指引。</b>联发科每季法说会给的是<b>新台币绝对区间 + '
@@ -419,8 +498,48 @@ SPEC = {
 
     # 'official_yoy' 不给：公司确实公告 y/y，但本表只存金额一列（见 _N_YOY）。
     # 'alt' / 'segments' 不给：月度披露就是一个合并营收数，没有第二计价列、没有月度分部。
-    # 'fx' 不给：没有官方美元营收实绩，不造分析师构造值（见 _N_NOFX）。
     # 'guidance' / 'brief_extra' 不给：series/ 里没有可复跑的指引源表（见 _N_NOGUIDE）。
+
+    # ── 汇率序列：挂上，但只用来画汇率线本身 ────────────────────────────────
+    # `csv` 指向 <code>series/tsm_fx.csv</code>：文件名带 tsm 是历史包袱（它是
+    # fetch/tsm.py 维护的），内容是一条**与公司无关的宏观序列** —— 美联储 H.10 台湾地区
+    # 日度牌价的月度算术平均（= FRED EXTAUS 的定义，落库脚本直接从 H.10 重算）。
+    # 本站挂它的每一页画出来逐点相同；覆盖 2013-01 起，本页 2018-01 起的每个月都在里面
+    # （底座对缺月是硬失败，缺一格就报 `series/tsm_fx.csv 缺月份`，不会静默补零）。
+    #
+    # `implied` 不给（默认 True）：本页这条线是**外部牌价**，不是公司随月营收公告申报的
+    # 换算汇率 —— 联发科申报的那个是**季度**平均汇率、印在季度业绩新闻稿的损益表上，
+    # 与月度公告无关。底座据此在图脚印「本图与月营收公告无关」，这句话在本页是真的。
+    # `assumption` 不给：那句折算假设是给 fx_lines / fx_contrib 用的，本页那两张不出。
+    'fx': {
+        'csv': 'tsm_fx.csv', 'col': 'ntd_per_usd', 'quote': 'NTD per USD',
+        'src': '美联储 H.10 台湾地区日度牌价的月度算术平均（NTD/USD，与 FRED EXTAUS 同'
+               '定义、同上游；由 fetch/tsm.py 从 H.10 原始日度值重算落库），'
+               '本站各页共用 series/tsm_fx.csv 同一份序列',
+        # ⚠️ per-ticker，**不可继承**。底座对这一条的要求是「要么给带出处的事实、
+        #    要么退回不带数字的定性版本」——
+        #    联发科从未披露过「美元计价营收占比」的百分比，所以这里走**定性**那条路：
+        #    引的是公司自己那句不带数字的话，一个百分比都不编。
+        'usd_share_note': {
+            'en': 'MediaTek reports in NT$ but says nearly all of its revenue is in '
+                  'US dollars, and it sets its full-year revenue target as US-dollar '
+                  'growth — so this rate moves the reported NT$ headline. The company '
+                  'discloses no US-dollar revenue actual, so this page charts the rate '
+                  'itself and never an implied US$ revenue line.',
+            'zh': '联发科以新台币入账，但公司自述营收「几乎全部以美元计价」'
+                  '（原文不带百分比，本页也不替它编一个），全年营收目标直接按美元增速给，'
+                  '季度损益表逐季申报平均汇率 —— 所以这条线直接推动报表上的新台币增速；'
+                  '但公司不公告美元营收实绩，故本页只画汇率本身，不折美元营收线',
+            'src': '公司自述（无比例数字可引，故按定性登记）：' + _FX_SRC_NEARLY_ALL
+                   + '；美元口径的全年目标与假设汇率：' + _FX_SRC_USD_TARGET
+                   + '；季度损益表的申报汇率行：' + _FX_SRC_RATE_ROW,
+        },
+    },
+
+    # 只跳两张需要「本币 ÷ 汇率」这条构造腿的图。汇率线本身（slug 'fx_rate'）不跳 ——
+    # 它画的是上面那条宏观序列，与本家披露什么无关（底座 §1.5 的两个判据）。
+    'skip': ['fx_lines', 'fx_contrib'],
+    'skip_note': {'fx_lines': _SKIP_FX_LINES, 'fx_contrib': _SKIP_FX_CONTRIB},
 
     'window': {
         # **显式 None = 用序列自己的起点**（2018-01），不是漏写。不设 /tsm/ 那样的 2016
@@ -446,7 +565,7 @@ SPEC = {
         '图列、图注与同比口径的规矩见 build/CONTRACT.md）',
 
     'notes': [_N_SRC, _N_ADD, _N_YOY, _N_BRK, _N_START, _N_DAYS,
-              _N_NOFX, _N_NOGUIDE, _N_HEAT],
+              _N_FXLEG, _N_NOGUIDE, _N_HEAT],
 
     'footer': '图表与派生算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
               '仅供个人研究，不构成投资建议',

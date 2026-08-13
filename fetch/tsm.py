@@ -30,6 +30,15 @@
    实测 2016-01 ~ 2026-07 共 127 个月，重算值与现有 tsm_fx.csv 最大偏差 4.8e-05
    （纯 4 位小数舍入残差），可以认定口径完全一致。
 
+   **tsm_fx.csv 覆盖 2013-01 起，不是 2016-01**（见下面 FX_SERIES_START 那段注释）：
+   它是挂在多页上的共享宏观序列，下界由「最早的消费方」决定，而不是由 TSMC 页面决定。
+   2013-01 ~ 2015-12 这 36 个月是 2026-08 用同一个 fetch_fx() 一次性回补的，
+   已入库的 2016-01 起那段逐字节未动。回补时的独立验证：把日度值按**年**平均，
+   与美联储自己发布的 G.5A 年均（2016-01-04 那期，含 2012~2015）逐年对表 ——
+   2012/2013/2014/2015 = 29.5580 / 29.6800 / 30.2990 / 31.7440，重算差 ≤ 3e-4
+   （G.5A 只印到 3 位小数，残差量级与之相符）。也就是说日度解析本身经得起
+   上游自己的账核，不是「我们算的月均自己跟自己一致」。
+
 3) 交叉校验源（只读不写）
    台湾证交所 OpenAPI https://openapi.twse.com.tw/v1/opendata/t187ap05_L
    「每月营业收入汇总表」，全市场当期一份 JSON，单位是**新台币千元**。
@@ -125,7 +134,17 @@ REV_CSV = 'tsm.csv'
 FX_CSV = 'tsm_fx.csv'
 GUIDANCE_CSV = 'tsm_guidance.csv'
 
-SERIES_START = '2016-01'          # build 脚本的历史起点，早于此不入库
+# ── 两个起点是**两件事**，不许合并回一个常量 ────────────────────────────
+# SERIES_START 管的是 tsm.csv：TSMC 页面的历史起点，早于此不入库。
+# FX_SERIES_START 管的是 tsm_fx.csv：汇率是**共享的宏观序列**，挂它的不止 TSMC ——
+#   联电（umc）与南亚科（nanya）的营收序列自 2013-01 起，汇率停在 2016-01 就会让
+#   那两页的美元腿/汇率贡献凭空少三年。H.10 的 dat00_ta.htm 本来就覆盖 2000-01 起，
+#   仓库每月也一直在下这一页，所以下界纯粹是我们自己截的，放开不需要新增任何源。
+# ⚠️ 谁也别把 FX 的下界再往前推「反正源里有」：2013-01 是当前**最早的消费方**
+#   （umc/nanya）的起点。没有消费方的年份写进来只是给每次 update() 的重述检测
+#   增加 N 年的比对面，出错概率涨、收益为零。要往前推，先有那一页。
+SERIES_START = '2016-01'
+FX_SERIES_START = '2013-01'
 
 # 对账容差：营收是整数应当完全相等；yoy 允许 1 位小数的舍入方向差；汇率 4 位小数
 TOL_REV = 0.51
@@ -520,12 +539,19 @@ def update(series_dir, cache_dir):
     today = _dt.date.today()
     cur = _mkey(today.year, today.month)
     new_fx_months = sorted(m for m in fx_src
-                           if m >= SERIES_START and m not in have_fx and m < cur)
+                           if m >= FX_SERIES_START and m not in have_fx and m < cur)
     # H.10 一个月至少有 15 个营业日；明显偏少说明该月数据还没灌全
     for m in new_fx_months:
         if fx_src[m][1] < 15:
             raise ValueError('H.10 %s 只有 %d 个日度观测，月均不可信，本次不写入'
                              % (m, fx_src[m][1]))
+    # _append_rows 只会往**文件尾**写。下界放到 2013-01 之后，「待写月份早于已入库
+    # 最大月」第一次成为可能（文件被截断、或哪个中间月漏了），那会写出一份乱序 CSV，
+    # 而乱序 CSV 不会报错、只会让下游按行序取「最新月」时静默取错。宁可停下。
+    if have_fx and new_fx_months and min(new_fx_months) < max(have_fx):
+        raise ValueError('待写汇率月份 %s 早于已入库最大月 %s；追加会写出乱序 CSV。'
+                         '先确认 tsm_fx.csv 是不是缺了中间月份'
+                         % (sorted(m for m in new_fx_months if m < max(have_fx)), max(have_fx)))
     new_fx_rows = [{'month': m, 'ntd_per_usd': '%.4f' % fx_src[m][0]} for m in new_fx_months]
 
     # ── 一致性闸门：build 脚本要用汇率折美元，营收月必须都有汇率 ──
