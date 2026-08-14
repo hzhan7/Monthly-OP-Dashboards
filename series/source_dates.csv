@@ -133,6 +133,7 @@ nanya,2026-07,2026-08-04,"IR 新闻稿列表标题日期 ""Nanya Technology ... 
 ndaq,2026-07,2026-08-05,"新闻稿 nasdaq-reports-july-2026-volumes 正文电头 ""NEW YORK, Aug. 05, 2026 (GLOBE NEWSWIRE)"""
 schw,2026-05,2026-06-12,"schw_may2026_press_release.pdf 首页 News Release 日期 ""June 12, 2026"""
 schw,2026-06,2026-07-21,"schwab_q2_2026_earnings_release.pdf 第 1 页电头 ""WESTLAKE, Texas, July 21, 2026"""
+schw,2026-07,2026-08-14,"schw_jul2026_press_release.pdf 第 1 页电头 ""WESTLAKE, Texas, August 14, 2026"""
 sgx,2018-08,2018-09-24,"PDF 直链（官方文件名「Market Statistics - Aug 2018」）的 HTTP Last-Modified ""Mon, 24 Sep 2018 12:26:30 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
 sgx,2018-09,2018-10-22,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Sep-2018」）的 HTTP Last-Modified ""Mon, 22 Oct 2018 02:52:21 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
 sgx,2018-10,2018-11-08,"PDF 直链（官方文件名「SGX-Monthly-Market-Statistics-Report-Oct-2018」）的 HTTP Last-Modified ""Thu, 08 Nov 2018 10:55:19 GMT""，取 GMT 日历日；语义是网站上线日（= 数据第一次可得），同一份报告挂上 SGXNet 通常再晚 1-3 天"
