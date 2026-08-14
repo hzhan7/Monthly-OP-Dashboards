@@ -11,12 +11,13 @@
     Ex2  gs_bar          月营收柱 + 右轴 12 个月滚动合计同比
     Ex3  qtr_bar         月度聚合到季（当季未满月份浅色）
     Ex4  gs_line         环比 m/m
-    Ex5  lines_endlabels 本币同比 vs 美元同比（单月口径）  【需 fx + 页上有美元腿】
-    Ex6  grouped_bars    汇率对报表增速的贡献（之差，pp）  【需 fx + 页上有美元腿】
-    Ex7  lines           全历史（可叠分部）
-    Ex8  lines           月均汇率                                【只需 fx】
-    Ex9  heat_matrix     逐年 × 逐月热力（口径见 `window.heat_metric`）
-    Ex10 核对表          近 N 个月，官方原始单位未换算
+    Ex5  stacked_dual   分部占比（100% 堆叠 + 右轴同一段换刻度）  【需 segments】
+    Ex6  lines_endlabels 本币同比 vs 美元同比（单月口径）  【需 fx + 页上有美元腿】
+    Ex7  grouped_bars    汇率对报表增速的贡献（之差，pp）  【需 fx + 页上有美元腿】
+    Ex8  lines           全历史（可叠分部）
+    Ex9  lines           汇率（fgn_col 的家再加一条「自印两列之商」）  【只需 fx】
+    Ex10 heat_matrix     逐年 × 逐月热力（口径见 `window.heat_metric`）
+    Ex11 核对表          近 N 个月，官方原始单位未换算
 
 **编号是算出来的，不是写死的**：画不出来的图整体跳过，后面的图**顺次前移**，
 页内所有互指（图注里的「见 Exhibit X」）都走 `EX[slug]` 查表，不会指到不存在的图。
@@ -553,7 +554,7 @@ def validate(spec):
 
 # 图的 slug（= 稳定标识）。编号 n 是**算出来的**，slug 才是页内互指的键。
 #
-# `mix`（分部占比时序）插在 `mom` 之后：它与 rev_bar 的堆叠柱是同一件事的两种读法
+# `mix`（分部占比，100% 堆叠柱）插在 `mom` 之后：它与 rev_bar 的堆叠柱是同一件事的两种读法
 # ——柱看绝对量、占比线看结构位移——所以排在量级三图（rev_bar/qtr/mom）之后、
 # 汇率腿之前。只有 `segments` 非空的家才出（见 build_exhibits 的 order 过滤）。
 _SLUGS = ['rev_bar', 'qtr', 'mom', 'mix', 'fx_lines', 'fx_contrib', 'hist', 'fx_rate', 'heat']
@@ -1846,7 +1847,7 @@ def build_exhibits(ds, spec, breaks):
         d['note'] += lay(d)
         push('mom', d, w.months)
 
-    # ── Ex5：分部占比（lines_endlabels，平滑 → 必须截断）────────────────────
+    # ── Ex5：分部占比（stacked_dual，100% 堆叠柱；DENSE 图型 → 必须截断）──────
     #
     # 与 rev_bar 的堆叠柱是同一份数据的两种读法：柱回答「这个月各业务各做了多少」，
     # 本图回答「结构在往哪边走」。放在这里而不是并进柱图，是因为占比与绝对量在同一张
@@ -1854,7 +1855,8 @@ def build_exhibits(ds, spec, breaks):
     # 场合最有价值，那正是绝对量图上看不出来的。
     if 'mix' in EX:
         shares = [(sd, ss / ds.rev * 100) for sd, ss in ds.segments]
-        w = Window(ds, i_x, 'lines_endlabels',
+        # `stacked_dual` 在 DENSE 名单里（平滑折线吃不了 null），所以窗口按它裁。
+        w = Window(ds, i_x, 'stacked_dual',
                    [mrwin.Leg(f'sh{k}', f'{sd["label"]} 占比', sh.values, 'primary')
                     for k, (sd, sh) in enumerate(shares)])
         # 占比的极值取**窗口内**，不取全序列：图上画的是窗口，图注引全序列的极值会
@@ -1865,25 +1867,33 @@ def build_exhibits(ds, spec, breaks):
             lo_i, hi_i = int(np.nanargmin(sw.values)), int(np.nanargmax(sw.values))
             rng.append((sd, float(sw.iloc[-1]), float(sw.iloc[lo_i]), str(sw.index[lo_i]),
                         float(sw.iloc[hi_i]), str(sw.index[hi_i])))
-        d = {'kind': 'lines_endlabels', 'fmt': 'pct1',
-             'title': 'Revenue mix by business（占合并营收的比重）',
-             'xlabels': w.labels, 'xrot': 90,
-             # ⚠️ **归零用 `yfloor` 不用 `zero_base`**：`zero_base` 在引擎里只写在
-             #    `draw()` 最后那个 `else` 分支里，而 `lines_endlabels` 有自己的分支、
-             #    排在它前面 —— 传了是个**死键**，一个字都不生效，`build/axisfmt.py`
-             #    的镜像链同序。实测后果：日月光这张图的 y0 会落在 +14.17，
-             #    0% 线在画布外 52.62px，左轴只剩 20/40/50/60/80%，
-             #    而图注还写着「线的高度可以直接当『占了几成』读」——
-             #    最新月 ATM 64.41% 画在 71.13% 高度、非 ATM 35.59% 画在 30.32%，
-             #    视觉比 2.345 而真值 1.810，放大了 29.6%。
-             #    全站 80 张 lines_endlabels 归零一律用 `yfloor: 0`
-             #    （build/single.py 里已把这条写成规矩），这里跟既有做法。
-             'ylab': '% of consolidated', 'yfmt': 'pct0', 'yfloor': 0,
-             'series': [{'name': f'{sd["label"]} (% of total)',
+        # ── 右轴那条线 ──
+        # `stacked_dual` 的 `line` 是必填（引擎与 verify_pages 都当它一定在），而
+        # 100% 堆叠里各段的高度本来就读得出来 —— 所以这条线**不引入新的量**，
+        # 它就是其中一段换个刻度重画一遍（版式出处：/exchanges-eu/ Ex2 的
+        # 「Deutsche Börse, %（右，同一条序列换个刻度）」）。
+        # 取**最新占比最小**的那一段：0..100 的堆叠里最矮的那块最难量，
+        # 给它一条 0..ymax 的专用轴才有增量；取最大的那块等于没放大。
+        k_r = min(range(len(shares)), key=lambda k: float(shares[k][1].iloc[-1]))
+        r_sd, r_sh = shares[k_r]
+        r_win = r_sh.iloc[w.i0:]
+        # 上界取 10 的整数倍并留一档余量：线贴着轴顶会与柱顶数值标签抢那条白边。
+        _ymax = float(np.ceil(float(np.nanmax(r_win.values)) / 10.0) * 10)
+        if float(np.nanmax(r_win.values)) / _ymax > 0.92:
+            _ymax += 10
+        d = {'kind': 'stacked_dual', 'height': 340, 'fmt': 'pct1', 'xrot': 90,
+             'title': 'Revenue mix by business（占合并营收的比重，堆叠 = 100%）',
+             'xlabels': w.labels,
+             'ylab': '% of consolidated（左，堆叠 = 100%）',
+             'ylab2': f'{r_sd["label"]}, %（右，同一条序列换个刻度）',
+             'stacks': [{'name': sd['label'],
                          'color': _SEG_COLORS[k % len(_SEG_COLORS)],
                          'values': L(sh.iloc[w.i0:].values)}
                         for k, (sd, sh) in enumerate(shares)],
+             'line': {'name': f'{r_sd["label"]}（RHS）', 'color': 'GREEN',
+                      'values': L(r_win.values), 'ymax': _ymax},
              'src_extra': ('Segment shares are computed as segment ÷ consolidated; '
+                           'the stacks sum to 100% by construction. '
                            'Segment provenance is stated in the exhibit note.'),
              # ⚠️ **不许无条件断言「分部列本身是披露值」**：日月光的第二段是**残差**
              #    （合并 − ATM），页尾的 _CALIBER_NOTE 白纸黑字说它不是官方分部数 ——
@@ -1897,18 +1907,22 @@ def build_exhibits(ds, spec, breaks):
                                    (('rev_bar', '堆叠段'), ('hist', '分部线')) if x in EX])
                       + '与本图配色逐一对应，'
                       '同一块业务在这几张图上永远是同一个颜色。'
-                      '纵轴自 0 起（<code>yfloor</code>），所以线的高度可以直接当'
-                      '「占了几成」读，不是被拉伸过的相对位置。'
+                      '<b>每根柱恒高 100%</b>（各段之和按构造就是合并总额），'
+                      '所以这张图只讲<b>结构</b>、一个字都没讲规模 —— '
+                      '柱高一样不代表那个月营收一样。'
+                      # 右轴那条线是同一段换个刻度，不说破读者会当成第三个量。
+                      + f'<b>右轴那条绿线不是新的量</b>：它就是<b>{r_sd["label"]}</b>'
+                        f'那一段，换成 0–{_ymax:.0f}% 的刻度重画一遍 —— '
+                        '100% 堆叠里最矮的那块最难量，给它一条专用轴才读得出逐月的进退；'
+                        '柱顶上方那一排绿色百分比就是它的逐月读数。'
                       + '；'.join(
                           # 分部名是英文（`Turnkey` / `NRE & Others`），后面直接接中文
                           # 会挤成「Turnkey最新」；补一个空格。
                           f'{sd["label"]} 最新 {cur:.1f}%，窗口内在 {lo:.1f}%（{lom}）到 '
                           f'{hi:.1f}%（{him}）之间'
                           for sd, cur, lo, lom, hi, him in rng) + '。'
-                      # 两段的家：两条线是同一个数的两种写法，说破比让读者自己发现好。
-                      + ('<b>本页只有两块业务，所以这两条线互为镜像</b>（和恒为 100%）：'
-                         '画两条不是给了两个独立的量，是让每一块的水平都能直接读出来，'
-                         '不必拿 100 去减。'
+                      + ('<b>本页只有两块业务，所以这两段互补</b>（和恒为 100%）：'
+                         '看其中一段的进退就等于看另一段的反向进退，不是两个独立的量。'
                          if len(shares) == 2 else '')
                       + '<b>占比动了不等于哪一块变差了</b>：分母是合并总额，'
                         '一块业务绝对量原地不动、另一块猛涨，前者的占比照样往下走 —— '
@@ -1919,7 +1933,7 @@ def build_exhibits(ds, spec, breaks):
                       + _boundary_note(want_from, str(w.months[0]), w.n,
                                        '占比本身没有 lag 要求（分部 ÷ 合并逐月即得），'
                                        '截断只可能来自某一条分部列在窗口首月还没有值',
-                                       'lines_endlabels'))}
+                                       'stacked_dual'))}
         d['note'] += lay(d)
         push('mix', d, w.months)
 

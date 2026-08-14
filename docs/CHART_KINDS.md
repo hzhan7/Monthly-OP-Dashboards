@@ -274,7 +274,7 @@
 
 配色由 Python 侧的调用方决定，而且**同一块业务在几张图上必须同色**：
 `build/mrbase.py` 为此设了共用常量 `_SEG_COLORS = ('MBLUE', 'GRAY', 'GREEN', 'GOLD')`，
-Ex2 的堆叠段 / `mix` 的占比线 / `hist` 的分部线三张图共用同一份、按 `spec['segments']`
+Ex2 的堆叠段 / `mix` 的 100% 堆叠段 / `hist` 的分部线三张图共用同一份、按 `spec['segments']`
 的顺序取色。三张图各配各的色，等于让读者在同一页里把同一块业务认成三块。
 
 ⚠️ **GOLD 排在第 4 位是为了躲 Ex2 的次轴同比线**（那条固定 GOLD）。所以先出事的

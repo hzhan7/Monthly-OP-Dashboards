@@ -1895,9 +1895,14 @@
         out.push({ name: ex.series[i].name, color: col(ex.series[i].color),
           values: ex.series[i].values, fmt: f });
     } else if (ex.kind === 'stacked_dual') {
+      /* 段的表格列**跟着 payload 自己声明的 `fmt` 走**，不再写死 f0c。
+         写死的那一版把占比型的堆叠（exchanges-eu 声明 f2、exchanges-na 声明 f1、
+         本仓的分部占比图声明 pct1）在表格视图里一律截成整数 —— payload 明明表了态，
+         表格却不认。没声明 fmt 的页（cboe/cme/hood/ibkr/lpla）退回 f0c，输出不变。 */
+      var sdf = fmtOf(ex.fmt || 'f0c');
       for (i = 0; i < ex.stacks.length; i++)
         out.push({ name: ex.stacks[i].name, color: col(ex.stacks[i].color),
-          values: ex.stacks[i].values, fmt: FMT.f0c });
+          values: ex.stacks[i].values, fmt: sdf });
       out.push({ name: ex.line.name, color: col(ex.line.color), values: ex.line.values, fmt: FMT.pct1 });
     } else if (ex.kind === 'diverging_bars') {
       out.push({ name: 'Reported − Core', color: C.NAVY, values: ex.values, fmt: f });
