@@ -132,7 +132,9 @@ def _left_range(ex):
     if k == 'gs_bar':
         y0, y1 = 0.0, mx * 1.22
     elif k == 'stacked_dual':
-        y0, y1 = 0.0, mx * 1.28
+        # 与 charts.js 同源：顶部留白只在有右轴线时才需要（那批逐点标签被抬到柱顶
+        # 之上的白底里）。两处必须一起改，否则 Python 侧的轴模型与引擎画出来的不是同一个。
+        y0, y1 = 0.0, mx * (1.28 if _rhs(ex) is not None else 1.06)
     elif k == 'bars_labeled':
         y0, y1 = 0.0, mx * 1.13
     elif k == 'qtr_bar':
@@ -240,8 +242,9 @@ def fix(ex):
         return ex
     y0, y1 = rng
     rc, rtk, r0, r1 = _rhs(ex), None, None, None
-    dual = kind in ('bar_line_dual', 'stacked_dual') or \
-        (kind in ('qtr_bar', 'grouped_bars', 'gs_bar') and rc is not None)
+    # `stacked_dual` 的右轴可选（不给 line 就是纯堆叠柱），判据与 charts.js 同源。
+    dual = kind == 'bar_line_dual' or \
+        (kind in ('qtr_bar', 'grouped_bars', 'gs_bar', 'stacked_dual') and rc is not None)
     if dual and rc is not None:
         if kind == 'stacked_dual':
             rtk = ticks(0.0, rc.get('ymax') or 60, 6)

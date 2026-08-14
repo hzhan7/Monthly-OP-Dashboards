@@ -118,7 +118,7 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 | `lines_endlabels` | 同上 | 多条平滑线，仅两端标数值。对应 `gsx.multi_line` |
 | `bar_line` | `bar{color,values,yfmt}`, `line{color,values,yfmt}` | 柱 + 线（同一轴） |
 | `bar_line_dual` | 同上 + `ylab2` | 柱（左轴）+ 线（右轴）。对应 `gsx.rev_bar_yoy` |
-| `stacked_dual` | `stacks[{name,color,values}]`, `line{...}` | 堆叠柱 + 右轴占比线。对应 `gsx.stack_share` |
+| `stacked_dual` | `stacks[{name,color,values}]`, `line{...}`**可选** | 堆叠柱 + 右轴占比线。对应 `gsx.stack_share`。**不给 `line` 就退化成纯堆叠柱**（右轴、图例项、表格行、以及柱顶 28% 的留白一并消失）—— 占比型堆叠里各段之和恒为 100，段高本身已经把每一块读出来了，再拿其中一段换个刻度画一遍是同一个数说两遍 |
 | `diverging_bars` | `values[]` | 正负分色柱 |
 | `bars_labeled` | `values[]`, `annot?` | 柱 + 每柱数值 + 注解 |
 

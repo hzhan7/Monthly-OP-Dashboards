@@ -314,7 +314,11 @@ def check_exhibit(tag, ex, short, long_):
         'bar_line': ['bar', 'line'], 'bar_line_dual': ['bar', 'line'],
         'lines': ['series'], 'lines_endlabels': ['series'], 'year_lines': ['series'],
         'seasonality': ['base', 'actual'], 'grouped_bars': ['groups'],
-        'bridge_bar': ['stacks'], 'stacked_dual': ['stacks', 'line'],
+        'bridge_bar': ['stacks'],
+        # `stacked_dual` 的 `line` 是**可选**的：不给就退化成纯堆叠柱（引擎侧
+        # 由 rhsOf() 判、逐处 null-safe）。占比型堆叠里各段之和恒为 100，
+        # 段高本身已经把每一块读出来了，再拿其中一段换个刻度画一遍是同一个数说两遍。
+        'stacked_dual': ['stacks'],
         'gs_bar': ['values'], 'gs_line': ['values'], 'gs_line_avg': ['values', 'avg12'],
         'qtr_bar': ['values'], 'diverging_bars': ['values'], 'bars_labeled': ['values'],
         'range_band': ['lo', 'hi', 'actual'],
@@ -456,9 +460,10 @@ def check_exhibit(tag, ex, short, long_):
             err(where, f'lines 开了 end_label，最高末点距绘图区顶只有 {top}px（< 14px）——'
                        f'spreadY 会把整列末点标签收成一摞贴右上角，读数被安到别的线上；'
                        f'把 height 提到 ≥325（现 {ex.get("height") or 248}）')
-    if kind == 'stacked_dual' and not ((ex.get('line') or {}).get('ymax')):
-        warn(where, 'stacked_dual 没给 line.ymax，右轴按缺省 0..60 画')
-    if kind in ('bar_line_dual', 'stacked_dual') and not ex.get('ylab2'):
+    if kind == 'stacked_dual' and ex.get('line') and not (ex['line'].get('ymax')):
+        warn(where, 'stacked_dual 给了 line 却没给 line.ymax，右轴按缺省 0..60 画')
+    if (kind == 'bar_line_dual' or (kind == 'stacked_dual' and ex.get('line'))) \
+            and not ex.get('ylab2'):
         warn(where, f'{kind} 是双轴但没给 ylab2，右轴没有标题')
 
 

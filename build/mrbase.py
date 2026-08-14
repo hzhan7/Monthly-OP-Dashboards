@@ -1867,31 +1867,20 @@ def build_exhibits(ds, spec, breaks):
             lo_i, hi_i = int(np.nanargmin(sw.values)), int(np.nanargmax(sw.values))
             rng.append((sd, float(sw.iloc[-1]), float(sw.iloc[lo_i]), str(sw.index[lo_i]),
                         float(sw.iloc[hi_i]), str(sw.index[hi_i])))
-        # ── 右轴那条线 ──
-        # `stacked_dual` 的 `line` 是必填（引擎与 verify_pages 都当它一定在），而
-        # 100% 堆叠里各段的高度本来就读得出来 —— 所以这条线**不引入新的量**，
-        # 它就是其中一段换个刻度重画一遍（版式出处：/exchanges-eu/ Ex2 的
-        # 「Deutsche Börse, %（右，同一条序列换个刻度）」）。
-        # 取**最新占比最小**的那一段：0..100 的堆叠里最矮的那块最难量，
-        # 给它一条 0..ymax 的专用轴才有增量；取最大的那块等于没放大。
-        k_r = min(range(len(shares)), key=lambda k: float(shares[k][1].iloc[-1]))
-        r_sd, r_sh = shares[k_r]
-        r_win = r_sh.iloc[w.i0:]
-        # 上界取 10 的整数倍并留一档余量：线贴着轴顶会与柱顶数值标签抢那条白边。
-        _ymax = float(np.ceil(float(np.nanmax(r_win.values)) / 10.0) * 10)
-        if float(np.nanmax(r_win.values)) / _ymax > 0.92:
-            _ymax += 10
+        # ⚠️ **本图不给 `line`**（右轴那条线），这是刻意的：
+        # 各段之和恒为 100，段高本身就把每一块读出来了，再拿其中一段换个刻度
+        # 重画一遍是同一个数说两遍 —— 本页只有两块业务，连「最矮的段不好量」
+        # 这个理由都不成立（两段互补，看一段就等于看另一段）。
+        # `stacked_dual` 的 `line` 因此在本轮被改成可选（引擎的 rhsOf() 逐处 null-safe，
+        # verify_pages 的必填表也跟着放开）；给了 line 的既有五页一格不变。
         d = {'kind': 'stacked_dual', 'height': 340, 'fmt': 'pct1', 'xrot': 90,
              'title': 'Revenue mix by business（占合并营收的比重，堆叠 = 100%）',
              'xlabels': w.labels,
-             'ylab': '% of consolidated（左，堆叠 = 100%）',
-             'ylab2': f'{r_sd["label"]}, %（右，同一条序列换个刻度）',
+             'ylab': '% of consolidated（堆叠 = 100%）',
              'stacks': [{'name': sd['label'],
                          'color': _SEG_COLORS[k % len(_SEG_COLORS)],
                          'values': L(sh.iloc[w.i0:].values)}
                         for k, (sd, sh) in enumerate(shares)],
-             'line': {'name': f'{r_sd["label"]}（RHS）', 'color': 'GREEN',
-                      'values': L(r_win.values), 'ymax': _ymax},
              'src_extra': ('Segment shares are computed as segment ÷ consolidated; '
                            'the stacks sum to 100% by construction. '
                            'Segment provenance is stated in the exhibit note.'),
@@ -1910,11 +1899,6 @@ def build_exhibits(ds, spec, breaks):
                       '<b>每根柱恒高 100%</b>（各段之和按构造就是合并总额），'
                       '所以这张图只讲<b>结构</b>、一个字都没讲规模 —— '
                       '柱高一样不代表那个月营收一样。'
-                      # 右轴那条线是同一段换个刻度，不说破读者会当成第三个量。
-                      + f'<b>右轴那条绿线不是新的量</b>：它就是<b>{r_sd["label"]}</b>'
-                        f'那一段，换成 0–{_ymax:.0f}% 的刻度重画一遍 —— '
-                        '100% 堆叠里最矮的那块最难量，给它一条专用轴才读得出逐月的进退；'
-                        '柱顶上方那一排绿色百分比就是它的逐月读数。'
                       + '；'.join(
                           # 分部名是英文（`Turnkey` / `NRE & Others`），后面直接接中文
                           # 会挤成「Turnkey最新」；补一个空格。

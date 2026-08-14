@@ -34,7 +34,7 @@
 | `qtr_bar`         | 季度柱 + 右轴 y/y                | `values[] line{}`          | 给 `line` 才有 | 268        |
 | `range_band`      | 区间带 + 实际值菱形              | `lo[] hi[] actual[]`       | 否             | 268        |
 | `seasonality`     | 灰=同月均值 / 蓝=实际，配对柱    | `base{} actual{}`          | 否             | 268        |
-| `stacked_dual`    | 堆叠柱 + 右轴百分比线            | `stacks[] line{}`          | **总是**       | 268        |
+| `stacked_dual`    | 堆叠柱（+ 可选的右轴百分比线）   | `stacks[]` `line{}`可选    | **总是**       | 268        |
 | `year_lines`      | 每年一条线叠在 12 格上           | `series[] highlight`       | 否             | 268        |
 
 画布最终高 = `height || 默认高` + x 标签带（`xrot=90` → 48、`45` → 36、`0` → 22）。
@@ -98,7 +98,7 @@
 
 | 容忍 null（线断开 / 柱跳过）                                                                                                                                                             | 不容忍 null（必须逐点稠密）                                                             |
 |------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------|
-| `lines` `year_lines` `bar_line` `bar_line_dual` `diverging_bars` `bars_labeled` `qtr_bar` `seasonality` `bridge_bar` `grouped_bars` `range_band` `heat_matrix` `gs_bar`(含 `yoy.values`) | `gs_line` `gs_line_avg` `lines_endlabels` `stacked_dual`（`stacks` 与右轴 `line` 都是） |
+| `lines` `year_lines` `bar_line` `bar_line_dual` `diverging_bars` `bars_labeled` `qtr_bar` `seasonality` `bridge_bar` `grouped_bars` `range_band` `heat_matrix` `gs_bar`(含 `yoy.values`) | `gs_line` `gs_line_avg` `lines_endlabels` `stacked_dual`（`stacks` 与右轴 `line` 都是，`line` 不给时只查 `stacks`） |
 
 不容忍那一侧的具体后果：
 
@@ -126,7 +126,7 @@
 | `lines` / `lines_endlabels` / `year_lines`                           | `series`（数组本身）                                    |
 | `seasonality`                                                        | `base`、`actual`（两个对象都要在，`values` 可为空数组） |
 | `grouped_bars`                                                       | `groups`                                                |
-| `bridge_bar` / `stacked_dual`                                        | `stacks`                                                |
+| `bridge_bar` / `stacked_dual`                                        | `stacks`（`stacked_dual` 的 `line` 是**可选**的，见下）  |
 | `gs_line_avg`                                                        | `avg12`（要画右端均值文字）                             |
 | 其余（`gs_bar` `gs_line` `qtr_bar` `diverging_bars` `bars_labeled`） | `values`                                                |
 
@@ -409,7 +409,15 @@ Ex2 的堆叠段 / `mix` 的 100% 堆叠段 / `hist` 的分部线三张图共用
   line: { name: '行业 ADV（RHS）', color: 'GREEN', values: [...], ymax: 60 },
   ylab: '千张/日', ylab2: '%' }
 ```
-- 左轴强制 `0 .. 堆叠总高 ×1.28`；右轴强制 `0 .. line.ymax`（**缺省 60**，几乎一定要显式给）。
+- **`line` 是可选的**：不给就退化成**纯堆叠柱** —— 右轴刻度、图例里那一项、
+  表格视图里那一行、以及柱顶那 28% 的留白（它本来是给右轴线的逐点标签用的）一并消失，
+  左轴改成 `0 .. 堆叠总高 ×1.06`。
+  什么时候不该给：**占比型堆叠**（各段之和恒为 100）里段高本身就把每一块读出来了，
+  再拿其中一段换个刻度画一遍是同一个数说两遍；只有两块业务时更是如此（两段互补，
+  看一段就等于看另一段）。段数多、最矮那块难量时，右轴线才有增量 ——
+  `/exchanges-eu/` Ex2 三家份额那张就是这种，它的 `ylab2` 也照实写着「同一条序列换个刻度」。
+- 左轴强制 `0 .. 堆叠总高 ×1.28`（无 `line` 时 ×1.06）；右轴强制 `0 .. line.ymax`
+  （**缺省 60**，给了 `line` 就几乎一定要显式给 `ymax`）。
   ⚠️ **右轴下界写死成 0（`r0 = 0`），右轴线含负值的图不能用这个 kind** ——
   负值点会被顶到轴外，画面不报错，读者只会读到「这条线从没转过负」。
   要「堆叠柱 + 会转负的次轴线」，走 `gs_bar` 的 `stacks` + `yoy`（§3.6.1 / §3.6.2）。

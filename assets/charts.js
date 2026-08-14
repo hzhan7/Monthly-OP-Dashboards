@@ -751,8 +751,14 @@
       XB = Math.max(XB, xlEm * fscale(8.2) * (rot === 90 ? 1 : 0.707) + fscale(10));
     /* 新图型里 qtr_bar / grouped_bars 的右轴（y/y、误差）是可选的：payload 没给 ex.line
        就退化成单轴柱图，不画空的右刻度。gs_bar 的 ex.yoy 同理（默认不给 = 维持现状）。 */
-    var dual = kind === 'bar_line_dual' || kind === 'stacked_dual' ||
-               ((kind === 'qtr_bar' || kind === 'grouped_bars' || kind === 'gs_bar') && !!rhsOf(ex));
+    /* `stacked_dual` 的右轴改成**可选**：不给 `ex.line` 就退化成纯 100% 堆叠柱。
+       起因是占比型堆叠 —— 各段之和恒为 100 时，段的高度本身就把每一块读出来了，
+       再把其中一段换个刻度画一遍是同一个数说两遍（本仓的分部占比图只有两块业务，
+       第二条线连"最矮的段不好量"这个理由都不成立）。
+       既有五页都给了 line，`rhsOf()` 本来就返回 null-safe，所以它们逐字节不变。 */
+    var dual = kind === 'bar_line_dual' ||
+               ((kind === 'qtr_bar' || kind === 'grouped_bars' || kind === 'gs_bar' ||
+                 kind === 'stacked_dual') && !!rhsOf(ex));
     var perPointLabels = kind === 'gs_bar' || kind === 'gs_line' || kind === 'gs_line_avg' ||
                          kind === 'stacked_dual' || kind === 'lines_endlabels' ||
                          kind === 'qtr_bar' || kind === 'seasonality' || kind === 'bridge_bar' ||
@@ -857,7 +863,10 @@
        —— matplotlib 的 locator 作用于最终 ylim，算在 max 上会得到两倍密度的刻度。
        各分支只定 y0/y1，刻度统一放到截轴、对零点之后再算。 */
     if (kind === 'gs_bar') { y0 = 0; y1 = mx * 1.22; }
-    else if (kind === 'stacked_dual') { y0 = 0; y1 = mx * 1.28; }
+    /* 那 28% 顶部留白是给右轴折线的逐点百分比标签的（它们被抬到柱顶之上的白底里）。
+       没有右轴线时那批标签根本不存在，留白就成了纯空白 —— 100% 堆叠的柱顶在 100，
+       轴却画到 128。所以按有没有 line 分两档。既有五页都给了 line，取值不变。 */
+    else if (kind === 'stacked_dual') { y0 = 0; y1 = mx * (rhsOf(ex) ? 1.28 : 1.06); }
     else if (kind === 'bars_labeled') { y0 = 0; y1 = mx * 1.13; }
     /* 以下四个与 gsx.py 同名函数的 set_ylim 一一对应（qtr_bar 的 1.32 是给竖排标签留的） */
     else if (kind === 'qtr_bar') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.32; }
@@ -1426,6 +1435,10 @@
            一段一抽：同一段的标签在同一带高度上，互相压的只会是左右邻居。 */
         thinLabels(labst);
       }
+      /* 右轴那条线是**可选**的（见上面 dual 的注释）。没给就到此为止：
+         100% 堆叠柱本身已经把每一段读出来了。`Y2` 在没有右轴时是 undefined，
+         所以这一段整体跳过，不是「画一条空线」。 */
+      if (rhsOf(ex) && Y2) {
       polyline(ex.line.values, col(ex.line.color), 1.8, true, false, Y2);
       /* 左右两轴各自缩放（左轴 0..stackMax*1.28，右轴 0..ymax），两者没有耦合，
          右轴折线经常落在柱体内部 —— 那里已经有段内数值标签，两个 6.6px 的数字会在
@@ -1445,6 +1458,7 @@
           { size: 6.6, fill: col(ex.line.color) }) });
       }
       thinLabels(labsd);
+      }
 
     /* ══════════════ 以下七个图型对应 build/gsx.py 的同名函数 ══════════════ */
 
@@ -1903,7 +1917,8 @@
       for (i = 0; i < ex.stacks.length; i++)
         out.push({ name: ex.stacks[i].name, color: col(ex.stacks[i].color),
           values: ex.stacks[i].values, fmt: sdf });
-      out.push({ name: ex.line.name, color: col(ex.line.color), values: ex.line.values, fmt: FMT.pct1 });
+      if (rhsOf(ex))
+        out.push({ name: ex.line.name, color: col(ex.line.color), values: ex.line.values, fmt: FMT.pct1 });
     } else if (ex.kind === 'diverging_bars') {
       out.push({ name: 'Reported − Core', color: C.NAVY, values: ex.values, fmt: f });
 
@@ -2006,7 +2021,7 @@
     } else if (ex.kind === 'stacked_dual') {
       for (i = 0; i < ex.stacks.length; i++)
         items.push(['sq', col(ex.stacks[i].color), ex.stacks[i].name]);
-      items.push(['line', col(ex.line.color), ex.line.name]);
+      if (rhsOf(ex)) items.push(['line', col(ex.line.color), ex.line.name]);
     } else if (ex.kind === 'diverging_bars') {
       items.push(['sq', C.NAVY, 'Reported > Core（油汇顺风）']);
       items.push(['sq', C.RED, 'Reported < Core（油汇拖累）']);
