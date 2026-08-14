@@ -111,7 +111,7 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 
 | kind | 数据字段 | 用途 |
 |---|---|---|
-| `gs_bar` | `values[]`, `legend`, `avg12`, `yoy_txt`, `mom_txt`, `yoy?` | 柱 + 12月均线 + 每柱数值 + YoY/MoM 气泡。对应 `gsx.lvl_bar`。**给了可选的 `yoy{values,color,yfmt,name}` 就改画次轴 y/y 折线、不画均线**（deck 的原样），见 `engine_kinds.md` §8 |
+| `gs_bar` | `values[]`, `legend`, `avg12`, `yoy_txt`, `mom_txt`, `yoy?`, `stacks?` | 柱 + 12月均线 + 每柱数值 + YoY/MoM 气泡。对应 `gsx.lvl_bar`。**给了可选的 `yoy{values,color,yfmt,name}` 就改画次轴 y/y 折线、不画均线**（deck 的原样）。**给了可选的 `stacks[{name,color,values}]` 就把柱按业务分色堆叠，总额仍取 `values`**（轴、柱顶数值、均线、次轴 y/y、表格视图全部照总额走；各段之和 ≡ `values` 是硬校验，配色不得与 `yoy.color` 撞）。两者见 `engine_kinds.md` §8 |
 | `gs_line` | `values[]`, `ovals_at_bottom?` | 平滑线 + 每点数值。对应 `gsx.chg_line` |
 | `gs_line_avg` | `values[]`, `avg12`, `avg_label` | 平滑线 + 均线 + 右端均值标注 |
 | `lines` | `series[{name,color,values,dash?}]`, `markers?`, `zero_base?`, `end_label?` | N 条线。对应 `gsx.long_line` / `gsx.indexed_lines`。**长历史图（对应 `long_line` 的）应当给 `zero_base: true`（deck 是零基线，不给等于隐性截轴）与 `end_label: true`（deck 会标最新一点）**，见 `engine_kinds.md` §8 |

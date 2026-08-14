@@ -18,7 +18,10 @@ OUT = os.path.expanduser('~/Desktop')
 
 SRC = 'Source: TSMC monthly revenue reports; format after Goldman Sachs GIR'
 SRC_G = 'Source: TSMC quarterly earnings-call guidance and reported results'
-SRC_FX = 'Source: monthly average NTD/USD (FRED series EXTAUS)'
+# 主位是 H.10，不是 FRED：本仓抓的是 federalreserve.gov 的 H.10 历史日度牌价
+# （fetch/tsm.py 模块头写明 FRED 在本机连不通），EXTAUS 只是同定义、同上游的另一个分发口。
+SRC_FX = ('Source: monthly average NTD/USD — Federal Reserve H.10 daily rates '
+          '(same definition and upstream as FRED EXTAUS)')
 
 df = pd.read_csv(os.path.join(D, 'data', 'tsm.csv'))
 df['month'] = pd.PeriodIndex(df['month'], freq='M')

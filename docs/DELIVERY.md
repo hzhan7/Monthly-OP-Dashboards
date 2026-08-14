@@ -19,6 +19,19 @@
 >    与**量价分解**（日历年 + 当年 YTD 口径）落地，多数页面的图数因此变了。
 > §1.1 / §1.2 两张表已按 2026-08-07 重测；其余各节的旧数字均以当节追记标出。
 
+> **2026-08-14 追记（家数与图数）**：仓库又扩了一次，本文正文里的家数/图数**全部是历史值**，
+> 现状以本条为准：
+> ① 新增 **`/lseg/`** 单公司页（走通用底座，未进任何横截面页，理由见 README）；
+> ② 新增**台湾半导体 6 家** `/ase/ /mtk/ /nanya/ /umc/ /alchip/ /guc/`，连同原有 `/tsm/`
+>    共 7 页改走**另一条底座** `build/mrbase.py` + `build/mrspecs/<t>.py`（月度营收图列），
+>    不是本文第 1 节说的 `build/single.py` 那条路 —— 加一家半导体页的步骤与 §4 / `CRON_WIRING` §5
+>    的「加一家交易所」不同；
+> ③ 现状：**单公司页 28 张 + 横截面页 6 张 = 34 个页面**（`data/*.js` 34 个 payload，
+>    另加不计页的 `data/roster.js`）。全站图数是个会随口径改造逐轮变的数，本文不再钉死 ——
+>    要现值就现数：只数 `exhibits` 里带 `kind` 的元素，不含每页的汇总表与核对表。
+> ④ 本文正文「12 家扩到 21 家」「单公司页共 21 张」「584 张图 / 28 个 payload」
+>    均为当时实测，保留作历史记录，**不要拿去做今天的核对基线**。
+
 ---
 
 ## 1. 本次新增了什么
@@ -288,7 +301,8 @@ rm -rf sgx/                # 页面壳目录
 
 # ② 删 5 行注册（手工编辑，每处就是一整行）
 #   monthly_run.py    EXCHANGES 里的   'sgx',      这一行
-#   monthly_run.py    EARLY_BY 里的    'sgx':      那一段（EARLY_BY 现有 spgi / enx / sgx / ndaq 四家）
+#   monthly_run.py    EARLY_BY 里的    'sgx':      那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq 五家；
+#                                                  原文写「四家」漏了 lseg，2026-08-14 订正，与 CRON_WIRING §4 一致）
 #   build/roster.py   EXCH 里的        'sgx',      这一行
 #   build/roster.py   LAG 里的         'sgx':      这一行
 #   build/roster.py   META 里的        'sgx':      这一行

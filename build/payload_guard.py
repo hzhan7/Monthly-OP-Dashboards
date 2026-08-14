@@ -47,10 +47,39 @@ json.dump」全部换成 `payload_guard.write_dash(path, payload, '<ticker>')`�
   不命中：`inflection` `information` `inflows` `influence` `infrastructure` `nanometer`
           `financial`（左边是字母）
   取 1-2 个字母是因为格式化单位都很短（bn / mn / tn / k / bp / pp / x），
-  而英文单词的后续至少 3 个字母 —— 唯二的例外是 `nano` / `info` / `infra` / `infer`
-  这类短词，真写进正文会误报一次 FAIL；权衡下宁可误报（响一次、改个措辞）也不放过
-  （放过 = 数字错着上线且没人知道）。
-已验证：对当前 15 个 data/*.js 命中 0 次。
+  而英文单词的后续至少 3 个字母。
+
+## 尾字母那 1-2 格：只认**我们自己的单位**，不认「凡是 1-2 个字母」
+
+上面那条规则原样用会误伤一批**正好长成「词干 + 1-2 个字母」的英文短词**：
+`nano` `info` `infra` `infer` `NAND`。模块最初的权衡是「宁可误报也不放过」，
+那个权衡的前提是这些词**不会**出现在正文里 —— 2026-08 引入「把 MOPS 官方
+增减原因原文写进 brief」之后前提没了：南亚科是 DRAM 厂、世芯是 ASIC 厂，
+公司自己填的备注原文里出现 `NAND` / `HBM` / `AI` 完全正常，而备注原文
+**改不了措辞**（改了就不是原文），误报一次 = 整页发不出去且无解。
+
+放宽的方式不是把尾字母数改小或去掉（那会漏掉 `$nanbn` 这一整类真事故），
+而是**把「1-2 个任意字母」换成「1-2 个字母且必须是本仓格式器真的会输出的单位」**：
+
+    尾部为空        → 一律拦。`nan%` `nan（` `-inf` `inf` `infinity` `$nan` 全在这一支，
+                      因为坏值右边跟的是 `%`、全角标点、`/日` 这类**非字母**。
+    尾部 ∈ _UNITS   → 拦。`$nanbn` `nanmn` `$nantn` `nank` `+naNpp` `nanbp` `nanx`。
+    尾部 ∉ _UNITS   → 放。`nano`(o) `info`(o) `infra`(ra) `infer`(er) `nanya`(ya)。
+
+判据换了个方向，这是关键：原来是「英文词的默认命运是被拦，除非它被人工登记成
+专有名词」（拒绝清单式，而英文词是**开集**，永远登记不完）；现在是「只有当尾字母
+恰好是**我们自己格式器输出的单位**时才拦」—— 而单位是**闭集**，它由本仓的 f-string
+决定，不由英语决定。新加一个单位后缀的人必须同步加进 `_UNITS`，那是一条查得到、
+管得住的规矩；要求所有人预先登记全世界的英文短词则不是。
+
+_UNITS 的取值是实测出来的：扫 build/ + fetch/ + tools/ 的全部 f-string，取「格式化
+占位符 `}` 右边紧跟的 1-2 个 ASCII 字母」，得到 pp / bn / bp / mn / k / px / x / tn /
+b / c / m / q / s / d / f / y / yr，全部收进来；另按对称补一个 `t`（b/m 的单字母写法
+都在，`t` 现在没人用但迟早有人写）。宁可多收：多收一个单位只是多拦一种不存在的坏串，
+漏收一个单位才会放走真事故。
+
+已验证：对当前 35 个 data/*.js 全量重扫命中 0 次；必须拦 / 必须放的两组用例见
+build/test_guards.py（`python3 build/test_guards.py`）。
 """
 import datetime
 import json
@@ -58,20 +87,36 @@ import os
 import re
 
 # 见模块头「字符串匹配的误伤边界」。infinity 必须排在 inf 前面，否则 inf 先匹配上再回溯失败。
-_BAD = re.compile(r'(?<![A-Za-z_])(?:nan|infinity|inf)(?:[A-Za-z]{1,2})?(?![A-Za-z_])', re.I)
+# 尾字母仍然按 1-2 个抓（要抓住 `$nanbn`），但抓到之后由 _UNITS 判是不是**我们的单位**，
+# 所以单独分组 —— 见模块头「尾字母那 1-2 格」。
+_BAD = re.compile(r'(?<![A-Za-z_])(nan|infinity|inf)([A-Za-z]{1,2})?(?![A-Za-z_])', re.I)
 
-# 模块头预告过的那次误报真的来了：**整词**恰好长成「nan/inf + 1-2 个字母」的专有名词。
-# 目前只有一个 —— 南亚科技的 ticker `nanya`（2408.TW，build/specs/nanya.py）。
-# 它出现在 payload.ticker / title / source / footer 等 9 处，而 ticker 是页面目录名，
-# 改措辞解决不了。
+# 本仓格式器真的会输出的单位后缀（实测自 build/ + fetch/ + tools/ 的全部 f-string：
+# 取格式化占位符 `}` 右边紧跟的 1-2 个 ASCII 字母）。**新增一个单位后缀必须同步加进来**，
+# 否则那个单位下的 `nan` 会被当成英文词放行 —— 这是本表唯一的失效方式。
+#   bn/mn/tn 十亿/百万/万亿  b/m/t 同上的单字母写法   k 千   pp/bp 百分点/基点
+#   x 倍数   px 像素   c 美分   q 季   s 秒   d 天   yr 年   y 年（`3Y %ile`）
+#   f 来自 `.{dec}f` 这类格式串本身，一并收
+_UNITS = frozenset({'bn', 'mn', 'tn', 'b', 'm', 't', 'k', 'pp', 'bp',
+                    'x', 'px', 'c', 'q', 's', 'd', 'yr', 'y', 'f'})
+
+# 残余碰撞的人工放行清单：**整词**既长成「nan/inf + 1-2 个字母」、尾字母又恰好落在
+# _UNITS 里的真实词。_UNITS 那条规则已经把 nano / info / infra / infer / nanya 自动放掉了，
+# 这里只剩下真正撞车的：
+#   · `nand`（NAND 闪存）—— 尾字母 `d` 撞上「天」这个单位。NAND 是存储器类型名，
+#     南亚科（DRAM）与世芯（ASIC）的图注、页注、以及**公司自己填的 MOPS 备注原文**里
+#     都会出现，而备注原文改了就不是原文，改措辞解决不了。
+#     反向确认过它不可能是格式化产物：`d` 这个后缀在本仓只出现在 fetch 侧的一句
+#     `print(f'+{lag}d')` 日志里，那条路径根本不进 payload。
+#   · `nanya`（南亚科的 ticker，2408.TW）—— _UNITS 规则下 `ya` 不是单位、已自动放行，
+#     仍显式留在表里：它出现在 payload.ticker / title / source / footer 等 9 处，
+#     是本仓对这条规则依赖最重的一个词，写出来比让它隐式通过更查得到。
 #
 # 放行判据必须是**整词逐字相等**，不是「包含」：
-#   · 格式化产物永远是 `nan` + 单位（bn/mn/tn/k/pp/bp/x/%），凑不出 `nanya`
-#     —— 本仓 18 个格式器一个都不以 y 或 ya 结尾（见 docs/SINGLE_SPEC.md §4）；
 #   · 反过来，`$nanbn` / `nan%` / `+nanpp` 这些真·坏串一个都不在这张表里，照样被拦。
-# 加词的门槛：只有当某个**整词**同时满足「是专有名词」与「不可能由 f-string 造出来」
-# 时才允许加，并在这里写清是哪一家、为什么改不了措辞。
-_ALLOW_WORDS = frozenset({'nanya'})
+# 加词的门槛：只有当某个**整词**同时满足「是专有名词或固定术语」「尾字母撞了 _UNITS」
+# 与「不可能由 f-string 造出来」时才允许加，并在这里写清是哪一家、为什么改不了措辞。
+_ALLOW_WORDS = frozenset({'nanya', 'nand'})
 
 
 class PayloadGuardError(SystemExit):
@@ -108,9 +153,16 @@ def _scan(node, path, out):
         elif node in (float('inf'), float('-inf')):
             out.append((path, f'{node}'))
     elif isinstance(node, str):
-        # finditer 而不是 search：放行了白名单词还要继续往后扫，
-        # 否则 '南亚科…$nanbn' 这种「白名单词在前、坏串在后」会被整串放过。
+        # finditer 而不是 search：放行了一处还要继续往后扫，
+        # 否则 '南亚科…$nanbn'、'NAND 需求回升…$nanbn' 这种「放行词在前、坏串在后」
+        # 会被整串放过。**放行是逐匹配的决定，永远不是整串的决定。**
         for hit in _BAD.finditer(node):
+            tail = (hit.group(2) or '').lower()
+            # 见模块头「尾字母那 1-2 格」：尾部为空 → 一律拦；
+            # 尾部不是本仓的单位 → 这是个英文词（nano / info / infra / nanya），放行。
+            if tail and tail not in _UNITS:
+                continue
+            # 尾字母确实撞上了单位，再看它是不是那几个人工登记过的整词（NAND 撞 `d`）。
             if hit.group(0).lower() in _ALLOW_WORDS:
                 continue
             i = max(0, hit.start() - 28)

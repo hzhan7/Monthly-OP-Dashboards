@@ -1,6 +1,6 @@
-# 月度经营指标看板（22 家）
+# 月度经营指标看板（28 家）
 
-22 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
+28 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
 数据全部来自公司官网 IR 或 SEC 申报的原始披露，不含任何券商研报的观点或数据。
 
 **看板地址：** https://hzhan7.github.io/Monthly-OP-Dashboards/
@@ -8,12 +8,12 @@
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 
 ```
-/            总览（22 家 + 6 张横截面，含各家新鲜度红点）
+/            总览（28 家 + 6 张横截面，含各家新鲜度红点）
 /ibkr/ /schw/ /lpla/ /hood/         券商与财富管理
 /cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /lseg/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 3 → 亚太 4）
 /msci/ /spgi/                       数据与指数
 /cost/ /axp/                        消费与信贷
-/tsm/                               半导体
+/tsm/ /ase/ /mtk/ /nanya/ /umc/ /alchip/ /guc/   半导体（台湾月度营收，7 家）
 /exchanges12/ /exchanges-na/ /exchanges-eu/ /exchanges-apac/ /exchanges-products/ /wealth/   横截面（同组公司放同一张图比）
 ```
 
@@ -45,9 +45,11 @@
 
 ```
 index.html          总览页
-<ticker>/index.html 28 个页面外壳 —— 里面没有任何公司专属内容
-                    13 个（12 家老单公司页 + wealth）由 build/make_shells.py 生成；
-                    15 个（5 张横截面 + build/specs/ 下每一家）由 build/make_shells12.py 生成
+<ticker>/index.html 34 个页面外壳 —— 里面没有任何公司专属内容
+                    13 个（11 家老单公司页 + tsm + wealth）由 build/make_shells.py 生成；
+                    22 个（5 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
+                    由 build/make_shells12.py 生成
+                    （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 34）
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
 assets/page.js      通用页面渲染器，全部页面共用一份（导航分行读 roster 的 row）
 assets/style.css    版式
@@ -57,6 +59,11 @@ fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面�
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所走这条）
 build/specs/<t>.py  一家一份配置（见 docs/SINGLE_SPEC.md）
+build/mrbase.py     月度营收页通用底座（台湾半导体 7 家）：build/mrspecs/<t>.py → data/<t>.js
+                    配置契约写在 mrbase.py 自己的 §1（不在 docs/ 里另开一份，
+                    免得字段清单与 validate() 两处走散）
+build/mrspecs/<t>.py 一家一份配置；build/<t>.py 是 7 个薄壳入口
+build/mrwin.py      mrbase 的窗口左端与排版裁决层，可单测（python3 build/mrwin.py）
 build/CONTRACT.md   payload 数据契约（写生成器前先读它；§6 是全站同比口径）
 build/yoy.py        同比口径的唯一实现，所有生成器算同比一律走这里
 build/brief.py      页顶数据总结（brief）的规则库，句子由各家生成器自己拼
@@ -80,8 +87,8 @@ docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 22 家 + 2 张公共表（费率、汇率）+ 6 张横截面页。
-**每天跑一次**：22 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
+**入口是 `monthly_run.py`**，一条 cron 管 28 家 + 2 张公共表（费率、汇率）+ 6 张横截面页。
+**每天跑一次**：28 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
 省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
 各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`
 （删一家 = 3 个文件 + 5 行注册，见其 §4；删一张横截面页照 `docs/DELIVERY.md` §4.4 的实测清单）。
@@ -105,16 +112,16 @@ python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据
 
 | 总状态 | 含义 |
 |---|---|
-| `NOTHING_TO_DO` | 22 家都没有新数据（正常，等下次） |
+| `NOTHING_TO_DO` | 28 家都没有新数据（正常，等下次） |
 | `PUBLISHED <sha> <n> <月份串>` | n 家更新并已推送，Pages 约 1 分钟后生效 |
 | `PARTIAL <sha> <n> ok / <m> fail` | 有更新也有失败，成功的那部分已发布 |
 | `FAILED <原因>` | 一家都没成功，或工作树不干净 / push 失败 |
 
-### 一家失败不拖累其余二十一家
+### 一家失败不拖累其余二十七家
 
 单公司仓库的老脚本是「一有问题就整体退出」——那时只有一家，退出=什么都不做，代价为零。
-扩到 22 家后同样的写法意味着：TSMC 官网当天抽风，CME / Cboe / HKEX 已经抓到的新数据
-也一起不发布，**一家的故障惩罚了另外二十一家**。所以这里逐家隔离：失败的那家跳过
+扩到 28 家后同样的写法意味着：TSMC 官网当天抽风，CME / Cboe / HKEX 已经抓到的新数据
+也一起不发布，**一家的故障惩罚了另外二十七家**。所以这里逐家隔离：失败的那家跳过
 （线上仍是它自己的旧数据，不会变成错数据），成功的照常发布，失败清单打在总状态里。
 
 ### 三条护栏（刻意让它失败，而不是替你做决定）
@@ -125,8 +132,8 @@ python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据
    「更新数据」推到公开站。（`--dry-run` 不 commit/push，故只警告不拦。）
 2. **缺列一律失败**，绝不静默写 NaN 上线。解析结果少任何一个已有列，该家的 fetch
    模块直接抛异常。
-3. **未到披露期不下载。** 22 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
-   天天跑；但天天把 22 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
+3. **未到披露期不下载。** 28 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
+   天天跑；但天天把 28 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
    `data_through` 对照各家的 LAG 节奏表，够新的直接跳过。
 
    **闸门比 LAG 提前 `EARLY = 5` 天开，不要改成和红点一样的 `+ GRACE`。** 两者共用
@@ -216,9 +223,10 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   「它不是什么」。横轴口径统一为**日历年 + 当年 YTD**：一格 = 一个完整日历年
   （对上一年同 12 个月），末格 = 当年 YTD（对去年同月窗口）。缺同口径（金额，数量）
   配对的页面明说「不具备数据条件」，不硬拆（db1 / enx / ice / ndaq 页各有一条说明）。
-- **brief**：12 家老单公司页与 `/wealth/` 的页顶 ~300 字数据总结。规则库在
-  `build/brief.py`（只算事实），句子由各家生成器自己拼；刻意不复述图表里已有的数字，
-  只写图表讲不出来的三件事 —— 基数效应、口径背离、所处区间。
+- **brief**：11 家老单公司页 + 台湾半导体 7 家 + `/wealth/` 的页顶 ~300 字数据总结。
+  规则库在 `build/brief.py`（只算事实），句子由各家生成器自己拼（`build/mrbase.py`
+  也 `import brief`，7 家共用底座拼出来的那几句 + spec 的 `brief_extra` 钩子）；
+  刻意不复述图表里已有的数字，只写图表讲不出来的三件事 —— 基数效应、口径背离、所处区间。
 
 ## 图表引擎
 
@@ -233,6 +241,13 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 - 不同量纲一律拆成独立图表；确需双轴的，两轴零点画在同一高度 ——
   除非对齐会把某一轴 38% 以上的量程推进无数据区（柱全为正却被迫拉出一大片负区那种），
   这时改为两轴各自缩放，并在图上写明「左右轴零点不同高」
+- **月度柱可按业务分部分色堆叠**（`gs_bar` 的可选 `stacks[]`），但**总额仍是那一根柱**：
+  纵轴、柱顶数值、12 个月均线、次轴同比全部照总额走，分色只是把同一根柱的填色拆开。
+  各段之和必须逐格等于总额 —— 引擎不替数据求和，差额会静默变成柱顶一截空白，
+  所以这条恒等式在 `build/verify_pages.py` 里硬校验（见 `docs/CHART_KINDS.md` §3.6.1）。
+  **没有改用堆叠柱专用图型（`stacked_dual`）是刻意的**：那个图型的右轴下界写死为 0，
+  而这里的次轴是 12 个月滚动同比、会转负，负值会被顶到轴外 ——
+  页面等于宣称「增速从没转负过」，而且不报任何错
 - **多年份对比图（`year_lines`）的往年色是同色相的等间距明度阶**，最浅一档也压得住网格线；
   当年红色高亮。逐年对比是这类图唯一的用途，颜色分不开等于图没画
 

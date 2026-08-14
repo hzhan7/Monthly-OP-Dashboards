@@ -21,14 +21,16 @@
      bridge_bar       正上负下的恒等式桥 + 净额菱形        gsx.bridge_bar
      grouped_bars     同一 x 上两根并排柱 + 右轴误差线     gsx.implied_vs_actual
      range_band       指引区间带状填充 + 实际值菱形        gsx.range_vs_actual
-   字段清单见 cache/engine_kinds.md（数据契约）。
+   字段清单见 build/engine_kinds.md（数据契约）。原来这里写的是 cache/ —— 那个路径不存在。
 
-   所有数值由 build_data.py（复用 skill 同一份算法）预先算好，本文件只负责画。
+   所有数值由各页的 build 脚本预先算好，本文件只负责画 —— 七家台湾半导体页走
+   build/mrbase.py，其余走 build/<ticker>.py 或 build/single.py。
+   （原来这里写的是 build_data.py，那个文件不存在。）
    —— 新图型同此：累计值、历史同月均值、季度合计、误差率一律在 Python 侧算完再传。
       唯一的例外是「桥」的净额：给了 ex.net 就用给的，没给才在这里求和（那是恒等式，
       不是口径判断）。
 
-   ex 上与「基线规范」直接对应的可选字段（build_data.py 传入）：
+   ex 上与「基线规范」直接对应的可选字段（由上述 build 脚本传入）：
      ycap    number    截轴上界（规矩 7）。超界的柱画到 cap 并加断口符号，超界的点钳位
                        画空心圈，真值一律竖排标出——截轴是为了看清主体，不是删点。
                        注意：双轴图上零点对齐可能把上界重新推高到 ycap 之上，此时就不截了
@@ -51,6 +53,18 @@
      yoy     {values,color,yfmt,name}
                        kind:'gs_bar' 的次轴同比折线（同 gsx.lvl_bar）。给了就画次轴 y/y
                        并**不画 12 个月均线**；没给维持现状。右轴刻度与折线同色。
+     stacks  [{name,color,values}]
+                       kind:'gs_bar' 的分部堆叠。给了就把每根柱按业务分色，
+                       **总额仍取 ex.values**（轴、柱顶数值、均线、次轴 y/y、表格视图
+                       一律照总额走）；没给维持现状。各段之和必须等于 ex.values ——
+                       这条在 build/verify_pages.py 里硬校验，不在这里兜底求和：
+                       兜底会把「分部漏了一块」画成一根矮柱，而矮柱看着完全正常。
+                       与 ycap / bar_marks 不兼容，遇上时该柱退回单色（见绘制处注释）。
+                       ⚠️ **不要为此改用 stacked_dual**：它的右轴被写死成 0..ymax
+                       （见 `kind === 'stacked_dual'` 那行 ticks(0, rc.ymax || 60, 6)），
+                       而 gs_bar 的次轴同比是会转负的（日月光 12 个月滚动同比最低
+                       −13.6%、创意 −23.0%），负值会被顶到轴外，页面等于宣称
+                       「增速从没转负过」。
    ========================================================================== */
 (function () {
   'use strict';
@@ -1249,13 +1263,49 @@
         el('line', { x1: M.l, x2: M.l + pw, y1: Y(avg), y2: Y(avg), stroke: C.NAVY,
           'stroke-width': 1.4, 'stroke-dasharray': '6 4' }, g);
       }
+      /* ── 可选的分部堆叠（ex.stacks）──
+         一根柱按业务分色，**总额仍然是 ex.values**：纵轴量程、柱顶数值、12 个月均线、
+         次轴 y/y 折线、表格视图与 tooltip 全部照 ex.values 走，一格都不改。
+         所以这只是把「同一根柱」的填色从一块变成几块，不是换了一个量。
+         没给 ex.stacks 时下面整段跳过，输出与从前逐字节相同（同 ex.yoy 的默认关闭）。
+
+         两种情形**退回单色**，而不是勉强堆：
+           · 该柱被截轴切掉（clampY 改了值）—— 断口的语义是「这根柱到不了顶」，
+             分段之后断口落在最上面那一段上，读者无从判断是哪一段被切了；
+           · 该柱要画成斜纹（markSet）—— 斜纹是整根柱的标记，分段会把它切碎。
+         两者都极少见（本仓现有 gs_bar 一处都没用过），退回比画错好。 */
+      var stkg = (ex.stacks && ex.stacks.length) ? ex.stacks : null;
       for (i = 0; i < n; i++) {
         /* 原来这里是直接 barPath(Y(values[i]))，没走截轴：设了 ycap 的话柱和数值标签
            会一起画到画布外几百像素（IBKR 现有 payload 没设过 ycap，所以一直没暴露）。
            改走 capBar 后，没设 ycap 时输出与从前逐字节相同。 */
         if (!isNum(ex.values[i])) continue;
-        var cutg2 = capBar(Xc(i) - wg / 2, wg, ex.values[i],
-          (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE);
+        var cutg2;
+        if (stkg && !(markSet && markSet[i]) && clampY(ex.values[i]) === ex.values[i]) {
+          var sbase = 0, sg, svv, shi;
+          for (sg = 0; sg < stkg.length; sg++) {
+            svv = stkg[sg].values ? stkg[sg].values[i] : null;
+            if (!isNum(svv)) continue;
+            shi = sbase + svv;
+            /* 段间留白缝（同 stacked_dual 的 1.5px，这里柱更窄故取小一点）：
+               两段同亮度相邻时没有缝就看不出分界。首段不留，否则柱底浮空。
+               ⚠️ 缝宽**必须按段高封顶**，不能写成定值 1.2px：占比小的段本身就只有
+               两三个像素高，定值缝会吃掉大半（实测 guc 的 NRE Jul-18 原始 2.087px
+               被削到 0.887px，dpr=1 下三列设备像素只剩一列有色，等于没画），
+               而 Math.max(0,…) 还会把不足缝宽的段直接削成 0 —— 柱看着比真值矮
+               一截，且不报错。取段高的 35% 封顶：够薄的段仍留得下可见的主体。 */
+            var sgap = sg ? Math.min(1.2, (Y(sbase) - Y(shi)) * 0.35) : 0;
+            el('rect', { x: (Xc(i) - wg / 2).toFixed(2), y: Y(shi).toFixed(2),
+              width: wg.toFixed(2),
+              height: Math.max(0, Y(sbase) - Y(shi) - sgap).toFixed(2),
+              fill: col(stkg[sg].color) }, g);
+            sbase = shi;
+          }
+          cutg2 = false;
+        } else {
+          cutg2 = capBar(Xc(i) - wg / 2, wg, ex.values[i],
+            (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE);
+        }
         if (!cutg2) labg.push({ i: i,
           el: txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 }) });
       }
@@ -1331,7 +1381,25 @@
         RE.push({ y: Y(sr.values[n - 1]) + 3.2, t: fe(sr.values[n - 1]), c: sc });
       }
       /* 左端标签的右边界：刻度栏左侧再留 4px。tickW 量不到时（图被 display:none）
-         退回一个够宽的常数，宁可离轴远也不要压上去。 */
+         退回一个够宽的常数，宁可离轴远也不要压上去。
+
+         ⚠️ **这个 10 是写死的、不跟字号缩放，这是已知缺陷，但不要顺手「修好」它。**
+         已知后果：刻度文字画在 `M.l - fscale(6)`，通栏卡（FS→1.70）时
+         fscale(6)=10.2 > 10 ⇒ 左端标签压上刻度 0.2px，被压的那根刻度会被 :1802
+         那段收尾的「让位」逻辑静默删掉。全站实测只损失 **3 根刻度、2 张图**
+         （日月光 Ex5 的 `30%` 与 `70%`、exchanges12 Ex9 的 `100`），网格线都还在。
+         半栏卡只差 0.3px 不触发。
+
+         改成 `fscale(10)` 试过，**代价远大于收益、已回退**：它把左端标签再往左推
+         4.5px（半栏）/ 7.0px（通栏），而标签左边就是竖排的纵轴标题
+         （`rotate(-90)`，画在 `fscale(13)`）。实测 6 处半栏图的间距从 +0.18px
+         变成 **−4.32px**（asx Ex13、db1 Ex5、db1 Ex7 两处、lseg Ex9 两处），
+         而 :1802 那段「让位」逻辑**显式排除竖排文本**、救不了这一侧，
+         `txt()` 的白色描边还会在标题上啃出一个缺口 —— 拿 3 根刻度换 6 处压字，不划算。
+
+         真要根治只有一条路：把 `M.l` 里给左端标签预留的那 30px 加宽
+         （见上面 margin 的算式），让两侧同时有余量。那会改动全站 80+ 张
+         `lines_endlabels` 的绘图区宽度，属于版式改动，要单独一轮回归，不在本轮范围。 */
       var lx = M.l - 10 - (tickW || 26);
       spreadY(LE).forEach(function (d) {
         txt(g, lx, d.y, d.t, { size: 8, anchor: 'end', fill: d.c });
@@ -1879,8 +1947,17 @@
         out.push({ name: nm.qtd || 'Quarter-to-date', color: C.RED, values: qv, fmt: f });
       }
     } else {
+      /* 分部堆叠时总额那一行不能再用浅蓝：画面上没有一块浅蓝，色块对不上任何东西。
+         总额是各段之和、没有自己的颜色，用 NAVY（本站「合计/合并」的既定用色）。 */
+      var stq = (ex.kind === 'gs_bar' && ex.stacks && ex.stacks.length) ? ex.stacks : null;
       out.push({ name: ex.legend || ex.ylab || '数值',
-        color: ex.kind === 'gs_bar' ? C.BLUE : C.NAVY, values: ex.values, fmt: f });
+        color: ex.kind !== 'gs_bar' ? C.NAVY : (stq ? C.NAVY : C.BLUE),
+        values: ex.values, fmt: f });
+      /* 堆叠的各段在表格视图与 tooltip 里逐段列出 —— 图上分了色、表里只有一个总额，
+         等于把刚刚画出来的拆分又藏起来。 */
+      if (stq) for (i = 0; i < stq.length; i++)
+        out.push({ name: stq[i].name, color: col(stq[i].color),
+          values: stq[i].values, fmt: f });
       /* gs_bar 开了次轴 y/y 时，表格视图与 tooltip 都要有这一行 ——
          图上有、表里没有，读者会以为图画错了。 */
       var yq = ex.kind === 'gs_bar' ? rhsOf(ex) : null;
@@ -1904,7 +1981,16 @@
       for (i = 0; i < ex.series.length; i++)
         items.push(['line', col(ex.series[i].color), ex.series[i].name]);
     } else if (ex.kind === 'gs_bar') {
-      items.push(['sq', C.BLUE, ex.legend]);
+      /* 分部堆叠时图例列各分部；此时图上根本没有一块浅蓝，再印 ex.legend 那个方块
+         就是给一个画面上不存在的颜色配文字。
+         ⚠️ 这里**只看 ex.stacks 在不在**，不复刻 draw() 里那条「ycap/yfloor/bar_marks
+         命中的柱退回单色」的兜底 —— 也就是说 stacks 与那三者同时出现时，图例会列出
+         画面上并不存在的分部色块。引擎这一侧是不设防的，挡在上游：
+         build/verify_pages.py 对这个组合是硬 ERROR。改动那条校验之前先回来看这里。 */
+      if (ex.stacks && ex.stacks.length) {
+        for (i = 0; i < ex.stacks.length; i++)
+          items.push(['sq', col(ex.stacks[i].color), ex.stacks[i].name]);
+      } else items.push(['sq', C.BLUE, ex.legend]);
       /* 给了 ex.yoy 就是次轴同比折线，均线那条虚线根本没画，图例也不能留 */
       var yl = rhsOf(ex);
       if (yl) items.push(['line', col(yl.color || 'GOLD'), yl.name || 'y/y (RHS)']);

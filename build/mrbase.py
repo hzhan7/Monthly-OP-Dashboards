@@ -249,6 +249,40 @@ def align_sim(ex):
             'alo': la0, 'ahi': la1, 'waste': waste, 'aligned': ok}
 
 
+_REMARKS = None
+
+
+def _remark(ticker, month):
+    """该月公司在 MOPS「備註／營收變化原因說明」栏填的原文 + 触发状态。
+
+    → `{'remark': str, 'triggered': bool, 'leg': str}`，**这一行不在库里就返回 None**。
+    两者必须分得开：
+      · `None`        = 本页序列没有这一行（fetch 没跟上 / 回补窗口之外）—— 页面一个字
+                        都不说。**不许**退化成「公司没填」，那是一句我们读不到的事实断言。
+      · `remark == ''` = 官方那一栏确实是空的（MOPS 用 `-` 表示没填，落库归一成空串）。
+    `triggered` 由 fetch 侧从当月同比与累计同比现算（`abs(yoy)>=50 or abs(ytd_yoy)>=50`，
+    门槛写在 MOPS 表脚注第 6 条），是判读这句话性质的**唯一**依据 —— 见 compose_brief 的 s6。
+
+    读不到文件只告警不阻断：这条序列喂的是 brief 里一句引文，为它停掉整页发布不值当。
+    但**告警必须响**，否则「七页集体少一句话」会被当成设计如此。
+    """
+    global _REMARKS
+    if _REMARKS is None:
+        _REMARKS = {}
+        path = os.path.join(SERIES, 'mops_remarks.csv')
+        try:
+            import csv as _csv
+            with open(path, encoding='utf-8') as fh:
+                for r in _csv.DictReader(fh):
+                    _REMARKS[(r['ticker'], r['month'])] = {
+                        'remark': (r.get('remark') or '').strip(),
+                        'triggered': str(r.get('triggered', '')).strip() in ('1', 'True', 'true'),
+                        'leg': (r.get('trigger_leg') or '-').strip()}
+        except OSError as e:
+            print(f'[warn] 读 series/mops_remarks.csv 失败，本次各页不印官方备注原文：{e!r}')
+    return _REMARKS.get((ticker, month))
+
+
 def source_date(ticker, month):
     """该月营收公告的官方发布日；查不到返回 None（不算构建失败）。"""
     try:
@@ -329,6 +363,21 @@ _FX = {'csv', 'col', 'quote', 'src', 'usd_share_note', 'assumption', 'usd_label'
        'implied',      # bool 非主序列的那条腿是不是**我们折出来的**。
                        #      默认 True（如 TSM：美元线是本币 ÷ 外部牌价的推导值）。
                        #      给 False = 两条腿都是官方申报值，页面不再印「推导值(Implied)」。
+       # ── 「主序列是本币，外币腿也是官方值」的家（日月光 3711）────────────────
+       # 这是第三种形态，与 local_col 那种**互斥**：
+       #   · local_col 的家（世芯）：主序列 = 外币（功能货币原值），本币腿另有一列；
+       #   · fgn_col   的家（日月光）：主序列 = 本币（可加总的那条），外币腿另有一列，
+       #     两列都是公司自己在月度新闻稿里印出来的官方值。
+       # 不给 fgn_col 时外币腿仍是 `rev / fx`（既有行为，TSM 走这条）。
+       'fgn_col',      # str 官方申报的外币腿所在列。与 local_col 互斥。
+       # ── 汇率线（Ex8）**本身**是不是公司申报值 ─────────────────────────────
+       # ⚠️ 这与 `implied` 是两件事，本轮之前被合成了一个标志，日月光正好把它们劈开：
+       #   · 它的外币腿是官方申报值（implied=False），
+       #   · 但 Ex8 那条汇率线仍是**美联储 H.10 月均外部牌价**（公司只印美元营收、
+       #     从不披露所用汇率），拿 implied 去驱动 Ex8 的 "as filed" 标签就是假话。
+       # 对照：世芯两者都是 True/申报（MOPS 的「本月換算匯率」栏），TSM 两者都不是。
+       # 默认跟随 `not implied`，即既有两家的行为一格不变。
+       'rate_filed',   # bool Ex8 的汇率线是不是公司随月营收公告一并申报的换算汇率
        }
 _WINDOW = {'x_from', 'heat_years', 'check_rows',
            # 'heat_metric' —— Ex9 的格里画哪一个量（§1.6）：
@@ -337,7 +386,15 @@ _WINDOW = {'x_from', 'heat_years', 'check_rows',
            #   加它的理由见 §1.6 —— 引擎的线性色阶限制属实，但「那就整张跳过」不成立，
            #   本仓对同类情况的既定做法是「照出 + 加告诫」。
            'heat_metric'}
-_SEG = {'col', 'zh', 'label'}
+_SEG = {'col', 'zh', 'label',
+        # bool 这一段是不是公司**自己印出来的**。默认 True。
+        # 给 False 的是**残差列**（日月光的「非 ATM」= 合并 − ATM）——
+        # 公司月报只印合并与 ATM 两个数，第三个是我们减出来的。
+        # 这个标志决定三处措辞：汇总表下方那句「All figures derived from…」、
+        # 页尾数据源条数的那个「N 个官方披露字段」、以及核对表标题里
+        # 「N 列不是公司披露值」那份清单。**不给标志就会被这三处一律当成披露值**，
+        # 而那正是本轮终审逮到的最重一条（同一页三处各说一套）。
+        'disclosed'}
 
 
 def _chk(d, allowed, what):
@@ -384,6 +441,35 @@ def validate(spec):
         for k in ('csv', 'col', 'quote', 'src'):
             if not spec['fx'].get(k):
                 raise SpecError(f'SPEC[fx] 缺 {k!r}')
+        if spec['fx'].get('local_col') and spec['fx'].get('fgn_col'):
+            raise SpecError(
+                'SPEC[fx] 同时给了 local_col 与 fgn_col。这两个字段回答的是同一个问题的'
+                '两个相反答案 ——「主序列是外币腿」vs「主序列是本币腿」—— 同时给等于'
+                '没有主序列。功能货币是外币的家给 local_col（世芯），本币入账但有官方'
+                '外币实绩的家给 fgn_col（日月光），两者只能选一个。')
+        if spec['fx'].get('fgn_col') and spec['fx'].get('implied', True):
+            # fgn_col 的全部意义就是「外币腿不是我们折的」。留着 implied=True，
+            # 页面会一边读官方申报列、一边在核对表印「Implied revenue」、
+            # 在 Ex5 印「(converted)」、在 Ex6 印那句折算假设 —— 三处都是假话，
+            # 而且三道闸门一个都拦不住（数值本身完全合法）。
+            raise SpecError(
+                'SPEC[fx] 给了 fgn_col 却没有把 implied 设成 False。'
+                'fgn_col 的语义就是「外币腿是公司申报的官方值」，与 implied=True'
+                '（「外币腿是本币 ÷ 外部牌价折出来的推导值」）直接矛盾；'
+                '不改的话页面会把官方申报值逐处标成 Implied / converted。')
+        if spec['fx'].get('fgn_col') and 'rate_filed' not in spec['fx']:
+            # `rate_filed` 的默认值是 `not implied`，而 fgn_col 的家 implied 恒为 False
+            # ⇒ 默认会算出 True，于是 Ex8 的标题、核对表的汇率列名、页尾的数据源条
+            # 三处一起印成「as filed / 官方申报的换算汇率」。可是「外币腿是官方值」
+            # 与「这条汇率线是公司申报的」是两件事：日月光两条腿都官方，却从不披露
+            # 它用的汇率。默认值在这一支上恰好是错的，所以**不许靠默认**，必须表态。
+            raise SpecError(
+                'SPEC[fx] 给了 fgn_col 就必须显式写 rate_filed。'
+                '它问的是**另一件事**：Ex8 那条汇率线本身是不是公司随月营收公告一并'
+                '申报的换算汇率。外币腿是官方值（fgn_col）不蕴含汇率线也是官方值 —— '
+                '公司可以每月印美元营收却从不披露所用汇率（日月光就是），'
+                '此处应写 False；只有汇率线确实来自官方申报表才写 True。'
+                '不写会走默认 `not implied` = True，把一个公司没申报过的汇率标成 as filed。')
         u = spec['fx'].get('usd_share_note')
         if not isinstance(u, dict) or not all(u.get(k) for k in ('en', 'zh', 'src')):
             raise SpecError(
@@ -440,6 +526,19 @@ def validate(spec):
         raise SpecError(f'SPEC[skip] 里的 {sorted(missing)} 没有 skip_note 理由。'
                         '跳一张图是**口径判断**，必须留下能被复核的理由，'
                         '否则下一个人只看见「这家怎么少一张图」。')
+    # ⚠️ **反方向也必须查**。页尾那段「本页不出「…」那张图」遍历的是 `skip_note`
+    #    而不是 `skip`（见 build_notes 末尾）—— 只查单向的话，「把某张图从 skip 里
+    #    拿掉、却忘了删 skip_note」会让页尾继续印「本页不出这张图」，而那张图就在
+    #    页上、还带着编号。它不报错、三道闸门全绿，属于「页面自相矛盾」那一类。
+    #    日月光本轮正好要做这个动作（fx_lines / fx_contrib 由跳过改为出图）。
+    orphan = set(notes) - sk
+    if orphan:
+        raise SpecError(
+            f'SPEC[skip_note] 里的 {sorted(orphan)} 不在 SPEC[skip] 里。'
+            '页尾的「本页不出「…」那张图」是遍历 skip_note 生成的 —— 留着这条理由'
+            '而图已经出了，页面会一边画图一边声称自己没画。'
+            '要么把它加回 skip，要么把这条理由删掉（有价值的实测数字请搬进那张图的图注，'
+            '别连数一起扔）。')
 
     ne = spec.get('note_extra') or {}
     if not isinstance(ne, dict):
@@ -453,7 +552,26 @@ def validate(spec):
 
 
 # 图的 slug（= 稳定标识）。编号 n 是**算出来的**，slug 才是页内互指的键。
-_SLUGS = ['rev_bar', 'qtr', 'mom', 'fx_lines', 'fx_contrib', 'hist', 'fx_rate', 'heat']
+#
+# `mix`（分部占比时序）插在 `mom` 之后：它与 rev_bar 的堆叠柱是同一件事的两种读法
+# ——柱看绝对量、占比线看结构位移——所以排在量级三图（rev_bar/qtr/mom）之后、
+# 汇率腿之前。只有 `segments` 非空的家才出（见 build_exhibits 的 order 过滤）。
+_SLUGS = ['rev_bar', 'qtr', 'mom', 'mix', 'fx_lines', 'fx_contrib', 'hist', 'fx_rate', 'heat']
+
+# 分部配色。**Ex2 的堆叠段、Ex5 的占比线、Ex7 全历史图的分部线共用这一份** ——
+# 三张图上同一块业务必须是同一个颜色，否则读者没法把它们连起来（而这种错不会报错，
+# 只会让人默默读错）。顺序即 spec['segments'] 的顺序。
+#
+# ⚠️ **GOLD 排在第 4 位不是随手排的，是躲 Ex2 的次轴同比线**：那条线固定是 GOLD
+#    （见 rev_bar 的 `yoy.color`），而 polyline 是无描边纯色线、画在柱之后 ——
+#    第 2 段若也用 GOLD，金线穿过金色段时前后景同色，整段看不见。实测：
+#    创意 92 个月里 15 个、日月光 76 个里 14 个，金线落在金色段内。
+#    改成浅蓝柱的年代金线一直看得见，这是分部堆叠新引入的回归，只能靠配色躲。
+#    MBLUE / GRAY 的对比度 1.99:1，比原来的 MBLUE / GOLD（1.66:1）还好一档。
+# NAVY 不在这里：它在 Ex7 上是「合并」那条线，拿来当某一个分部的色会撞车。
+# ⚠️ 第 3 段起是雷区：MBLUE vs GREEN 对比度只有 1.07:1、灰度差 1.7%，
+#    真出现三分部的家之前必须重挑，别指望这份清单直接够用。
+_SEG_COLORS = ('MBLUE', 'GRAY', 'GREEN', 'GOLD')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -662,6 +780,8 @@ class DataSet(object):
         need += [s['col'] for s in (spec.get('segments') or [])]
         if (spec.get('fx') or {}).get('local_col'):
             need.append(spec['fx']['local_col'])
+        if (spec.get('fx') or {}).get('fgn_col'):
+            need.append(spec['fx']['fgn_col'])
         if 'month' not in df.columns:
             raise SpecError(f'series/{spec["csv"]} 缺列 month')
         for c in need:
@@ -721,15 +841,34 @@ class DataSet(object):
         self.usd = self.usd_yoy = self.fx_contrib = None
         self.loc = self.loc_yoy = self.fgn = None
         if self.fx is not None:
-            # 汇率腿有**两条**：本币腿 loc 与外币腿 fgn。恒等式永远是 loc ≡ fgn × fx。
+            # 汇率腿有**两条**：本币腿 loc 与外币腿 fgn。
             # 谁当主序列由「可不可加总」定（value.summable），与「谁是本币」无关 ——
             # 功能货币非本币的家（世芯 3661）这两件事落在不同的列上。
+            #
+            # ⚠️ **`loc ≡ fgn × fx` 不是普遍成立的恒等式，只对下面前两支成立**：
+            #   · local_col 那支（世芯）：官方页脚明写「本月新台幣 ＝ 本月功能性貨幣 ×
+            #     本月換算匯率」，fx 就是那个申报汇率 ⇒ 恒等式精确成立。
+            #   · 既有那支（TSM）：fgn **是按这个式子定义出来的**，成立是构造使然。
+            #   · fgn_col 那支（日月光）：**不成立**。两条腿是公司两次独立披露，而 fx
+            #     是外部牌价（公司不披露自己用的汇率）。实测反解出的隐含汇率与 H.10
+            #     月均逐月偏离 −2.07% ~ +2.22%（99 个月，均值 −0.12%，29 正 70 负，
+            #     符号在翻）。所以**任何依赖这条恒等式的算式都不许套到 fgn_col 的家上**
+            #     —— compose_brief 的 s4 就为此专门分了一支（那里若照旧走
+            #     `本币 ÷ 汇率`，brief 会把一条页面上没有的构造序列称作「官方申报」）。
             lc = spec['fx'].get('local_col')
+            fc = spec['fx'].get('fgn_col')
             if lc:
                 # 主序列是外币腿（功能货币原值），本币腿在另一列（官方逐月折算栏）。
                 self.loc = df[lc].astype(float)
                 self.fgn = self.rev
                 self.loc_yoy = Y.mom_yoy(self.loc, Y.FLOW)
+            elif fc:
+                # 主序列是本币腿（可加总的那条），外币腿也是**官方申报列**，不是折出来的。
+                # 与上面那支的区别只在「谁是主序列」；与下面那支的区别是**根本不做除法**
+                # —— 页面上的美元线是公司自己印的数，可以拿去和源文件逐字对。
+                self.loc = self.rev
+                self.fgn = df[fc].astype(float)
+                self.loc_yoy = self.yoy
             else:
                 # 既有行为，一格不动：主序列就是本币腿，外币腿由它除汇率折出来。
                 # 本币腿的同比仍走 self.yoy（有公告同比列的家用公告值）。
@@ -792,6 +931,24 @@ class Window(object):
         self.full = None
 
 
+# `lay()` 输出的起点标记。用途只有一个：让 spec 的 note_extra 能插在**排版说明之前**
+# （口径重于像素账，见 build_exhibits 末尾的插入循环）。零宽不换行空格，页面上不可见、
+# 不占宽度、不影响 brief/图注的字数统计，也不会被 md2b_deep 或 payload_guard 认成内容。
+# 插完之后这个标记必须被消掉 —— `_strip_lay()` 在 payload 组装前统一清一遍。
+_LAY = '⁠'
+
+
+def _strip_lay(ex):
+    """把 `_LAY` 标记从所有图注里清掉。**必须在写 payload 之前调**。
+
+    留着它不会渲染出任何东西，但会进 `data/*.js`、进 diff、进下游任何做逐字比对的
+    工具 —— 一个只有构建期有意义的记号不该出现在产物里。
+    """
+    for e in ex:
+        if isinstance(e.get('note'), str) and _LAY in e['note']:
+            e['note'] = e['note'].replace(_LAY, '')
+
+
 def lay(d):
     """给一张画好的 exhibit 补 `full` / `xstep`，并把**实测数**接进它的图注。
 
@@ -806,7 +963,7 @@ def lay(d):
          还是本来就有」，而这一轮最容易犯的错就是把既有问题说成新问题、
          或者反过来把自己引入的问题说成既有的。
     """
-    txt = mrwin.layout(d)
+    txt = _LAY + mrwin.layout(d)
     c_half = mrwin.label_clash(d, full=False)
     c_full = mrwin.label_clash(d, full=True)
     if not (c_half and c_full):
@@ -826,6 +983,52 @@ def lay(d):
                 f'被压住的那一根刻度让位（至少留 2 根），所以画面不会糊，'
                 f'但代价是<b>少一档刻度</b> —— 写在这里免得读者以为那一档本来就没有。')
     return txt
+
+
+def _implied_line_note(ds, spec, R):
+    """Ex8 第二条线（本币 ÷ 外币）的图注。**数全部现算，一个都不写死。**
+
+    这段话的分寸是全页最难拿捏的一处，所以把边界写在这里：
+      · **能证明的**：拿外部牌价乘本币柱，还原不出公司印的外币数。判据不是「差得多」
+        而是「算术上不可能」—— 两列都是整数，四舍五入给出一个可行区间，牌价落在
+        区间外就意味着不存在任何一种「按这个牌价换算再取整」的路径能印出这两个数。
+      · **证明不了的**：这条线就是公司用的汇率。它只与「每月一个统一汇率」**相容**；
+        公司也可能按币别/子公司分别换算后加总，那样它是一个营收加权的复合比率，
+        不是牌价表上的任何一个数。相容不等于唯一，这句必须写出来。
+    """
+    loc = ds.loc.astype(float)
+    fgn = ds.fgn.astype(float)
+    fx = ds.fx.astype(float)
+    imp = loc / fgn
+    dev = (imp / fx - 1) * 100                      # %
+    ok = np.isfinite(dev.values)
+    dv = dev.values[ok]
+    n = len(dv)
+    # 逐月的舍入噪声下界：两列都是整数，各带 ±0.5 的不确定，合成相对误差上界。
+    band = (0.5 / np.abs(loc.values[ok]) + 0.5 / np.abs(fgn.values[ok])) * 100
+    n_out = int(np.sum(np.abs(dv) > band))
+    n_big = int(np.sum(np.abs(dv) > 0.5))
+    i_lo, i_hi = int(np.argmin(dv)), int(np.argmax(dv))
+    ms = [str(p) for p, f in zip(ds.all, ok) if f]
+    return (
+        '<b>本图有两条线，它们不是同一个东西。</b>'
+        f'深藏青是外部牌价（{spec["fx"]["quote"]}，月均）；'
+        f'红色是<b>公司自印两列之商</b> —— 把它每月印出来的本币营收除以同一份公告里的'
+        f'外币营收，逐月得到的比值。<b>它不是「公司申报的汇率」</b>：'
+        f'{spec["name"]} 每月印两列金额，却<b>从不披露所用汇率</b>，本页也不替它申报一个。'
+        f'两条线逐月相差 {dv[i_lo]:+.2f}%（{ms[i_lo]}）到 {dv[i_hi]:+.2f}%（{ms[i_hi]}），'
+        f'{n} 个月里 {int(np.sum(dv > 0))} 个月为正、{int(np.sum(dv < 0))} 个为负 —— '
+        f'<b>符号在翻，不是一个可以校准掉的常数偏移</b>；|差| 超过 0.5% 的有 {n_big} 个月。'
+        f'<b>这不是精度问题</b>：两列都是整数，四舍五入本身只允许 ±(0.5/本币 + 0.5/外币) '
+        f'的相对误差，而 <b>{n_out}/{n} 个月的实际偏离超过了这个上界</b> —— '
+        f'也就是说，不存在任何一种「按这条外部牌价换算再取整」的算法能印出公司印的那两个数。'
+        '<b>所以本页能证明的只有一件事：拿深藏青那条去乘本币柱，还原不出公司印的外币数。</b>'
+        '<b>证明不了的是：红色那条就是公司用的汇率。</b>它只说明「每月一个统一汇率」'
+        '这个假设与数据相容，而相容不等于唯一 —— 公司也可能按币别或子公司分别换算'
+        '后加总，那样红线是一个营收加权的复合比率，不是牌价表上的某一个数。'
+        f'{R("fx_lines")} 与 {R("fx_contrib")} 两张图<b>不依赖这条红线</b>：'
+        '它们只用两条官方营收腿各自的同比之差，中间不经过任何汇率。'
+        if n else '')
 
 
 def _boundary_note(want_from, got_from, n, lag_desc, kind):
@@ -908,7 +1111,16 @@ def apply_breaks(ex, months, breaks):
         return []
     ex['break_at'] = [i for i, _ in hits]
     ex['break_label'] = [d['month'] for _, d in hits]
-    ex['note'] = (ex.get('note') or '') + break_note([d for _, d in hits])
+    # 断点说明**插在排版说明之前**（`_LAY` 标记处），不是追加到末尾。
+    # 它讲的是「这张图上那两条红线是什么」——属于口径，该排在像素账前面；
+    # 更要紧的是它是一段**通用样板**（「影响合并与非 ATM，ATM 不受影响」这类由
+    # spec 的 breaks[].zh 逐图重复），而 spec 的 note_extra 常常就是来**纠正**它的
+    # （日月光的占比图上那句 caveat 是反的：分母一动两条占比线都受影响）。
+    # 追加到末尾会让读者最后读到的是被纠正的那一句，纠正反而排在前面。
+    _bn = break_note([d for _, d in hits])
+    _note = ex.get('note') or ''
+    _k = _note.find(_LAY)
+    ex['note'] = (_note[:_k] + _bn + _note[_k:]) if _k >= 0 else (_note + _bn)
     return [d for _, d in hits]
 
 
@@ -941,6 +1153,13 @@ def legs(spec):
         'fgn_label': fx.get('usd_label') or 'US$ revenue',
         # 非主序列那条腿是不是推导值。默认 True = 既有行为。
         'implied': fx.get('implied', True),
+        # 外币腿是不是**另一列官方申报值**（而不是主序列本身、也不是折出来的）。
+        # 只有这一种形态下「主序列是本币、美元线也是官方值」同时成立。
+        'fgn_filed': bool(fx.get('fgn_col')),
+        # Ex8 那条汇率线本身是不是公司申报的换算汇率。**与 implied 是两件事**：
+        # 日月光 implied=False（美元腿官方）但 rate_filed=False（汇率是外部牌价）。
+        # 默认 `not implied` = 既有两家（TSM False / 世芯 True）逐字不变。
+        'rate_filed': fx.get('rate_filed', not fx.get('implied', True)),
     }
 
 
@@ -1089,8 +1308,23 @@ def compose_brief(ds, spec, EX):
     #    序列，写这句等于凭空引入一个页面别处查不到、也不是公司披露的数。
     #    这一句落空之后，下面那两级替补（分部构成 / 季内进度）会自动接上，字数不会塌。
     s4 = ''
-    if ds.fx is not None and usd_leg_shown(EX):
-        LG = legs(spec)
+    LG_ = legs(spec) if ds.fx is not None else None
+    # ⚠️ **外币腿是另一列官方申报值的家（fgn_col，日月光）不许走下面那条恒等式**。
+    #    下面整段的算式是 `B.per_unit(loc, fx)` = 本币 ÷ 汇率 —— 那是**推导出来的**
+    #    美元，不是页面上画的那条官方美元线。照旧走下去，brief 会把一条页面上根本
+    #    没有的构造序列说成「美元营收（官方申报）」，并且给出一个与 Ex6 那张汇率贡献图
+    #    对不上的 pp 数。两个数量级都正常，三道闸门一个都拦不住。
+    if ds.fx is not None and usd_leg_shown(EX) and LG_['fgn_filed']:
+        _uy = float(ds.usd_yoy.iloc[-1])
+        _ny = float(ds.loc_yoy.iloc[-1])
+        if B.need(_uy, _ny):
+            _gap = _ny - _uy
+            s4 = (f'美元营收（官方申报）单月同比{B.pct(_uy / 100)}，'
+                  f'{LG_["loc_zh"]}口径{B.pct(_ny / 100)} —— '
+                  '两条都是公司在同一份月度公告里印出来的读数，页面没有做任何折算；'
+                  f'差额{_gap:+.1f}pp 就是汇率这条腿的贡献，是<b>观测值</b>不是折算的产物。')
+    if not s4 and ds.fx is not None and usd_leg_shown(EX) and not LG_['fgn_filed']:
+        LG = LG_
         # 恒等式的分子永远是**本币腿**：本币 ÷ 汇率 = 外币。主序列已经是外币的家
         # （功能货币非本币）这里必须取 ds.loc，取 rv 会算成「外币 ÷ 汇率」。
         loc_zh = LG['loc_zh']            # 本币腿的中文名，可能不是 value 那一列的
@@ -1159,6 +1393,9 @@ def compose_brief(ds, spec, EX):
     if callable(hook):
         s5 = hook({'ds': ds, 'spec': spec, 'i': i, 'B': B, 'Y': Y,
                    'cur_bn': cur_bn, 'cnq': cnq, 'mth': mth}) or ''
+    # 「这一句是钩子给的」与「spec 挂了钩子」是两回事：钩子每个月都可能返回空串。
+    # 下面 s6 那里要按前者判，所以在这里就记住，别到那边再去问 callable(hook)。
+    _s5_from_hook = bool(s5)
     if not s5:
         # 少这一句整页会撞上 render 的字数下限而发不出去 —— 那是拿页面的可发布性换一段解读。
         m3s = rev.rolling(3).mean().values.astype(float)
@@ -1169,7 +1406,65 @@ def compose_brief(ds, spec, EX):
                   f'单月同比比它{"高" if d >= 0 else "低"}{abs(d):.1f}pp，'
                   f'本月把均值往{"上" if d >= 0 else "下"}拐。')
 
-    return B.render([s1, s2, s3, s4, s5])
+    # ── s6：公司在 MOPS 申报表「備註／營收變化原因說明」栏填的**原文**。
+    #
+    # 这一句是全 brief 里唯一**不是我们写的**部分，所以规矩比别处严：
+    #   · 原文逐字引用，繁体不转简（65 个非空格里 49 格含不可逆的繁简 N:1 合并字，
+    #     係→系 39 格、復→复 8、製→制 2 —— 转一遍就回不去，那是改内容不是改格式）；
+    #   · 引文走 B.quote() 走字数豁免，**引导语与引号照常计费**（分寸线管的是编辑
+    #     裁量，那些字正是编辑裁量）；
+    #   · 底座只断言两件事实：「本月过没过门槛」与「公司填的是这句」。
+    #     **不断言「公司这句话是对的」，也不断言「这句解释了本月的增减」** ——
+    #     后者是附注第 6 条给出的推定，让读者自己接上。
+    #
+    # ⚠️ `triggered` 是唯一判据，不许拿「remark 非空」当「官方增减原因」：
+    #    24 个月 × 7 家实测，`triggered=0 且 remark 非空` 共 24 格、**全部是联发科**
+    #    那一句每月一字不变的折算口径注（同期当月同比在 −15.63%~+30.96% 摆动，
+    #    24 次一次都没触发过）。把它印成「公司对本月增减的解释」就是页面在说谎。
+    #    也不许改用「连续同文月数」当判据：创意连续同文 5 个月、南亚科 4 个月，
+    #    但它们**是**法定增减原因（公司复用套话），用 streak 会把这两家误判。
+    rk = _remark(spec['ticker'], str(ALL[i]))
+    s6 = ''
+    if rk is not None:
+        _LEG = {'month': '单月同比', 'ytd': '累计同比', 'both': '单月与累计同比'}
+        leg = _LEG.get(rk['leg'], '单月或累计同比')
+        # 门槛是官方在**新台币**口径上判的。主序列不是新台币的家（功能货币非本币，
+        # 如世芯-KY）页面上印的是美元同比，两者会在 50% 附近分家（实测 2026-05：
+        # 新台币累计 −50.05% 触发、美元累计 −48.96% 不触发，公司确实填了）——
+        # 不点明的话读者会看到一个没过线的数却被告知「因达 50% 而填」。
+        # 引导语要极省：brief 上限只给自撰散文，而这七页本来就用到 316–354 字，
+        # 余量 26–64 字。引文本身走豁免不占预算，**但每一个引导字都占**。
+        ntd_note = '（门槛按新台币口径判）' if legs(spec).get('split') else ''
+        if rk['remark'] and len(rk['remark']) <= B.QUOTE_MAX:
+            if rk['triggered']:
+                s6 = (f'本月{leg}过了 MOPS 备注栏 ±50% 的填报门槛{ntd_note}，'
+                      f'公司填的是「{B.quote(rk["remark"])}」——达标必填，不是主动说明。')
+            else:
+                s6 = ('本月两条腿都没到 MOPS 的 ±50% 门槛，公司仍填了'
+                      f'「{B.quote(rk["remark"])}」——<b>不是对本月增减的说明</b>。')
+        elif rk['remark']:
+            # 超长不截断：官方说明常带「係因…所致」「惟…」这类结构，从中间切一刀会把
+            # 因果或转折截反，而外面还套着引号、页面还说这是原文 —— 那是在引号里造假。
+            s6 = (f'本月备注原文 {len(rk["remark"])} 字，超出引文上限，'
+                  '此处不引（截断会把因果截反）；全文见原公告。')
+        elif rk['triggered']:
+            s6 = (f'本月{leg}过了 ±50% 填报门槛{ntd_note}，但本页未登记到备注原文；'
+                  '<b>「未登记」≠「公司未填」</b>。')
+        # 未过门槛且备注为空（实测 168 格里占 103 格、61%）：一个字都不写。
+        # 公司本来就没有说明义务，这件事 61% 的月份都成立 —— 按本仓自己的
+        # is_monotonic 判据，每月都成立的陈述是噪音不是信息。
+
+    # 引了原文就把 s5 的**通用替补**换掉：那一句自己就写着是为撑下限而存在的填充，
+    # 用一句真有信息量的官方原话替它正好。spec 自己给的钩子（tsm 的指引桥那种真洞察）
+    # 不动。
+    # ⚠️ 判据是「这一句**实际上**是不是那句通用替补」，不是「spec 有没有挂钩子」。
+    #    挂了钩子但当月返回空串的家（南亚科：只有极少数月份有新闻稿说明），
+    #    s5 会退回替补句 —— 按「有没有钩子」判的话它清不掉，那一页就比没挂钩子的家
+    #    平白多出 50 来字的填充，还把 380 的余量吃掉。`_s5_from_hook` 在上面赋值处
+    #    就记下来了，两处不许各判各的。
+    if s6 and not _s5_from_hook:
+        s5 = ''
+    return B.render([s1, s2, s3, s4, s5, s6])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1259,9 +1554,22 @@ def build_summary(ds, spec):
             {'v': ytx, 'cls': ycls},
             pcell]})
 
-    note = ('All figures derived from the single officially disclosed field: consolidated '
-            f'net revenue ({v["raw_label"]}, unaudited)。'
-            '「3Y %ile」= 当月读数在最近 36 个月中高于多少百分比的观测，分位越高越极端；'
+    # ⚠️ 「single officially disclosed field」以前是**无条件**写死的，而这句话下方
+    #    紧挨着的就是分部行（日月光两行、创意两行）—— 页面一边列着分部一边宣称
+    #    「全部由合并这一个披露字段派生」。分部列不是从合并列派生的（日月光的
+    #    分部/合并比值 99 个月在 0.479~0.756 之间走），这是一句实打实的假话。
+    #    残差段（`disclosed: False`）要单独点名：它确实是我们减出来的，别混进披露清单。
+    _disc = [sd for sd, _ in ds.segments if sd.get('disclosed', True)]
+    _resid = [sd for sd, _ in ds.segments if not sd.get('disclosed', True)]
+    note = (('All figures derived from the single officially disclosed field: consolidated '
+             f'net revenue ({v["raw_label"]}, unaudited)。' if not ds.segments else
+             'All figures derived from the officially disclosed monthly fields: consolidated '
+             f'net revenue ({v["raw_label"]}, unaudited)'
+             + ''.join(f' + {sd["label"]}' for sd in _disc) + '。'
+             + ''.join(f'{sd["label"]} 不是第三次披露，'
+                       f'它是「合并 − {_disc[0]["label"]}」的残差。'
+                       for sd in _resid if _disc))
+            + '「3Y %ile」= 当月读数在最近 36 个月中高于多少百分比的观测，分位越高越极端；'
             '比率行（占 TTM 比重）的 m/m、y/y 一律用百分点差（|差|&lt;1pp 时改用 bp），'
             '不用「百分比的百分比变化」。'
             + (f'周期内累计的行（{"、".join(cum_blanked)}）的 m/m 与 3Y %ile 已一并留空：'
@@ -1307,9 +1615,13 @@ def build_exhibits(ds, spec, breaks):
     # 原来这里把 Ex5/Ex6/Ex8 捆成一束，于是「没有官方美元营收实绩」的家连**汇率线本身**
     # 也一起跳掉了。但 Ex8 画的是 ds.fx（NTD/USD 这条宏观序列），不是任何营收量，
     # 公司披不披露美元营收与它无关（§1.5）。
+    # `mix` 同理只回答「画得出来吗」：没有分部列就没有占比可画，与该不该画无关。
+    # 判据用 ds.segments 而不是 spec.get('segments')，两者等价但前者是真正喂进图的那份。
+    has_seg = bool(ds.segments)
     order = [s for s in _SLUGS
              if s not in skip
-             and (has_fx or s not in _FX_SLUGS)]
+             and (has_fx or s not in _FX_SLUGS)
+             and (has_seg or s != 'mix')]
     EX = {s: i + 2 for i, s in enumerate(order)}
     n_table = len(order) + 2
 
@@ -1369,8 +1681,31 @@ def build_exhibits(ds, spec, breaks):
              'values': L(bars.values),
              'yoy': {'name': f'{Y.TTM_WIN} 个月滚动合计的同比（RHS）', 'color': 'GOLD',
                      'values': L(line.values), 'yfmt': 'pct0'},
+             # 分部堆叠：柱**高**仍是 values（合并营收），只是填色按业务分块。
+             # 有分部列的家才给；没有的家这个键根本不存在，引擎走原路径。
+             # ⚠️ 不改用 stacked_dual：它的右轴被写死成 0..ymax，而这里的次轴是
+             #    12 个月滚动同比、会转负（日月光最低 −13.6%、创意 −23.0%），
+             #    负值会被顶到轴外 —— 页面等于宣称「增速从没转负过」。
+             **({'stacks': [
+                 {'name': f'{sd["label"]} ({lab_bn})',
+                  'color': _SEG_COLORS[k % len(_SEG_COLORS)],
+                  'values': L((ss.iloc[w.i0:] / div).values)}
+                 for k, (sd, ss) in enumerate(ds.segments)]} if ds.segments else {}),
              'src_extra': f'Gold line = {Y.TTM_WIN}-month rolling-sum y/y (RHS).',
-             'note': ('<b>柱与线是两种口径，这不是笔误</b>：柱是公司公告的<b>单月</b>合并营收'
+             'note': (
+                 # 分部堆叠时先说清「颜色是什么、柱顶那个数是什么」—— 读者看到分色柱
+                 # 的第一个问题就是这两个，放在最后写等于让人先误读一遍。
+                 (f'<b>柱按业务分色，但柱高一格没变</b>：'
+                  + '、'.join(f'{sd["label"]}' for sd, _ in ds.segments)
+                  + '各占一段，<b>各段之和恒等于柱高</b>，也就是公司公告的合并营收；'
+                    '柱顶那个数是<b>合计</b>，不是最上面那一段。'
+                    '每一段的逐月读数在「表格」视图里逐行列出'
+                  # 互指必须条件化：`mix` 与本图都由 `segments` 决定出不出，但 spec
+                  # 仍可以显式 skip 掉 mix —— 那时这里的 R('mix') 是 KeyError，
+                  # 整页构建失败。同一条规矩本文件别处已经写过（§1.5 的第 ② 支）。
+                  + (f'；结构本身怎么随时间位移，见 {R("mix")}。' if 'mix' in EX else '。')
+                  if ds.segments else '')
+                 + '<b>柱与线是两种口径，这不是笔误</b>：柱是公司公告的<b>单月</b>合并营收'
                       # 原始单位与显示单位相同的家（div=1）不印「换算成…显示」——
                       # 那句话在它们身上会变成「US$mn 换算成 US$mn」这种空转。
                       + (f'（{v["raw_label"]}，此处换算成 {lab_bn} 显示）'
@@ -1511,7 +1846,84 @@ def build_exhibits(ds, spec, breaks):
         d['note'] += lay(d)
         push('mom', d, w.months)
 
-    # ── Ex5：本币 vs 美元单月同比（lines_endlabels，平滑 → 必须截断）────────
+    # ── Ex5：分部占比（lines_endlabels，平滑 → 必须截断）────────────────────
+    #
+    # 与 rev_bar 的堆叠柱是同一份数据的两种读法：柱回答「这个月各业务各做了多少」，
+    # 本图回答「结构在往哪边走」。放在这里而不是并进柱图，是因为占比与绝对量在同一张
+    # 图上必然要抢纵轴 —— 而占比的信息恰恰在「总量涨的时候某一块占比反而在掉」这种
+    # 场合最有价值，那正是绝对量图上看不出来的。
+    if 'mix' in EX:
+        shares = [(sd, ss / ds.rev * 100) for sd, ss in ds.segments]
+        w = Window(ds, i_x, 'lines_endlabels',
+                   [mrwin.Leg(f'sh{k}', f'{sd["label"]} 占比', sh.values, 'primary')
+                    for k, (sd, sh) in enumerate(shares)])
+        # 占比的极值取**窗口内**，不取全序列：图上画的是窗口，图注引全序列的极值会
+        # 指向一个图上根本看不见的月份（本仓在拥挤度那件事上已经栽过一次同样的错）。
+        rng = []
+        for sd, sh in shares:
+            sw = sh.iloc[w.i0:]
+            lo_i, hi_i = int(np.nanargmin(sw.values)), int(np.nanargmax(sw.values))
+            rng.append((sd, float(sw.iloc[-1]), float(sw.iloc[lo_i]), str(sw.index[lo_i]),
+                        float(sw.iloc[hi_i]), str(sw.index[hi_i])))
+        d = {'kind': 'lines_endlabels', 'fmt': 'pct1',
+             'title': 'Revenue mix by business（占合并营收的比重）',
+             'xlabels': w.labels, 'xrot': 90,
+             # ⚠️ **归零用 `yfloor` 不用 `zero_base`**：`zero_base` 在引擎里只写在
+             #    `draw()` 最后那个 `else` 分支里，而 `lines_endlabels` 有自己的分支、
+             #    排在它前面 —— 传了是个**死键**，一个字都不生效，`build/axisfmt.py`
+             #    的镜像链同序。实测后果：日月光这张图的 y0 会落在 +14.17，
+             #    0% 线在画布外 52.62px，左轴只剩 20/40/50/60/80%，
+             #    而图注还写着「线的高度可以直接当『占了几成』读」——
+             #    最新月 ATM 64.41% 画在 71.13% 高度、非 ATM 35.59% 画在 30.32%，
+             #    视觉比 2.345 而真值 1.810，放大了 29.6%。
+             #    全站 80 张 lines_endlabels 归零一律用 `yfloor: 0`
+             #    （build/single.py 里已把这条写成规矩），这里跟既有做法。
+             'ylab': '% of consolidated', 'yfmt': 'pct0', 'yfloor': 0,
+             'series': [{'name': f'{sd["label"]} (% of total)',
+                         'color': _SEG_COLORS[k % len(_SEG_COLORS)],
+                         'values': L(sh.iloc[w.i0:].values)}
+                        for k, (sd, sh) in enumerate(shares)],
+             'src_extra': ('Segment shares are computed as segment ÷ consolidated; '
+                           'Segment provenance is stated in the exhibit note.'),
+             # ⚠️ **不许无条件断言「分部列本身是披露值」**：日月光的第二段是**残差**
+             #    （合并 − ATM），页尾的 _CALIBER_NOTE 白纸黑字说它不是官方分部数 ——
+             #    同一页上这里说「是披露值」、那里说「不是」，读者信哪一句都会错。
+             #    底座读不出哪一列是残差（那是 per-ticker 事实），所以这里只说**能证明的**：
+             #    占比这个比值是我们算的。分部列的来历由 spec 的 note_extra 逐家交代。
+             'note': ('<b>占比是现算的：分部 ÷ 合并。</b>分部列各自是什么、哪一列是官方'
+                      '披露值哪一列是残差，见本注下方各家自己的说明 —— '
+                      + '、'.join(f'{R(s)} 的' + t for s, t in
+                                  [(x, y) for x, y in
+                                   (('rev_bar', '堆叠段'), ('hist', '分部线')) if x in EX])
+                      + '与本图配色逐一对应，'
+                      '同一块业务在这几张图上永远是同一个颜色。'
+                      '纵轴自 0 起（<code>yfloor</code>），所以线的高度可以直接当'
+                      '「占了几成」读，不是被拉伸过的相对位置。'
+                      + '；'.join(
+                          # 分部名是英文（`Turnkey` / `NRE & Others`），后面直接接中文
+                          # 会挤成「Turnkey最新」；补一个空格。
+                          f'{sd["label"]} 最新 {cur:.1f}%，窗口内在 {lo:.1f}%（{lom}）到 '
+                          f'{hi:.1f}%（{him}）之间'
+                          for sd, cur, lo, lom, hi, him in rng) + '。'
+                      # 两段的家：两条线是同一个数的两种写法，说破比让读者自己发现好。
+                      + ('<b>本页只有两块业务，所以这两条线互为镜像</b>（和恒为 100%）：'
+                         '画两条不是给了两个独立的量，是让每一块的水平都能直接读出来，'
+                         '不必拿 100 去减。'
+                         if len(shares) == 2 else '')
+                      + '<b>占比动了不等于哪一块变差了</b>：分母是合并总额，'
+                        '一块业务绝对量原地不动、另一块猛涨，前者的占比照样往下走 —— '
+                      + ('绝对量请回 '
+                         + ' 与 '.join(R(s) for s in ('rev_bar', 'hist') if s in EX)
+                         + '。' if any(s in EX for s in ('rev_bar', 'hist')) else
+                         '绝对量请看核对表的分部列。')
+                      + _boundary_note(want_from, str(w.months[0]), w.n,
+                                       '占比本身没有 lag 要求（分部 ÷ 合并逐月即得），'
+                                       '截断只可能来自某一条分部列在窗口首月还没有值',
+                                       'lines_endlabels'))}
+        d['note'] += lay(d)
+        push('mix', d, w.months)
+
+    # ── Ex6：本币 vs 美元单月同比（lines_endlabels，平滑 → 必须截断）────────
     if 'fx_lines' in EX:
         # ⚠️ 这一格最阴：NAVY 线走的是公司**公告**的 y/y（序列第一个月就有值，基于我们
         #    没有的上年数据），MBLUE 是自算的、要 12 个月 lag。按主腿定左端会让 series[1]
@@ -1529,14 +1941,42 @@ def build_exhibits(ds, spec, breaks):
         #   · 本币入账的家（TSM）：NAVY = 本币公告值，MBLUE = 我们折的美元（推导值）
         #   · 功能货币是外币的家（世芯）：NAVY = 官方折算的本币栏，MBLUE = 官方申报的
         #     外币栏，两条都是官方值，不能印「推导值（Implied）」
-        _navy = (f'{LG["loc_label"]} y/y (as filed)' if LG['split']
-                 else f'{LG["loc_label"]} y/y (as reported)')
+        # ⚠️ 「as filed / as reported」说的是**这条同比是不是公司报出来的**，判据必须是
+        #    `official_yoy` 有没有给 —— 不是 `split`。没有公告同比列的家（ase 就是）
+        #    这条线走的是 build/yoy.py 自算值，页尾与核对表都写着「computed」，
+        #    线名却挂 "as reported" 就是同页两说。台积电、世芯有 official_yoy，不受影响。
+        _navy = (f'{LG["loc_label"]} y/y '
+                 + ('(as filed)' if LG['split'] and ds.official_yoy is not None
+                    else '(as reported)' if ds.official_yoy is not None
+                    else '(computed)'))
+        # 与 _navy 同一条规矩：`as filed` 说的是**这条同比**是不是公司报的，
+        # 不是那一列金额。fgn_col 的家（ase）金额是申报值、同比是本页自算的 ——
+        # 印 `as filed` 会与刚刚按 official_yoy 判成 `computed` 的 NAVY 侧不对称，
+        # 读者只能理解成「一条是公司算的、一条是我们算的」，而两条都是我们算的。
         _mblue = (f'{LG["fgn_label"]} y/y (converted)' if LG['implied']
+                  else f'{LG["fgn_label"]} y/y (computed from as-filed US$)'
+                  if LG['fgn_filed']
                   else f'{LG["fgn_label"]} y/y (as filed)')
         if LG['implied']:
             _leadin = (f'US$ 线是<b>推导值（Implied）</b>：{LG["loc_zh"]}月营收 ÷ 当月平均汇率，'
                        '不是公司披露的美元营收。假设：全部营收按当月平均汇率一次性折算，'
                        '忽略月内汇率路径、对冲与递延收款，因此这条线只能看方向与量级。')
+        elif LG['fgn_filed']:
+            # 第三种形态（日月光）：两条腿各自都是公司在**同一份月度新闻稿**里印出来的
+            # 独立读数，页面没有做任何折算，也没有把任何一条腿和某个汇率绑起来。
+            # 这比上面那种「官方恒等式」还硬一档 —— 那边两条腿由一个申报汇率互推，
+            # 这边两条腿是两次独立披露，差额是**观测**不是算术产物。
+            _leadin = ('<b>两条线都是公司自己印出来的，页面一次折算都没有做。</b>'
+                       f'{LG["fgn_label"]} 与{LG["loc_zh"]}营收逐月印在<b>同一份</b>月度'
+                       '新闻稿上，是两次独立披露的读数，不是一个数除以汇率得到另一个。'
+                       '所以两条线之差是**观测到的**汇率影响，不是折算假设的产物 —— '
+                       '本页对这两条线没有引入任何外部牌价，也没有任何一条是我们折的。'
+                       '⚠️ 但公司<b>不披露它自己用的换算汇率</b>，'
+                       + (f'所以拿本页 {R("fx_rate")} 那条外部牌价去乘{LG["loc_zh"]}柱，'
+                          '还原不出这条美元线，两者本来就不是一套数。'
+                          if 'fx_rate' in EX else
+                          f'所以任何外部牌价乘上{LG["loc_zh"]}柱都还原不出这条美元线，'
+                          '两者本来就不是一套数。'))
         else:
             _leadin = ('<b>两条线都是官方申报值</b>：'
                        f'{LG["fgn_label"]} 是公司功能货币的原值，'
@@ -1561,9 +2001,14 @@ def build_exhibits(ds, spec, breaks):
                       + f'<b>本图两条线都是单月同比</b>，与 {R("rev_bar")} 右轴的 '
                       f'{Y.TTM_WIN} 个月滚动口径<b>不是一个数</b>：'
                       '本图讲的是「公司这个月报出来的增速里有多少是汇率」，'
-                      f'NAVY 线的线名写着 {"as filed" if LG["split"] else "as reported"}，'
-                      '换成滚动口径它就不再是公司报的那个数了。'
-                      f'口径差异用本序列自己实测（{CAL["n"]} 个两种同比都有值的月份）：'
+                      # 线名与这句话必须同源，否则页面会说「线名写着 as reported」
+                      # 而线名其实印的是 computed（没有公告同比列的家）。
+                      + (f'NAVY 线的线名写着 {_navy.split("y/y ")[-1]}，'
+                         + ('换成滚动口径它就不再是公司报的那个数了。'
+                            if ds.official_yoy is not None else
+                            '——本家没有公告同比列，这条线是 <code>build/yoy.py</code> 自算的'
+                            '单月同比；换成滚动口径连口径都换了，两者不可对读。'))
+                      + f'口径差异用本序列自己实测（{CAL["n"]} 个两种同比都有值的月份）：'
                       f'单月同比逐月标准差 {CAL["std_mom"]:.1f}pp、'
                       f'{Y.TTM_WIN} 个月滚动 {CAL["std_ttm"]:.1f}pp，'
                       f'相邻月跳变中位 {CAL["medjump_mom"]:.1f}pp vs {CAL["medjump_ttm"]:.1f}pp，'
@@ -1638,10 +2083,12 @@ def build_exhibits(ds, spec, breaks):
     if 'hist' in EX:
         series = [{'name': f'Monthly revenue ({lab_bn})', 'color': 'NAVY',
                    'values': L(ds.disp.values)}]
-        seg_colors = ['MBLUE', 'GOLD', 'GREEN', 'GRAY']
+        # 配色走 _SEG_COLORS 这一份共用清单：本图的分部线、Ex2 的堆叠段、Ex5 的占比线
+        # 必须逐一同色。原来这里另写了一份同样内容的局部列表 —— 两份一旦分叉，
+        # 同一块业务在两张图上变两个颜色，页面不报错，只是读者默默读错。
         for k, (sd, ss) in enumerate(ds.segments):
             series.append({'name': f'{sd["label"]} ({lab_bn})',
-                           'color': seg_colors[k % len(seg_colors)],
+                           'color': _SEG_COLORS[k % len(_SEG_COLORS)],
                            'values': L((ss / div).values)})
         d = {'kind': 'lines', 'full': True, 'height': 300, 'x': 'long',
              'title': f'Full monthly revenue history since {ALL[0].year}',
@@ -1667,22 +2114,53 @@ def build_exhibits(ds, spec, breaks):
         # 汇率线的身份跟着 fx.implied 走：外部牌价（推导那条腿用的）是「月均」，
         # 而 implied=False 的家用的是公司**自己申报**的换算汇率 —— 它就来自月营收公告
         # 本身，「本图与月营收公告无关」在它身上是假话。
-        _rk = 'monthly average' if LG['implied'] else 'as filed'
-        _rk_s = 'monthly avg.' if LG['implied'] else 'as filed'
-        _rk_zh = ('本图与月营收公告无关。' if LG['implied'] else
-                  '本图的汇率是公司随月营收公告一并申报的换算汇率，'
-                  '与页内两条营收腿同源、由官方恒等式绑定，不是外部牌价。')
+        # ⚠️ 判据是 `rate_filed` 而**不是** `implied`：这两件事本轮才劈开（§1.5 的第 ③ 支）。
+        #    日月光 implied=False（美元腿是官方申报值）但 rate_filed=False —— 它每月自印
+        #    美元营收却**从不披露所用汇率**，这条线仍是外部牌价。按 implied 判会在这里
+        #    印出「as filed」，等于替公司申报了一个它没申报过的汇率。
+        _rk = 'as filed' if LG['rate_filed'] else 'monthly average'
+        _rk_s = 'as filed' if LG['rate_filed'] else 'monthly avg.'
+        # ⚠️ 「本图与月营收公告无关」这句在**两条线**的家身上是假话：红色那条整条
+        #    出自月营收公告（就是公告里那两列金额相除）。所以三种形态各说各的。
+        _rk_zh = ('本图的汇率是公司随月营收公告一并申报的换算汇率，'
+                  '与页内两条营收腿同源、由官方恒等式绑定，不是外部牌价。'
+                  if LG['rate_filed'] else
+                  '本图两条线来历不同：外部牌价那条与月营收公告无关，'
+                  '而另一条整条出自月营收公告（公告里那两列金额相除）。'
+                  if (LG['fgn_filed'] and ds.fgn is not None) else
+                  '本图与月营收公告无关。')
+        # ── 第二条线：公司自印两列之商（本币营收 ÷ 外币营收）─────────────────
+        # 只画给「外币腿是官方申报值、但汇率线是外部牌价」的家（目前只有日月光）。
+        #   · rate_filed=True 的家（世芯）**必须排除**：它的本币栏 = 外币栏 × 申报汇率，
+        #     两列相除**按构造**恒等于已经在画的那条，画出来是两条重合线 ——
+        #     等于宣称「我们验证了公司的申报」，而那只是恒等式的代数重排。
+        #   · 其余五家没有官方外币列，`ds.fgn` 是折出来的，相除会恒等于 fx 本身。
+        # 值走 ds.loc / ds.fgn，**不在这里重读 CSV**：spec 里那些图注文字自己读 CSV，
+        # 两条路一旦因窗口/reindex 分叉，线与说明会对不上而且不报错。
+        _two = LG['fgn_filed'] and not LG['rate_filed'] and ds.fgn is not None
+        series = [{'name': f'{spec["fx"]["quote"]} ({_rk_s})', 'color': 'NAVY',
+                   'values': L(ds.fx.values)}]
+        if _two:
+            # 线名刻意避开「汇率 / rate」：叫它「隐含汇率」读起来就像一个申报过的数，
+            # 而公司从不申报。这里只说它是什么运算 —— 两列印出来的数相除。
+            series.append(
+                {'name': f'NT$ ÷ US$ revenue as printed（implied; '
+                         f'{spec["name"]} discloses no rate）',
+                 'color': 'RED', 'values': L((ds.loc / ds.fgn).values)})
         d = {'kind': 'lines', 'full': True, 'height': 300, 'x': 'long',
-             'title': f'{spec["fx"]["quote"]}, {_rk}',
-             'fmt': 'f1', 'ylab': spec['fx']['quote'], 'xstep': 9, 'xrot': 90,
-             'end_label': True,
-             'series': [{'name': f'{spec["fx"]["quote"]} ({_rk_s})', 'color': 'NAVY',
-                         'values': L(ds.fx.values)}],
+             'title': (f'{spec["fx"]["quote"]}：外部月均牌价 vs 公司自印两列之商'
+                       if _two else f'{spec["fx"]["quote"]}, {_rk}'),
+             # 两条线相差常在千分位上，f1 会把 32.22 与 32.00 印成同一个数
+             'fmt': 'f2' if _two else 'f1',
+             'ylab': spec['fx']['quote'], 'xstep': 9, 'xrot': 90,
+             'end_label': True, 'series': series,
+             **({'label_fmt': 'f2'} if _two else {}),
              'src_extra': (_rk_zh + 'Exhibit source: ' + spec['fx']['src']
                            + '. ' + u['en']),
              'note': ('纵轴按数据范围自适应，未自 0 起 —— 汇率的绝对水平压在 0 起点的轴上'
                       '会变成一条直线，看不出近年的急升。'
                       '正因为轴不自 0 起，末点的绝对读数已标出，免得只能靠刻度目测水平。'
+                      + (_implied_line_note(ds, spec, R) if _two else '')
                       # 只画汇率线、不画美元腿的家：这张图与本家的披露无关，说清楚，
                       # 免得读者以为页面在暗示某条美元营收线被藏起来了。
                       + ('' if usd_leg_shown(EX) else
@@ -1752,14 +2230,23 @@ def build_exhibits(ds, spec, breaks):
                 # 的色带占比本身有几个百分点的抖动，拿 33% vs 31% 去建议换口径，是把
                 # 噪声说成结论 —— 而换口径要连带改标题、图注与页尾点名条，不是免费的。
                 _MAT = 10.0                      # 百分点，材料性差距的门槛
-                _gap = _sh - _bc['share']
+                # ⚠️ 「判材料性」与「印给人看」必须用两个数：
+                #    材料性判在**未取整**的差上（拿 33% vs 31% 去建议换口径是把噪声
+                #    说成结论）；而印出来的那个差**必须等于页面上另外两个取整百分数
+                #    自己相减**，否则读者拿页面上的数一减就对不上 —— 而这一段的卖点
+                #    恰恰是「本段现算，不是写死的话」。
+                #    实测：mtk 38.4615 − 29.6703 = 8.79 印 9，而页面印的是 38% 与 30%
+                #    （差 8）；alchip 28.7770 − 27.3381 = 1.44 印 1，页面是 29% 与 27%
+                #    （差 2）。两页都减不出自己印的那个数。
+                _gap_raw = _sh - _bc['share']                     # 判材料性用
+                _gap = abs(round(_sh) - round(_bc['share']))      # 印出来用
                 cmp_zh = (f'同一段窗口下另外两个口径实测：{_o}。'
                           + ('本表用的就是三者里最铺得开的那一个。' if _best == HM_KEY else
                              f'铺得最开的是{_HEAT_TXT[_best]["zh"]}'
                              f'（{_bc["share"]:.0f}%），比本表少 {_gap:.0f} 个百分点 —— '
                              '要换就把该家 spec 的 <code>window.heat_metric</code> 改成 '
                              f'<code>{_best}</code>，标题、本段与页尾的口径点名条会自己'
-                             '跟着改。' if _gap >= _MAT else
+                             '跟着改。' if _gap_raw >= _MAT else
                              f'铺得最开的是{_HEAT_TXT[_best]["zh"]}'
                              f'（{_bc["share"]:.0f}%），也只比本表少 {_gap:.0f} 个百分点，'
                              '属于同一档 —— 这点差距在百来个格子上是抖动不是结论，'
@@ -1776,9 +2263,14 @@ def build_exhibits(ds, spec, breaks):
                 f'p5/p95 = {crowd["p5"]:+.0f} / {crowd["p95"]:+.0f}{TX["unit"]}，'
                 f'最宽 20% 的色带里塞了 <b>{crowd["dull"]} 格（{_sh:.0f}%）</b>—— '
                 '它们彼此色差不到两成、肉眼分不开。' + verdict + cmp_zh
-                + f'这几个数在构建期从<b>本表实际用的那张 matrix</b> 现算（{NH} 年 × 12 '
-                  '列），不是从全序列算的 —— 引擎的 5/95 分位只看 matrix，拿全序列算出来'
-                  '的分位读者照着核会对不上。')
+                # ⚠️ 年数取 `len(matrix)` 而不是 spec 的 `heat_years`：后者是**上限配置**，
+                #    `heat_matrix_of()` 实际取到几年由序列有多长决定（同比要 12 个月 lag，
+                #    序列短的家凑不满）。印配置值等于让读者去数一张不存在的表 ——
+                #    而这一句本身正是在说「拿别的口径算出来读者照着核会对不上」。
+                #    实测 mtk：配置 9、实际 8 行（2019–2026，91 格）。
+                + f'这几个数在构建期从<b>本表实际用的那张 matrix</b> 现算'
+                  f'（{len(matrix)} 年 × 12 列），不是从全序列算的 —— '
+                  '引擎的 5/95 分位只看 matrix，拿全序列算出来的分位读者照着核会对不上。')
         else:
             crowd_zh = ('（本表有限格不足 8 个，算不出可信的分位与拥挤度，'
                         '故本段不给实测数。）')
@@ -1819,12 +2311,24 @@ def build_exhibits(ds, spec, breaks):
     # ── spec 的逐图补注（note_extra）：追加到那一张图自己的图注末尾。
     #    放在这里而不是各图内部，是为了让「哪一张图能补注」由 EX 一处决定：
     #    图没出（跳过 / 没有汇率腿）时补注也不会凭空掉到别的图上。
+    #    ⚠️ 补注要插在**排版说明之前**：`lay()` 那段讲的是像素账（通栏、band 宽、
+    #    标签抽稀），而 note_extra 讲的是**这张图画的是什么**。口径最重的一段落在
+    #    像素数学后面，读者要先读完两段版面细节才看到「这两列到底是什么」。
+    #    `lay()` 的输出被 `_LAY` 标出来，这里按它切开重排；没有标记的图（或补注为空）
+    #    走原路径，产出逐字不变。
     _by_n = {n: s for s, n in EX.items()}
     for e in ex:
         _x = (spec.get('note_extra') or {}).get(_by_n.get(e.get('n')))
-        if _x:
-            e['note'] = (e.get('note') or '') + _x
+        if not _x:
+            continue
+        note = e.get('note') or ''
+        k = note.find(_LAY)
+        if k >= 0:
+            e['note'] = note[:k] + _x + note[k + len(_LAY):]
+        else:
+            e['note'] = note + _x
 
+    _strip_lay(ex)
     _pack_full(ex)
     return ex, EX, ctx
 
@@ -1867,7 +2371,36 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
     #    底座绝不替任何一家断言「未发生并表或重述」—— 那句话在至少四家上是假话。
     brk = load_breaks(spec)
     drawn = ctx['brk_drawn']
-    _CAP = [str(e['n']) for e in ex if e.get('ycap') is not None or e.get('yfloor') is not None]
+    # ⚠️ **`yfloor` 不等于「截轴」，要看有没有点真的被它挡住**。
+    #    截轴的语义是「有数据点画不进画布，只能在断口处收边」；而 `yfloor: 0` 用在
+    #    占比图上（Ex5 的两条线恒在 0–100 之间）一个点都没截，它只是把轴归零。
+    #    不分开的话，页尾会写「Exhibit 5 设了截轴」，而 Ex5 自己的图注写着
+    #    「纵轴自 0 起，所以高度可以直接当占比读，不是被拉伸过的相对位置」——
+    #    同一页两句话，读者只能理解成其中一句在骗人。
+    def _cut(e):
+        # 把这张图上所有「按 x 轴逐点」的数组摊平。字段名与 build/verify_pages.py 的
+        # arrays_of() 同源 —— 那边是闸门，这边是叙述，两处要看同一批数。
+        vals = []
+        for k in ('values', 'lo', 'hi', 'actual'):
+            if isinstance(e.get(k), list):
+                vals += e[k]
+        for k in ('bar', 'line', 'net', 'yoy', 'base'):
+            o = e.get(k)
+            if isinstance(o, dict) and isinstance(o.get('values'), list):
+                vals += o['values']
+        for grp in ('series', 'stacks', 'groups'):
+            for s in (e.get(grp) or []):
+                if isinstance(s.get('values'), list):
+                    vals += s['values']
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        lo, hi = e.get('yfloor'), e.get('ycap')
+        return ((hi is not None and any(v > hi for v in vals))
+                or (lo is not None and any(v < lo for v in vals)))
+
+    _CAP = [str(e['n']) for e in ex
+            if (e.get('ycap') is not None or e.get('yfloor') is not None) and _cut(e)]
+    _FLOOR0 = [str(e['n']) for e in ex
+               if e.get('yfloor') is not None and e.get('ycap') is None and not _cut(e)]
     if brk:
         where = '；'.join(
             # 按 **Exhibit 编号** 排，不按 slug 的字母序 —— 后者会把这份清单写成
@@ -1901,6 +2434,12 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
     brk_note += (('本页也没有 <code>ycap</code>／<code>yfloor</code> 截轴。'
                   if not _CAP else
                   f'另有 Exhibit {"、".join(_CAP)} 设了 <code>ycap</code>／<code>yfloor</code> 截轴。')
+                 # 归零 ≠ 截轴。设了 yfloor 但一个点都没被它挡住的图要单独说，
+                 # 否则页尾会声称某张图「截过轴」，而那张图自己的图注写着
+                 # 「纵轴自 0 起、高度可以直接当占比读，不是被拉伸过的相对位置」。
+                 + (f'Exhibit {"、".join(_FLOOR0)} 设了 <code>yfloor</code> 把纵轴<b>归零</b>，'
+                    '但没有任何一个点低于它 —— 那是让高度可以按绝对水平读，'
+                    '<b>不是截轴</b>，一个点都没被挡住。' if _FLOOR0 else '')
                  + '这一段由本页 payload 现读生成，不是写死的说明文字 —— '
                    '哪天真加了断点或截轴，它会自己改口，'
                    '所以本页不会出现「图注说画了断点线、图上其实没有」这种自相矛盾。')
@@ -1947,19 +2486,68 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
     cur_ttm = float(ds.yoy_ttm.iloc[-1])
 
     notes = []
+    # 「这一个字段」要现算，不能写死：有分部列的家喂进页面的是**合并 + 各分部**，
+    # 有 fgn_col 的家还多一条官方外币列 —— 这两种家身上「一个字段」是假话，
+    # 而它恰好出现在页尾「数据源」这条最该精确的说明里。
+    # 只数**公司自己印出来的**那些：残差段（`disclosed: False`）不是披露字段，
+    # 把它算进去等于替公司多申报了一个数（日月光的「非 ATM」就是这种）。
+    _seg_d = [sd for sd, _ in ds.segments if sd.get('disclosed', True)]
+    _seg_r = [sd for sd, _ in ds.segments if not sd.get('disclosed', True)]
+    _nfields = 1 + len(_seg_d) + (1 if legs(spec).get('fgn_filed') else 0)
+    _fld = ('这一个字段' if _nfields == 1 else
+            f'这 {_nfields} 个官方披露字段（合并'
+            + ''.join('、' + sd['zh'] for sd in _seg_d)
+            + ('、官方外币栏' if legs(spec).get('fgn_filed') else '') + '）'
+            + (''.join(f'，再加上由它们减出来的 {sd["zh"]}' for sd in _seg_r)
+               if _seg_r else ''))
     notes.append('<b>数据源</b>：主线是' + spec['source_zh'] + '。'
                  + ('除 ' + R('fx_rate') + ' 外，' if has('fx_rate') else '')
-                 + '本页各图与两张表全部由这一个字段'
-                 # 「月均」只对拿外部牌价折推导腿的家成立；implied=False 的家用的是
-                 # 公司自己申报的换算汇率，叫它「月均汇率序列」是错的。
-                 # 判据是 fx_used(EX)（§1.5）而不是 ds.fx：挂了 fx 却一张汇率图都不出的
+                 + '本页各图与两张表全部由' + _fld
+                 # ⚠️ 这一句说的是**那条汇率序列是什么**，所以判据是 `rate_filed`，
+                 # 不是 `implied`（两者本轮才劈开，§1.5 第 ③ 支）。日月光 implied=False
+                 # 但它的汇率线是 H.10 外部牌价 —— 按 implied 判会印成「官方申报的换算
+                 # 汇率序列」，等于替公司申报了一个它从不披露的汇率。
+                 # 判据用 fx_used(EX)（§1.5）而不是 ds.fx：挂了 fx 却一张汇率图都不出的
                  # spec（三张全 skip）身上，「本页由这一个字段加一条汇率序列派生」是假话
                  # —— 那条序列一格都没进过页面。
-                 + (('加一条月均汇率序列' if legs(spec)['implied'] else '加一条官方申报的换算汇率序列')
+                 + (('加一条官方申报的换算汇率序列' if legs(spec)['rate_filed']
+                     else '加一条月均汇率序列')
                     if fx_used(EX) else '')
                  + '派生，不引入任何券商预测或外部估计。'
-                 + (f'例外的那一张在图脚第二行写明了自己的来源：{R("fx_rate")} 来自 '
-                    + spec['fx']['src'] + '。' if has('fx_rate') else ''))
+                 # 新增的「本月備註」列是**第三个来源**（MOPS 申报表的文字栏），
+                 # 不在上面那个字段清单里 —— 那句穷举一旦漏了它就是假话，而它偏偏
+                 # 就印在同一页的核对表最后一列上，读者一眼看得见。
+                 + ('核对表最后还有一列<b>本月備註</b>，那是公司在 MOPS 月营收申报表'
+                    '「備註／營收變化原因說明」栏填的<b>文字</b>（原文逐字，繁体不转简），'
+                    '与上面那些数值字段不是同一个来源；'
+                    # ⚠️「页顶 brief 也有」不是每页都成立：核对表那一列的判据是
+                    #    「近 13 个月至少一格非空」，而 brief 那句引文只在**当月**过
+                    #    ±50% 门槛时才印。台积电正好卡在这两者之间（Jun-26 填过、
+                    #    2026-07 是 +44.7% 未触发）—— 无条件写「brief 与那一列」
+                    #    会让读者去 brief 里找一句不存在的话。
+                    + ('它只在页顶 brief 与那一列里出现，'
+                       if (lambda r: r and r['remark'])(
+                           _remark(spec['ticker'], str(ds.all[-1]))) else
+                       '本月它只在那一列里出现 —— 当月未过 ±50% 门槛，'
+                       '所以页顶 brief 里没有引文，')
+                    + '不进任何一张图，也不参与任何计算。'
+                    # 判据与核对表那一列**同源**（同一个窗口、同一条「至少有一格非空」），
+                    # 否则会出现「页尾说有这一列、表里没有」或反过来。
+                    if any((lambda r: r and r['remark'])(
+                        _remark(spec['ticker'], str(p)))
+                        for p in ds.all[-int(spec['window'].get('check_rows', 13)):])
+                    else '')
+                 # ⚠️ 「例外的那一张」在两条线的家身上是**半句假话**：Ex8 的红线
+                 #    （本币 ÷ 外币）恰恰是**由本页这几个字段现算的**，只有深藏青那条
+                 #    来自外部。把整张图划到「不由本页字段派生」那一侧，就是数据来源
+                 #    账目失真。判据用与画线同一条，两处不许各写各的。
+                 + ((f'{R("fx_rate")} 是唯一同时用到两个来源的一张：'
+                     '深藏青那条来自 ' + spec['fx']['src'] + '；'
+                     '红色那条是本页两条官方营收腿相除现算的，不引入任何外部数。'
+                     if (legs(spec)['fgn_filed'] and not legs(spec)['rate_filed'])
+                     else f'例外的那一张在图脚第二行写明了自己的来源：{R("fx_rate")} 来自 '
+                          + spec['fx']['src'] + '。')
+                    if has('fx_rate') else ''))
     notes.append('<b>版式出处</b>：' + spec['format_source'])
     notes.append(
         '<b>同比口径：本页并存两种，逐处点名</b>（CONTRACT.md §6 要求）。'
@@ -1981,13 +2569,27 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
             '<b>单月 y/y 有两个来源，数值上几乎重合</b>：'
             # 「热力矩阵用公告原值」只在矩阵画的就是单月同比时成立；换成环比之后它一格
             # 都不碰 official_yoy，这句话就得把它去掉（判据同 §1.6）。
-            + ('热力矩阵与核对表' if ctx['heat_is_single_yoy'] else '核对表')
-            + '用公司随公告'
-            f'给出的 <code>{spec["official_yoy"]}</code> 原值；其余由本脚本按序列自算'
-            '（口径实现统一走 <code>build/yoy.py</code>，本页不再自己写 '
-            '<code>pct_change(12)</code>）。'
-            f'两者在 {len(d)} 个可比月份上最大差 {float(d.max()):.2f}pp、'
-            f'中位差 {float(d.median()):.2f}pp，来自公司口径的四舍五入，未做人工对齐。')
+            # ⚠️ 「其余由本脚本自算」**说反了**。有 official_yoy 的家，DataSet 里
+            #    `self.yoy = official_yoy`（不是 yoy_self），所以凡是取 `ds.yoy` 的地方
+            #    ——汇总表、抬头、brief、Ex5 的本币腿、Ex6 的柱——用的都是公告值。
+            #    真正走自算的只有那些**结构上不可能有公告值**的派生量：
+            #    滚动合计同比、环比、以及（另一条腿的）外币同比。
+            #    实测台积电 Ex5 的 NAVY 线 115 个点里 108 点等于公告的一位小数值。
+            + ('热力矩阵、核对表' if ctx['heat_is_single_yoy'] else '核对表')
+            + '与页内一切「单月同比」读数（汇总表、抬头、页顶 brief'
+            + (f'、{R("fx_lines")} 的本币腿' if 'fx_lines' in EX else '')
+            + '）用的都是公司随公告'
+            f'给出的 <code>{spec["official_yoy"]}</code> 原值；'
+            '<b>自算的只有结构上不可能有公告值的那几个派生量</b> —— '
+            f'{Y.TTM_WIN} 个月滚动合计同比、环比'
+            + ('、以及外币腿的同比（公司不公告它）' if usd_leg_shown(EX) else '')
+            + '（口径实现统一走 <code>build/yoy.py</code>，本页不再自己写 '
+              '<code>pct_change(12)</code>）。'
+            + (f'⚠️ 因此 {R("fx_contrib")} 那根柱是<b>两种口径相减</b>：'
+               '本币腿取公告值、外币腿是自算值，差额里含公司口径的四舍五入。'
+               if usd_leg_shown(EX) and 'fx_contrib' in EX else '')
+            + f'两者在 {len(d)} 个可比月份上最大差 {float(d.max()):.2f}pp、'
+              f'中位差 {float(d.median()):.2f}pp，来自公司口径的四舍五入，未做人工对齐。')
     else:
         # ⚠️「本页 spec 没登记」≠「公司没披露」。后者是一句关于该公司公告内容的**事实
         #    断言**，底座读不到（它只看得见 series/ 里有没有这一列）。世芯 3661 的 MOPS
@@ -2018,6 +2620,25 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                          '假设全部营收按当月平均汇率一次性折算，忽略月内汇率路径、对冲与递延收款。'
                          f'{_fx_contrib_txt}= {LG["loc_zh"]} y/y '
                          '− US$ y/y，单位是百分点。')
+        elif LG['fgn_filed']:
+            # 第三种形态（日月光）。**不能走下面那一支** —— 那一支写着「換算匯率本身
+            # 也是官方申报的格子，不是 H.10 / FRED / 台银牌价」，而本家恰恰相反：
+            # 公司从不披露它用的汇率，页上那条线就是 H.10。照旧走下去，页尾会先点名
+            # 否认 H.10，再往下两行原样印出 fx.src =「美联储 H.10…」，自己打自己。
+            notes.append('<b>本页两条货币腿都是官方申报值，没有一条是折出来的</b>：'
+                         f'{LG["fgn_label"]} 与{LG["loc_zh"]}营收逐月印在<b>同一份</b>'
+                         '月度新闻稿上，是两次独立披露，不是一个数除以汇率得到另一个。'
+                         f'{_fx_contrib_txt}= {LG["loc_zh"]} y/y − US$ y/y，'
+                         '单位是百分点 —— 它是<b>观测到的</b>两条官方增速之差，'
+                         '不是任何折算假设的产物，'
+                         f'读作「以{LG["loc_zh"]}计的那个头条数被汇率抬高/压低了多少」，'
+                         '<b>不是公司受到的汇率冲击</b>（真正的暴露在成本端与对冲上，'
+                         '月营收公告看不到）。'
+                         '⚠️ <b>公司不披露它自己用的换算汇率</b>：'
+                         + (f'{R("fx_rate")} 上那条<b>外部牌价线</b>（见下条「汇率序列口径」），'
+                            if has('fx_rate') else '本页的汇率序列是外部牌价，')
+                         + f'拿它去乘{LG["loc_zh"]}柱还原不出上面那条美元线，'
+                           '两者本来就不是一套数 —— 所以本页任何一处都没有把这两者相乘。')
         else:
             notes.append('<b>本页两条货币腿都是官方申报值，没有一条是折出来的</b>：'
                          '公司的功能货币就是主序列那一种，'
@@ -2131,9 +2752,19 @@ def _window_note(ds, spec, ex, EX, ctx):
     # 页面窗口起点与实际左端是两个数，也不该只印钳位后的那一个。
     x0 = spec['window'].get('x_from')
     if not x0:
+        # ⚠️ 「没有任何一张图被截短过」是两件事被合成了一句：
+        #    ① **页面窗口**没有被设短（这才是 x_from 说了算的事）；
+        #    ② **单张图**有没有因为派生量的 lag 而截掉左端 —— 那由图型与 lag 决定，
+        #       与 x_from 无关。单月同比要 12 个月 lag，环比要 1 个月，
+        #       平滑图型又吃不了 null，所以这些图**必然**比窗口起点晚开始，
+        #       而它们各自的图注里就写着「这里显式截断」。
+        #    原来那句一概而论，与同页三四张图的图注直接打架（两个读者先后被绊住）。
         head = ('<b>短窗口图的起点与数据边界</b>：本页 <code>window.x_from</code> 显式为 '
-                f'None —— 不设短窗口，{span} 的左端就是<b>本序列自己的起点 {want}</b>，'
-                '没有任何一张图被截短过。')
+                f'None —— <b>不设短窗口</b>，{span} 能画到多早由序列本身决定，'
+                f'左端不早于<b>本序列自己的起点 {want}</b>。'
+                '（这说的是<b>窗口</b>没有被设短。个别图仍会比这个起点晚开始 —— '
+                '单月同比要 12 个月的 lag、环比要 1 个月，而平滑图型吃不了 null，'
+                '只能显式截断；是哪几张、各晚多少，写在它们自己的图注里。）')
     elif str(x0) != str(want):
         head = (f'<b>短窗口图的起点与数据边界</b>：本页 spec 要的窗口起点是 <b>{x0}</b>，'
                 f'但本序列自 <b>{want}</b> 才有数，底座按「窗口起点落在序列之前就取序列首月」'
@@ -2205,8 +2836,9 @@ def build(spec, out_dir=None, quiet=False):
     # 不印（表里多一列页面上没有任何图用到的数，读者无从判断它是干什么的）。
     if fx_used(EX):
         LG = legs(spec)
+        # 这一列是**汇率线本身**，所以跟 rate_filed 走，不跟 implied 走（同 Ex8）。
         cols.append([f'{spec["fx"]["quote"]} '
-                     f'({"monthly avg." if LG["implied"] else "as filed"})', 'fx'])
+                     f'({"as filed" if LG["rate_filed"] else "monthly avg."})', 'fx'])
         # 「Implied revenue」只在外币腿**确实是我们折出来的、而且真的画在页上**时才有
         # 意义。两道判据缺一不可：
         #   · fx.local_col 给了的家（主序列本身就是官方外币栏）：那一列已经是本表第一
@@ -2222,8 +2854,77 @@ def build(spec, out_dir=None, quiet=False):
             r['fx'] = f(ds.fx.get(p), 4)
             if _usd_col:
                 r['usd'] = f(ds.usd.get(p), 0)
+    # ── 官方备注列。brief 里那句引文只讲当月，这一列给它一个**可逐格复核**的出处，
+    #    顺带让读者看得出「这一栏平时是空的」——那是 ±50% 门槛没触发，不是公司沉默。
+    #    只在近 T 个月里**至少有一格非空**时才加：全空的一列 13 个「—」什么也没说，
+    #    还占着核对表的宽度（这七页里 tsm / umc / ase 常年如此）。
+    #    ⚠️ 必须 HTML 转义：assets/page.js 的核对表是 `innerHTML` 字符串拼出来的，
+    #    原文里真出现过半角括号与英文（`委託設計(NRE)`、`晶圓產品(Wafer production)`），
+    #    今天没有 `<` `&`，但这一列的内容不由我们决定，转义是唯一不靠运气的做法。
+    _rk_rows = [_remark(spec['ticker'], str(p)) for p in ALL[-T:]]
+    if any(r and r['remark'] for r in _rk_rows):
+        import html as _html
+        # ── 触发腿单列 ──
+        # 不并进备注那一格：那一格是**逐字原文**，前面粘一个标签就不再是原文了。
+        # 这一列存在的理由是实测出来的：世芯 2026-03/04/05 的备注写着「**本年**營收較
+        # 去年同期減少…」，而同一行页面印的 y/y 是 −44.7% / −30.2% / −36.2%（美元、单月），
+        # 离 ±50% 很远 —— 真正触发的是**新台币累计**（−60.08 / −53.66 / −50.05%）。
+        # 不点明腿，读者会以为公司在给一个没到门槛的数写说明。
+        # 表头带口径：门槛是官方在**新台币**上判的，而主序列不是新台币的家页面印的是外币同比。
+        _leg_zh = {'month': '單月', 'ytd': '累計', 'both': '單月＋累計'}
+        cols.append(['觸發腿' + ('（按新台幣口徑）' if legs(spec).get('split') else ''), 'rk_leg'])
+        cols.append(['本月備註（MOPS 原文）', 'remark'])
+        for r, rk in zip(trows, _rk_rows):
+            r['rk_leg'] = (None if rk is None else
+                           _leg_zh.get(rk['leg'], '—') if rk['triggered'] else '—')
+            if rk is None:
+                r['remark'] = None          # 该月不在序列里 → 渲染成「—」
+            elif rk['remark']:
+                r['remark'] = _html.escape(rk['remark'])
+            else:
+                # 空 ≠ 缺失。触发了却是空的（实测 168 格里 0 例）要看得出来，
+                # 因为那是上游的合规缺口，不是我们的数据缺口。
+                r['remark'] = '（未觸發門檻）' if not rk['triggered'] else '（已觸發但未填）'
+    # ⚠️ 标题里那句「官方原始单位，未换算」**必须跟着实际列构成走**。
+    #    台积电那张表第 3 列是 FRED/H.10 的外部牌价、第 4 列是 `Implied revenue (US$mn)`
+    #    ——13 行全是折算值，而同页页尾自己写着「美元口径全部是推导值（Implied）」。
+    #    一张标题声称「未换算」的表里放着两列换算/外部值，正是本仓点名的第一种历史错型
+    #    （「核对表多一列分析师构造值，而表标题写着未换算」），且三道闸门一条都不响。
+    #    判据逐列现算，不按家写死。一列算「不是公司披露值」的三种情形：
+    #      · 我们算出来的 —— 自算同比（`y/y — computed`）、触发腿（按 ±50% 判出来的分类）；
+    #      · 外部序列 —— 汇率列在 `rate_filed=False` 时是外部牌价（公司没申报过）；
+    #      · 构造值 —— 美元列在 `implied=True` 时是「本币 ÷ 牌价」折出来的。
+    #    反过来这些**是**披露值，不列进去：各金额列、分部列、備註原文、
+    #    以及有 `official_yoy` 的家那一列公告同比、`rate_filed=True` 的申报汇率、
+    #    `fgn_col` 那一列官方外币金额。
+    #    ⚠️ 判据必须覆盖**全部**非披露列，漏一个（比如新加的触发腿）就会让标题里那个
+    #    「N 列」与读者自己数出来的对不上 —— 而这一行的全部意义就是让人能自己数。
+    _LGT = legs(spec) if spec.get('fx') else {'implied': True, 'rate_filed': False}
+    # 残差分部列（`disclosed: False`）同样不是披露值。它的列头不带任何口径尾巴
+    # （同排的 yoy 带 `— computed`、usd 带 `as filed`），读者只能读成 as filed。
+    # `alt` 列**故意不在这份判据里**：本仓目前唯一的 alt（世芯的新台币栏）是公司
+    # 自印的官方栏，判定为披露值。将来若有人把 alt 用作构造列，这里要补一支。
+    _segd = {'seg_' + sd['col']: sd.get('disclosed', True) for sd, _ in ds.segments}
+    _derived = [c[0] for c in cols
+                if (c[1] == 'fx' and not _LGT['rate_filed'])
+                or (c[1] == 'usd' and _LGT['implied'])
+                or (c[1] == 'yoy' and 'computed' in c[0])
+                or c[1] == 'rk_leg'
+                or (str(c[1]).startswith('seg_') and not _segd.get(c[1], True))]
+    # 「未换算」这半句也要逐列现算：世芯那张表里 `Consolidated revenue (NT$mn, translated)`
+    # 是公司**按自己申报的换算汇率**折出来的官方栏（页尾第 7 条自己写着「不是原生记账数」），
+    # 值没问题 —— 但标题第一分句与列头、与页尾在字面上直接打架，而「未换算」恰恰是本仓
+    # 点名的第一种历史错型的措辞。
+    _xlat = [c[0] for c in cols if 'translated' in c[0].lower()]
+    _unit = ('金额列为官方原始单位、未换算' if not _xlat else
+             '金额列为官方原始单位；其中 ' + '、'.join(_xlat)
+             + ' 是公司按自己申报的换算汇率折出来的官方栏，不是原生记账数')
+    _title = (f'近 {T} 个月核对表（{_unit}）' if not _derived else
+              f'近 {T} 个月核对表（{_unit}；'
+              f'另有 {len(_derived)} 列<b>不是公司披露值</b>：'
+              + '、'.join(_derived) + '）')
     table = {'n': ctx['n_table'],
-             'title': f'近 {T} 个月核对表（官方原始单位，未换算）',
+             'title': _title,
              'idx': '月份', 'cols': cols, 'rows': trows}
 
     # ── 抬头

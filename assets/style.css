@@ -67,6 +67,27 @@ h1 { margin: 0 0 6px; font-size: 25px; font-weight: 700; letter-spacing: -0.015e
    实测末两行会被抻出肉眼可见的空隙。 */
 .brief p { margin: 0; font-size: 13.5px; line-height: 1.78; color: var(--ink-2); }
 .brief b { color: var(--ink); font-weight: 700; }
+/* 逐字引用的官方原文（台湾 MOPS 申报表「備註」栏，由 build/brief.py 的 quote() 包出来）。
+   它是 brief 里唯一**不是我们写的**那几个字，读者必须一眼分得出来。
+
+   为什么是「换色 + 下划线」这两样，而不是别的：
+     · **不加粗** —— `.brief b` 已经占着「强调」这个语义（同段里 <b> 用得很密），
+       引文再加粗，一段话里会出现两种互相争抢的重点。
+     · **不用斜体** —— 中文没有真正的斜体字形，浏览器只能做伪斜（整体切变），
+       繁体笔画多，切变后糊成一团。
+     · **不用背景高亮** —— brief 本身已经是一个带边框的浅色块（见上），
+       再叠一层底色会变成块中块，而引文常在句中，底色一段一段的更碎。
+     · 换色是彩色线索、下划线是**非彩色**线索，两样都给才在灰度/打印下仍分得出
+       —— navy(#1f3864) 与正文 ink-2(#333) 转灰之后很接近，只靠颜色在打印稿上会失效。
+   下划线用 `text-decoration` 而不是 `border-bottom`：后者在行内元素换行时
+   （375px 窄屏引文必然换行）两段各自补一条边，末端会翘出去。 */
+.brief .mops-quote {
+  color: var(--navy);
+  text-decoration: underline;
+  text-decoration-color: rgba(31, 56, 100, 0.35);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
 .brief[hidden] { display: none; }
 
 /* ── exhibit 网格 ── */

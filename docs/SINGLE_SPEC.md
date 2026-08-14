@@ -262,6 +262,21 @@ Exhibit 1 是汇总表，图从 2 起编号，末尾是核对表。顺序固定�
 等于白画（cboe 原 deck 的 Exhibit 9 就是这么错的）。所以一个 group 里写了两种单位，
 底座会拆成两张图，而不是让你自己记得拆。
 
+### 2.1 `gs_bar` 的分部堆叠（`ex.stacks`）**不由本底座产出**
+
+引擎给 `gs_bar` 加了一个可选的 `stacks[]`：给了就把每根柱按业务分色，总额仍取 `values`
+（字段契约见 `docs/CHART_KINDS.md` §3.6.1）。**`build/single.py` 一处都没用它，
+本文的 SPEC 里也没有对应字段** —— 写了会撞 §4 第一条「有未知字段」的硬失败。
+
+不是漏了，是这套 SPEC 里没有「分部」这个概念：`groups[].cols` 里的列是**彼此独立的序列**
+（先按 `unit` 分桶，同桶的几条只是量纲相同），谁也不是谁的一部分，堆起来的柱高没有指称。
+`stacks` 要求的是「各段之和逐格恒等于总额」这种**加总关系**，本底座拿不出这个保证 ——
+硬堆出来的图不会报错，只会画出一根谁也解释不了的柱。
+
+真正在用它的是另一条路：`build/mrbase.py` + `build/mrspecs/<t>.py`（台湾半导体月度营收那 7 页），
+分部列在 SPEC 的 `segments` 字段里显式声明，与合并营收本来就是披露层面的加总关系。
+配色走那边的共用常量 `_SEG_COLORS`，堆叠段 / 占比线 / 全历史分部线三张图同色。
+
 ## 3. 门槛：什么时候**不**出页
 
 - 共同最新月 = 各头条列末月里最早的那个，再往回找到最近一个**全部头条列都有值**的月份
@@ -374,10 +389,15 @@ SPEC = {
 }
 ```
 
-## 7. 底座与既有 12 家的关系
+## 7. 底座与手写生成器那 11 家的关系
 
-既有 12 家（cme / cboe / hkex / ibkr / schw / lpla / hood / msci / spgi / cost / axp / tsm）
-仍各自跑 `build/<t>.py`，**本轮一行都没改**。底座里的 `mlab` / `nz` / `nz_txt` / `LN` /
+既有 11 家（cme / cboe / hkex / ibkr / schw / lpla / hood / msci / spgi / cost / axp）
+仍各自跑 `build/<t>.py`，**本轮一行都没改**。
+（原来这里写的是 12 家、含 `tsm`；2026-08 台湾半导体接入后 `tsm` 已改走
+`build/mrbase.py` + `build/mrspecs/tsm.py` 那条路，`build/<t>.py` 只剩一个薄壳入口。
+仓库里现在有**三条**生成器路径：本文的 `single.py`、各家手写的 `build/<t>.py`、
+以及 `mrbase.py`，`monthly_run.builder()` 按「文件在不在」逐条试。）
+底座里的 `mlab` / `nz` / `nz_txt` / `LN` /
 `load` / `yoy_line` / `yoy_rhs` / `qlab` / `to_monthly` / `tail_contiguous`
 就是从 cme / cboe / hkex 那三份重复实现收敛来的（口径取最严的一份）。
 

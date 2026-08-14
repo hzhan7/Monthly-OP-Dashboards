@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
 r"""南亚科技（Nanya Technology，2408.TW）月度合并营收 —— 无人值守抓取模块。
 
-对应 build/specs/nanya.py（页面由通用底座 build/single.py 生成），维护一个序列文件：
+对应 build/specs/nanya.py（页面由通用底座 build/single.py 生成），维护**两个**序列文件：
 
-  series/nanya.csv    month, revenue_ntd_mn
+  series/nanya.csv        month, revenue_ntd_mn
+      月度合并营收水平值。入口 `update()`，源 1（MOPS 月档）。这条线已稳定，**别动**。
+
+  series/nanya_notes.csv  month, release_date, note_en, note_zh, n_points, explains,
+                          note_form, lead_en, lead_zh, mom_pct_said, yoy_pct_said,
+                          irid, url_en, url_zh
+      **新闻稿正文里的「增减原因说明」原文**（中英双语逐字）。入口 `update_notes()`，
+      源 5（新闻稿详情页）。与 `update()` 完全解耦，见文件末尾 WIRING。
+      ⚠ 它**不是** `series/mops_remarks.csv` 的另一份拷贝，两者回答的不是同一个问题
+      —— 先读下面「两段文字回答的不是同一个问题」那一节，不然一定会用错。
 
 ────────────────────────────────────────────────────────────────────────
 数据源（四处，各司其职；哪一处能做什么、不能做什么，逐条实测过）
@@ -37,6 +46,66 @@ r"""南亚科技（Nanya Technology，2408.TW）月度合并营收 —— 无人
    月营收，别取错。）每月一条，标题形如
      "Nanya Technology July 2026 Revenue NT$ 43,868 Million"
    日期形如 "AUG 04, 2026"。2013-01 起 158 条，是本模块唯一「官方自己说的发布日」。
+   列表项的 `href` 里带 `IRId=<id>`，那是详情页（源 5）的主键 —— 见 `_pr_items()`。
+
+5) **新闻稿正文（`series/nanya_notes.csv` 的唯一源）** —— 详情页
+   https://www.nanya.com/en/IR/16/?IRId=<id>     英文
+   https://www.nanya.com/tw/IR/16/?IRId=<id>     繁体中文
+   https://www.nanya.com/cn/IR/16/?IRId=<id>     简体中文（本模块不取，见下）
+   正文夹在 `<!--Fixpage_Content S-->` 与 `<!--Fixpage_Content E-->` 之间，
+   实测 2024-08 ~ 2026-07 共 48 张（英 24 + 繁 24）页面 72,062 ~ 72,700 字节、
+   正文段 960 ~ 1,722 字节。结构固定三块：引言段（今日公布 …，含 MoM/YoY 百分数）、
+   一张四行营收表（当月 / 上月 / MoM% / 去年同月 / YoY%）、以及**可能存在的**
+   `(Note)` / `(註)` 增减原因说明块。
+
+   **中文版路径是怎么找到的**（不是猜的，是从页面自己的语言切换器里读出来的）：
+   详情页尾部 `<script>` 里写着
+       var url = window.location.pathname + window.location.search;
+       if (url.length > 3) { url = url.substr(3, url.length - 3); }
+       $(".linken").attr("href", "/en" + url);
+       $(".linktw").attr("href", "/tw" + url);
+       $(".linkcn").attr("href", "/cn" + url);
+   也就是：**只替换路径的第一段（`/en` → `/tw` / `/cn`），query 一字不动**。
+   所以同一篇稿的三语版本共用同一个 `IRId`，不需要再去中文列表页找对应那条
+   （中文列表是 `/tw/Activity?Action=IR_PressCenter_year_Item&…`，取了也是同一批 id）。
+   本模块取 `/tw`：南亚科是台湾发行人，繁体是公司自己发的那一版；`/cn` 是它的
+   机器转写（同一个 IRId、同一篇稿），当第三版核对没有增量信息。
+
+────────────────────────────────────────────────────────────────────────
+「增减原因说明」是什么 —— 它和 MOPS 備註**回答的不是同一个问题**
+────────────────────────────────────────────────────────────────────────
+同一个数据月，公司会写**两段互相独立的文字**，落在两个不同的仓库序列里：
+
+  · `series/mops_remarks.csv` 的 `remark` —— MOPS 月营收申报表最后一栏「備註／
+    營收變化原因說明」。它是**法定披露栏**，触发条件是那张表脚注第 6 条：
+    「本月營收或本年累計營收較去年同期增減變動達 50％以上者，需於備註欄位說明」。
+    ⇒ 它回答的是 **「同比 / 累计同比为什么越了 ±50% 的线」**。
+  · `series/nanya_notes.csv` 的 `note_en` / `note_zh`（本模块）—— 公司自己发的
+    新闻稿正文里的 `(Note)` / `(註)` 说明块。**没有任何法规要求它存在**，
+    写不写、解释哪条腿，全由公司自己定。
+    ⇒ 它回答的是 **它首句自己声明的那条腿**，由 `explains` 列标出来。
+
+**2026-07 就是这两段各说各话的现场**，也是本序列存在的理由：
+    MOPS 備註：`受市場需求成長影響。`
+      —— 触发腿 `trigger_leg=both`（单月同比 **+719.61%**、累计同比 +660.87%），
+         所以这句话解释的是**同比**。
+    新闻稿正文：`July revenue increased 49.27% month over month, mainly due to:`
+      + 三个分点（旧约到期 / 依约履行完毕 / 新约 7 月起生效、长短依客户议定）
+      —— 首句自己写明 `month over month`，所以这三点解释的是 **+49.27% 的环比**。
+  ⇒ 把这三点当成 +719.61% 同比的原因，是把「上个月合约交替造成的单月台阶」
+    冒充成「一年之内 DRAM 价格与需求的整体变化」——**两个数量级不同的事**。
+    `explains` 这一列存在的唯一目的就是让下游拦住这次误引；下游的判读规则一句话：
+    **引用 `note_*` 时必须同时读 `explains`，`explains` 说 mom 就只能配环比。**
+
+`explains` 怎么来（**从原文首句解析，不猜、不看哪条腿涨得多**）：
+    mom 关键词  `month[\s-]*over[\s-]*month` | `MoM` | `較上(個)?月` | `月增` | `月減`
+    yoy 关键词  `year[\s-]*over[\s-]*year`  | `YoY` | `較去年同期` | `較上年同期`
+                | `年增` | `年減`
+    命中集合 → `mom` / `yoy` / `both` / `-`（一个都没命中）。
+    ⚠ 英文说明块里写的是 `month over month`（**无连字符**），而同一篇的引言段写的是
+      `month-over-month`（**有连字符**）—— 少写 `[\s-]*` 这一整列就会静默变成 `-`。
+    中英两版各解一遍：结论一致就用它；一版有一版没有 → 用有的那版并 warn；
+    两版指向不同的腿 → **落 `-` 并 warn**（宁可说「不知道」，不替公司选一条）。
 
 ────────────────────────────────────────────────────────────────────────
 发布节奏（实测，不是公司承诺）
@@ -151,6 +220,46 @@ r"""南亚科技（Nanya Technology，2408.TW）月度合并营收 —— 无人
       否则一次深度回补（把 MAX_BACKFILL 放开重建全序列）必然假 FAIL 在 2014 年初。
       其余月份仍然抛异常。
 
+── 以下三条是 `series/nanya_notes.csv` 那条线的（2026-08-14 实测）──────────
+
+11. **详情页的软 404 也是 HTTP 200，而且它连 `Fixpage_Content` 锚点都有。**
+    这条比口径坑 3 更阴一层：口径坑 3 说的是「壳页没有 IR 年表的锚点」，
+    到了详情页**这个判据失效了** —— 实测 `?IRId=999999`：
+      /en/… → **200 + 65,981 字节**，`Fixpage_Content S/E` **两个锚点都在**，
+              正文段 828 字节，内容是 "The content you requested could not be found."
+      /tw/… → **200 + 66,313 字节**，同样两个锚点都在，正文段 485 字节，
+              内容是「非常抱歉，您所要求的頁面並不存在」
+    而真详情页是 72,062 ~ 72,700 字节 —— **两个区间只差 5.7KB，长度分不开**。
+    更麻烦的是第三种情形：`?IRId=13160` 是 2026-08-05 发的《BoD Resolutions》，
+    一张**完全合法**的真页，锚点、长度、版式全部正常，只是**不是月营收稿**。
+    ⇒ 所以 `_pr_detail()` 的判据是「拿到的是不是**这一篇**」，两条一起用：
+      ① 正文里必须出现该数据月的标题串（英 `July 2026`，繁 `2026年7月`）；
+      ② 正文头一张表第一格的千元数，四舍五入到百万必须等于新闻稿**列表标题**里的
+         NT$mn（容差 1）。这一条同时把「英文页与繁体页取到的是同一篇」也验了
+         —— 48 张页面里两语的表格首格逐月**逐字相同**。
+
+12. **繁体版电头里的 `今(4)日` 会把「有没有括注式说明」这条判据整列带偏。**
+    `note_form='inline'` 是靠「引言段里剔掉样板括注后还剩没剩下括注」判的，
+    而繁体电头写作「南亞科技(股票代號：2408)**今(4)日**公佈…」，那个 `(4)` 是发布日
+    的日号。第一版没剔它，结果 24 个月**繁体全判成 `inline`、英文全判成 `-`**。
+    这个错没有变成 24 行假数据，是因为 `_note_row()` 有一条「中英两版说明形状必须
+    一致」的护栏，当场抛异常、一行都没落库。
+    ⇒ 两个教训各记一条：① 纯数字括注一律当样板（`_DIGIT_PAREN`）；
+      ② **中英互校不是锦上添花，它是这条线上唯一能抓住"解析器自己错了"的护栏**
+      —— 网络护栏只管「拿到的对不对」，管不了「读出来的对不对」。
+
+13. **公司自己引的百分数，与用本序列现算的，可以差在"基期"上而不是"算错"。**
+    24 个月逐月比过（见对账 D-2/D-3），公司在引言段里印的 MoM% / YoY% 与本序列
+    现算值**全部一致到 ±0.006pp**（纯四舍五入）。唯一一处对不上的是**基期本身**：
+      2025-12 那篇新闻稿表里的「2024 年 12 月營收」印的是 **2,205,528** 千元，
+      而 series/nanya.csv 的 2024-12 是 **2,205,531** 千元，**差 −3 千元**。
+    这 −3 不是印刷错误：2024 年月度加总 34,131,670 vs 官方审计 34,131,667 正好
+    **+3**（对账 A 那张表里 2024 那一行），也就是公司在年结后把整个 2024 年的审计
+    调整 −3 落在了 12 月这一格，然后拿**调整后**的基期去算 2025-12 的同比。
+    ⇒ 与口径坑 4 是同一个现象的第 N 次出现：**「去年當月」是另一个量。**
+      所以 `selfcheck_notes()` 的 D-2 对不上时**只打印、不改数**，
+      更不许为了"能对上"去动 series/nanya.csv。
+
 ────────────────────────────────────────────────────────────────────────
 对账（2026-08-13 实测；数字就是数字，"看起来对"不算）
 ────────────────────────────────────────────────────────────────────────
@@ -200,20 +309,82 @@ C. 月度值 vs **第三源**（同一笔申报的另一条分发通道）
    · TWSE OpenAPI t187ap05_L（源 2）2026-07：當月營收 **43,867,609** 千元，
      与 MOPS 月档、与新闻稿标题「NT$ 43,868 Million」（四舍五入到百万）三处一致。
 
+D. `series/nanya_notes.csv` 的三项对账（2026-08-14 实测，24 个月 = 2024-08 ~ 2026-07）
+   `selfcheck_notes()` 复算 D-1 / D-2 两项，**不发请求**。
+
+   D-1 电头日期 vs `series/source_dates.csv`
+       source_dates 里 nanya 目前**只有 1 行**（2026-07 → 2026-08-04，`update()` 的
+       `_record_release()` 只在有新月份时写，所以历史月没有回填）。
+       那 1 行与 notes 的 `release_date` **逐字相同**，0 处不一致；
+       另外 23 个月 source_dates 里根本没有对应行 —— 是**缺行**不是**打架**。
+
+   D-2 说明自报百分数 vs series/nanya.csv 现算
+       2025-05 mom：公司说 +6.87%，库内算 +6.870%，差 −0.001pp
+       2026-07 mom：公司说 +49.27%，库内算 +49.269%，差 +0.001pp
+       （只有这两个月填了自报百分数，因为只有这两个月有说明。）
+
+   D-3 引言段百分数与表格三个金额 vs 库内（24 个月 × 中英两版全扫，非 selfcheck 范围）
+       · 引言段的 MoM% / YoY%：24 个月**全部一致**，最大偏差 0.006pp（纯四舍五入）。
+       · 引言段的 YTD 金额（NT$mn）：24 个月与库内年内累计**全部一致**。
+       · 表格三个金额（当月 / 上月 / 去年同月，千元）共 24×3×2 = 144 格：
+         **143 格逐字相等，1 格不等** —— 2025-12 那篇的「2024 年 12 月」印 2,205,528，
+         库内 2,205,531，差 −3 千元，中英两版都是 2,205,528。**这是基期重述，
+         不是本序列错**，原因写在口径坑 13。
+
+   D-4 中英逐点对照（24 个月）
+       · 有说明的 2 个月，两版**形状、点数、口径**全部一致：
+         2026-07 都是 3 点、都写 `month over month` / `較上月`、都引 49.27%；
+         2025-05 都是 1 条括注、都挂在环比从句上、都引 6.43% 的汇率影响。
+       · 逐点语义一一对应，没有任何一版多一点或少一点。唯一措辞差异在**首句主语**：
+         英文写 "July revenue"，繁体写「7月份自結合併營收」（明写"自结、合并"）——
+         繁体更精确，英文省略了口径限定词。分点三句两版信息量相同。
+       · 其余 22 个月两版都是「没有说明」，一致。
+
 ────────────────────────────────────────────────────────────────────────
 幂等
 ────────────────────────────────────────────────────────────────────────
 没有新月份时 `update()` **一个字节都不写**（连既有行的重排都不做），
 series/nanya.csv 字节级不变。已入库值永不覆盖 —— 与官方不一致时抛异常，由人判断。
+`update_notes()` 对 series/nanya_notes.csv 是同一条承诺（实测连跑两次 MD5 不变），
+且它**只写 nanya_notes.csv，一个字节都不碰 nanya.csv**。
 
-━━ 依赖 ━━ 只用标准库；体检与发布日两条支线额外需要 certifi（口径坑 2），
-没有 certifi 时那两条支线自动缺席、主链不受影响。
+────────────────────────────────────────────────────────────────────────
+WIRING —— `update_notes()` 还没接进 monthly_run.py，接的时候请这样接
+────────────────────────────────────────────────────────────────────────
+`update_notes()` 是**独立入口**，`update()` 里没有一行调用它。选这个而不是
+「在 `update()` 末尾追加一步」，三条理由，每条都是为了不动已经稳定的那条线：
+
+  1. `update()` 在入库主链上（monthly_run.py 调它），而 notes 要跑 **2N 次
+     www.nanya.com 的 HTTPS 请求**。那个域名的证书链在 Python 默认 context 下
+     验不过（口径坑 2），本模块现在的设计是「nanya.com 挂了主链照常入库」。
+     把 notes 塞进 `update()` 就等于把主链的耗时与失败面绑到一个支线站点上，
+     哪怕包了 try/except，也把「没有新月份时一个字节都不写」这句承诺变成半真
+     —— 因为另一个文件可能被写了。
+  2. 两条线的**补数需求不同**。notes 是首次落 24 个月、之后每月一行；
+     nanya.csv 是 2013-01 起的全序列。让 notes 能单独重跑（删了重建、
+     或者只补中间某几个月），不必碰营收序列。
+  3. 失败语义不同。营收序列取不到 = 看板断更，必须响；某个月的正文认不出来 =
+     少一条注脚，不该把当月入库拖挂。
+
+  → 建议接法（roster / monthly_run 侧，本模块不改那两个文件）：
+    在 nanya 那一步**成功之后**追加一个独立步骤，失败只 warn 不影响退出码：
+        try:
+            fetch.nanya.update_notes(SERIES_DIR)
+        except Exception as exc:
+            print(f'[nanya][warn] notes 更新失败（不影响营收序列）：{exc!r}')
+  → `series/mops_remarks.csv` 那条线也处在同样的「已落库、未接线」状态
+    （见 fetch/mops_remarks.py 的 WIRING）。两条注脚线建议一起接、一起在
+    payload 里出现，因为它们必须**并排读**才不会被误引（见前面那节）。
+
+━━ 依赖 ━━ 只用标准库；体检、发布日、以及 notes 三条支线额外需要 certifi
+（口径坑 2），没有 certifi 时那几条支线自动缺席、主链不受影响。
 """
 
 from __future__ import annotations
 
 import csv
 import datetime as _dt
+import html as _html
 import io
 import json
 import os
@@ -447,8 +618,13 @@ def _ir_year(year):
 
 
 # ── 源 4：新闻稿发布日 ──────────────────────────────────────────────────
-def _press_releases(year):
-    """[(数据月 'YYYY-MM', 发布日 'YYYY-MM-DD', 标题里的 NT$mn)]，取不到返回 []。"""
+def _pr_items(year):
+    """该年新闻稿列表里的**月营收稿**，每条一个 dict，取不到返回 []。
+
+    字段：month（数据月）/ release_date / mn（标题里的 NT$mn）/ irid / title / href。
+    `irid` 是详情页的主键，`series/nanya_notes.csv` 那条线要靠它取正文；
+    `_press_releases()` 只是这里的一个投影（保持老签名，`update()` 的行为不变）。
+    """
     try:
         blob = _get(NY_PR % year, timeout=90, tries=2, context=_ssl_ctx())
         doc = json.loads(blob.decode('utf-8', 'ignore'))
@@ -461,10 +637,10 @@ def _press_releases(year):
     out = []
     for blk in doc['msg'].split('calendar-row3')[1:]:
         dm = re.search(r'col-xs-9 col-sm-12">([A-Z]{3} \d{2}, \d{4})<', blk)
-        tm = re.search(r'calendar-detail" href="[^"]*">(.*?)</a>', blk, re.S)
+        tm = re.search(r'calendar-detail" href="([^"]*)">(.*?)</a>', blk, re.S)
         if not (dm and tm):
             continue
-        title = re.sub(r'\s+', ' ', re.sub('<[^>]+>', '', tm.group(1))).strip()
+        title = re.sub(r'\s+', ' ', re.sub('<[^>]+>', '', tm.group(2))).strip()
         # "Nanya Technology July 2026 Revenue NT$ 43,868 Million"
         # 2016-03 与 2020 下半年那 6 条的月名是缩写或省了年份，所以月名与年份都放宽
         rm = re.search(r'(' + '|'.join(m[:3] for m in _MON_EN) +
@@ -477,8 +653,25 @@ def _press_releases(year):
         mo = _MON3[rm.group(1)[:3].upper()]
         yy = int(rm.group(2)) if rm.group(2) else (
             int(rel[:4]) - (1 if mo == 12 and rel[5:7] == '01' else 0))
-        out.append((f'{yy}-{mo:02d}', rel, float(rm.group(3).replace(',', ''))))
+        im = re.search(r'IRId=(\d+)', tm.group(1))
+        out.append({
+            'month': f'{yy}-{mo:02d}',
+            'release_date': rel,
+            'mn': float(rm.group(3).replace(',', '')),
+            'irid': im.group(1) if im else None,
+            'title': title,
+            'href': tm.group(1),
+        })
     return out
+
+
+def _press_releases(year):
+    """[(数据月 'YYYY-MM', 发布日 'YYYY-MM-DD', 标题里的 NT$mn)]，取不到返回 []。
+
+    `_pr_items()` 的投影。**签名与返回值逐字不变** —— `update()` 与 `release_date()`
+    都在用它，新加的 notes 那条线不许改动它们看到的东西。
+    """
+    return [(it['month'], it['release_date'], it['mn']) for it in _pr_items(year)]
 
 
 def _pr_years(month):
@@ -707,6 +900,439 @@ def _record_release(series_dir, month, day):
         print(f'[nanya][warn] source_dates 记录失败（不阻断）：{exc!r}')
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# series/nanya_notes.csv —— 新闻稿正文的「增减原因说明」
+#   本节**只写 series/nanya_notes.csv**，一个字节都不碰 series/nanya.csv。
+#   入口是 `update_notes()`，与 `update()` 完全解耦（理由见文件末尾 WIRING）。
+# ══════════════════════════════════════════════════════════════════════════
+NOTES_COLUMNS = [
+    'month', 'release_date', 'note_en', 'note_zh', 'n_points', 'explains',
+    'note_form', 'lead_en', 'lead_zh', 'mom_pct_said', 'yoy_pct_said',
+    'irid', 'url_en', 'url_zh',
+]
+
+# 分点之间的连接符。**选它是因为原文里不会出现它**，不是因为它好看：
+# 2024-08 ~ 2026-07 那 48 张详情页（英 24 + 繁 24）的正文里，
+# `|`（U+007C）、`¦`（U+00A6）、`‖`（U+2016）**一次都没出现过**（实测计数全 0）。
+# 于是 `note_en.split(' | ')` 是一个**无歧义**的逆运算 —— 下游要还原分点，
+# 不需要知道本模块，也不会把公司原文里的某个字符误当成分隔符切开。
+# 备选里 `;` `/` `、` 全部落选：三个都在原文里出现过（例：`annual, semi-annual and
+# quarterly`、`投資人關係/財務資訊/每月營收`、`含一年、半年及單季`），
+# 用它们做分隔符 = 把「原文逐字」这条承诺当场毁掉。
+NOTES_SEP = ' | '
+
+# 详情页。语言只换路径第一段：站点的语言切换器就是这么干的 —— 详情页
+# `<script>` 里写着 `$(".linktw").attr("href", "/tw" + url)`（url = pathname+search），
+# 也就是把 `/en/...` 的 `/en` 换成 `/tw`（繁）或 `/cn`（简），**query 一字不动**。
+# 所以同一篇稿的三语版本共用同一个 IRId，不需要再去列表页找中文那条。
+# 本模块取 `/tw`（繁体）：南亚科是台湾发行人，繁体才是公司自己发的那一版，
+# `/cn` 是它的机器转写（同一篇、同一个 IRId），不是另一份独立文本。
+NY_PR_DETAIL = NY_ORIGIN + '/%s/IR/16/?IRId=%s'
+_DETAIL_S = 'Fixpage_Content S'
+_DETAIL_E = 'Fixpage_Content E'
+# 详情页实测 72,062 ~ 72,700 字节；软 404 壳页 65,981（英）/ 66,313（繁）字节。
+# **两个区间几乎相接，长度分不开**（口径坑 11），所以这个下限只做粗筛，
+# 真正的判据是 `_pr_detail()` 里那三条内容判据。
+_MIN_DETAIL = 60_000
+
+# 首次 / 断档时最多往回补多深。24 = 与 series/mops_remarks.csv 同一个窗口，
+# 两份东西要并排读（同一个月，MOPS 備註说一句、新闻稿正文说另外三句），
+# 窗口不对齐就没法逐月对照。之后每月只追加一行，库会长过 24 个月，本模块不回删。
+_NOTES_WINDOW = 24
+MAX_NOTES_BACKFILL = 24
+
+# 引言段里的**样板**括注，一律不算「说明」。判据是括注里含这些串之一。
+# 为什么要这张表：`note_form='inline'` 靠「引言段里还剩没剩下括注」判定，
+# 而每一篇的引言段都自带 2~3 个样板括注（股票代号、IR 路径、以及 `(Note)` 角标），
+# 不剔掉的话 24 个月会全部被误判成「有说明」。
+_BOILERPLATE_PAREN = (
+    'Ticker', 'Investor relations', 'Investor Relations',
+    '股票代號', '投資人關係', 'Unit:', '單位',
+)
+# 纯数字括注同样是样板：繁体版的电头是「今(4)日公佈…」，括号里那个 4 是发布日的日号。
+# 这条是**中英两版形状核对逼出来的** —— 第一版没有它，24 个月里繁体版 24 个月全被
+# 判成 `inline`、英文版 24 个月全是 `-`，于是 `_note_row()` 的形状核对当场抛异常、
+# 一行都没落库。换句话说：这条护栏挡住的不是网络故障，是**解析器自己的错**。
+_DIGIT_PAREN = re.compile(r'^[\d\s]+$')
+
+
+class NanyaNotesError(NanyaFetchError):
+    """notes 那条线的故障出口。抓不到 / 认不出来 / 与官方对不上，一律抛它。"""
+
+
+def _plain(fragment):
+    """HTML 片段 → 原文逐字的纯文本。
+
+    只做三件事：去标签、`&nbsp;`/`&amp;` 之类实体还原、**把连续空白压成一个空格**。
+    压空白是必须的：正文里的换行/缩进是 CMS 排版产物不是公司写的字，
+    留着会让同一句话在 CSV 里长得不一样。除此之外**一个字都不动** ——
+    繁体不转简、标点不规整、`1.` 这类编号原样留（编号本身就是分点的证据）。
+    """
+    txt = re.sub(r'<[^>]+>', '', fragment)
+    txt = _html.unescape(txt)
+    return re.sub(r'\s+', ' ', txt).strip()
+
+
+def _pr_detail(irid, lang, month, title_mn):
+    """取某篇新闻稿正文（`Fixpage_Content` 之间那段 HTML）。认不出来就抛异常。
+
+    lang ∈ {'en', 'tw'}。**HTTP 200 在这里什么都不证明**，三条内容判据缺一不可：
+      ① 正文长度 >= `_MIN_DETAIL`（粗筛，挡半截响应）；
+      ② `Fixpage_Content S/E` 两个锚点都在 —— 但**这条挡不住软 404**，
+         壳页也有这对锚点（口径坑 11），所以它只保证「拿到的是一张本站页面」；
+      ③ **正文里必须出现该数据月的标题串**（英 `July 2026`，繁 `2026年7月`），
+         **且**正文头一张表的第一个千元数四舍五入到百万等于新闻稿列表标题里的
+         NT$mn —— 这两条一起才回答「拿到的是不是**这一篇**」。
+         只有 ② 的话，`IRId=999999`（壳页）和 `IRId=13160`（董事会决议，同一天发的
+         另一篇真页）都会被当成月营收稿收下。
+    """
+    if lang not in ('en', 'tw'):
+        raise NanyaNotesError(f'lang 只支持 en/tw，收到 {lang!r}')
+    url = NY_PR_DETAIL % (lang, irid)
+    body = _get(url, timeout=90, tries=3, context=_ssl_ctx())
+    if len(body) < _MIN_DETAIL:
+        raise NanyaNotesError(f'{url} 只有 {len(body)} 字节（<{_MIN_DETAIL}），不是详情页')
+    html = body.decode('utf-8', 'ignore')
+    if _DETAIL_S not in html or _DETAIL_E not in html:
+        raise NanyaNotesError(f'{url} 里没有 {_DETAIL_S!r}/{_DETAIL_E!r} 锚点，版式变了？')
+    seg = html.split(_DETAIL_S, 1)[1].split(_DETAIL_E, 1)[0]
+
+    y, m = int(month[:4]), int(month[5:7])
+    marker = f'{_MON_EN[m - 1]} {y}' if lang == 'en' else f'{y}年{m}月'
+    if marker not in _plain(seg):
+        raise NanyaNotesError(
+            f'{url}（{month}）正文里找不到 {marker!r} —— 取到的不是这个月的月营收稿'
+            f'（正文 {len(seg)} 字节，开头：{_plain(seg)[:120]!r}）')
+
+    tbl = re.search(r'(?is)<table.*?</table>', seg)
+    if not tbl:
+        raise NanyaNotesError(f'{url}（{month}）正文里没有营收表，版式变了？')
+    first = re.search(r'>\s*([\d,]{7,})\s*<', tbl.group(0))
+    if not first:
+        raise NanyaNotesError(f'{url}（{month}）营收表第一格不是千元数字，版式变了？')
+    got_mn = float(first.group(1).replace(',', '')) / 1000.0
+    if abs(got_mn - title_mn) > 1.0:
+        raise NanyaNotesError(
+            f'{url}（{month}）正文表里 NT${got_mn:,.3f}mn 与列表标题 '
+            f'NT${title_mn:,.0f}mn 差 {got_mn - title_mn:+,.3f}mn —— 取到了别的稿子')
+    return seg
+
+
+# 说明块的头：`<p><strong>(Note) …</strong></p>` / `<p><strong>(註) …</strong></p>`。
+# `(?!\s*</strong>)` 是**必须的**：引言段里还有一个 `<strong>(Note)</strong>` 角标
+# （挂在百分数后面，例：`a 49.27% <strong>(Note)</strong> increase month-over-month`），
+# 不排除它就会把引言段当成说明块的头。
+_NOTE_HEAD = re.compile(
+    r'(?is)<p>\s*<strong>\s*[(（]\s*(?:Note|註|注)\s*[)）]\s*(?!</strong>)(.*?)</strong>\s*</p>(.*)$')
+# 分点：`<p>1. …</p>`。**整段 <p> 原样收走，编号不剥**（`1. ` 是公司写进正文的字，
+# 剥了就不是「原文逐字」了；而且分点顺序一旦靠位置隐含，下游重排一次就再也查不出来）。
+# 前面那个捕获组只用来核编号连不连续，不参与落库。
+_NOTE_PT = re.compile(r'(?is)<p>\s*(\d+)\s*[.、]\s*(?:(?!</p>).)*?</p>')
+# 引言段 = 正文里第一个含「今日公布」那句话的 <p>。不能拿整段正文找括注：
+# 表格上方的 `<h5>` 里有 `(Unit: Thousand NT$)`。
+_LEAD_P = re.compile(r'(?is)<p>(?:(?!</p>).)*?(?:today announced|公佈|公布)(?:(?!</p>).)*?</p>')
+_PAREN = re.compile(r'[(（][^()（）]*[)）]')
+
+# 口径关键词。英文说明用 `month over month`（无连字符）而引言段用 `month-over-month`
+# （有连字符），两种都得认 —— 差一个连字符就整列变 `-`。
+_MOM_PAT = re.compile(r'month[\s-]*over[\s-]*month|\bMoM\b|較上(?:個)?月|月增|月減', re.I)
+_YOY_PAT = re.compile(r'year[\s-]*over[\s-]*year|\bYoY\b|較去年同期|較上年同期|年增|年減', re.I)
+
+
+def _legs(text):
+    """一句话里出现了哪几条腿的口径关键词 → {'mom', 'yoy'} 的子集。"""
+    legs = set()
+    if _MOM_PAT.search(text):
+        legs.add('mom')
+    if _YOY_PAT.search(text):
+        legs.add('yoy')
+    return legs
+
+
+def _explains_of(legs):
+    return {frozenset(): '-', frozenset({'mom'}): 'mom',
+            frozenset({'yoy'}): 'yoy', frozenset({'mom', 'yoy'}): 'both'}[frozenset(legs)]
+
+
+def _said_pct(text, leg):
+    """从一句话里解析公司自报的某条腿的百分数，解析不出返回 ''。
+
+    两种版式都认，且**方向词决定符号**：
+      英 `increased 49.27% month over month` / `0.54% decrease year-over-year`
+      繁 `較上月增加49.27%` / `較去年同期減少0.54%`
+    百分数与口径词可能在任意一边（英文两种语序都出现过），所以先把关键词所在的
+    **从句**切出来，再在从句里取**离关键词最近**的那个百分数 —— 不是取第一个。
+    "最近" 这条不是讲究：2025-05 那句从句里有两个百分数
+    （`a 6.87% increase month-over-month (affected by an adverse exchange rate
+    impact of 6.43%)`），取第一个碰巧对，但换个语序就会把汇率影响 6.43% 当成环比。
+    """
+    pat = _MOM_PAT if leg == 'mom' else _YOY_PAT
+    hit = pat.search(text)
+    if not hit:
+        return ''
+    # 从句 = 关键词所在的、被逗号/句号切出来的那一段（中英标点都切）
+    left = max((text.rfind(c, 0, hit.start()) for c in ',，。;；:：'), default=-1)
+    right = min((p for p in (text.find(c, hit.end()) for c in ',，。;；:：') if p >= 0),
+                default=len(text))
+    clause = text[left + 1:right]
+    at = hit.start() - (left + 1)               # 关键词在从句里的位置
+    nums = list(re.finditer(r'(-?[\d,]+\.?\d*)\s*%', clause))
+    if not nums:
+        return ''
+    num = min(nums, key=lambda n: min(abs(n.start() - at), abs(n.end() - at)))
+    val = float(num.group(1).replace(',', ''))
+    if re.search(r'decrease|declin|减少|減少|下降|衰退|減', clause, re.I):
+        val = -abs(val)
+    elif re.search(r'increase|grow|增加|成長|成长|增', clause, re.I):
+        val = abs(val)
+    return f'{val:.2f}'
+
+
+def _parse_note(seg, lang):
+    """一篇正文 → dict(form, lead, points)。**只认原文，不猜**。
+
+    form 三档，含义互斥，下游必须靠它区分「公司写了什么形状的说明」：
+      · `points` —— 正文里有独立的 `(Note)/(註)` 说明块，后面跟着 `1. 2. 3.` 分点。
+      · `inline` —— 没有说明块，但引言段里有**非样板**括注（实测只有一种：
+        2025-05 的 `(affected by an adverse exchange rate impact of 6.43%)` /
+        `(匯率負面影響6.43%)`）。它是**塞在环比从句里的**汇率注，
+        和 `points` 那种「公司专门写一段解释这个月为什么动」不是一回事，
+        混成一列会让下游把一句汇率旁注当成经营解释引用。
+      · `-` —— 两样都没有。**这不等于「公司没解释」在别处也不存在**：
+        MOPS 備註栏是另一条通道、另一套触发规则，见文件头「两段文字回答的
+        不是同一个问题」那一节。
+    """
+    m = _NOTE_HEAD.search(seg)
+    if m:
+        lead = _plain(m.group(1))
+        # 一次 finditer 同时拿到「编号」（group(1)，只用来核连续性）和
+        # 「整段 <p> 的原文」（group(0) 去标签后，**含 `1. ` 编号**，这才是落库值）。
+        pts = [(int(mo.group(1)), _plain(mo.group(0)))
+               for mo in _NOTE_PT.finditer(m.group(2))]
+        if not pts:
+            # 说明块的头在、分点一个都认不出来 = 版式变了。这里**必须抛**：
+            # 静默返回 0 个分点会让 CSV 记下「公司写了说明但没说什么」——
+            # 一句看上去完全正常的假话（仓库硬规矩：HTTP 200 不等于成功）。
+            raise NanyaNotesError(
+                f'{lang} 正文里 (Note)/(註) 说明块的头认出来了（{lead[:60]!r}），'
+                f'但后面一个分点都解析不出来 —— 版式变了，本次不落库')
+        nums = [n for n, _ in pts]
+        if nums != list(range(1, len(nums) + 1)):
+            raise NanyaNotesError(f'{lang} 说明块分点编号不连续：{nums}')
+        return {'form': 'points', 'lead': lead, 'points': [t for _, t in pts]}
+
+    lp = _LEAD_P.search(seg)
+    if not lp:
+        raise NanyaNotesError(f'{lang} 正文里找不到引言段（含「today announced」/「公佈」的 <p>）')
+    lead_txt = _plain(lp.group(0))
+    for raw in _PAREN.findall(lead_txt):
+        inner = raw[1:-1].strip()
+        if not inner or inner in ('Note', '註', '注'):
+            continue
+        if _DIGIT_PAREN.match(inner):
+            continue
+        if any(b in inner for b in _BOILERPLATE_PAREN):
+            continue
+        # 括注修饰的是它**前面**那条腿：取括注之前那段文字里最后出现的口径词。
+        before = lead_txt[:lead_txt.index(raw)]
+        mom_at = max((mm.start() for mm in _MOM_PAT.finditer(before)), default=-1)
+        yoy_at = max((mm.start() for mm in _YOY_PAT.finditer(before)), default=-1)
+        legs = set()
+        if mom_at >= 0 or yoy_at >= 0:
+            legs = {'mom' if mom_at > yoy_at else 'yoy'}
+        return {'form': 'inline', 'lead': lead_txt, 'points': [raw], 'legs': legs}
+    return {'form': '-', 'lead': '', 'points': []}
+
+
+def _note_row(item, seg_en, seg_tw):
+    """一个月的两语正文 → 一行 `series/nanya_notes.csv`（值全是 str）。"""
+    month = item['month']
+    en = _parse_note(seg_en, 'en')
+    tw = _parse_note(seg_tw, 'tw')
+
+    if en['form'] != tw['form']:
+        # 中英不同形状 = 其中一版漏了/多了说明。**不猜哪版对**，抛出来让人看。
+        raise NanyaNotesError(
+            f'{month} 英文版说明形状是 {en["form"]}、繁体版是 {tw["form"]} —— '
+            f'两版对不上，本次不落库')
+    if len(en['points']) != len(tw['points']):
+        raise NanyaNotesError(
+            f'{month} 英文版 {len(en["points"])} 点、繁体版 {len(tw["points"])} 点，'
+            f'点数对不上，本次不落库')
+
+    form = en['form']
+    n_points = len(en['points']) if form == 'points' else 0
+
+    # `explains` —— 本行最关键的一列：这段说明解释的是**哪个口径**。
+    # 只从原文的说明首句里解析，**不看当月哪条腿涨得多、不猜**。
+    if form == 'points':
+        legs_en, legs_tw = _legs(en['lead']), _legs(tw['lead'])
+    elif form == 'inline':
+        legs_en, legs_tw = en.get('legs', set()), tw.get('legs', set())
+    else:
+        legs_en = legs_tw = set()
+    if legs_en == legs_tw:
+        legs = legs_en
+    elif not legs_en or not legs_tw:
+        # 一版写了口径词、另一版没写 → 取有的那版，并且说出来。
+        legs = legs_en or legs_tw
+        print(f'[nanya][warn] {month} 口径词只在一版里出现（en={sorted(legs_en)} '
+              f'tw={sorted(legs_tw)}），explains 取并集非空的那版')
+    else:
+        # 两版都写了、但指的不是同一条腿 → **落 `-`**。
+        # 宁可让下游知道「这一格的口径不可信」，也不要替公司选一个。
+        legs = set()
+        print(f'[nanya][warn] {month} 中英两版说的不是同一条腿（en={sorted(legs_en)} '
+              f'tw={sorted(legs_tw)}），explains 落 "-"')
+    explains = _explains_of(legs)
+    if form != '-' and explains == '-':
+        print(f'[nanya][warn] {month} 有说明（form={form}）但首句里解析不出口径词，'
+              f'explains 落 "-"：{en["lead"][:100]!r}')
+
+    # 说明**自己引用的**那条腿的百分数。points 版从说明首句取；inline 版从括注
+    # 所在的那个从句取（括注里的 6.43% 是汇率影响、不是环比本身，不能拿它冒充）。
+    # **中英两版各解一遍再互校**：这是唯一一处不花任何额外请求就能做的交叉核对
+    # （同一篇稿的两个语言版本是两次独立的排版），对不上就说出来。
+    src_en = en['lead'] if form in ('points', 'inline') else ''
+    src_tw = tw['lead'] if form in ('points', 'inline') else ''
+    said = {}
+    for leg in ('mom', 'yoy'):
+        if leg not in legs:
+            said[leg] = ''
+            continue
+        a, b = _said_pct(src_en, leg), _said_pct(src_tw, leg)
+        if a and b and a != b:
+            print(f'[nanya][warn] {month} 说明首句里的 {leg} 百分数中英两版不一致'
+                  f'（en={a} vs tw={b}），落英文版并请人核一眼')
+        said[leg] = a or b
+    mom_said, yoy_said = said['mom'], said['yoy']
+
+    # note_* = **首句 + 各分点**，全部用 NOTES_SEP 连起来。首句必须进去：
+    # 它带着「49.27% month over month」这个口径，把它扔了，三个分点就成了
+    # 无主语的三句话，下游想引用都不知道在解释什么。首句同时单列 lead_*，
+    # 下游要只引分点时 `note_en.split(NOTES_SEP)[1:]` 即可。
+    parts_en = ([en['lead']] + en['points']) if form == 'points' else en['points']
+    parts_tw = ([tw['lead']] + tw['points']) if form == 'points' else tw['points']
+    for p in parts_en + parts_tw:
+        if NOTES_SEP.strip() in p:
+            raise NanyaNotesError(
+                f'{month} 原文里出现了分隔符 {NOTES_SEP.strip()!r}，'
+                f'再用它连接就切不回去了：{p[:120]!r}')
+
+    return {
+        'month': month,
+        'release_date': item['release_date'],
+        'note_en': NOTES_SEP.join(parts_en),
+        'note_zh': NOTES_SEP.join(parts_tw),
+        'n_points': str(n_points),
+        'explains': explains,
+        'note_form': form,
+        'lead_en': en['lead'] if form == 'points' else '',
+        'lead_zh': tw['lead'] if form == 'points' else '',
+        'mom_pct_said': mom_said,
+        'yoy_pct_said': yoy_said,
+        'irid': item['irid'] or '',
+        'url_en': NY_PR_DETAIL % ('en', item['irid']),
+        'url_zh': NY_PR_DETAIL % ('tw', item['irid']),
+    }
+
+
+def _read_notes(csv_path):
+    """读已入库的 notes。文件不存在 → 空。列不对 → 抛异常（不静默重建）。"""
+    if not os.path.exists(csv_path):
+        return []
+    with open(csv_path, newline='', encoding='utf-8') as fh:
+        rows = list(csv.reader(fh))
+    if not rows:
+        return []
+    header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+    if header != NOTES_COLUMNS:
+        raise NanyaNotesError(
+            f'series/nanya_notes.csv 列不对：\n  库内 {header}\n  期望 {NOTES_COLUMNS}')
+    seen = set()
+    for r in body:
+        if r[0] in seen:
+            raise NanyaNotesError(f'series/nanya_notes.csv 有重复月份 {r[0]}')
+        seen.add(r[0])
+    return [dict(zip(header, r)) for r in body]
+
+
+def _months_back(ym, n):
+    """ym 往回数 n 个月。"""
+    y, m = int(ym[:4]), int(ym[5:7])
+    t = y * 12 + (m - 1) - n
+    return f'{t // 12}-{t % 12 + 1:02d}'
+
+
+def update_notes(series_dir, cache_dir=None):                      # noqa: ARG001
+    """把新闻稿正文的「增减原因说明」增量落进 `series/nanya_notes.csv`。
+
+    **只写这一个文件。`series/nanya.csv` 一个字节都不碰。**
+
+    增量：库里已有的月份一律跳过（不重取、不覆盖），只补库里没有的。
+    幂等：没有新月份时**一个字节都不写**（既有行连重排都不做）。
+    整批写：任何一个月的护栏没过就抛异常、整批不写 —— 半份 CSV 比没有更坏。
+
+    返回新增月份列表（升序）。取不到的月份**如实缺行**，不造行、不插值。
+    """
+    csv_path = os.path.join(series_dir, 'nanya_notes.csv')
+    have = {r['month']: r for r in _read_notes(csv_path)}
+
+    # 官方最新月走**新闻稿列表**，不走 IR 年表也不走 MOPS：
+    # 新闻稿是本模块四条源里最快的一条（实测能比 IR 年表早一个多星期，见「发布节奏」），
+    # 而且本序列的正文就在这条稿子里 —— 拿别的源定窗口只会让窗口比正文还新。
+    today = _dt.date.today()
+    items = {}
+    for y in (today.year, today.year - 1, today.year - 2):
+        for it in _pr_items(y):
+            items.setdefault(it['month'], it)
+    if not items:
+        raise NanyaNotesError('新闻稿列表一条月营收稿都没取到，本次不写入')
+    latest = max(items)
+    start = _next_month(max(have)) if have else _months_back(latest, _NOTES_WINDOW - 1)
+
+    wanted, cursor = [], start
+    while cursor <= latest:
+        if cursor not in have:
+            wanted.append(cursor)
+        cursor = _next_month(cursor)
+    missing = [m for m in wanted if m not in items or not items[m]['irid']]
+    if missing:
+        # 新闻稿列表里没有那一条（或那条没有 IRId）→ **如实缺**，不造行。
+        print(f'[nanya][warn] 新闻稿列表里没有这些月的月营收稿，'
+              f'nanya_notes.csv 如实缺行：{", ".join(missing)}')
+        wanted = [m for m in wanted if m not in missing]
+    if len(wanted) > MAX_NOTES_BACKFILL:
+        raise NanyaNotesError(
+            f'要补 {len(wanted)} 个月（{wanted[0]} ~ {wanted[-1]}），超过 '
+            f'MAX_NOTES_BACKFILL={MAX_NOTES_BACKFILL}。先人工确认再放开。')
+    if not wanted:
+        print(f'[nanya] notes 无新月份（库内最新 {max(have) if have else "空"}，'
+              f'官方最新 {latest}），series/nanya_notes.csv 未改动')
+        return []
+
+    rows = []
+    for ym in wanted:
+        it = items[ym]
+        seg_en = _pr_detail(it['irid'], 'en', ym, it['mn'])
+        seg_tw = _pr_detail(it['irid'], 'tw', ym, it['mn'])
+        rows.append(_note_row(it, seg_en, seg_tw))
+        time.sleep(0.6)                 # 顺序取、别并发；理由同口径坑 1
+
+    body = [have[m] for m in have] + rows
+    body.sort(key=lambda r: r['month'])
+    with open(csv_path, 'w', newline='', encoding='utf-8') as fh:
+        w = csv.DictWriter(fh, fieldnames=NOTES_COLUMNS, lineterminator='\n')
+        w.writeheader()
+        w.writerows(body)
+
+    withnote = ', '.join('{month}/{note_form}/{explains}'.format(**r)
+                         for r in rows if r['note_form'] != '-') or '无'
+    print(f'[nanya] nanya_notes.csv 新增 {len(rows)} 个月：{", ".join(wanted)}'
+          f'（其中正文里有说明的：{withnote}）')
+    return wanted
+
+
 # ── 自检（不写任何文件；`python3 fetch/nanya.py` 直接跑）──────────────────
 def selfcheck(series_dir=None):
     """复算模块头「对账 A」那张表：月度加总 vs 官方审计年度。"""
@@ -724,5 +1350,66 @@ def selfcheck(series_dir=None):
         print(f'{y:<6}{s:>18,}{a:>16,}{s - a:>+12,}{(s - a) / a * 100:>+11.4f}%')
 
 
+def selfcheck_notes(series_dir=None):
+    """复算模块头「对账 D」那两张表。**不发一个请求、不写一个字节**，全靠库内三份 CSV。
+
+    两件事，都是「公司自己说的数」与「本仓库自己算的数」对撞：
+      ① `release_date`（新闻稿电头）vs `series/source_dates.csv` 里 nanya 的行；
+      ② 说明里公司自报的 `mom_pct_said` / `yoy_pct_said` vs 用 `series/nanya.csv`
+         现算的环比 / 同比。**对不上不改数据**，打印出来由人判断 ——
+         公司引的百分数可能是它自己的口径（比如基期被重述过，见口径坑 4/13），
+         把库内水平值改成"能对上"才是真的错。
+    """
+    series_dir = series_dir or os.path.join(ROOT, 'series')
+    notes = _read_notes(os.path.join(series_dir, 'nanya_notes.csv'))
+    if not notes:
+        print('[nanya] series/nanya_notes.csv 是空的，selfcheck_notes 跳过')
+        return
+    _, body = _read_series(os.path.join(series_dir, 'nanya.csv'))
+    lvl = {m: float(v) for m, v in body}
+
+    sd_path = os.path.join(series_dir, 'source_dates.csv')
+    sd = {}
+    if os.path.exists(sd_path):
+        with open(sd_path, newline='', encoding='utf-8') as fh:
+            for r in csv.DictReader(fh):
+                if (r.get('ticker') or '').strip() == TICKER:
+                    sd[r['month']] = r['source_date']
+
+    print(f'\n── D-1 电头日期 vs source_dates（{len(notes)} 个月）──')
+    diff = [n for n in notes if n['month'] in sd and sd[n['month']] != n['release_date']]
+    nosd = [n['month'] for n in notes if n['month'] not in sd]
+    print(f'   两边都有的 {len(notes) - len(nosd)} 个月：不一致 {len(diff)} 个'
+          + ('' if not diff else '\n   ' + '\n   '.join(
+              f'{n["month"]}: notes {n["release_date"]} vs source_dates {sd[n["month"]]}'
+              for n in diff)))
+    if nosd:
+        print(f'   source_dates 里没有的 {len(nosd)} 个月（不是错，'
+              f'_record_release 只在有新月份时写）：{", ".join(nosd)}')
+
+    print(f'\n── D-2 说明自报百分数 vs series/nanya.csv 现算 ──')
+    hit = 0
+    for n in notes:
+        for leg, col in (('mom', 'mom_pct_said'), ('yoy', 'yoy_pct_said')):
+            if not n[col]:
+                continue
+            hit += 1
+            ym = n['month']
+            y, m = int(ym[:4]), int(ym[5:7])
+            base = (f'{y - 1}-12' if m == 1 else f'{y}-{m - 1:02d}') if leg == 'mom' \
+                else f'{y - 1}-{m:02d}'
+            if ym not in lvl or base not in lvl:
+                print(f'   {ym} {leg}: 库内缺 {base}，算不了')
+                continue
+            calc = (lvl[ym] / lvl[base] - 1) * 100
+            said = float(n[col])
+            flag = 'OK' if abs(said - calc) <= 0.01 else '⚠ 对不上'
+            print(f'   {ym} {leg}: 公司说 {said:+.2f}%，库内算 {calc:+.2f}%'
+                  f'（{base} → {ym}），差 {said - calc:+.3f}pp  {flag}')
+    if not hit:
+        print('   （没有任何一行填了自报百分数）')
+
+
 if __name__ == '__main__':
     selfcheck()
+    selfcheck_notes()

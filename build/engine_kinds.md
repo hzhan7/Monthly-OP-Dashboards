@@ -189,14 +189,15 @@
 
 ---
 
-## 8. 补 deck 缺口的三个可选开关（`zero_base` / `end_label` / `yoy`）
+## 8. 补 deck 缺口的四个可选开关（`zero_base` / `end_label` / `yoy` / `stacks`）
 
-三个都**默认关闭**，不给就与从前逐字节相同（COST/IBKR 两个已上线的站靠这条）。
-它们补的是「deck 有、网页版一直没有」的三层信息，由各页 build 脚本自行决定要不要开。
+四个都**默认关闭**，不给就与从前逐字节相同（COST/IBKR 两个已上线的站靠这条）。
+它们补的是「deck 有、网页版一直没有」的几层信息，由各页 build 脚本自行决定要不要开。
 
 | 字段 | 作用于 | 对应 gsx | 说明 |
 |---|---|---|---|
-| `zero_base: true` | `lines` | `long_line` 的 `set_ylim(0, max*1.16)` | 纵轴从 0 起 |
+| `zero_base: true` | `lines` | `long_line` 的 `set_ylim(0, max*1.16)` | 纵轴从 0 起。⚠️ **只对 `kind:'lines'` 生效** —— 引擎里它写在 `draw()` 最后那个 `else` 分支里，而 `lines_endlabels` / `gs_bar` / `stacked_dual` 各有自己的分支、排在它前面。给别的 kind 传它是个**死键**，一个字都不生效且不报错（`build/axisfmt.py` 的镜像链同序，所以生成端也看不出来）。这些 kind 要归零请用 `yfloor: 0` |
+| `stacks: [{name,color,values}]` | `gs_bar` | 无（本仓新增） | 把每根柱按业务分色堆叠，**总额仍取 `ex.values`**：纵轴量程、柱顶数值、12 个月均线、次轴 y/y、表格视图与 tooltip 一律照总额走。各段之和必须等于 `values`（`build/verify_pages.py` 硬校验，引擎**不替 payload 求和**）；各段必须显式给互不相同的 color，且**不能与 `yoy.color` 撞**（那条线无描边、画在柱之后，同色时穿过该段整段看不见）。与 `ycap` / `yfloor` / `bar_marks` 不兼容，命中的柱退回单色。⚠️ **不要改用 `stacked_dual`**：它的右轴被写死 `ticks(0, ymax, 6)`、`r0 = 0`，而 `gs_bar` 的次轴同比会转负（实测创意 92 个有值月里 26 个为负、最低 −23.0%），负值会被顶到画布外 |
 | `end_label: true` | `lines` | `long_line` 的 `n_label` | 每条序列末点标出数值（粗体、点的左上方） |
 | `yoy: {…}` | `gs_bar` | `lvl_bar` 的次轴金色 y/y 折线 | 给了就画次轴 y/y，**同时不画 12 个月均线** |
 

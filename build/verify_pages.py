@@ -325,6 +325,66 @@ def check_exhibit(tag, ex, short, long_):
             err(where, f'{kind} 缺必填字段 {f}（引擎会抛 TypeError，本页此图之后的 exhibit 全丢）')
     if kind == 'gs_bar' and ex.get('avg12') is None and not ex.get('yoy'):
         err(where, 'gs_bar 既没有 avg12 也没有 yoy —— 12 个月均线会静默消失，图例却仍写着它')
+    # ── gs_bar 的分部堆叠（ex.stacks）──
+    # 引擎**不替 payload 求和**：它照着 ex.values 画轴与柱顶数值，照着 stacks 分段填色。
+    # 两者对不上时画面不报错 —— 各段之和比总额少一块，就是柱顶留一截空白（看着像
+    # 「这个月分部数据只有一部分」，其实是漏了一整块业务）；多一块则最上面那段
+    # 溢出柱顶、盖住数值标签。所以恒等式必须在这里硬校验，不能在引擎里兜底。
+    if kind == 'gs_bar' and ex.get('stacks'):
+        stk = ex['stacks']
+        # `yfloor` 与 `ycap` 走的是同一个 clampY —— 漏掉它，被下界钳住的柱会静默
+        # 退回单色 #9DC3E6，而那个颜色在图例里根本不存在。
+        if (ex.get('ycap') is not None or ex.get('yfloor') is not None
+                or ex.get('bar_marks')):
+            err(where, 'gs_bar 同时给了 stacks 与 ycap/yfloor/bar_marks —— 引擎对这些柱会'
+                       '退回单色，而图例仍列着各分部，读者看到的柱与图例对不上'
+                       '（见 charts.js 绘制处注释）')
+        # ⚠️ 撞色要连**次轴那条线**一起查，不能只查 stacks 内部：那条线是无描边纯色、
+        #    画在柱之后，与某一段同色时它穿过那一段就整段消失（实测创意 92 个月里
+        #    15 个、日月光 76 个里 14 个，金线正落在金色段内）。图上看不出、也不报错。
+        scols = [s.get('color') for s in stk]
+        ycol = ((ex.get('yoy') or {}).get('color')) or ('GOLD' if ex.get('yoy') else None)
+        allc = scols + ([ycol] if ycol else [])
+        if None in scols or len(set(scols)) < len(scols):
+            err(where, f'gs_bar 的 stacks 配色 {scols} 有缺省或重复 —— 同色的两段在一根柱里'
+                       f'连不出分界，图例也指不到具体哪一段')
+        elif ycol and len(set(allc)) < len(allc):
+            err(where, f'gs_bar 的次轴 y/y 线用了 {ycol}，与某一分部段同色 —— '
+                       f'折线画在柱之后且无描边，穿过同色段时整段看不见（图例里却有两条 {ycol}）')
+        vals = ex.get('values') or []
+        # 负的段值：引擎 `Math.max(0, …)` 会把它静默吞成零高，并把它上面那一段整体
+        # 抬高 —— 而 `Σ段 ≡ values` 这条恒等式**照样成立**，所以下面那条检查抓不到。
+        # 页面上看到的是「某个月某一段凭空消失、另一段变胖」，一个字的提示都没有。
+        neg = [(k, i, s['values'][i]) for k, s in enumerate(stk)
+               if isinstance(s.get('values'), list)
+               for i in range(len(s['values']))
+               if isinstance(s['values'][i], (int, float)) and s['values'][i] < 0]
+        if neg:
+            k0, i0, v0 = neg[0]
+            err(where, f'gs_bar 的 stacks 有 {len(neg)} 个负段值（首个在 stacks[{k0}] idx {i0}：'
+                       f'{v0!r}）—— 引擎会把它削成零高并抬高上面那一段，而各段之和仍等于'
+                       f'总额，恒等式检查抓不到。残差型分部列（合并 − 某分部）最容易踩这条')
+        miss, off = [], []
+        for i in range(len(vals)):
+            if vals[i] is None:
+                continue
+            parts = [s['values'][i] for s in stk
+                     if isinstance(s.get('values'), list) and i < len(s['values'])
+                     and s['values'][i] is not None]
+            if len(parts) != len(stk):
+                miss.append(i)
+                continue
+            tot = sum(parts)
+            if abs(tot - vals[i]) > max(1e-6, abs(vals[i]) * 1e-6):
+                off.append((i, tot, vals[i]))
+        if miss:
+            err(where, f'gs_bar 的 stacks 在 {len(miss)} 个位置有分段缺值（首个在 idx {miss[0]}）'
+                       f'—— 那根柱会短一截，看着像那个月分部数据不全')
+        if off:
+            i0, t0, v0 = off[0]
+            err(where, f'gs_bar 的 stacks 有 {len(off)} 个位置各段之和 ≠ values'
+                       f'（首个在 idx {i0}：各段和 {t0!r} vs 总额 {v0!r}）—— '
+                       f'柱高照总额画、填色照各段画，差额会变成柱顶一截空白或溢出')
 
     # ── heat_matrix 走自己的维度规则，不吃 xlabels ──
     if kind == 'heat_matrix':
