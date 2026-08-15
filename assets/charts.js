@@ -931,7 +931,17 @@
       var rv = lineVals(ex).filter(function (v) { return v != null && isFinite(v); });
       if (kind === 'stacked_dual') { rtk = ticks(0, rc.ymax || 60, 6); r0 = 0; r1 = rtk[rtk.length - 1]; }
       else {
-        rtk = ticks(Math.min.apply(null, rv.concat([0])), Math.max.apply(null, rv), 9);
+        /* 右轴默认把 0 纳入量程 —— 右轴上住的通常是 y/y 这类跨零序列，零线是它的
+           判据基准，不画出来读者没法判正负。但右轴也可以是一条**水平量**
+           （TSM Ex12 的 NTD/USD 月均汇率在 29–33 之间走）：那种序列的零点毫无意义，
+           强行纳入会把 29–33 的线压成 0–35 轴顶端的一条直线，全部结构消失。
+           所以给 line/yoy 开一个 `zero_base: false` 的口子，缺省行为一字不变。
+           ⚠️ 同一份量程逻辑另有两份副本：`build/axisfmt.py` 的 `fix_all`
+           与 `build/mrbase.py` 的 `align_sim` —— 三处必须同时改，否则
+           Python 侧算出来的刻度与页面上画的对不上。 */
+        var rzb = rc.zero_base !== false;
+        rtk = ticks(Math.min.apply(null, rzb ? rv.concat([0]) : rv),
+                    Math.max.apply(null, rv), 9);
         r0 = rtk[0]; r1 = rtk[rtk.length - 1];
       }
       /* 两轴的 0 必须落在同一画布高度：取两者中较高的那个零点比例 f，

@@ -33,6 +33,20 @@
 | `break_label` | string \| string[] | 断点竖排标签；给一条时所有断点共用 |
 | `bar_marks` / `mark_note` | int[] / string | 斜纹柱（不可比期）与它在 tooltip 里的解释 |
 | `bar_labels` | bool | `false` 关掉每柱/每点数值标签（`grouped_bars` 相反，默认关、给 `true` 才开） |
+| `section` | string | 在这张图**之前**起一个新章节标题（`page.js` 插 `<h2 class="section ingrid">`，CSS 里 `grid-column: 1/-1` 横跨整行）。用途是「下面这一段读的不是同一份数据」——TSM 的 Ex10 起读的是营收之外的五张法定申报表。只该给一段里的**第一张**图 |
+
+双轴图（`bar_line_dual` / `qtr_bar` / `grouped_bars` / `gs_bar` 的右轴）的
+`line`（或 `gs_bar` 的 `yoy`）对象上还有一个 `zero_base`。
+（`bar_line` 是**单轴**，给了也不起作用；`stacked_dual` 有右轴但量程被写死成 0–`ymax`，
+同样不吃这个字段。）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `zero_base` | bool | 缺省 `true` = 右轴量程强制含 0。右轴住的通常是 y/y 这类**跨零**序列，零线是判正负的基准，不画出来读者没法判。给 `false` 用于右轴是**水平量**的情形（TSM Ex12 的 NTD/USD 汇率在 29–33 之间走）——那种序列零点没有意义，强行含 0 会把线压成轴顶的一条直线，结构全部消失 |
+
+> ⚠️ `zero_base` 的量程逻辑在仓里有**三份副本**，改一处必须同改另两处，否则 Python 侧
+> 算出的刻度与页面上画的对不上：`assets/charts.js`（右轴 `ticks(...)`）、
+> `build/axisfmt.py` 的 `fix_all`、`build/mrbase.py` 的 `align_sim`。
 
 格式器名：`f0 f1 f0c int pct0 pct1 pct0z pp0 pp1 x0 usd0 usd1 usd2`。
 颜色名只许用 `C.*` 常量名：`NAVY BLUE MBLUE GRAY GREEN RED WHITE GRID AXIS INK`（也可直接写 `#RRGGBB`，但别这么干 —— 这套色已过色盲安全校验）。

@@ -111,6 +111,16 @@
      GS deck 的图号就是阅读顺序，打乱它比少一张图更糟。 */
   var grid = el('grid'), needRedraw = false;
   D.exhibits.forEach(function (ex) {
+    /* 章节标题：带 ex.section 的图之前起一个新板块。
+       用途是「这一段图读的不是同一份数据」—— TSM 的 Ex10 起读的是营收之外的
+       五张法定申报表，跟上面九张没有派生关系，混在一条编号里读者会默认它们同源。
+       没有任何既有页面的 payload 带这个字段，所以另外 33 页一行都不会变。 */
+    if (ex.section) {
+      var sh2 = document.createElement('h2');
+      sh2.className = 'section ingrid';
+      sh2.textContent = ex.section;
+      grid.appendChild(sh2);
+    }
     window.Exhibits.card(grid, ex, {
       source: D.source,
       xlabels: ex.x === 'long' ? D.xlabels_long : D.xlabels,

@@ -235,7 +235,9 @@ def align_sim(ex):
     rv = axisfmt._fin(rc.get('values'))
     if not rv:
         return None
-    rtk = axisfmt.ticks(min(rv + [0.0]), max(rv), 9)
+    # `zero_base: False` 见 axisfmt.fix_all 与 charts.js 的同处注释（三份副本）。
+    rtk = axisfmt.ticks(min(rv + ([0.0] if rc.get('zero_base') is not False else [])),
+                        max(rv), 9)
     r0, r1 = rtk[0], rtk[-1]
     fr = max(axisfmt._zero_frac(y0, y1), axisfmt._zero_frac(r0, r1))
     if fr <= 1e-9:
@@ -344,6 +346,33 @@ _TOP = {
                      #        键必须是 _SLUGS 里的 slug，写错在 validate 里硬失败。
     'format_source', # ✓ str 版式出处
     'footer',        #   str
+
+    # ── 本家专属板块（「这一页还申报了别的东西」）────────────────────────
+    # 底座对这三个字段一无所知，只负责**在哪里插、编号怎么续**。内容、口径、
+    # 数据从哪张 CSV 来，全部由 spec 自己决定 —— 这是本轮唯一一处「让 spec 往
+    # 底座里塞东西」的口子，所以它必须是纯位置性的：
+    #   · 底座不读那些 CSV，不知道字段名，也不替它们算任何数；
+    #   · 没给这三个字段的 spec 走的是**一字未改的原路径**（另外 33 页 payload
+    #     逐字节不变，这是本轮的硬验收条件）。
+    # 为什么不做成通用的 `_SLUGS` 扩展：_SLUGS 里的 slug 是**每一家都可能有**的图，
+    # 页内互指、skip、note_extra 三处都按 slug 查表。这八张图只有台积电有
+    # （另外六家台股页没有一家申报董事會核准資本支出的英文披露），
+    # 塞进 _SLUGS 等于给另外 33 页各开一个永远为空的槽。
+    'summary_extra',  #  callable(ds, spec) -> list[tuple]  追加到 Exhibit 1 的行。
+                      #      元组格式与底座内部的 rows 完全一致：
+                      #      (kind, label, series, dec, pct, mode, inv, cum)
+                      #      ⚠️ series 必须是 PeriodIndex(freq='M') 且**末点就是本月**
+                      #      —— 3Y %ile 走 pctile.cell(i=-1)，取的是数组最后一行，
+                      #      而前三列走 s.get(cur)。两者不是同一个判据，序列比主序列
+                      #      长一个月时它们会指向不同的月份，表上看不出来。
+    'summary_note',   #  callable(ds, spec) -> str  追加到 Exhibit 1 的 note 末尾。
+                      #      给了 summary_extra 就**必须**给它：底座那句
+                      #      「All figures derived from the single officially disclosed
+                      #      field」在多了别的申报表之后是假话，validate 里硬校验。
+    'extra_exhibits', #  callable(ds, spec, n0, R) -> list[dict]  追加在标准图之后。
+                      #      n0 = 本板块第一张的编号（底座算好传进来），
+                      #      R(slug) 查标准图的编号。返回的 dict 自带 'n'。
+                      #      第一张带 'section' 字段时页面会在它上方起一个新章节标题。
 }
 
 _VALUE = {'col', 'div', 'label', 'sym', 'dec', 'raw_label', 'raw_dec', 'summable',
@@ -540,6 +569,17 @@ def validate(spec):
             '而图已经出了，页面会一边画图一边声称自己没画。'
             '要么把它加回 skip，要么把这条理由删掉（有价值的实测数字请搬进那张图的图注，'
             '别连数一起扔）。')
+
+    # summary_extra 一旦给了，底座那句「All figures derived from the single officially
+    # disclosed field」就管不住新增的行了 —— 它必须由 spec 自己补一段口径说明。
+    # 少给的话原来是在 build_summary 里抛一个光秃秃的 KeyError（堆栈指向底座，
+    # 看不出是 spec 缺字段），所以在这里拦掉并说清楚。
+    if spec.get('summary_extra') and not spec.get('summary_note'):
+        raise SpecError(
+            'SPEC 给了 summary_extra 却没给 summary_note。汇总表多出来的行不是从'
+            '月营收派生的，底座只会把那句「全部由这一个披露字段派生」的主语收窄到'
+            '营收行，剩下那几行的来源与口径必须由 spec 自己说 —— 不说的话页面上会'
+            '出现几行没有出处的数字。')
 
     ne = spec.get('note_extra') or {}
     if not isinstance(ne, dict):
@@ -1520,6 +1560,23 @@ def build_summary(ds, spec):
              ('group', 'Seasonality', None, None, None, None, None, False),
              ('row', '% of trailing-12-month revenue', ds.share_ttm, 2, True, 'pp', False, False)]
 
+    # 本家专属的附加行（见 _TOP 的 `summary_extra`）。追加在最后 —— 表上「营收派生的
+    # 行」与「另外几张申报表的行」不能交错，否则上面那句「全部由合并营收派生」
+    # 就分不清管到哪一行为止。
+    _xrows = spec['summary_extra'](ds, spec) if spec.get('summary_extra') else []
+    for _r in _xrows:
+        # 末点必须就是本月。序列多一个月时，前三列走 s.get(cur) 取到的是本月，
+        # 而 3Y %ile 走 pctile.cell(i=-1) 取的是**数组最后一行**（下个月），
+        # 两列指向不同月份，表面上完全看不出来。
+        if _r[0] == 'row' and _r[2] is not None and len(_r[2].index):
+            _last = _r[2].index[-1]
+            if _last > cur:
+                raise SpecError(
+                    f'SPEC[summary_extra] 的「{_r[1]}」末点是 {_last}，晚于主序列的 {cur} —— '
+                    f'前三列按 {cur} 取值、3Y %ile 却按数组最后一行算，两列会指向不同月份。'
+                    f'请把该序列裁到 {cur} 为止，或把它只放进 extra_exhibits 不放进汇总表')
+    rows += list(_xrows)
+
     # QTD / YTD 的**月数现算**。原来图注里写死「QTD 为 3 个月 vs 3 个月、YTD 为 6 个月
     # vs 6 个月」—— 那只在季末月/半年末成立，数据到 2026-07 时实际是 1 vs 1 与 7 vs 7，
     # 而这一句正是在教读者「这两行里哪个读数可比」，说错了比不说更坏。7 页全带过这个错。
@@ -1562,9 +1619,14 @@ def build_summary(ds, spec):
     #    残差段（`disclosed: False`）要单独点名：它确实是我们减出来的，别混进披露清单。
     _disc = [sd for sd, _ in ds.segments if sd.get('disclosed', True)]
     _resid = [sd for sd, _ in ds.segments if not sd.get('disclosed', True)]
-    note = (('All figures derived from the single officially disclosed field: consolidated '
+    # ⚠️ 「All figures」在有 summary_extra 的页上是**假话** —— 下半张表的行来自另外
+    #    几张申报表，跟月营收没有派生关系。这与上面分部行踩过的是同一个坑
+    #    （那次是「single field」旁边就列着两个分部），所以这里同样把主语收窄，
+    #    而不是在别处补一句「不过下面几行除外」。没有 summary_extra 的页逐字不变。
+    _all = 'The revenue rows above are' if _xrows else 'All figures'
+    note = ((f'{_all} derived from the single officially disclosed field: consolidated '
              f'net revenue ({v["raw_label"]}, unaudited)。' if not ds.segments else
-             'All figures derived from the officially disclosed monthly fields: consolidated '
+             f'{_all} derived from the officially disclosed monthly fields: consolidated '
              f'net revenue ({v["raw_label"]}, unaudited)'
              + ''.join(f' + {sd["label"]}' for sd in _disc) + '。'
              + ''.join(f'{sd["label"]} 不是第三次披露，'
@@ -1583,14 +1645,26 @@ def build_summary(ds, spec):
             + '分位判据统一走 <code>build/pctile.py</code>（全站一份实现，避免同一条序列'
               '在两页判成两个结果）：把该行的分位在最近 24 个月里逐月回放一遍，'
               '若 ≥70% 的月份钉在 100 或 0，这一列对这一行就没有区分度，留空。'
+            # 「因为它是三个月均值」这个理由只对平滑序列成立。summary_extra 进来之后
+            # blanked 里可能混进别家申报表的**存量**行（台积电的债券加权平均票面利率就是
+            # 一条单调爬升的存量），对它套这句话就是在页面上印一个假的留空理由。
             + (f'本轮据此留空的行：{"、".join(blanked)}'
-               '（平滑序列比原始月度序列更单调，分位常年在高位，'
-               '看着像「又创新高」，其实只是三个月均值本来就很少回落）。'
+               + ('（平滑序列比原始月度序列更单调，分位常年在高位，'
+                  '看着像「又创新高」，其实只是三个月均值本来就很少回落）。'
+                  if all('moving avg' in b for b in blanked)
+                  else '（单调序列的分位常年钉在端点 —— 平滑序列与缓慢爬升的存量'
+                       '都属这一类，读数不带区分度）。')
                if blanked else '本轮无行触发该判据。')
             + (f'另有 {"、".join(short_blanked)} 因可用样本不足 8 个月，分位算不出可信读数，'
                '一并留空。' if short_blanked else ''))
 
-    return {'title': f'{spec["name"]} monthly revenue summary — {mlab(cur)}',
+    if _xrows:
+        # 标题也得跟着改口：多了另外几张申报表之后它就不只是「revenue summary」。
+        _title = f'{spec["name"]} monthly disclosure summary — {mlab(cur)}'
+        note += spec['summary_note'](ds, spec)
+    else:
+        _title = f'{spec["name"]} monthly revenue summary — {mlab(cur)}'
+    return {'title': _title,
             'heads': heads, 'sep': 3, 'rows': srows, 'note': note}, blanked
 
 
@@ -2326,6 +2400,24 @@ def build_exhibits(ds, spec, breaks):
         else:
             e['note'] = note + _x
 
+    # ── 本家专属板块（见 _TOP 的 `extra_exhibits`）──────────────────────────
+    #    插在这里而不是更早：上面那圈 note_extra 是按 `EX` 反查 slug 的，
+    #    这八张图不在 _SLUGS 里、也不该吃 note_extra，先插进去只会让 `_by_n` 多出
+    #    八个查不到的编号。也**不走 push()** —— push 会无条件 apply_breaks()，
+    #    给一张「按到期年份排的柱图」盖上营收口径的断点竖线是纯粹的错。
+    if spec.get('extra_exhibits'):
+        _extra = spec['extra_exhibits'](ds, spec, n_table, R)
+        _want = list(range(n_table, n_table + len(_extra)))
+        _got = [e.get('n') for e in _extra]
+        if _got != _want:
+            raise SpecError(
+                f'SPEC[extra_exhibits] 返回的编号是 {_got}，应当是 {_want} —— '
+                f'编号断档会让页内互指与核对表编号对不上')
+        ex += _extra
+        # 核对表跟着往后挪。`n_table = len(order) + 2`（上面那行）是标准图的唯一
+        # 编号权威，不动它；这里只在它之上加本板块的长度。
+        ctx['n_table'] = n_table + len(_extra)
+
     _strip_lay(ex)
     _pack_full(ex)
     return ex, EX, ctx
@@ -2498,9 +2590,16 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
             + ('、官方外币栏' if legs(spec).get('fgn_filed') else '') + '）'
             + (''.join(f'，再加上由它们减出来的 {sd["zh"]}' for sd in _seg_r)
                if _seg_r else ''))
+    # 「本页各图与两张表全部由营收派生」在有 extra_exhibits／summary_extra 的页上是**假话** ——
+    # 那些图与汇总表下半张读的是公司另外几张月度申报表，跟月营收没有派生关系。
+    # 这与 build_summary 里那句 "All figures derived from…" 是同一个坑，改法也一致：
+    # 收窄主语，别在别处补一句「不过某几张除外」。判据用「不在 EX 里」——
+    # 本板块的图正是没有 slug 的那些。
+    _xn = sorted(e['n'] for e in ex if e['n'] not in set(EX.values()))
+    _scope = (f'Exhibit 2–{max(EX.values())} 与核对表' if _xn else '本页各图与两张表')
     notes.append('<b>数据源</b>：主线是' + spec['source_zh'] + '。'
                  + ('除 ' + R('fx_rate') + ' 外，' if has('fx_rate') else '')
-                 + '本页各图与两张表全部由' + _fld
+                 + _scope + '全部由' + _fld
                  # ⚠️ 这一句说的是**那条汇率序列是什么**，所以判据是 `rate_filed`，
                  # 不是 `implied`（两者本轮才劈开，§1.5 第 ③ 支）。日月光 implied=False
                  # 但它的汇率线是 H.10 外部牌价 —— 按 implied 判会印成「官方申报的换算
@@ -2512,6 +2611,10 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                      else '加一条月均汇率序列')
                     if fx_used(EX) else '')
                  + '派生，不引入任何券商预测或外部估计。'
+                 + (f'<b>Exhibit {_xn[0]}–{_xn[-1]} 与汇总表下半张不在此列</b>：'
+                    '它们读的是公司另外几张月度申报表，与月营收没有派生关系，'
+                    '各自的出处印在那张图自己的 Exhibit source 一行上。'
+                    if _xn else '')
                  # 新增的「本月備註」列是**第三个来源**（MOPS 申报表的文字栏），
                  # 不在上面那个字段清单里 —— 那句穷举一旦漏了它就是假话，而它偏偏
                  # 就印在同一页的核对表最后一列上，读者一眼看得见。
@@ -2734,6 +2837,12 @@ def _window_note(ds, spec, ex, EX, ctx):
     rows, nums = [], []
     for e in ex:
         if e.get('x') == 'long' or e['kind'] == 'heat_matrix':
+            continue
+        # 本家专属板块的图不算「短窗口图」：这条总账讲的是「同一个页面窗口起点下，
+        # 各图首点差在哪个 lag 上」，而那些图各自读的是别的申报表、各有各的起点，
+        # 有一张（到期墙）的 x 轴甚至不是时间轴。混进来会让 Ex 跨度写成 Ex2–Ex17，
+        # 并把「自 2026 起，11 格」这种句子印成窗口口径的一部分。
+        if e.get('off_window'):
             continue
         xl = e.get('xlabels') or []
         if not xl:

@@ -58,6 +58,7 @@ import numpy as np
 import pandas as pd
 
 from . import _facts
+from . import _tsm_extra
 
 # ── 图注里的数**一个都不写死**：下面这两句在 import 期从 CSV 现算，
 #    读不到源就退回不带数字的定性版本（`_facts` 里每个函数拿不到都返回 None，不抛异常）。
@@ -226,6 +227,16 @@ SPEC = {
 
     'guidance': {'csv': 'tsm_guidance.csv'},
     'brief_extra': _guidance_bridge,
+
+    # ── 非营收月度披露板块（Exhibit 10 起）─────────────────────────────────
+    # 台积电按月申报的不只有营收：另有背書保證、資金貸與、衍生性商品、董監持股／設質、
+    # 公司債月報表五项，加上 SEC 侧董事会当日 6-K 的核准資本支出。
+    # 这三个钩子的实现、口径与数据全在 `_tsm_extra.py`，底座只管往哪儿插、编号怎么续。
+    # ⚠️ 另外六家台股页**不能**照抄：它们没有一家申报董事會核准資本支出的英文披露，
+    #    衍生性商品与背書保證的表式也各不相同（联电填「無」的两项台积电填的是实数）。
+    'summary_extra': _tsm_extra.summary_rows,
+    'summary_note': _tsm_extra.summary_note,
+    'extra_exhibits': _tsm_extra.exhibits,
 
     # `breaks` 为空，且**不给 `continuity`**。
     #

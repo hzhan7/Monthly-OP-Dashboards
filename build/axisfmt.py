@@ -252,7 +252,11 @@ def fix(ex):
         else:
             rv = _fin(rc.get('values'))
             if rv:
-                rtk = ticks(min(rv + [0.0]), max(rv), 9)
+                # `zero_base: False` = 右轴住的是水平量（如汇率）而不是跨零的 y/y，
+                # 不强行把 0 纳入量程。三处副本必须同改：`assets/charts.js` 的
+                # 右轴 ticks(...) 与 `build/mrbase.py` 的 `align_sim`。
+                rtk = ticks(min(rv + ([0.0] if rc.get('zero_base') is not False else [])),
+                            max(rv), 9)
                 r0, r1 = rtk[0], rtk[-1]
                 f = max(_zero_frac(y0, y1), _zero_frac(r0, r1))
                 if f > 1e-9:

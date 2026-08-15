@@ -147,6 +147,10 @@ h2.section {
   margin: 34px 0 16px; padding-bottom: 6px; font-size: 15px; font-weight: 700;
   border-bottom: 1px solid var(--rule);
 }
+/* 网格里的章节标题（page.js 按 ex.section 插）。两列网格里的直接子元素默认只占
+   一列，标题会被挤到左半栏、右半栏塞进下一张图 —— 必须显式横跨整行。 */
+.grid > h2.section.ingrid { grid-column: 1 / -1; margin: 26px 0 2px; }
+
 .prose { margin-top: 32px; padding-top: 20px; border-top: 1.6px solid var(--ink); }
 .prose h2 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
 .prose ol { margin: 0; padding-left: 19px; }
