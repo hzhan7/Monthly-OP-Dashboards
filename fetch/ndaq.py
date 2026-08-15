@@ -253,6 +253,22 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
     ⇒ 画北欧衍生品时不要用 8-K 的 ADV 去反推月度，也不要拿这条序列做精确的 y/y；
       要用就用 IR 这一条自己的时间序列（内部一致：月度求和 vs IR 自己的季度面板 ±0.000%）。
 
+18. **两个官方源会互相打架，而且错的那个是 nasdaqtrader。** 2026-07 实测：
+        IR PDF          U.S. matched equity volume        56,161 百万股
+        nasdaqtrader    NASDAQ+NTX+PSX 三盘口之和          55,998.334 百万股   差 -0.2905%
+    用完全独立的第三方（Cboe 日频 tape CSV，22 个交易日逐日求和）裁决：
+        Q 54,745,234,604 + B 1,039,363,729 + X 376,016,882 = 56,160.615 百万股
+    ⇒ IR 与 Cboe 差 +0.0007%（纯四舍五入，**IR 是对的**）；nasdaqtrader 差 -0.2890%。
+    缺量是**全市场**的、不是只少报 Nasdaq 自己：nasdaqtrader 的 consolidated
+    382,591,323,502.862 vs Cboe 383,603,195,026 = -0.2638%（缺约 1,012 百万股）。
+    正因分子分母同时少算，**市占率百分比完全正常**（Nasdaq Q 占比：Cboe 14.2713%
+    vs nasdaqtrader 14.2678%），所以 nasdaqtrader 自己的任何内部校验都不会报警，
+    错值已扩散到 marketshare26.xlsx / mscompar26.xlsx / Trader.aspx 网页至少三处。
+    已排除：口径变更（2026-01..06 偏差只有 0.0003%~0.0023%，只有 7 月破裂）、
+    auction 口径（auctions=n 时 Q 掉 28%，量级对不上）、BX→NTX 改名、本模块解析错。
+    ⇒ **用户 2026-08-15 决定：不因两个官方源互不吻合而拒发，照官方公布值出网站。**
+      因此本模块的 IR↔B 组恒等式改成两档（见 XCHECK_TOL / XCHECK_HARD_TOL）。
+
 ━━━━━━━━━━━ 📌 未找到（查过，确实没有）━━━━━━━━━━━
 
 · **IPO 募资金额（capital raised / proceeds）：Nasdaq 官方任何一处都不披露，只披露 IPO 家数。**
@@ -414,11 +430,25 @@ MONTH_COLS = IR_MONTH_COLS + [
 assert sorted(MONTH_COLS) == sorted(IR_MONTH_COLS + MS_MONTH_COLS), 'MONTH_COLS 与规格表对不上'
 QUARTER_COLS = [c for c, _s, _l in IR_QUARTERLY_SPEC]
 
-# A 组与 B 组的恒等式容差。IR 印的是整数百万股，纯舍入误差上限约 0.0011%；
-# 2026-08-06 对 18 个重叠月实测最大 0.0101%（2025-06），说明还有极小的口径/重传噪声。
-# 阈值取 0.15%，是实测最大值的约 15 倍 —— 够宽到不误报，又窄到解析错行必然被抓住
-#（错一行至少差几个百分点）。
+# A 组与 B 组的恒等式容差，**两档**（改档理由见口径坑 18）。
+#
+# 软档 XCHECK_TOL = 0.15%：IR 印的是整数百万股，纯舍入误差上限约 0.0011%；
+# 2026-08-06 对 18 个重叠月实测最大 0.0101%（2025-06）。0.15% 是实测最大值的约 15 倍。
+# 超软档 = 两份官方文件对不上，**只 WARN，照官方公布值写入**（用户 2026-08-15 拍板）。
+# 原设计是超软档即抛，2026-07 因此整月被拦下 —— 但那次实测证明错的是 nasdaqtrader
+# 自己（口径坑 18），拦下来也换不回正确数字，只是让整个模块停更。
+#
+# 硬档 XCHECK_HARD_TOL = 5%：这一档仍然抛。它要抓的是**本模块自己解析错**那一类：
+# 取错 sheet 静默低估约 27%（口径坑 5）、取错列差几倍、A/B 组单位错差 1e6。
+# 5% 远在这些量级之下，而两个官方源之间的真实分歧历史最大 0.0101%、本次 0.29%，
+# 离 5% 还有一个数量级 —— 所以这一档既不会误伤真实分歧，又拦得住结构性解析事故。
+#
+# ⚠ 放宽的代价，必须写明：IR 那一侧若**错抓相邻月**，历史 18 个重叠月里有 3 个月的
+# 月环比 < 2.2%（2025-06 仅 0.24%、2025-12 1.86%、2026-02 2.17%），这种错在两档制下
+# 会降级成 WARN 而不再被拦下。B 组那一侧不受影响 —— 列按表头名查、行按 A 列 datetime
+# 键（_parse_marketshare），取错行/列在结构上不可能发生。
 XCHECK_TOL = 0.0015
+XCHECK_HARD_TOL = 0.05
 
 _MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December']
@@ -873,9 +903,13 @@ def _crosscheck_ir_vs_ms(ir, ms):
 
     这是本模块最强的一道解析正确性证明 —— 它同时验证「行没抓错」和
     「IR 那条 U.S. matched equity volume 的确切口径就是三个盘口撮合量之和」。
-    返回 (重叠月数, 最大相对偏差)。超阈值直接抛。
+
+    两档（理由见口径坑 18 与 XCHECK_TOL 上方那段）：
+      · 超 XCHECK_HARD_TOL(5%)  → 抛。这一档是本模块自己解析错的量级。
+      · 超 XCHECK_TOL(0.15%)    → 不抛，计入 flagged 由调用方 WARN，照官方公布值写入。
+    返回 (重叠月数, 最大相对偏差, flagged)，flagged 是 [(月份, IR值, B组和, 相对偏差)]。
     """
-    worst, n = 0.0, 0
+    worst, n, flagged = 0.0, 0, []
     for mon in sorted(set(ir) & set(ms)):
         a = ir[mon].get('vol_us_cash_matched_mnsh')
         parts = [ms[mon].get('vol_us_cash_matched_nasdaq_sh'),
@@ -888,15 +922,18 @@ def _crosscheck_ir_vs_ms(ir, ms):
         n += 1
         if rel > worst:
             worst = rel
-        if rel > XCHECK_TOL:
+        if rel > XCHECK_HARD_TOL:
             raise NdaqFetchError(
                 '%s：IR 的 matched %.0f 百万股 与 nasdaqtrader 三盘口之和 %.3f 百万股 '
-                '相差 %.4f%%，超过阈值 %.4f%% —— 多半是解析错行或官方改口径，拒绝写入'
-                % (mon, a, b, rel * 100, XCHECK_TOL * 100))
+                '相差 %.4f%%，超过硬阈值 %.4f%% —— 这个量级不是两个官方源的分歧，'
+                '是本模块取错表/取错列/单位错了（口径坑 5/13），拒绝写入'
+                % (mon, a, b, rel * 100, XCHECK_HARD_TOL * 100))
+        if rel > XCHECK_TOL:
+            flagged.append((mon, a, b, rel))
     if n == 0:
         # A 组窗口 19-24 个月、B 组 250 个月，正常一定有重叠；没有说明其中一份没解析出东西
         raise NdaqFetchError('IR 与 marketshare 没有任何重叠月份，两份文件至少有一份解析失败了')
-    return n, worst
+    return n, worst, flagged
 
 
 # ── 发布日台账 ───────────────────────────────────────────────────────────
@@ -1049,7 +1086,14 @@ def update(series_dir, cache_dir):
             '（缺年份会 302 到 HTTP 200 的 HTML 错误页，不是 404）' % (y % 100, (y - 1) % 100))
     ms = _parse_marketshare(ms_path)
     _validate_marketshare(ms)
-    _crosscheck_ir_vs_ms(ir, ms)
+    _, _, _flagged = _crosscheck_ir_vs_ms(ir, ms)
+    for _mon, _a, _b, _rel in _flagged:
+        # 只 WARN 不抛：两份官方文件对不上时照官方公布值写入（口径坑 18）。
+        # 这行必须留在 stdout 里 —— 它是「网站上这个月的 A 组与 B 组本来就对不上」的唯一痕迹。
+        print('[ndaq] WARN %s：IR 的 matched %.0f 百万股 与 nasdaqtrader 三盘口之和 %.3f '
+              '百万股 相差 %.4f%%（超软阈值 %.2f%%，未超硬阈值 %.2f%%）—— 两个官方源互不吻合，'
+              '按口径坑 18 照官方公布值写入，A 组与 B 组这个月不自洽'
+              % (_mon, _a, _b, _rel * 100, XCHECK_TOL * 100, XCHECK_HARD_TOL * 100))
 
     monthly = {}
     for mon in sorted(set(ir) | set(ms)):
@@ -1090,9 +1134,13 @@ def _crosscheck(series_dir, cache_dir):
         raise NdaqFetchError('marketshare%02d/%02d.xlsx 都取不到' % (y % 100, (y - 1) % 100))
     ms = _parse_marketshare(ms_path)
 
-    n, worst = _crosscheck_ir_vs_ms(ir, ms)
-    print('[1] IR vs nasdaqtrader matched 恒等式：%d 个重叠月，最大相对偏差 %.4f%%（阈值 %.2f%%）'
-          % (n, worst * 100, XCHECK_TOL * 100))
+    n, worst, flagged = _crosscheck_ir_vs_ms(ir, ms)
+    print('[1] IR vs nasdaqtrader matched 恒等式：%d 个重叠月，最大相对偏差 %.4f%%'
+          '（软阈值 %.2f%% 只 WARN，硬阈值 %.2f%% 才抛）'
+          % (n, worst * 100, XCHECK_TOL * 100, XCHECK_HARD_TOL * 100))
+    for mon, a, b, rel in flagged:
+        print('    <== %s 超软阈值：IR %.0f vs B组和 %.3f 百万股，差 %.4f%%（口径坑 18）'
+              % (mon, a, b, rel * 100))
 
     pairs = [('vol_us_options_mmcontracts', 'q_us_options_mmcontracts'),
              ('vol_nordic_derivs_mmcontracts', 'q_nordic_derivs_mmcontracts'),
