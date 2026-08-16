@@ -268,3 +268,10 @@
   Chrome 实验性的 `--force-dark-mode` 会强制反转页面，此时 `heat_matrix` 里接近白色的格子会被反成
   深色而格内字仍是深色 → 读不出来（`gs_bar`/`gs_line` 的白底气泡本来就有同样毛病）。
 - `heat_matrix` 不支持 `break_at` / `ycap`；`stacked_dual` 不支持截轴（截一段堆叠柱等于把总量画错）。
+- **SCHW 的 exhibit 编号在 2026-08-15 整体改过一次。** 本文件、`assets/charts.js` 与
+  `build/wealth.py` 的注释里凡是写「schw ExN」的，引用的都是**改号前**的编号
+  （旧 2..19 → 新 2..16：删掉旧 Ex10/12/14/15，旧 Ex11 上移到第 3 位，新增一张
+  Daily average trades 的 `year_lines`）。这些注释记的是**当时实测到的证据**
+  （某张图上量到多少像素、哪条规矩因它而立），照新编号改一遍会让证据与它对应的
+  截图和数字全部对不上，所以**不要批量改号** —— 要回溯具体是哪张图，用
+  `git show 6fc8c50:build/schw.py`（改号前最后一次提交）对照。
