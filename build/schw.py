@@ -127,9 +127,29 @@ df['organic_growth_ann'] = nna * 12 / assets.shift(1) * 100
 df['organic_growth_roll'] = nna.rolling(12).sum() / assets.shift(12) * 100
 df['dats_mn'] = df['dats_k'] / 1000.0
 df['assets_tn'] = assets / 1000.0
-# 2020-10 新开经纪账户 14,718k 系 TD Ameritrade 收购一次性并表
-df['new_acct_ex'] = df['new_brokerage_accounts_k'].copy()
-df.loc[pd.Period('2020-10', 'M'), 'new_acct_ex'] = np.nan
+# ── 新开经纪账户：把官方明写的两笔并购搬账**净掉**（不是置空）──
+# 月报脚注 (4) 原文（schw_nov2020_table.xlsx）：
+#   "October 2020 includes 14.5 million new brokerage accounts related to the acquisition
+#    of TD Ameritrade. May 2020 includes 1.1 million new brokerage accounts related to
+#    the acquisition of the assets of USAA's Investment Management Company."
+# 两笔都是官方自己给出的**确切数量**，所以这里做减法而不是把整个月扔掉：
+#   2020-05  1,250 − 1,100 = 150 （左右邻月 201 / 201）
+#   2020-10 14,718 − 14,500 = 218 （左右邻月 184 / 430）
+# 减完的读数与邻月严丝合缝，说明这两笔就是全部的一次性成分。
+# 本文件此前只处理了 2020-10、且用的是置空 —— 于是 2020-05 那 1,250k 一直当成真实开户量
+# 画在图上（Exhibit 7 的柱、Exhibit 12 那条 2020 年线都被它顶出一个假尖峰），
+# 而 2020-10 在逐年对照图上是个洞。两个毛病同一个根因：把「并购搬账」当成了「开户」。
+ACQ_ACCOUNTS_K = {
+    pd.Period('2020-05', 'M'): 1_100.0,     # USAA Investment Management
+    pd.Period('2020-10', 'M'): 14_500.0,    # TD Ameritrade
+}
+df['new_acct_ex'] = df['new_brokerage_accounts_k'].astype(float)
+for _p, _k in ACQ_ACCOUNTS_K.items():
+    if _p in df.index:
+        _raw = float(df.loc[_p, 'new_brokerage_accounts_k'])
+        if _raw <= _k:                       # 官方口径变了/月份对错了 —— 响，别写负数
+            raise SystemExit(f'{_p} 新开户 {_raw}k 不大于并购搬账 {_k}k，净额会是负数')
+        df.loc[_p, 'new_acct_ex'] = _raw - _k
 
 avgm = pd.read_csv(os.path.join(SERIES, 'schw_avg_margin.csv'))
 avgm['month'] = month_index(avgm['month'])
@@ -341,8 +361,8 @@ def ptp_yoy(s, pct_series=False):
     与 yoy_series() 完全同口径（同一个 _yoy_pair、同一条 YOY_BASE_MIN 小基数护栏），
     差别只在返回形状：那个按「尾部 win 期」切片，只有当窗口正好是序列尾段时才对得上。
     本页改画全历史之后有两处对不上：
-      · 柱与次轴取自**不同**序列的图（Exhibit 7 的柱是原始新开户数、次轴走剔除了
-        TD Ameritrade 搬账月的 new_acct_ex），两条长度差 1，切片必错位一个月；
+      · 柱与次轴取自**不同**序列的图（本页几张图的次轴走的是净除并购搬账之后的
+        new_acct_ex，与原始披露列不是同一条），长度或缺值位置一旦不同，切片必错位；
       · dats/margin 这种起点晚于 df 的列，尾部切片会把 x 轴对齐搞成「最近 N 个有数的月」。
     错位在图上看不出来，只会让人读出一个假趋势（同 on() 的 docstring）。所以一律按月份对齐。
     """
@@ -645,6 +665,8 @@ def xstep_for(n):
     return next((k for k in range(lo, 2 * lo + 1) if (n - 1) % k == 0), lo)
 H_BAR = 330                            # 通栏长历史柱图的画布高（不含 x 标签带）
 H_BRIDGE = 360                         # 桥图更高：它要同时容纳堆叠段、净额菱形与截轴真值
+H_TALL = 420                           # 截轴图再高一档：截轴管「那一档占轴多少」，
+                                       # 加高管「那一档有多少像素」，两件事互相独立
 
 YOY_NOTE = ('单月同比的小基数保护：去年同月基数小于本序列绝对值中位数的 '
             f'{YOY_BASE_MIN:.0%}、或与本月异号时不算同比，折线在该月断开 —— '
@@ -894,37 +916,60 @@ ex.append({
 })
 
 # ── Exhibit 7：新开经纪账户（全历史月度柱，截轴）──
-# 全历史一拉开就把 2020-10 那根 14,718k 收了进来 —— TD Ameritrade 并表的账户搬账，
-# 不是当月新开户。25 个月窗口时它在窗口外，所以这张图此前不需要截轴；现在需要了。
-# 处理方式与本仓一贯规矩一致：**截轴不删点**，超界的柱画到边界 + 断口符号 + 红色真值。
+# 这张图有两层「一个时代压平其余时代」的问题，分开治：
+#
+# (1) **并购搬账**：2020-05 的 USAA（1.1mn 户）与 2020-10 的 TD Ameritrade（14.5mn 户）。
+#     它们不是开户，是把别家的存量账户搬进来。官方脚注给了确切数量，所以上面
+#     ACQ_ACCOUNTS_K 直接把它们**净掉**（1,250→150、14,718→218），而不是留一根
+#     14,718 的柱子再截轴——那根柱把纵轴顶到 1,600，其余 154 个月全挤在底部十分之一。
+#     两根被调整过的柱画成**斜纹**（bar_marks），提醒读者这两个月与邻月不是同一回事，
+#     原始披露值写在图注里，一个数都没有藏。
+#
+# (2) **2020–21 的开户狂潮**：净掉并购之后最高的仍是 2021-02 的 1,211k，是 2013–2019 年
+#     月度中位数（106k）的 11 倍。这一段是真实业务（零利率 + 散户入市），不能动数据，
+#     只能截轴：门槛取 700k，越界的是 2021 年 1/2/3 三个月，画到边界 + 断口符号 + 红色真值。
+#     为什么是 700 而不是更低：500 会切掉 6 根、且全部连在一起，红色竖排真值会排成一堵墙
+#     （引擎的 capLabel 只会把撞车的标签逐个右移，连着 6 根就全跑到别人的柱子上去了）。
+#     700 只切 3 根，而 2013–2019 那一档的波动（70–165k）从占纵轴 6% 拉到 14%。
+# 画布同时加高到 H_TALL：截轴改善的是「占轴多少」，加高改善的是「那一档有多少像素」，
+# 两件事互相独立，一起做才够读。
 nba = df['new_brokerage_accounts_k']
-nba_ex = df['new_acct_ex']                    # 同序列，2020-10 置空（见文件上方）
-NBA_CAP = 1600
-d7 = tail(nba, ALL_N)
-_over7 = [(mlab(p), float(nba.loc[p])) for p in nba.dropna().index if float(nba.loc[p]) > NBA_CAP]
+nba_ex = df['new_acct_ex']          # 已净掉并购搬账（见文件上方 ACQ_ACCOUNTS_K）
+NBA_CAP = 700
+d7 = tail(nba_ex, ALL_N)
+_i7 = list(d7.index)
+_marks7 = [_i7.index(p) for p in ACQ_ACCOUNTS_K if p in _i7]
+_adj7 = '、'.join(
+    f'{mlab(p)}（披露 {comma(float(nba.loc[p]))}k − 并购搬账 {comma(k)}k = '
+    f'{comma(float(nba_ex.loc[p]))}k）'
+    for p, k in ACQ_ACCOUNTS_K.items() if p in _i7)
+_over7 = [(mlab(p), float(v)) for p, v in d7.items() if float(v) > NBA_CAP]
 _ov7_txt = '、'.join(f'{m} 的 {comma(v)}k' for m, v in _over7)
-# 次轴同比走**剔除了并表月**的那条序列：拿 14,718k 当分母（或分子）算出来的是
-# +10,265% 与 −97%，那两个点会把整条次轴压成一条平线，而它们描述的是一次搬账、
-# 不是开户动能。剔除之后 2020-10 与 2021-10 两个月的同比都算不出，折线在那里断开 ——
-# 断口本身就是「这两个月没有可比基数」的正确表达。
 P7 = ptp_stats(nba_ex, d7.index)
 ex.append({
-    'n': 7, 'kind': 'gs_bar', 'full': True, 'height': H_BAR,
-    'fmt': 'f0c', 'xlabels': xl(nba, ALL_N), 'xstep': xstep_for(len(d7)),
-    'title': f'New brokerage accounts opened — {mlab(d7.index[0])} 至今',
-    'ylab': 'k accounts', 'ylab2': '% y/y (单月)', 'legend': 'Monthly',
+    'n': 7, 'kind': 'gs_bar', 'full': True, 'height': H_TALL,
+    'fmt': 'f0c', 'xlabels': xl(nba_ex, ALL_N), 'xstep': xstep_for(len(d7)),
+    'title': f'New brokerage accounts opened — {mlab(d7.index[0])} 至今（已净除并购搬账）',
+    'ylab': 'k accounts', 'ylab2': '% y/y (单月)', 'legend': 'Monthly (ex-acquisition)',
     'values': L(d7.values), 'yoy': ptp_yoy_axis(nba_ex, d7.index),
+    'bar_marks': _marks7,
     'ycap': NBA_CAP, 'yfloor': 0,
-    'cap_note': (f'axis capped at {comma(NBA_CAP)}k — {_over7[0][0]} outlier shown in red'
-                 if len(_over7) == 1 else f'axis capped at {comma(NBA_CAP)}k — outliers in red'),
+    'cap_note': (f'axis capped at {comma(NBA_CAP)}k — {len(_over7)} months in red'
+                 if _over7 else None),
     'note': (QNOTE + '。这一行是<b>当月新开户数</b>（流量），不是账户存量。'
-             + (f'纵轴截在 {comma(NBA_CAP)}k：{_ov7_txt} 是 TD Ameritrade 并表带来的'
-                '账户搬账，不是当月新开户，留着会把其余 9 年整条压平。'
-                '被截的柱画到边界加断口符号、真值红色竖排标出，点没有被删掉。'
+             + (f'<b>柱画的是净除并购搬账之后的开户量</b>：{_adj7}。'
+                '两笔数量都是官方月报脚注 (4) 明写的，不是这里估的；'
+                '它们是把别家的存量账户整批搬进来，不是当月有人来开户，'
+                '留着会把纵轴顶到五位数、其余十几年全压成贴地的一条线。'
+                '这两根柱画成<b>斜纹</b>以示与邻月不同源，披露原值已在上面列出。'
+                if _adj7 else '')
+             + (f'纵轴另截在 {comma(NBA_CAP)}k：净除并购之后最高的仍是 2020–21 年'
+                f'开户狂潮的几个月（{_ov7_txt}），是 2013–2019 年月度中位数的十倍以上。'
+                '那一段是真实业务，所以不动数据只截轴 —— 超界的柱画到边界加断口符号、'
+                '真值红色竖排标出，点没有被删掉。'
                 if _over7 else '')
-             + '<b>次轴同比用的是剔除了该并表月之后的序列</b>：拿那一个月当基数算出来的是'
-             '四位数的同比，描述的是一次搬账不是开户动能；剔除之后该月与它的次年同月'
-             '两个点算不出同比，折线在那里断开。'
+             + '<b>次轴同比同样走净除后的序列</b>：拿并购月当基数算出来的是四位数的同比，'
+             '描述的是一次搬账不是开户动能。'
              + ptp_axis_note(P7) + ptp_gap_note(nba_ex, d7.index)),
 })
 
@@ -1114,12 +1159,13 @@ ex.append({
     'n': 12, 'kind': 'year_lines', 'fmt': 'f0c', 'xlabels': MONTHS,
     'title': 'New accounts path by year',
     'ylab': 'k accounts', 'series': y13, 'highlight': len(y13) - 1,
-    'note': ('Oct-2020 excluded (TD Ameritrade onboarding)。该月 14,718k 是账户搬账不是'
-             '新开户，留着会把整张图压平 —— 本图窗口现在是全部 '
-             f'{len(y13)} 年（{y13[0]["name"]}–{y13[-1]["name"]}），2020 年<b>在</b>窗口内，'
-             '所以这条剔除规则是真的在生效：2020 那条线在 Oct 处断开一格。'
-             '同一个月在 Exhibit 7 里是保留的（截轴 + 红色真值），两张图对同一个异常点'
-             '采取不同处理，是因为柱图能把它画在轴外、折线图不能。'),
+    'note': ('画的是<b>净除并购搬账之后</b>的开户量，与 Exhibit 7 的柱同一条序列：'
+             'May-2020 的 USAA（1.1mn 户）与 Oct-2020 的 TD Ameritrade（14.5mn 户）'
+             '都是把别家的存量账户整批搬进来，不是当月有人来开户，官方脚注给了确切数量，'
+             '所以这里做减法（1,250→150、14,718→218），减完与邻月严丝合缝。'
+             f'本图窗口是最近 {len(y13)} 年（{y13[0]["name"]}–{y13[-1]["name"]}），'
+             '2020 年<b>在</b>窗口内 —— 此前那条线在 May 处有一个 1,250k 的假尖峰'
+             '（并购没净掉）、在 Oct 处是个洞（整月被置空），两处现在都是真实读数。'),
 })
 
 # ── Exhibit 13：日均交易笔数逐年同期对照（版式同 Exhibit 12）──
@@ -1249,7 +1295,7 @@ def _last(s):
 _Q_NNA = next((v for v in reversed(qyoy) if v is not None), None)
 _CAL_ROWS = [t for t in (
     _pair_txt('Core net new assets（Exhibit 2 次轴）', _y_nna, _last(_R_NNA)),
-    _pair_txt('New brokerage accounts（Exhibit 7 次轴，已剔除并表月）',
+    _pair_txt('New brokerage accounts（Exhibit 7 次轴，已净除并购搬账）',
               yoy_of(nba_ex), _last(_R_NBA)),
     ('Core NNA 的另一种口径：季度合计同比（Exhibit 3 的绿线）'
      f'{_Q_NNA:+,.1f}%' if _Q_NNA is not None else ''),
@@ -1418,13 +1464,16 @@ notes = [
     + fee_period_note(head='费率的期间：'),
 
     f'<b>截轴不删点。</b>窗口拉到全历史之后有两张图需要截轴，都不删点：'
-    f'（1）Exhibit 7 的纵轴截在 {comma(NBA_CAP)}k，'
-    + (f'{_ov7_txt} 是 TD Ameritrade 并表带来的账户搬账、不是当月新开户，'
-       if _over7 else '')
-    + '留着会把其余 9 年整条压平；被截的柱画到边界加断口符号、真值红色竖排标出。'
-    '同一个异常月在 Exhibit 12 的逐年对照图里改用<b>剔除</b>处理（折线图没有「画到轴外」'
-    '这个选项），在 Exhibit 7 的次轴同比里也走剔除后的序列 —— '
-    '同一个点在三处按图型各自的能力处理，每处都在图注里写明了。'
+    f'（1）Exhibit 7 的纵轴截在 {comma(NBA_CAP)}k'
+    + (f'，越界的是 {_ov7_txt} —— 2020–21 年开户狂潮的几个月，那是真实业务，'
+       '所以不动数据只截轴：柱画到边界加断口符号、真值红色竖排标出。'
+       if _over7 else '。')
+    + '<b>并购搬账则是另一回事，走的是减法不是截轴</b>：May-2020 的 USAA 与 Oct-2020 的 '
+    'TD Ameritrade 把别家的存量账户整批搬进来，官方脚注给了确切数量（1.1mn / 14.5mn 户），'
+    '所以 Exhibit 7 与 Exhibit 12 画的都是净除之后的开户量，那两根柱另画成斜纹以示不同源，'
+    '披露原值在 Exhibit 7 的图注里。'
+    '<b>不这么做的后果是量化的</b>：留着 14,718k 那一根，纵轴要顶到 1,600k，'
+    '2013–2019 年那一档（月度 70–165k）只占纵轴 6%，十几年的逐月差异在图上是一条平线。'
     f'（2）Exhibit 5 的滚存桥截在 ±{comma(BR_CAP)} $bn：市值变动的量级是核心净新增的'
     '十几倍，不截轴深蓝那一段薄得读不出逐月变化'
     + (f'；本图超界的是 {"、".join(_cut5)}，同样是画到边界 + 红色真值。' if _cut5 else '。'),
