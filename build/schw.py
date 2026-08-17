@@ -785,11 +785,12 @@ ex.append({
 # ── Exhibit 4：年化有机增长率（流量不算环比百分比，改用年化有机增速）──
 og = df['organic_growth_ann']
 ogr = df['organic_growth_roll']
-# x 轴**不 dropna**，与 Exhibit 2 / 5 / 6 / 7 逐格对齐（都用 df.index，99 格）。
-# 首月（序列起点）没有上月末客户资产做分母，值为 null，gs_bar 跳过该柱不画 —— 这比
-# 把它压掉好：压掉之后本图就比相邻几张少一格，四张全历史柱图并排看时行与行对不齐，
-# 而「同一个月在这张图上是哪一列」正是并排看它们的全部理由。
-d4 = og.reindex(df.index)
+# 按**自身序列**取窗（dropna），不铺满 df.index。
+# 2026-08-16 的历史回填之后，本页各列的起点第一次不再相同：客户总资产与新开经纪账户
+# 回到了 2013-09，而 core NNA 只回到 2017-02（官方 2018 年初才开始披露这个口径）。
+# 有机增速的分子是 core NNA，所以它也只能从 2017-02 起 —— 铺满 df.index 的话左边会多出
+# 41 个空列，读者看到的是「2013 年到 2017 年有机增速是零」，那是这一版最容易造出的假象。
+d4 = tail(og, ALL_N)
 _bk4 = brk_idx(d4.index)                      # 分子是 core NNA，断点原样传导过来
 # 次轴 = 同一条**单月**年化率的百分点差（比率序列的点对点同比就是 pp 差），
 # 不再是滚动 12 个月率的 pp 差 —— 与本页其余各图同口径。
@@ -797,7 +798,7 @@ ST4 = caliber_stats(og - og.shift(12), ogr - ogr.shift(12), d4.index)
 P4 = ptp_stats(og, d4.index, pct_series=True)
 ex.append({
     'n': 4, 'kind': 'gs_bar', 'full': True, 'height': H_BAR,
-    'fmt': 'pct1', 'yfmt': 'pct0', 'xlabels': XL_LONG, 'xstep': xstep_for(len(XL_LONG)),
+    'fmt': 'pct1', 'yfmt': 'pct0', 'xlabels': xl(og, ALL_N), 'xstep': xstep_for(len(d4)),
     'title': f'Annualised organic growth rate — {mlab(og.dropna().index[0])} 至今',
     'ylab': '% annualised', 'ylab2': 'pp y/y (单月)', 'legend': 'Monthly',
     'values': L(d4.values),
@@ -820,7 +821,10 @@ ex.append({
 })
 
 # ── Exhibit 5：恒等式滚存桥（GS SCHW First Take Exhibit 2）──
-bAll = df
+# 桥的两段之一是 core NNA，所以窗口只能从 core NNA 的第一个月起 —— 客户资产虽然
+# 回到了 2013-09，但那几年画出来会是「一整段只有浅蓝市值变动、深蓝恒为零」的假桥。
+bAll = df.loc[nna.dropna().index[0]:]
+_XL5 = [mlab(p) for p in bAll.index]
 _bk5 = brk_idx(bAll.index)
 # 截轴：全历史窗口下市值变动的量程是 −568…+1,458bn，而核心净新增只有 −9…+80bn。
 # 不截的话深蓝那一段厚度只剩 1px，「40 还是 79」在图上完全读不出来 —— 而这张图的
@@ -835,7 +839,7 @@ _cut5 = [mlab(p) for p in bAll.index
               or bAll['market_gains'].loc[p] > BR_CAP or bAll['market_gains'].loc[p] < BR_FLOOR)]
 ex.append({
     'n': 5, 'kind': 'bridge_bar', 'full': True, 'height': H_BRIDGE,
-    'fmt': 'usd0', 'xlabels': XL_LONG, 'xstep': xstep_for(len(XL_LONG)),
+    'fmt': 'usd0', 'xlabels': _XL5, 'xstep': xstep_for(len(_XL5)),
     'break_at': _bk5, 'break_label': BRK_LABEL,
     'title': f'What moved client assets: flows vs. markets — {mlab(bAll.index[0])} 至今',
     'ylab': '$bn change',
@@ -1030,9 +1034,14 @@ ex.append({
              'would be false precision. Both series are quarterly。'
              'x 轴标的是各季<b>季末月</b>；PDF 版此处保留 2 位小数，网页图表引擎的格式器只到 '
              '1 位小数，切到「表格」视图可读到 2 位。'
-             '本图不做窗口截取，画的是两条线都有值的全部季度 —— '
-             '净息差单独回溯得更早（费率表自 2013Q4 起），但占比的分母是客户资产，'
-             f'{mlab(df.index[0])} 之前没有，而这个图型不许留空点，所以两条线同起同止。'),
+             '本图不做窗口截取，画的是两条线都有值的全部季度。'
+             f'2026-08-16 把客户总资产回填到 {mlab(df.index[0])} 之后，这张图的窗口从 '
+             f'14 个季度扩到了 {len(bs)} 个 —— 分母（客户资产的季度均值）此前只回溯到 2018 年，'
+             '把这条比值截在了金融危机后半段之外。现在它盖住了 2015–2019 那轮加息、'
+             '2020 的零利率与 2022 起的又一轮加息，「生息资产占客户资产的比重在长期下行」'
+             '这句话第一次有足够长的样本支撑。'
+             '两条线同起同止：净息差本身在费率表里还能更早，但占比的分母补不出来，'
+             '而 <code>lines_endlabels</code> 这个图型不容忍空点（docs/CHART_KINDS.md §1.2）。'),
     # 费率的期间放 src_extra —— 它是「这两条线的数出自哪一季」的出处说明，
     # 紧贴 Source 行显示；过期时那句 ⚠ 也在同一段，读者不用翻到页尾的方法论。
     'src_extra': fee_period_note(),
@@ -1040,8 +1049,16 @@ ex.append({
 
 
 # ── Exhibit 11/12/13：逐年同期对照 ──
-def year_series(s, n_years=None):
-    """按年切成「Jan..Dec 十二格」的多条线。n_years=None 表示全部年份（本页默认）。"""
+# 逐年对照图最多画几条线。上界不是审美偏好，是调色板的物理上限：引擎把往年线摊在
+# 一条固定的蓝色明度带上（L* 约 77→24），10 条线时相邻两年差 ~6 个 L*，还分得开；
+# 客户总资产与新开经纪账户回填到 2013-09 之后是 14 条，相邻年只差 ~4 个 L*，
+# 2013/2014/2015 三条在图上是同一个蓝。这类图的题眼是「今年 vs 最近几年的同月」，
+# 再往前的年份该去看 Exhibit 6 / 7 的全历史柱图，那里每个月都单独占一根柱。
+YEAR_LINES_MAX = 10
+
+
+def year_series(s, n_years=YEAR_LINES_MAX):
+    """按年切成「Jan..Dec 十二格」的多条线。n_years=None 表示全部年份。"""
     s = s.dropna()
     yrs = sorted({p.year for p in s.index})
     if n_years:
@@ -1293,22 +1310,29 @@ notes = [
     '每张相关图的 Source 行下都写明了当期口径。',
 
     # ── 这一条是本轮改版最容易被误读的地方，所以排在方法论第二位 ──
-    f'<b>⚠ 时间轴：本页所有图都画「全部可得历史」，起点是 {mlab(df.index[0])}，不是 2016 年。</b>'
-    '本轮改版的要求是「所有的图从 2016 年开始」，做不到的原因有两层，第二层比第一层硬：'
-    '<b>(1) 抓取边界</b> —— 月报附表走 CDN 直链（见 <code>fetch/schw.py</code>），'
-    '官网今天还挂着的最老一份是 2019-05 那期，它的 13 个月滚动表回溯到 '
-    f'{mlab(df.index[0])}，更早的月报 URL 已逐个实测、全部 404；'
-    '<b>(2) 披露边界</b> —— 更要命的是，<b>「核心净新增资产」这个口径本身是 2018 年才开始'
-    '披露的</b>：2016–2017 年的季报附表里只有未剔除的 Net New Assets，没有 Core 这一行，'
-    '两者不是同一条序列（官方对同一个月给出过 37.7 与 22.1 两个数），不能拼接。'
-    '所以就算把抓取修到 2016 年，本页的主指标在那几年也依然是空的。'
-    '客户总资产与新开经纪账户没有第二层问题，理论上可以靠季度 8-K 的月度附表回溯到 '
-    '2013 年 —— 那是一次 <code>fetch/schw.py</code> 的改造，不在本轮范围内。'
-    '本页因此把窗口一律放到「各列自己的第一个月」，而不是补一段不存在的历史：'
-    f'月度主序列 {mlab(df.index[0])} 起；日均交易笔数与月末融资余额是 2026-01 那期月报'
-    f'新增的两列、回填至 {mlab(dm.dropna().index[0])} 起；'
-    f'季度费率图自 {qlab(_ratio.index[0])} 起（更早的季度算不出分母，见该图图注）。'
-    '此前各图用的是「从最新月倒推 25 个月 / 13 个月 / 14 个季度」的滚动窗口，现已全部取消。',
+    '<b>⚠ 时间轴：每张图画到它自己那条序列的第一个月，各图起点因此并不相同。</b>'
+    '要求是「所有的图从 2016 年开始」。2026-08-16 为此做了一次历史回填'
+    f'（<code>fetch/schw.py --backfill</code>，见该文件的「历史回填源」一节），'
+    f'把序列从 99 个月接到了 {len(df)} 个月。结果分三档，<b>档与档的边界是官方的披露史，'
+    '不是抓取能力</b>：'
+    f'<b>(1) 客户总资产 / 新开经纪账户 → {mlab(df.index[0])}</b>（{len(atn.dropna())} 个月，'
+    '已越过 2016 整整两年多）。这两列靠 SEC EDGAR 补齐：2017-03 之前 Schwab 把'
+    '「月度活动报告」原样作为季度 8-K 的 EX-99.1 附上去，正文里就是那张 13 个月滚动表，'
+    '相邻两期重叠 10 个月，可以逐期接续；2017-03 之后的缺口由官方 CDN 上几份'
+    '文件名不规则（前缀 <code>schwab_</code>、扩展名大写 <code>.XLSX</code>）的老附表补上。'
+    f'<b>(2) 核心净新增资产及其派生量 → {mlab(nna.dropna().index[0])}</b>'
+    f'（{len(nna.dropna())} 个月，到不了 2016）。这是<b>披露边界</b>：'
+    '<b>Core</b> Net New Assets 这一行 2018 年初才出现在滚动表里，'
+    '在那之前同一位置只有未剔除的 Net New Assets。两者不是一条序列'
+    '（官方对 2017-06 同时给过 37.7 与 22.1 两个数），'
+    '<b>本页不拼接</b> —— 拼出来的那一段会让 2016–2017 年的「核心」净流入系统性偏高。'
+    f'受此约束的是 Exhibit 2 / 3 / 4 / 5。<b>(3) 日均交易笔数 / 月末融资余额 → '
+    f'{mlab(dm.dropna().index[0])}</b>（{len(dm.dropna())} 个月）：这两列是 2026-01 那期'
+    '月报<b>新增</b>的，官方回填到 2025-01 就到头了，更早的年份公司从未公布过这两个数，'
+    '任何来源都补不出来。'
+    f'季度费率图（Exhibit 10）随客户总资产一起回到了 {qlab(_ratio.index[0])}。'
+    '此前各图用的是「从最新月倒推 25 个月 / 13 个月 / 14 个季度」的滚动窗口，现已全部取消。'
+    '<b>不补零、不外推、不拿旧口径顶新口径</b>：补不出来的月份就是空的。',
 
     f'<b>季末月口径。</b>{QNOTE}——3/6/9/12 月没有独立月报，这四个月的数值取自当季季报，'
     '所以序列是连续的，但它与其余月份的披露载体不同'

@@ -23,9 +23,17 @@
   python urllib 无论带什么 UA/Sec-Fetch 头都是 403，只有真浏览器栈（curl --http2 带全套
   浏览器头也行）能过。所以**不能**把落地页解析放进无人值守主路径。
   content.schwab.com 这个 CDN 域宽松得多：urllib + 普通 Chrome UA 即可 200。
-· SEC EDGAR 不是可选源。查过 CIK 0000316709 的全部 8-K：月度经营数据**从不单独 8-K 披露**，
-  EDGAR 全文里出现「monthly activity report」的只有季度 8-K Ex-99.1 里的一句提示。
-  想靠 EDGAR 拿月度数据是走不通的。
+· SEC EDGAR **是可选源，但只对 2017-03 及更早有效**（2026-08-16 更正，原文说它整个走不通）。
+  实测 CIK 0000316709 的全部 8-K：
+    - **2014-10 至 2017-01** 的十期季度 8-K，其 EX-99.1 正文里嵌的就是「Monthly Activity
+      Report」那张 13 个月滚动表（例：0000316709-16-000097 的 schw-20161017xex99_1.htm，
+      表窗 2015-09…2016-09）。相邻两期锚点差 3 个月、窗口重叠 10 个月，可逐期接续，
+      合起来覆盖 2013-09…2016-12，一个月不缺。
+    - **2017-04-18 那期起**，EX-99.1 里只剩一句「…please see the Monthly Activity Report」
+      的脚注引用，表本身不再随 8-K 附上。原文那句「只有一句提示」描述的正是这之后的情形，
+      对 2017-04 以后成立，对更早的年份是错的。
+  月度活动报告**本身**确实从不单独发 8-K，这半句原文没错。
+  取 EDGAR 要在 User-Agent 里带联系方式，否则 403（见 _EDGAR_UA），这是它明文的使用条款。
 · 新闻稿 PDF 里的数字和 xlsx 完全一致，但 PDF 要 OCR/文本抽取，没必要，xlsx 是结构化的。
 
 ================================ 发布节奏 ================================
@@ -111,6 +119,21 @@ dats_k 整列是空的，实际只有 2018-12…2024-12 共 7 个年末的月末
 要让它有资格进图，得先补齐两件事 —— 在文件里写清每个数出自哪份 10-K/年报的哪张表，
 并在 fetch 侧写出可复现的抓取路径；在那之前它只能停在 series/ 里当参考料。
 
+========================== 历史回填（backfill）==========================
+主流程 update() 只探最近 8 个月 / 3 个季度 —— 那是「每月往后走一格」该有的开销。
+把**存量**历史一次性补齐是另一件事，走 `python3 fetch/schw.py --backfill`：
+它扫 _HIST_XLSX 里那份写死的老附表清单（文件名有两处不成规律的历史变体：前缀
+`schwab_`、扩展名大写 `.XLSX`，推不出来所以写死）+ 上面说的 EDGAR 那条路，
+把 2013-09…2018-04 共 56 个月补进 series/schw.csv。
+
+三条铁律：**已存在的月份一个字符都不改**；**重叠月必须逐值相等**（不等就整次失败，
+要人去看是解析取错了还是官方重述了）；**回填后月份必须仍然逐月连号**（缺口会让
+下游 assets.diff() 把两个月的变动记到一个月上）。首次跑通时 39 个重叠值 0 处不符，
+第二次跑 166 个重叠值 0 处不符、新增 0 个月（幂等）。
+
+回填**不改变各列自己的披露边界**：core_nna_usdbn 仍然从 2017-02 起（_CORE_NNA_FROM），
+dats_k / margin_balances_usdbn 仍然从 2025-01 起。补出来的只是客户总资产与新开经纪账户。
+
 ================================ 落盘 ================================
 所有下载文件只写 cache/（已 gitignore），文件名与官方一致，便于事后复核。
 """
@@ -118,8 +141,10 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import json
 import os
 import re
+import time as _time
 import urllib.error
 import urllib.request
 
@@ -181,6 +206,12 @@ _SANE = {
 
 # DATs 与月末融资余额自 2026-01 期起披露，回填到 2025-01。比这更早的月份这两列本就没有。
 _DATS_MARGIN_FROM = (2025, 1)
+# **Core** Net New Assets 这一行是 2018 年初才出现在滚动表里的：实测最早带它的一份是
+# schwab_feb2018_table.XLSX（表窗 2017-02…2018-02），而 2017 年的几份季报附表（q1/q2/q3
+# 2017）与 2016 年及更早的全部来源里，同一位置只有未剔除的 "Net New Assets"。
+# 两者不是一条序列（2017-06 官方同时给过 37.7 与 22.1），所以**不拼接**：
+# 2017-02 之前 core_nna_usdbn 一律留空，由 build 侧按各自序列起点画图。
+_CORE_NNA_FROM = (2017, 2)
 
 # 同一个月同时来自月报和季报时谁说了算：季报是最终版。
 _SOURCE_RANK = {'monthly': 0, 'quarterly': 1}
@@ -389,10 +420,19 @@ def parse_table(path: str, report_ym: tuple[int, int]) -> dict:
 
 
 def _required(ym: tuple[int, int]) -> list[str]:
-    """该月**必须**解析出来的列。缺任何一列 → 抛，绝不写 NaN。"""
-    if ym >= _DATS_MARGIN_FROM:
-        return list(COLS)
-    return [c for c in COLS if c not in ('dats_k', 'margin_balances_usdbn')]
+    """该月**必须**解析出来的列。缺任何一列 → 抛，绝不写 NaN。
+
+    三段披露边界，全部是官方自己的（不是抓取能力的边界）：
+      · 2025-01 起才有 dats_k / margin_balances_usdbn（2026-01 那期月报新增两列并回填）
+      · 2017-02 起才有 core_nna_usdbn（见 _CORE_NNA_FROM）
+      · 再往前只剩客户总资产与新开经纪账户两列
+    """
+    out = list(COLS)
+    if ym < _DATS_MARGIN_FROM:
+        out = [c for c in out if c not in ('dats_k', 'margin_balances_usdbn')]
+    if ym < _CORE_NNA_FROM:
+        out = [c for c in out if c != 'core_nna_usdbn']
+    return out
 
 
 # ── 源枚举 ─────────────────────────────────────────────────────────────
@@ -432,6 +472,176 @@ def _candidates(back: int = 8):
             qq += 4
             yy -= 1
         yield 'quarterly', QUARTER_URL.format(q=qq, year=yy), (yy, qq * 3)
+
+
+# ── 历史回填源（2013-09 … 2018-04）─────────────────────────────────────
+# 主流程 _candidates() 只探最近 8 个月 / 3 个季度 —— 那是「每月增量」该有的样子，
+# 不该为了追历史每次多打几十个请求。但 2026-08-16 的一次历史考古发现，官方手上
+# **还留着**一批更老的表，主流程碰不到它们只是因为文件名有两处变体：
+#
+#   (a) **前缀**：2017 年及更早的季报附表叫 `schwab_`，不是 `schw_`
+#       （schw_q1_2017…=404，schwab_q1_2017…=200）；
+#   (b) **扩展名大写**：2017Q3–2018Q4 的几份是 `.XLSX`
+#       （schw_q2_2018_earnings_tables.xlsx=404，同名 .XLSX=200）。
+#
+# 这两条都不是规律，是历史遗留的手工命名，推不出来 —— 所以这里**写死一份清单**而不是
+# 拼 URL。清单里的每一份都实测过 200 且解析通过；哪天官方撤下某一份，backfill() 会
+# 在 stdout 上点名说它没了，而不是静默少几个月（已经落盘的历史行不受影响）。
+#
+# 再往前（2013-09 … 2016-12）CDN 上一份都不剩了，但 **SEC EDGAR 上有**：那几年 Schwab
+# 把「月度活动报告」原样作为季度 8-K 的 EX-99.1 附上去，正文里就是那张 13 个月滚动表。
+# ⚠ 本文件上方 docstring 曾断言「想靠 EDGAR 拿月度数据是走不通的」—— 那句话对 **2017-04
+# 及以后**成立（从 2017-04-18 那期起，EX-99.1 里只剩一句「请见 Monthly Activity Report」
+# 的脚注引用），对 2017-03 之前是**错的**。已在 docstring 里改正。
+_HIST_XLSX = [
+    # (报告月, URL 文件名) —— 报告月 = 该表最右一列，parse_table 按它倒推整张表
+    ((2016, 9),  'schw_q3_2016_earnings_tables.xlsx'),
+    ((2016, 12), 'schw_q4_2016_earnings_tables.xlsx'),
+    ((2017, 3),  'schwab_q1_2017_earnings_tables.xlsx'),
+    ((2017, 6),  'schwab_q2_2017_earnings_tables.xlsx'),
+    ((2017, 9),  'schwab_q3_2017_earnings_tables.XLSX'),
+    ((2018, 2),  'schwab_feb2018_table.XLSX'),
+    ((2018, 3),  'schw_q1_2018_earnings_tables.XLSX'),
+    ((2018, 6),  'schw_q2_2018_earnings_tables.XLSX'),
+    ((2018, 9),  'schw_q3_2018_earnings_tables.xlsx'),
+    ((2018, 12), 'schw_q4_2018_earnings_tables.XLSX'),
+    ((2019, 1),  'schwab_jan2019_table.xlsx'),
+    ((2019, 2),  'schwab_feb2019_table.xlsx'),
+    ((2019, 4),  'schwab_apr2019_table.xlsx'),
+    ((2019, 5),  'schw_may2019_table.xlsx'),
+]
+EDGAR_CIK = '0000316709'
+EDGAR_SUB = 'https://data.sec.gov/submissions/CIK{cik}.json'
+EDGAR_DIR = 'https://www.sec.gov/Archives/edgar/data/316709/{acc}'
+# EDGAR 要求 UA 里带得到人的联系方式，否则 403。这不是反爬，是它明文写的使用条款。
+_EDGAR_UA = 'monthly-op-dashboards research (hzhan7@gmail.com)'
+# EX-99.1 里嵌着月度表的最后一期。之后官方改成只在脚注里引用，硬扫也扫不出东西来，
+# 与其每次白跑几十个请求，不如把这条边界写出来。
+_EDGAR_UNTIL = '2017-02-01'
+
+
+def _edgar_get(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={'User-Agent': _EDGAR_UA,
+                                               'Accept-Encoding': 'gzip'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        blob = r.read()
+    if blob[:2] == b'\x1f\x8b':
+        import gzip
+        blob = gzip.decompress(blob)
+    return blob
+
+
+def _edgar_8k(limit_before: str = _EDGAR_UNTIL) -> list:
+    """CIK 的 8-K 清单（含历史分片），只留 limit_before 之前的。→ [(date, acc, [docs])]"""
+    j = json.loads(_edgar_get(EDGAR_SUB.format(cik=EDGAR_CIK)))
+    rows = []
+    packs = [j['filings']['recent']]
+    for f in j['filings'].get('files', []):
+        _time.sleep(0.15)
+        packs.append(json.loads(_edgar_get(
+            'https://data.sec.gov/submissions/' + f['name'])))
+    for p in packs:
+        rows += [(d, a) for a, fm, d in
+                 zip(p['accessionNumber'], p['form'], p['filingDate'])
+                 if fm.startswith('8-K') and d < limit_before]
+    return sorted(set(rows))
+
+
+_HTML_TAG = re.compile(r'<[^>]+>')
+_TITLE_RE = re.compile(r'Monthly Activity Report\s+For\s+([A-Za-z]+)\s+(\d{4})', re.I)
+
+
+def _cell_text(c: str) -> str:
+    t = _HTML_TAG.sub('', c)
+    t = (t.replace('&#xFEFF;', '').replace('&#x2019;', "'").replace('&amp;', '&')
+          .replace('&#160;', ' ').replace('&nbsp;', ' '))
+    return re.sub(r'&#\d+;', '', t).strip()
+
+
+def _html_num(x: str):
+    """'2,556.7' → 2556.7；'(0.3)' → -0.3；'-'/'' → None。括号是会计负号。"""
+    t = x.replace(',', '').replace('$', '').strip()
+    neg = t.startswith('(') and t.endswith(')')
+    if neg:
+        t = t[1:-1].strip()
+    if t in ('', '-', '\u2014', 'N/A', '*'):
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def parse_edgar_monthly(html: str) -> dict:
+    """8-K EX-99.1 里的月度活动报告表 → {(y, m): {col: 值}}；不是这种文件返回 {}。
+
+    与 xlsx 那条路共用同一套规矩：**按标签前缀取行、按锚点行反推单位倍率、
+    表头月份与标题月倒推逐个核对**。核对不上就整份丢掉（返回 {}）而不是猜 ——
+    这批文件跨 4 年、版式改过好几次，错位一格在图上看不出来。
+    """
+    i = html.lower().find('monthly activity report')
+    if i < 0:
+        return {}
+    a, b = html.rfind('<table', 0, i), html.find('</table>', i)
+    if a < 0 or b < 0:
+        return {}
+    rows = []
+    for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S):
+        cells = [_cell_text(c) for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S)]
+        rows.append([c for c in cells if c != ''])
+
+    hit = next((_TITLE_RE.search(r[0]) for r in rows if r and _TITLE_RE.search(r[0])), None)
+    if not hit:
+        return {}
+    ay, am = int(hit.group(2)), _MON.index(hit.group(1).lower()[:3]) + 1
+    hdr = next(([c.lower()[:3] for c in r if c.lower()[:3] in _MON]
+                for r in rows if sum(c.lower()[:3] in _MON for c in r) >= 12), None)
+    if not hdr:
+        return {}
+    yms = []
+    y, m = ay, am
+    for _ in hdr:
+        yms.append((y, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    yms.reverse()
+    if [_MON[mm - 1] for _, mm in yms] != hdr:      # 表头与标题月倒推对不上 → 版式变了
+        return {}
+
+    def row_of(prefix, skip_core=False):
+        for r in rows:
+            lab = re.sub(r'\s+', ' ', r[0]).strip().lower() if r else ''
+            if not lab.startswith(prefix):
+                continue
+            if skip_core and lab.startswith('core'):
+                continue
+            vals = [_html_num(x) for x in r[1:1 + len(yms)]]
+            if sum(v is not None for v in vals) >= len(yms) - 2:
+                return {ym: v for ym, v in zip(yms, vals) if v is not None}
+        return None
+
+    a_money = row_of(_LABEL['_anchor_money'])
+    a_count = row_of(_LABEL['_anchor_count'])
+    if not a_money or not a_count:
+        return {}
+    s_money = _scale(a_money, *_SANE['total_client_assets_usdbn'], 'edgar money')
+    s_count = _scale(a_count, *_SANE['_anchor_count'], 'edgar count')
+
+    out: dict = {ym: {} for ym in yms}
+    for col in COLS:
+        vals = row_of(_LABEL[col])
+        if vals is None:
+            continue
+        s = s_money if col in _MONEY else s_count
+        for ym, v in vals.items():
+            x = v * s
+            lo_hi = _SANE.get(col)
+            if lo_hi and not (lo_hi[0] <= abs(x) <= lo_hi[1]):
+                raise FetchError(f'EDGAR {ym} {col}={x} 超出合理区间 {lo_hi}')
+            out[ym][col] = round(x, 6)
+    return {ym: v for ym, v in out.items() if v}
 
 
 RESTATEMENTS: list = []      # 上一次 _collect 发现的跨源/跨期数值打架，供调用方审计
@@ -579,8 +789,158 @@ def update(series_dir, cache_dir) -> list:
     return [f'{y:04d}-{m:02d}' for y, m in added]
 
 
+def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
+    """把 2013-09 … 2018-04 的历史月份补进 series/schw.csv，返回新增月份。
+
+    与 update() 的关系：update() 管**增量**（每月往后走一格，只探最近几期），
+    backfill() 管**存量**（一次性把官方还留着的老表全扫一遍）。两者写同一个 CSV，
+    都遵守同一条铁律：**已存在的月份一个字符都不改**。
+
+    重叠月是这里最重要的一道自检 —— 老表与仓里现有的 99 个月有大量重叠，两边**必须**
+    逐值相等。不等只有两种可能：解析取错了行/列，或者官方重述过。两种都不能静默：
+    对不上的行会被打印出来并让整次回填失败（`FetchError`），要人去看。
+    （2026-08-16 首次跑通时：57 个重叠 (月,指标) 全部相等，0 处不符。）
+
+    幂等：跑第二遍不会有任何新增，也不会改动任何已有行。
+    """
+    def log(*a):
+        if verbose:
+            print(*a)
+
+    merged: dict[tuple[int, int], dict] = {}
+    origin: dict[tuple[int, int], str] = {}
+
+    def absorb(vals: dict, src: str):
+        """先写者胜。这里的「先」= 调用顺序：CDN 的表比 EDGAR 的新，先扫 CDN。"""
+        for ym, cols in vals.items():
+            slot = merged.setdefault(ym, {})
+            for c, v in cols.items():
+                if c in slot:
+                    if abs(slot[c] - v) > 1e-6:
+                        RESTATEMENTS.append((ym, c, slot[c], v, src))
+                    continue
+                slot[c] = v
+                origin.setdefault(ym, src)
+
+    for ym, name in _HIST_XLSX:
+        url = f'{CDN}/excels/{name}'
+        try:
+            path = _download(url, cache_dir)
+        except FetchError as e:
+            log(f'  [hist] {name} 下载失败：{e}')
+            continue
+        if path is None:
+            log(f'  [hist] {name} 已从 CDN 撤下（404）—— 已落盘的历史行不受影响')
+            continue
+        absorb(parse_table(path, ym), name)
+        log(f'  [hist] {name} ok')
+
+    # EDGAR：2017-03 之前的月度表嵌在季度 8-K 的 EX-99.1 里
+    try:
+        fils = _edgar_8k()
+    except Exception as e:
+        log(f'  [edgar] 清单取不到（{type(e).__name__}: {e}），本轮只用 CDN 的历史表')
+        fils = []
+    for date, acc in fils:
+        base = EDGAR_DIR.format(acc=acc.replace('-', ''))
+        try:
+            idx = json.loads(_edgar_get(base + '/index.json'))
+        except Exception:
+            continue
+        _time.sleep(0.15)
+        docs = [it['name'] for it in idx['directory']['item']
+                if it['name'].lower().endswith(('.htm', '.html'))
+                and 'ex99' in it['name'].lower().replace('-', '').replace('_', '')]
+        for d in docs:
+            try:
+                html = _edgar_get(f'{base}/{d}').decode('utf-8', 'replace')
+            except Exception:
+                continue
+            _time.sleep(0.15)
+            got = parse_edgar_monthly(html)
+            if got:
+                absorb(got, f'EDGAR {acc}/{d}')
+                log(f'  [edgar] {date} {d} → {min(got)}…{max(got)}')
+                break
+
+    if not merged:
+        raise FetchError('历史回填一个月份都没解析出来 —— CDN 与 EDGAR 两条路都空了，'
+                         '不要当成「没有历史数据」，先人工核对 _HIST_XLSX 里的链接。')
+
+    # ── 与现有 CSV 对账 ──
+    path = os.path.join(series_dir, SERIES)
+    with open(path, newline='') as f:
+        rows = list(csv.reader(f))
+    header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+    if header != ['month'] + COLS:
+        raise FetchError(f'{SERIES} 列名与预期不符：{header}')
+    have = {r[0]: r for r in body}
+
+    clash, checked = [], 0
+    for ym, vals in merged.items():
+        key = f'{ym[0]:04d}-{ym[1]:02d}'
+        if key not in have:
+            continue
+        for c, v in vals.items():
+            cur = have[key][1 + COLS.index(c)]
+            if cur == '':
+                continue
+            checked += 1
+            if abs(float(cur) - v) > max(0.05, abs(float(cur)) * 1e-6):
+                clash.append((key, c, float(cur), v))
+    log(f'  [对账] 重叠 {checked} 个 (月,指标)，不符 {len(clash)} 个')
+    if clash:
+        for c in clash[:20]:
+            log('    MISMATCH', c)
+        raise FetchError(f'历史表与仓里现有值有 {len(clash)} 处不符，拒绝写入。'
+                         '要么解析取错了行，要么官方重述过 —— 两种都得人去看。')
+
+    added = []
+    for ym in sorted(merged):
+        key = f'{ym[0]:04d}-{ym[1]:02d}'
+        if key in have:
+            continue
+        vals = merged[ym]
+        missing = [c for c in _required(ym) if c not in vals]
+        if missing:
+            log(f'  [跳过] {key} 缺 {missing}')
+            continue
+        body.append([key] + [_fmt(c, vals.get(c)) for c in COLS])
+        added.append(key)
+
+    if not added:
+        return []
+    body.sort(key=lambda r: r[0])
+    # 连续性自检：回填后月份必须仍然逐月连号（build/schw.py 的 assert_monthly 也查这条，
+    # 但在写盘之前就拦住，比让下游构建失败要好定位得多）。
+    for i in range(1, len(body)):
+        py, pm = int(body[i - 1][0][:4]), int(body[i - 1][0][5:])
+        cy, cm = int(body[i][0][:4]), int(body[i][0][5:])
+        if (cy, cm) != _shift((py, pm), 1):
+            raise FetchError(f'回填后月份不连续：{body[i - 1][0]} → {body[i][0]}。'
+                             '缺口会让 assets.diff() 把两个月的变动记到一个月上，拒绝写入。')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(body)
+    os.replace(tmp, path)
+    log(f'  [回填] 新增 {len(added)} 个月：{added[0]} … {added[-1]}')
+    return added
+
+
 if __name__ == '__main__':
+    import sys
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if '--backfill' in sys.argv:
+        # 一次性的历史存量补齐，不进 monthly_run 的每日/每月主路径。
+        print('backfill:', backfill(os.path.join(_root, 'series'),
+                                    os.path.join(_root, 'cache')))
+        if RESTATEMENTS:
+            print('跨源数值打架（先写者胜，此处仅记录）:')
+            for r in RESTATEMENTS:
+                print('  ', r)
+        raise SystemExit(0)
     print('latest_month:', latest_month(os.path.join(_root, 'cache')))
     print('update      :', update(os.path.join(_root, 'series'), os.path.join(_root, 'cache')))
     if RESTATEMENTS:
