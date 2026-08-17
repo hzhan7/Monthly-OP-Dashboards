@@ -380,15 +380,22 @@ def ptp_yoy(s, pct_series=False):
     return pd.Series(val, index=pd.PeriodIndex(idx, freq='M'), dtype=float)
 
 
-def ptp_yoy_axis(s, idx, pct_series=False):
+def ptp_yoy_axis(s, idx, pct_series=False, ymax=None):
     """gs_bar 的次轴折线：**点对点（单月）同比**。给了它引擎就不画 12 个月均线。
 
     口径标签里写死「单月」：本页汇总表的 y/y 列、页顶 brief、各图次轴现在全是单月口径，
     但季度图（Exhibit 3）的右轴仍是季度合计同比，两者放在同一页上不点名就会被读成一个数。
+
+    `ymax` = 右轴截轴上界（引擎的 rc.ymax）。语义与左轴的 ycap 完全一致：**截轴不删点**，
+    超界的点钳到边界、画空心红圈、真值红色竖排标出。只在一两个基数效应尖峰把整条线
+    压平时才给 —— 给了就必须在图注里点名是哪几个月、真值多少。
     """
-    return {'name': 'y/y (pp, 单月, RHS)' if pct_series else 'y/y (单月, RHS)',
-            'color': 'GOLD', 'values': on(ptp_yoy(s, pct_series), idx),
-            'yfmt': 'pp1' if pct_series else 'pct0'}
+    d = {'name': 'y/y (pp, 单月, RHS)' if pct_series else 'y/y (单月, RHS)',
+         'color': 'GOLD', 'values': on(ptp_yoy(s, pct_series), idx),
+         'yfmt': 'pp1' if pct_series else 'pct0'}
+    if ymax is not None:
+        d['ymax'] = float(ymax)
+    return d
 
 
 def ptp_gap_note(s, idx, what='去年同月基数过小'):
@@ -790,10 +797,14 @@ ex.append({
              + (f'序列起点 {mlab(df.index[0])} 落在季中，{"、".join(_QDROP)} 只有 '
                 f'{int(qcnt.iloc[0])} 个月，不是完整季度，已整根剔除（不是数据缺失，'
                 '是拿不满季的合计与完整季度并排会砸出一个假坑）。' if _QDROP else '')
-             + '柱全为正而右轴 y/y 跨零，两轴零点若强行对齐要把左轴拉到负区、下方大片画布'
-             '全空，所以引擎按兜底规则改成两轴各自缩放，并在图内左上角标了'
-             '「左右轴零点不同高」—— 右轴的零在那条绿色虚线上，不在柱的基线上。'
-             '左轴从 0 起，与 PDF 版一致。'
+             + '柱全为正而右轴 y/y 跨零，两轴零点不同源。走对齐还是走「两轴各自缩放」'
+             '由 assets/charts.js 的 ALIGN_WASTE_MAX（阈值 38%）自动决定，不是本图写死的：'
+             '本窗口实测 waste 28.6% 未超阈值，所以引擎走的是<b>对齐</b> —— 左轴因此被拉到'
+             '负区（可见刻度自 -50 起），下方那段空白正是对齐的代价；右轴那条绿色零虚线与'
+             '柱的基线<b>重合</b>，图内也<b>不</b>标「左右轴零点不同高」。真正超阈值触发'
+             '兜底、并标出那句话的是 Exhibit 4（waste 50%）。'
+             '⚠ 改窗口后这段必须重算：waste 随窗口变，'
+             '跑 python3 tools/align_replica.py --note data/schw.js 3 取新数。'
              + (f'末季 {qv.index[-1]} 已含 {n_in_last} 个月，为完整季度。'
                 if n_in_last >= 3 else
                 f'末季 {qv.index[-1]} 只含 {n_in_last} 个月，柱为浅蓝且右轴 y/y 已作废 —— '
@@ -936,6 +947,11 @@ ex.append({
 nba = df['new_brokerage_accounts_k']
 nba_ex = df['new_acct_ex']          # 已净掉并购搬账（见文件上方 ACQ_ACCOUNTS_K）
 NBA_CAP = 700
+# 右轴也要截。净除并购之后次轴仍有两个月冲到三位数：分母是疫情前的低基数（2020-01 的
+# 167k、2020-02 的 159k），2021 年同月一放大就是 +556% / +662%。这两个点把右轴撑到 700%，
+# 其余 141 个月全被压在零线附近的一条带子里 —— 与左轴那根 14,718k 的柱是同一类问题，
+# 只是发生在另一条轴上。同样按「截轴不删点」处理：超界的点钳到边界 + 空心红圈 + 红色真值。
+YOY_CAP7 = 300
 d7 = tail(nba_ex, ALL_N)
 _i7 = list(d7.index)
 _marks7 = [_i7.index(p) for p in ACQ_ACCOUNTS_K if p in _i7]
@@ -946,12 +962,15 @@ _adj7 = '、'.join(
 _over7 = [(mlab(p), float(v)) for p, v in d7.items() if float(v) > NBA_CAP]
 _ov7_txt = '、'.join(f'{m} 的 {comma(v)}k' for m, v in _over7)
 P7 = ptp_stats(nba_ex, d7.index)
+_y7 = ptp_yoy(nba_ex)
+_yhi7 = '、'.join(f'{mlab(p)} 的 {v:+,.0f}%' for p, v in _y7.items()
+                 if p in d7.index and v > YOY_CAP7)
 ex.append({
     'n': 7, 'kind': 'gs_bar', 'full': True, 'height': H_TALL,
     'fmt': 'f0c', 'xlabels': xl(nba_ex, ALL_N), 'xstep': xstep_for(len(d7)),
     'title': f'New brokerage accounts opened — {mlab(d7.index[0])} 至今（已净除并购搬账）',
     'ylab': 'k accounts', 'ylab2': '% y/y (单月)', 'legend': 'Monthly (ex-acquisition)',
-    'values': L(d7.values), 'yoy': ptp_yoy_axis(nba_ex, d7.index),
+    'values': L(d7.values), 'yoy': ptp_yoy_axis(nba_ex, d7.index, ymax=YOY_CAP7),
     'bar_marks': _marks7,
     'ycap': NBA_CAP, 'yfloor': 0,
     'cap_note': (f'axis capped at {comma(NBA_CAP)}k — {len(_over7)} months in red'
@@ -970,6 +989,10 @@ ex.append({
                 if _over7 else '')
              + '<b>次轴同比同样走净除后的序列</b>：拿并购月当基数算出来的是四位数的同比，'
              '描述的是一次搬账不是开户动能。'
+             + (f'<b>右轴另截在 +{YOY_CAP7}%</b>：{_yhi7} —— 分母是疫情前的低基数，'
+                '不截的话右轴要拉到 700%，其余十几年的同比全压在零线附近读不出。'
+                '超界的点同样钳到边界、画空心红圈、真值红色竖排标出，没有删点。'
+                if _yhi7 else '')
              + ptp_axis_note(P7) + ptp_gap_note(nba_ex, d7.index)),
 })
 

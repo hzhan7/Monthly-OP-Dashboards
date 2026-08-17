@@ -774,7 +774,8 @@
           t 是一行竖排真值、r 是刻度数字（+ 可选轴标题）、b 是 x 标签带（已缩过）、
           l 是刻度数字（+ 可选轴标题 + lines_endlabels 的左端标签列）。
           M.r 的 14 与 M.l 的基数留的是「半个刻度数字的溢出」，同样正比于字号。 */
-    var capOn = ex.ycap != null || ex.yfloor != null;
+    var _rhsCap = (rhsOf(ex) || {}).ymax;
+    var capOn = ex.ycap != null || ex.yfloor != null || _rhsCap != null;
     var M = { t: fscale(capOn ? 30 : 14),
               r: fscale(dual ? (ex.ylab2 ? 56 : 42)
                       : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ||
@@ -940,8 +941,17 @@
            与 `build/mrbase.py` 的 `align_sim` —— 三处必须同时改，否则
            Python 侧算出来的刻度与页面上画的对不上。 */
         var rzb = rc.zero_base !== false;
-        rtk = ticks(Math.min.apply(null, rzb ? rv.concat([0]) : rv),
-                    Math.max.apply(null, rv), 9);
+        /* `ymax`：右轴的截轴上界。此前只有 stacked_dual 认这个字段，其余图型的右轴一律
+           被最大值撑满 —— 而右轴上住的多是 y/y，一个基数效应的尖峰（SCHW Ex7 的
+           Feb-21 是 +662%，分母是疫情前的低基数）就能把其余十几年压成贴着零线的一条线。
+           左轴早就有 ycap 解决同一个问题，右轴缺这半边。
+           语义与 ycap 完全一致：**截轴不删点** —— 超界的点钳到边界、画空心红圈、
+           真值红色竖排标出（见 polyline 里的 out 分支），一个点都不丢。
+           不给 ymax 时下面这两行与从前逐字节相同，所以既有 34 页一行都不会变
+           （已核对：现网 payload 里设过 ymax 的 8 处全是 stacked_dual，走的是上一分支）。 */
+        var rhi = Math.max.apply(null, rv);
+        if (rc.ymax != null && +rc.ymax < rhi) rhi = +rc.ymax;
+        rtk = ticks(Math.min.apply(null, rzb ? rv.concat([0]) : rv), rhi, 9);
         r0 = rtk[0]; r1 = rtk[rtk.length - 1];
       }
       /* 两轴的 0 必须落在同一画布高度：取两者中较高的那个零点比例 f，
@@ -1061,12 +1071,22 @@
     function polyline(vals, color, lw, doSmooth, markers, yfn) {
       yfn = yfn || Y;
       var d = '', pen = false, pts = [], out = [], vs = vals;
-      /* 只有左轴参与截轴；超界的点钳到边界画空心圈 + 真值，绝不丢点（规矩 7） */
+      /* 超界的点钳到边界画空心圈 + 真值，绝不丢点（规矩 7）。
+         左右两轴各有各的界：左轴看 ex.ycap / ex.yfloor，右轴看该系列自己的 ymax。 */
       if (yfn === Y && capOn) {
         vs = vals.map(function (v, k) {
           if (v == null || !isFinite(v)) return v;
           if (ex.ycap != null && v > y1) { out.push([k, v, y1, true]); return y1; }
           if (ex.yfloor != null && v < y0) { out.push([k, v, y0, false]); return y0; }
+          return v;
+        });
+      } else if (yfn !== Y && _rhsCap != null && r1 != null) {
+        /* 真值标签走**右轴自己的**格式器：右轴是 %/pp，左轴可能是 $ 或裸数，
+           拿左轴的 capFmt 去印 +662% 会印成「663」。 */
+        var rfm = fmtOf((rhsOf(ex) || {}).yfmt || 'pct0');
+        vs = vals.map(function (v, k) {
+          if (v == null || !isFinite(v)) return v;
+          if (v > r1) { out.push([k, v, r1, true, rfm(v)]); return r1; }
           return v;
         });
       }
@@ -1111,7 +1131,8 @@
       for (i = 0; i < out.length; i++) {
         el('circle', { cx: Xc(out[i][0]), cy: yfn(out[i][2]), r: 2.6, fill: C.WHITE,
           stroke: BREAK, 'stroke-width': 1.1 }, g);
-        capLabel(Xc(out[i][0]) + 3.4, out[i][3], capFmt(out[i][1]));
+        capLabel(Xc(out[i][0]) + 3.4, out[i][3],
+          out[i][4] != null ? out[i][4] : capFmt(out[i][1]));
       }
     }
 
