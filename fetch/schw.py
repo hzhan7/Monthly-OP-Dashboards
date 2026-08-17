@@ -23,16 +23,23 @@
   python urllib 无论带什么 UA/Sec-Fetch 头都是 403，只有真浏览器栈（curl --http2 带全套
   浏览器头也行）能过。所以**不能**把落地页解析放进无人值守主路径。
   content.schwab.com 这个 CDN 域宽松得多：urllib + 普通 Chrome UA 即可 200。
-· SEC EDGAR **是可选源，但只对 2017-03 及更早有效**（2026-08-16 更正，原文说它整个走不通）。
-  实测 CIK 0000316709 的全部 8-K：
-    - **2014-10 至 2017-01** 的十期季度 8-K，其 EX-99.1 正文里嵌的就是「Monthly Activity
-      Report」那张 13 个月滚动表（例：0000316709-16-000097 的 schw-20161017xex99_1.htm，
-      表窗 2015-09…2016-09）。相邻两期锚点差 3 个月、窗口重叠 10 个月，可逐期接续，
-      合起来覆盖 2013-09…2016-12，一个月不缺。
-    - **2017-04-18 那期起**，EX-99.1 里只剩一句「…please see the Monthly Activity Report」
-      的脚注引用，表本身不再随 8-K 附上。原文那句「只有一句提示」描述的正是这之后的情形，
-      对 2017-04 以后成立，对更早的年份是错的。
-  月度活动报告**本身**确实从不单独发 8-K，这半句原文没错。
+· SEC EDGAR **是可选源**（2026-08-16 更正了两遍，把过程写下来，免得第三次又绕回去）。
+  实测 CIK 0000316709 的季度 8-K：**每一期**的 EX-99.1 正文里都嵌着「The Charles Schwab
+  Corporation Monthly Activity Report For <月> <年>」那张 13 个月滚动表 —— 2014 年的有，
+  2026 年的也有。相邻两期锚点差 3 个月、窗口重叠 10 个月，可逐期接续。
+    - 原始 docstring 写「想靠 EDGAR 拿月度数据是走不通的」→ **错**。
+    - 第一次更正写「2017-04 起表就不随 8-K 附了，只剩一句脚注引用」→ **也错**，
+      而且错得更隐蔽：那是**解析器**的毛病不是官方的改动。两代版式放标题的位置不同 ——
+      2017-03 及更早，标题在表的第一行**里**；之后，标题在表**上方的 <div> 里**。
+      而正文另有一句「…please see the Monthly Activity Report.」的脚注，位置比真表靠前。
+      当时的解析器锚在「monthly activity report」这个词上再往回找 <table>，于是
+      新版式必然捞到上面某张不相干的表，**静默**返回空 —— 97 份里只读出 15 份，
+      看上去就像「2017-04 之后官方不附表了」。
+      教训：解析器读不到，和源里没有，长得一模一样；分辨这两者只能去看原文。
+  现在的做法见 parse_edgar_monthly()：锚在**标题正则**上，再按标题落在表内还是表外
+  决定往前还是往后找 <table>。实测 871 个与 series/schw.csv 重叠的 (月,指标) 全部相等，
+  含 2019-04 那个 core NNA = -0.3（会计负号的右括号被拆进独立 <td>，见 _glue）。
+  月度活动报告**本身**确实从不单独发 8-K，原文这半句没错。
   取 EDGAR 要在 User-Agent 里带联系方式，否则 403（见 _EDGAR_UA），这是它明文的使用条款。
 · 新闻稿 PDF 里的数字和 xlsx 完全一致，但 PDF 要 OCR/文本抽取，没必要，xlsx 是结构化的。
 
@@ -488,11 +495,9 @@ def _candidates(back: int = 8):
 # 拼 URL。清单里的每一份都实测过 200 且解析通过；哪天官方撤下某一份，backfill() 会
 # 在 stdout 上点名说它没了，而不是静默少几个月（已经落盘的历史行不受影响）。
 #
-# 再往前（2013-09 … 2016-12）CDN 上一份都不剩了，但 **SEC EDGAR 上有**：那几年 Schwab
-# 把「月度活动报告」原样作为季度 8-K 的 EX-99.1 附上去，正文里就是那张 13 个月滚动表。
-# ⚠ 本文件上方 docstring 曾断言「想靠 EDGAR 拿月度数据是走不通的」—— 那句话对 **2017-04
-# 及以后**成立（从 2017-04-18 那期起，EX-99.1 里只剩一句「请见 Monthly Activity Report」
-# 的脚注引用），对 2017-03 之前是**错的**。已在 docstring 里改正。
+# 再往前（2013-09 … 2016-12）CDN 上一份都不剩了，但 **SEC EDGAR 上有**：Schwab 把
+# 「月度活动报告」原样作为季度 8-K 的 EX-99.1 附上去，正文里就是那张 13 个月滚动表。
+# 这条路对**每一期**都有效（不止老年份），详见上方 docstring 里关于两代版式的那一段。
 _HIST_XLSX = [
     # (报告月, URL 文件名) —— 报告月 = 该表最右一列，parse_table 按它倒推整张表
     ((2016, 9),  'schw_q3_2016_earnings_tables.xlsx'),
@@ -515,9 +520,10 @@ EDGAR_SUB = 'https://data.sec.gov/submissions/CIK{cik}.json'
 EDGAR_DIR = 'https://www.sec.gov/Archives/edgar/data/316709/{acc}'
 # EDGAR 要求 UA 里带得到人的联系方式，否则 403。这不是反爬，是它明文写的使用条款。
 _EDGAR_UA = 'monthly-op-dashboards research (hzhan7@gmail.com)'
-# EX-99.1 里嵌着月度表的最后一期。之后官方改成只在脚注里引用，硬扫也扫不出东西来，
-# 与其每次白跑几十个请求，不如把这条边界写出来。
-_EDGAR_UNTIL = '2017-02-01'
+# 扫到哪一期为止。**不是**因为之后就没有表了（2026 年那期 EX-99.1 里照样有），
+# 而是 2018-05 起 series/schw.csv 本来就有值，再扫下去只是拿同样的数对一遍账。
+# 留一年余量：往后多扫一点，重叠对账的样本就多一点，那是这条路唯一的自检。
+_EDGAR_UNTIL = '2020-01-01'
 
 
 def _edgar_get(url: str) -> bytes:
@@ -558,6 +564,25 @@ def _cell_text(c: str) -> str:
     return re.sub(r'&#\d+;', '', t).strip()
 
 
+def _glue(cells: list) -> list:
+    """把被拆进独立 <td> 的「零件」粘回它前面那个数，再丢掉空单元格。
+
+    这一步**不能省，也不能放在丢空格之后**。EDGAR 的表把会计负号的右括号、百分号
+    单独放进一个 <td>：`(0.3` `)` 是两格。先丢空格再配对的话，`(0.3` 过不了 float()
+    变成 None，那一行就**少一个 token**，于是 zip(months, vals) 之后**整行往后错一格** ——
+    错位的每个值都是「上个月的数」，看着完全正常，只有跨源对账才抓得到。
+    （实测：只改锚点不加这一步，2019-07…2020-07 那批文件里 core NNA 一列错出 44 个值，
+    全部等于前一个月 —— 病根就是 2019-04 的 core NNA 是 -0.3。）
+    """
+    out: list = []
+    for c in cells:
+        if c in (')', '%', ')%', 'bp', ')bp') and out:
+            out[-1] += c
+        elif c != '':
+            out.append(c)
+    return out
+
+
 def _html_num(x: str):
     """'2,556.7' → 2556.7；'(0.3)' → -0.3；'-'/'' → None。括号是会计负号。"""
     t = x.replace(',', '').replace('$', '').strip()
@@ -580,20 +605,30 @@ def parse_edgar_monthly(html: str) -> dict:
     表头月份与标题月倒推逐个核对**。核对不上就整份丢掉（返回 {}）而不是猜 ——
     这批文件跨 4 年、版式改过好几次，错位一格在图上看不出来。
     """
-    i = html.lower().find('monthly activity report')
-    if i < 0:
+    # ── 锚点：必须锚在**标题**上，不能锚在「monthly activity report」这个词上 ──
+    # 正文里另有一句脚注「…please see the Monthly Activity Report.」，位置比真表更靠前。
+    # 锚错了还不止是找不到表：老版式（2017-03 及更早）标题在表的**第一行里**，
+    # 所以要往回找 <table>；新版式标题在表**上方的 <div> 里**，要往后找。
+    # 一律往回找的话，新版式会捞到上面某张毫不相干的表 —— 而且**静默**返回 {}。
+    # 本文件 2026-08-16 首版就踩了这个坑：97 份 EX-99.1 只读出 15 份，
+    # 于是得出了「2017-04 起表就不随 8-K 附了」这个**错误**结论（docstring 已更正）。
+    hits = list(_TITLE_RE.finditer(html))
+    if not hits:
         return {}
-    a, b = html.rfind('<table', 0, i), html.find('</table>', i)
+    hit = hits[-1]                       # 一份文件里标题只出现一次；取最后一个最稳
+    i = hit.start()
+    a_back = html.lower().rfind('<table', 0, i)
+    if a_back >= 0 and html.lower().find('</table>', a_back) > i:
+        a = a_back                       # 老版式：标题落在这张表内部
+    else:
+        a = html.lower().find('<table', i)   # 新版式：标题在表上方
+    b = html.find('</table>', a) if a >= 0 else -1
     if a < 0 or b < 0:
         return {}
     rows = []
     for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S):
         cells = [_cell_text(c) for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S)]
-        rows.append([c for c in cells if c != ''])
-
-    hit = next((_TITLE_RE.search(r[0]) for r in rows if r and _TITLE_RE.search(r[0])), None)
-    if not hit:
-        return {}
+        rows.append(_glue(cells))
     ay, am = int(hit.group(2)), _MON.index(hit.group(1).lower()[:3]) + 1
     hdr = next(([c.lower()[:3] for c in r if c.lower()[:3] in _MON]
                 for r in rows if sum(c.lower()[:3] in _MON for c in r) >= 12), None)
@@ -848,9 +883,12 @@ def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
         except Exception:
             continue
         _time.sleep(0.15)
+        # 附件命名两代都有：`schw-20141015ex99157591b.htm` 与 `exhibit991093018.htm`。
+        # 只筛 'ex99' 会**静默漏掉后者**（'exhibit991…' 里没有 ex99 这个连续子串），
+        # 而漏掉的表现是「这期没有月度表」，与「真的没有」长得一模一样。
+        # 一份 8-K 通常只挂 3–6 个文档，全试一遍的代价可以忽略，比猜命名规律稳。
         docs = [it['name'] for it in idx['directory']['item']
-                if it['name'].lower().endswith(('.htm', '.html'))
-                and 'ex99' in it['name'].lower().replace('-', '').replace('_', '')]
+                if it['name'].lower().endswith(('.htm', '.html'))]
         for d in docs:
             try:
                 html = _edgar_get(f'{base}/{d}').decode('utf-8', 'replace')
