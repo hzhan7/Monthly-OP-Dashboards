@@ -236,8 +236,14 @@ def align_sim(ex):
     if not rv:
         return None
     # `zero_base: False` 见 axisfmt.fix_all 与 charts.js 的同处注释（三份副本）。
+    # 右轴截轴上界 ymax，语义与 charts.js:952-953 同源（2026-08-17 起非 stacked_dual
+    # 也认这个字段）。不给时与从前逐字节相同。
+    _rhi = max(rv)
+    _cap = rc.get('ymax')
+    if _cap is not None and float(_cap) < _rhi:
+        _rhi = float(_cap)
     rtk = axisfmt.ticks(min(rv + ([0.0] if rc.get('zero_base') is not False else [])),
-                        max(rv), 9)
+                        _rhi, 9)
     r0, r1 = rtk[0], rtk[-1]
     fr = max(axisfmt._zero_frac(y0, y1), axisfmt._zero_frac(r0, r1))
     if fr <= 1e-9:

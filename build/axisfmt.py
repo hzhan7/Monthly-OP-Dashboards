@@ -253,10 +253,20 @@ def fix(ex):
             rv = _fin(rc.get('values'))
             if rv:
                 # `zero_base: False` = 右轴住的是水平量（如汇率）而不是跨零的 y/y，
-                # 不强行把 0 纳入量程。三处副本必须同改：`assets/charts.js` 的
-                # 右轴 ticks(...) 与 `build/mrbase.py` 的 `align_sim`。
+                # 不强行把 0 纳入量程。四处副本必须同改：`assets/charts.js` 的
+                # 右轴 ticks(...)、`build/mrbase.py` 的 `align_sim`、
+                # `tools/align_replica.py`。
+                # `ymax` = 右轴截轴上界（charts.js:952-953）。2026-08-17 起它从
+                # stacked_dual 专用放开成所有双轴图通用，这里跟着放开，否则一旦有页面
+                # 在非 stacked_dual 的右轴上设 ymax，Python 侧算出的刻度会与浏览器
+                # 画出来的不一致 —— 而那种不一致没有任何东西会报错。
+                # 不给 ymax 时下面两行与从前逐字节相同。
+                _rhi = max(rv)
+                _cap = rc.get('ymax')
+                if _cap is not None and float(_cap) < _rhi:
+                    _rhi = float(_cap)
                 rtk = ticks(min(rv + ([0.0] if rc.get('zero_base') is not False else [])),
-                            max(rv), 9)
+                            _rhi, 9)
                 r0, r1 = rtk[0], rtk[-1]
                 f = max(_zero_frac(y0, y1), _zero_frac(r0, r1))
                 if f > 1e-9:
