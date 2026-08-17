@@ -49,6 +49,7 @@
     给它打红点 —— 旧数据看得出是旧的，不会被当成新的
 """
 import argparse
+import csv
 import datetime
 import glob
 import hashlib
@@ -158,6 +159,57 @@ EARLY_BY = {
     # 闸门要跟快腿是因为快腿那一行**先落库**（update() 建行、慢腿的 9 列留空，
     # 下一轮回补）—— 闸门等到第 11 天才开，快腿的数就要在源站上白挂九天。
     'ndaq': (14, 14),
+}
+
+
+# ── 慢腿登记表 ────────────────────────────────────────────────────────────────
+# 上面那张 EARLY_BY 管的是**头条腿**：头条一落地，data_through 就跳月，not_due 判
+# 「追平」，整家从此不再下载。对单腿源这没问题；对多腿源，慢腿当月晚几天发的数据
+# 就此没人去取，要等下个月 1 号闸门重开才顺带回补 —— 结构性晚一整个发布周期。
+#
+# 2026-08-17 实测的四个实例（逐列扫 series/<t>.csv 的最后非空月）：
+#   tmx  17 条现货列停 2026-06 / 28 条 MX 列 2026-07   官方 2026-08-07 就发了
+#   db1  20 条集团台账列停 2026-06 / 43 列 2026-07     上游 xlsx 字节已变
+#   lseg 17 条订单簿列停 2026-06 / 63 列 2026-07       官方 2026-08-11 就发了
+#   jpx   2 条 IPO 列停 2026-06 / 39 列 2026-07
+# 三家在首页都是**绿点 + 印着 2026-07**，用户看不出慢腿差了一个月。
+#
+# 值 = (列名前缀元组, (常规月开闸日, 季末月开闸日))，开闸日单位同 LAG =「该月结束
+# 后第几天」。列名用**前缀**匹配，因为慢腿的列名天然共享前缀；写全名也可以。
+#
+# ⚠ 开闸日不必取该腿实测的**最早**到货日。慢腿闸门要防的是「拖到下月」这种整月丢
+#   失，只要闸门在当月内开，那个月的数据当月就能进来。lseg 订单簿近 30 期跨度是
+#   +2~+24 天，按 +2 开闸等于每月多 20 天下载，而它每轮要打 67 次检索 API
+#   （fetch/lseg_orderbook.py 的逐月 _search，各 sleep 0.25s）—— 取中段即可。
+#
+# ⚠ **不要为「永久停发」的列建登记**：它们永远追不平，闸门会被顶成天天下载。
+#   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年）、lseg 的 6 条
+#   repoclear_* 停在 2026-05（另一条更慢的腿，节奏未实测）。两者都**不**登记。
+SLOW_LEGS = {
+    # 现货 CTS 新闻稿：数据月结束后第 2–8 天、中位第 5、139 期最坏第 14
+    # （fetch/tmx.py:63-65）。该 docstring 自己的结论就是「闸门次月 2 日开」。
+    'tmx':  (('tmx_all_', 'tsx_', 'tsxv_', 'alpha_', 'alphax_drk_'), (2, 2)),
+
+    # 集团 IR 台账 xlsx：次月约第 10 天（fetch/db1.py:4、:62 的节奏表）。
+    # 按 not_due docstring 的 EARLY 原则提前 2 天，宁可多打两个空请求。
+    # 后三条不共享前缀，只能点名；漏了它们闸门会在台账只到一半时提前关，而
+    # turnover_cash_total_eurbn 还是 build/exchanges12.py 的门槛列，漏它等于把
+    # exchanges-eu / exchanges-products 两张横截面页一起钉住。
+    'db1':  (('trading_days_cash', 'vol_fd_', 'vol_power_', 'vol_gas_', 'otc_',
+              'auc_', 'settle_', 'adv_360t_', 'cash_balances_', 'gsf_',
+              'turnover_cash_total_eurbn', 'aum_stoxx_dax_etf_eurbn',
+              'vol_licensed_index_contracts'), (8, 8)),
+
+    # LSE 订单簿月报：近 30 期 +2~+24 天，2026 中位 +21
+    # （fetch/lseg_orderbook.py:76-86，节奏 2024 年起明显变慢）。
+    # 取第 12 天是成本折中：比中位早 9 天，又不至于把 67 次/轮的检索 API 打 20 天。
+    'lseg': (('lse_orderbook_', 'lse_trading_days_', 'lse_lit_uk_share_',
+              'turquoise_integrated_', 'turquoise_dark_', 'turquoise_paneuropean_',
+              'turquoise_trading_days_', 'gbp_eur_rate'), (12, 12)),
+
+    # jpx 的 2 条 IPO 列（ipo_public_offerings / ipo_funds_jpybn）同样落后一个月，
+    # 但 fetch/jpx.py 的 docstring 没给这条腿的实测到货日分布 —— **先不登记**，
+    # 免得凭猜的开闸日要么天天下载、要么根本不开。补测后照上面的格式加一行即可。
 }
 
 
@@ -334,6 +386,18 @@ def not_due(t):
     所以先用本地已有的 data_through 对照 LAG 表，够新的直接跳过，一个字节都不下。
     --force 会绕过它（改了图表代码后要全量重建）。
 
+    ## 两道判据，缺一条就会静默丢一整个发布周期
+
+    `data_through` 只代表**头条腿**（build/single.py:resolve_through 只看头条列），
+    所以它答的是「页面够不够新」。多腿源的慢腿晚几天发，头条一落地它就跳月、闸门
+    随即关死，慢腿当月的数据要等下个月 1 号才顺带回补 —— 2026-08-17 实测 tmx /
+    db1 / lseg 三家正卡在这上面，且首页全是绿点。所以这里是两道：
+
+      1. 头条腿追平了今天本该有的月份（原判据，逐位未变）；
+      2. **且** SLOW_LEGS 登记的慢腿也不欠货（slow_pending）。
+
+    没登记慢腿的家，第 2 条恒为「不欠」，行为与改动前完全相同。
+
     ## 这道闸门与首页红点用的**不是**同一个阈值，别再合并回去
 
     两者共用 LAG 表，但方向相反，所以偏置必须相反：
@@ -364,8 +428,7 @@ def not_due(t):
     页面挂着旧数据一天」要防的事。EARLY_BY 的三条逐家注释（enx / sgx / ndaq）算的
     也都是「LAG − EARLY = 实测最早发布日」，与这里的 `- 1` 同一口径。
     """
-    r = load(os.path.join(HERE, 'build', 'roster.py'), 'roster_due')
-    lag = r.LAG.get(t)
+    lag = due_lag(t)
     if lag is None:
         return False
     p = os.path.join(DATA, f'{t}.js')
@@ -379,20 +442,99 @@ def not_due(t):
     # 共用 roster 的 LAG 表（= 该月结束后第几天发布，季末月单独给值），但偏置取 -EARLY
     # 而不是红点的 +GRACE（理由见上）。从本月往回找第一个「已开闸」的候选月，
     # 那就是今天本该已经有的月份。
-    today = datetime.date.today()
+    early = EARLY_BY.get(t, (EARLY, EARLY))
+    due = _due_month((lag[0] - early[0], lag[1] - early[1]))
+    if due is None or through < due:
+        return False
+    # 头条腿追平了，但多腿源可能还欠着慢腿的货 —— 那正是 data_through 看不见的部分。
+    return not slow_pending(t)
+
+
+def due_lag(t):
+    """roster 的 LAG[t]（= 该月结束后第几天发布，(常规月, 季末月)）；没登记返回 None。
+
+    单拎出来是因为 not_due 与「跳过原因」那句话都要用它，而它每次都要 load 一遍
+    build/roster.py —— 两处各写一遍 load 迟早会漂。
+
+    缓存一份：not_due 与「跳过原因」那句话各调一次，28 家就是 56 次 load，而 LAG
+    是启动即定的常量表，一轮之内不会变。
+    """
+    if not _LAG_CACHE:
+        _LAG_CACHE.update(load(os.path.join(HERE, 'build', 'roster.py'),
+                               'roster_due').LAG)
+    return _LAG_CACHE.get(t)
+
+
+_LAG_CACHE = {}
+
+
+def _due_month(open_days, today=None):
+    """今天本该已经拿到的那个月（'YYYY-MM'）；6 个月内没有候选月开闸时返回 None。
+
+    `open_days` = (常规月, 季末月)，单位与 LAG 一致 =「该月结束后第几天开闸」。
+    从 not_due 里原样拆出来，只为让**每条腿各带各的开闸日**走同一份算术 ——
+    日期这层只能有一份实现：`- 1` 那个偏移（end 已经是「月末后第 1 天」）是靠实测
+    才发现的，抄第二份必然少写一次。循环体与拆分前逐行相同。
+
+    `today` 只为测试留缝，生产路径一律走默认值。
+    """
+    today = today or datetime.date.today()
     for k in range(6):
         n = today.year * 12 + today.month - 1 - k      # 候选月的下个月（k=0 即本月）
         y, m = n // 12, n % 12 + 1
         end = datetime.date(y, m, 1)                   # 候选月月末 + 1 天
         cy, cm = (y, m - 1) if m > 1 else (y - 1, 12)  # 候选月本身
-        qe = cm % 3 == 0
-        days = lag[1] if qe else lag[0]
-        early = EARLY_BY.get(t, (EARLY, EARLY))[1 if qe else 0]
-        # end 已是「月末后第 1 天」，故偏移量减 1，闸门才真的落在月末后第 (days-early)
-        # 天（理由与实测见 docstring 末节）。max(0,…) 仍把下界钉在次月 1 号。
-        if today >= end + datetime.timedelta(days=max(0, days - early - 1)):
-            return through >= f'{cy}-{cm:02d}'
-    return False
+        off = open_days[1] if cm % 3 == 0 else open_days[0]
+        # end 已是「月末后第 1 天」，故偏移量减 1；max(0,…) 把下界钉在次月 1 号。
+        if today >= end + datetime.timedelta(days=max(0, off - 1)):
+            return f'{cy}-{cm:02d}'
+    return None
+
+
+def slow_pending(t, today=None):
+    """这一家是否「还欠着慢腿的货」→ 欠就返回 True，闸门必须开着。
+
+    判据只用 series/<t>.csv 里逐列的最后非空月，**不碰 payload、不 import fetch
+    模块**。两条都是刻意的：
+
+      · data_through 是给**页面新鲜度**用的（build/single.py:resolve_through 只看
+        头条列，slow_cols 一律排除 —— 那对页面是对的，一条天生晚发的腿不该拖住整
+        页）。闸门问的是另一个问题「今天还欠不欠货」，欠一条腿也是欠。两个问题共
+        用一个字段，正是 tmx / db1 / lseg 静默停更的全部成因。
+      · import fetch 模块会把 openpyxl / fitz / pandas 这些重库拖进「已追平」这条
+        今天完全不碰 fetch 的路径，28 家每天都要付一次。
+
+    **失败一律 fail-open（当成「欠货」→ 去下载）**：这个方向错了只多几个 HTTP
+    请求，反方向错了是整月静默丢数据 —— 而后者正是本函数要修的那个 bug。所以整个
+    函数体裹在 except 里，异常只打 WARN，绝不让它把整轮 monthly_run 带走。
+    """
+    reg = SLOW_LEGS.get(t)
+    if not reg:
+        return False
+    prefixes, open_days = reg
+    try:
+        due = _due_month(open_days, today)
+        if due is None:                       # 这条腿今天还没开闸 → 不欠
+            return False
+        p = os.path.join(SERIES, f'{t}.csv')
+        with open(p, encoding='utf-8', newline='') as f:
+            rows = list(csv.reader(f))
+        head = rows[0]
+        idx = [i for i, c in enumerate(head)
+               if i and any(c.startswith(x) for x in prefixes)]
+        if not idx:
+            print(f'  ⚠ {t}: 慢腿登记的列前缀在 series/{t}.csv 里一列都没匹配上 —— '
+                  f'多半是上游改了列名，登记就此静默失效。按欠货处理（照常下载）。')
+            return True
+        # 一条腿 = 同一份上游文件、同一次到货 ⇒ 各列的最后非空月本应相同。
+        # 取最小（最落后的那列）才是这条腿真实的进度。
+        last = min((max((r[0] for r in rows[1:]
+                         if i < len(r) and r[i].strip()), default='')
+                    for i in idx), default='')
+        return last < due
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring 的 fail-open
+        print(f'  ⚠ {t}: 慢腿判定出错（{type(e).__name__}: {e}）—— 按欠货处理，照常下载。')
+        return True
 
 
 def builder(t):
@@ -476,7 +618,14 @@ def one(t, force):
     代价：多算一次全文件 hash（series 里最大的一家几百 KB，可忽略）。
     """
     if not force and not_due(t):
-        return 'NOCHANGE', '未到披露期，跳过下载'
+        # 这两种情况以前共用一句「未到披露期，跳过下载」，而 2026-08-17 实测那天被
+        # 跳过的 25 家**没有一家**真的「未到披露期」—— 闸门早在 08-01~08-12 就开了，
+        # 真实原因全是后一种。那句话最误导的地方在于它听着完全无害（「太早了，当然
+        # 没数据」），于是 tmx / db1 / lseg 的慢腿停更就一直躲在它后面没人看见。
+        lag = due_lag(t)
+        early = EARLY_BY.get(t, (EARLY, EARLY))
+        due = lag and _due_month((lag[0] - early[0], lag[1] - early[1]))
+        return 'NOCHANGE', (f'线上已追平候选月 {due}' if due else '闸门未开，跳过下载')
     fp = os.path.join(HERE, 'fetch', f'{t}.py')
     cmd = builder(t)
     if cmd is None:
