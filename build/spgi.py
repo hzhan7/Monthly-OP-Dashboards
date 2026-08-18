@@ -14,10 +14,13 @@
 
 ⚠️ 披露口径的硬约束（决定了本页为何比其他标的薄）：
    · Billed Issuance 官方**只披露同比百分比，从不给绝对面值**。故本页用同比链式
-     构造一个指数（2024 年同月 = 100）来呈现相对水平，指数本身不是公司披露值。
-   · SPDJI ADV 官方给绝对值，但每份 xlsx 只含当年与上年两年。2024 年的绝对值由
-     2025 年值与官方「'25 v. '24 % Change」反算得到（披露数据的算术推导，非估计）。
-   · 更早年份的历史文件在 CDN 上已不可访问，故序列起点为 2024-01。
+     构造一个指数（2022 年同月 = 100）来呈现相对水平，指数本身不是公司披露值。
+   · SPDJI ADV 官方给绝对值，但每份 xlsx 只含当年与上年两年。2022 年的绝对值由
+     2023 年值与官方「'23 v. '22 % Change」反算得到（披露数据的算术推导，非估计）。
+   · 序列起点 2022-01，**再往前不是拿不到、是官方从来没按月披露过**：这份月度指标
+     工作簿创刊于 2023 Q1（as of March 2023），更早各季的 IR 附件只有财报稿 / slides /
+     proxy / 年报与 2019-2021 的 Supplemental Information PDF，无一带月度颗粒度。
+     历史回填的取数与实测见 build/basefill/spgi_history.py。
    · 从 2025-12 起 ADV 定义剔除 event contracts，且不追溯重述早期月份 → 断点。
 
 与 PDF 版的两处有意差异（其余逐字照搬）：
@@ -66,10 +69,10 @@ def _source_dates():
 
 
 SRC = 'Source: S&P Global monthly metrics xlsx; format after Goldman Sachs GIR'
-DNOTE = ('2024 ADV values are back-calculated from the 2025 level and the officially '
-         "disclosed 25 v. 24 % change")
+DNOTE = ('2022 ADV values are back-calculated from the 2023 level and the officially '
+         "disclosed 23 v. 22 % change")
 INOTE = ('Billed issuance is disclosed as a y/y % only; this index chains those '
-         'percentages (same month of 2024 = 100)')
+         'percentages (same month of 2022 = 100)')
 EVENT = ('From Dec-2025 the ADV definition excludes event contracts, with no restatement '
          'of earlier months')
 
@@ -213,6 +216,24 @@ def shift(month, k):
     return f'{n // 12}-{n % 12 + 1:02d}'
 
 
+# ── 基期年 / 反算年一律现读，不许写死 ──────────────────────────────────────
+# 2026-08 那次历史回填（build/basefill/spgi_history.py）把序列从 2024-01 推到 2022-01：
+# 指数基期由「2024 同月 = 100」挪到 2022、整年反算的年份由 2024 挪到 2022。当时页面里
+# 手写的 2024 有二十来处，全部在一夜之间变成假话 —— 所以这三个量此后只从数据里取。
+BIDX_FROM = next(m for m in MONTHS if BIDX[at(m)] is not None)
+BASE_Y = int(BIDX_FROM[:4]) - 1          # 同比链第一环的分母年，即指数的基期年
+BIY_FROM = next(m for m in MONTHS if BIY[at(m)] is not None)
+ADVY_FROM = next(m for m in MONTHS if ADVY[at(m)] is not None)
+DERIVED_YEARS = sorted({m[:4] for m in MONTHS if DERIVED[at(m)] == 1})
+DERIVED_TXT = '、'.join(DERIVED_YEARS)
+# 反算年的「源年」= 反算年 + 1（拿它的披露值除以官方同比得到反算年）。取最早那一个：
+# 反算年目前只有一个（2022），但这个量要能承受「将来又补了一年」和「官方补发了绝对值、
+# 一年都不剩」两种情况 —— 直接 int(DERIVED_TXT) 在这两种情况下都会当场炸。
+DERIVED_Y0 = int(DERIVED_YEARS[0]) if DERIVED_YEARS else None
+N_BIY = sum(1 for m in MONTHS if BIY[at(m)] is not None)
+N_ADVY = sum(1 for m in MONTHS if ADVY[at(m)] is not None)
+
+
 # ────────────────────────── Exhibit 1：汇总表 ──────────────────────────
 CUR = LATEST
 PRV = shift(LATEST, -1)
@@ -228,12 +249,12 @@ SUM_ROWS = [
     (None, 'ADV y/y as disclosed (%)', ADVY, 1, True, 'pp', True),
     ('S&P Global Ratings', None, None, 0, False, '', True),
     (None, 'Billed issuance y/y as disclosed (%)', BIY, 1, True, 'pp', True),
-    # 链式指数：每个月各自以自己的 2024 同月为基数（见 Exhibit 3 图注与页脚说明第 3 条）。
-    # m/m 展开是 (BI_Jun26/BI_Jun24)/(BI_May26/BI_May24) —— 两个不同且从未披露的分母的
-    # 比值之比，不对应任何可解释的量；分位是把 18 个各带不同基数的读数排在一起比大小
+    # 链式指数：每个月各自以自己的 BASE_Y 同月为基数（见 Exhibit 3 图注与页脚说明第 3 条）。
+    # m/m 展开是 (BI_Jun26/BI_Jun22)/(BI_May26/BI_May22) —— 两个不同且从未披露的分母的
+    # 比值之比，不对应任何可解释的量；分位是把一串各带不同基数的读数排在一起比大小
     # （与 CONTRACT §2 对 4-4-5 净销售额、build/cost.py 对 net_sales_bn 的处理同构）。
-    # y/y 保留：BI_2024 同月在分子分母上精确对消，等于官方披露的同比。
-    (None, 'Billed issuance index (2024 same month = 100)', BIDX, 1, False, 'ratio', False),
+    # y/y 保留：BASE_Y 同月在分子分母上精确对消，等于官方披露的同比。
+    (None, f'Billed issuance index ({BASE_Y} same month = 100)', BIDX, 1, False, 'ratio', False),
 ]
 
 
@@ -289,33 +310,46 @@ summary = {
     'note': (DNOTE + '.&nbsp; ' + INOTE + '.&nbsp; ' + EVENT + '.<br>'
              '两条 y/y 行本身就是比率，m/m 与 y/y 一律用百分点差（|差|&lt;1 用 bp），'
              '不是「百分比的百分比变化」。3Y %ile = 当月读数在近 36 个月里高于百分之多少的观测；'
-             '两条 y/y 与指数序列 2025-01 才起步，分位只有 18 个观测垫底，只能当粗略刻度读。<br>'
+             f'两条 y/y 与指数序列自 {mlab(BIY_FROM)} 起共 {N_BIY} 个读数，'
+             + ('已经填满 36 个月的分位窗口。' if N_BIY >= 36 else
+                f'不足 36 个月，分位只有 {N_BIY} 个观测垫底，只能当粗略刻度读。')
+             + '<br>'
              '<b>指数行的 m/m 与 3Y %ile 是刻意留空，不是缺数</b>：指数每个月各自以自己的 '
-             '2024 同月为基数，跨月的变化是两个不同分母（且从未披露）的比值之比，'
+             f'{BASE_Y} 同月为基数，跨月的变化是两个不同分母（且从未披露）的比值之比，'
              '不对应任何可解释的量，分位同理是拿苹果比橘子。'
-             f'该行只有 y/y 可读 —— 2024 年同月基数在分子分母上对消，'
+             f'该行只有 y/y 可读 —— {BASE_Y} 年同月基数在分子分母上对消，'
              f'{num(BIDX[at(CUR)], 1)} / {num(BIDX[at(YAG)], 1)} 恰好等于官方披露的 '
              f'{BIY[at(CUR)]:+.0f}%（上一行）。相邻两列的水平值仍照 Exhibit 3 列出供核对，'
              '但不可相减。'),
 }
 
 # ────────────────────────── Exhibit 2：SPDJI ADV ──────────────────────────
-W2 = 25                                        # 照搬 deck 的 win=25
+# deck 的 win=25 是在序列只有 30 个月时定的（那时 25 已经接近全序列）。2026-08 回填到
+# 2022-01 之后再钉死 25，等于把刚补回来的一半历史挡在图外 —— 本图是全页唯一的水平值
+# 长历史图，通栏、画全序列。窗口现读长度，序列每月长一个月它自己跟着长。
+W2 = len(MONTHS)
 m2 = tail(MONTHS, W2)
 adv_w = tail(ADV, W2)
 xl2 = [mlab(m) for m in m2]
 brk_i = brk_idx(m2)
 adv_yoy_lvl = (ADV[at(CUR)] / ADV[at(YAG)] - 1) * 100
 # 次轴同比与 deck 的 gsx.lvl_bar 同源：拿水平值自己算，不是抄披露值那一列。
-# 两者本来就应当相等（2024 年的 ADV 正是用披露的同比反算出来的），最新月
-# +30.0% vs 披露 +30.0% 即互为校验；不等就说明 CSV 内部矛盾，宁可让它露出来。
+# 两者只在**四舍五入之内**相等，不是恒等：官方那一列的同比是 3-4 位小数的成品
+# （0.256），而这里是拿两个水平值现除（9.791/7.794-1 = 25.62%），两者印到 1 位小数
+# 时对得上就算互为校验。2026-08 回填之前 2024 全年的 ADV 正是用披露同比反算的，
+# 那时两者是**精确**相等；回填换成官方直接披露的绝对值之后，这层恒等消失了 ——
+# 差得远（超过半个百分点）才说明 CSV 内部矛盾，那时宁可让它露出来。
 advy_w = tail(yoy_of(ADV), W2)
 # ── 为什么本页留在单月口径（CONTRACT.md §6 的默认是 12 个月滚动合计）──
-# 理由不是「ADV 不能加总」（日均量的 12 个月合计确实有量纲问题，但同比是比值、
-# 分子分母同权，交易日在比值里直接约掉，所以那不是障碍），而是**数据长度**：
-# 本页序列自 2024-01 起（更早年份的官网 xlsx 在 CDN 上已不可访问，见口径说明），
-# 而滚动同比要 12 个月填窗 + 12 个月比较才有第一个点。下面这两个数现算，
-# 窗口每月往前滚、序列每月长一个月，它们会自己变 —— 写死就迟早变成假话。
+# 【2026-08 更新】原来的理由是**数据长度**（序列只有 30 个月，填不满滚动窗口）。
+# 回填到 2022-01 之后那条理由**已经失效**，下面这几个现算的数会自己证明这一点。
+# 剩下的两条理由与序列长度无关，各自独立成立：
+#   (1) 口径断点：滚动窗口会把 2025-12「剔除 event contracts」一次抹到 12 个月上，
+#       而单月口径至少还能逐月点名哪几个读数跨了口径 —— 对本页这次断点，滚动比单月更糊；
+#   (2) 页内可对读：billed issuance 从来不给绝对面值，Ex3/4/7 手里根本没有可加总的
+#       水平值序列，滚动口径无从算起。Ex2 单独改成滚动，全页就再没有两处同比能互相对读。
+# 这两条哪天不成立了（断点滚出全序列、或官方开始给面值），就该改回默认口径。
+# 下面这几个数一律现算 —— 窗口每月往前滚、序列每月长一个月，写死就迟早变成假话。
 _ttm_w = tail(ttm_cover(ADV), W2)
 TTM_HAVE = sum(1 for v in _ttm_w if v is not None)
 MOM_HAVE = sum(1 for v in advy_w if v is not None)
@@ -346,16 +380,21 @@ ex2 = {
     'note': (f'柱为公司披露的 SPDJI 交易所交易衍生品日均成交量；金线（右轴）是同月对'
              f'去年同月的水平值同比（<b>单月口径</b>），最新月 {adv_yoy_lvl:+.1f}% 与公司披露的 '
              f'{ADVY[at(CUR)]:+.1f}% 互为校验。'
-             f'<b>本图偏离契约默认的 {Y.TTM_WIN} 个月滚动合计同比，理由是数据长度不够，'
-             f'不是「日均量不能加总」</b>（同比是比值，分子分母同权，交易日在比值里约掉）：'
+             f'<b>本图偏离契约默认的 {Y.TTM_WIN} 个月滚动合计同比，理由是口径断点与页内'
+             f'可对读，不是数据长度、也不是「日均量不能加总」</b>'
+             f'（同比是比值，分子分母同权，交易日在比值里约掉）：'
              f'本页序列自 {mlab(MONTHS[0])} 起共 {len(MONTHS)} 个月，'
-             f'而滚动同比要 {Y.TTM_WIN} 个月填窗 + {Y.TTM_WIN} 个月比较才有第一个点 —— '
-             f'本图这 {W2} 个月的窗口里，单月口径能画 {MOM_HAVE} 个月，'
-             f'滚动口径只能画 {TTM_HAVE} 个月。'
-             f'换口径会把这条线的 {(W2 - TTM_HAVE) / W2 * 100:.0f}% 变成空白，'
-             f'而剩下的 {TTM_HAVE} 个点里有 {_ttm_after_brk} 个落在 {mlab(BRK_M)} '
-             f'口径断点之后 —— 滚动窗口会把这次断点一次抹到 {Y.TTM_WIN} 个月上，'
-             f'反倒比单月更难说清哪几个读数跨了口径。'
+             f'这 {W2} 个月的窗口里单月口径能画 {MOM_HAVE} 个月、'
+             f'滚动口径能画 {TTM_HAVE} 个月 —— '
+             + (f'长度已经不再是障碍（{mlab(MONTHS[0])} 起的历史是 2026-08 回填补上的）。'
+                if TTM_HAVE >= MOM_HAVE * 0.8 else
+                f'换口径仍会把这条线的 {(W2 - TTM_HAVE) / W2 * 100:.0f}% 变成空白。')
+             + f'留在单月的两条理由与长度无关：滚动口径这 {TTM_HAVE} 个点里有 '
+               f'{_ttm_after_brk} 个落在 {mlab(BRK_M)} 口径断点之后，'
+               f'滚动窗口会把这次断点一次抹到 {Y.TTM_WIN} 个月上，反倒比单月更难说清'
+               f'哪几个读数跨了口径；而 billed issuance 从来不给绝对面值，'
+               f'Exhibit 3/4/7 根本没有可加总的水平值序列，本图单独改成滚动，'
+               f'全页就再没有两处同比能互相对读。'
              + (f'窗口最左端没有上年对位月，同比从 {advy_from} 起才有。'
                 if advy_from else '窗口内还没有上年对位月，暂时只有柱、没有同比线。')
              + (f'红色竖虚线 = 口径断点（{mlab(BRK_M)}）：该月起 ADV 剔除 event '
@@ -377,11 +416,11 @@ idx_i = [i for i, v in enumerate(BIDX) if v is not None]
 i0 = idx_i[0]
 idx_months = MONTHS[i0:]
 idx_vals = BIDX[i0:]
-W3 = min(25, len(idx_vals))                    # deck 的 win=25，序列只有 18 个月
+W3 = len(idx_vals)             # 同 Ex2：deck 的 win=25 是短序列时代的遗物，现在画全序列
 idx_w = tail(idx_vals, W3)
 xl3 = [mlab(m) for m in tail(idx_months, W3)]
 idx_yoy = (BIDX[at(CUR)] / BIDX[at(YAG)] - 1) * 100
-# 指数的同比 = 官方披露的 billed issuance 同比：2024 年同月那个（从未披露的）基数
+# 指数的同比 = 官方披露的 billed issuance 同比：BASE_Y 年同月那个（从未披露的）基数
 # 在分子分母上精确对消。这是本图**唯一**可跨月读的量 —— 水平值不是。
 idxy_w = tail(yoy_of(idx_vals), W3)
 idxy_at = [i for i, v in enumerate(idxy_w) if v is not None]
@@ -393,14 +432,18 @@ idxy_from = mlab(tail(idx_months, W3)[idxy_at[0]]) if idxy_at else None
 ex3 = {
     'n': 3, 'kind': 'gs_bar', 'full': True, 'fmt': 'f0', 'xlabels': xl3,
     'title': 'Ratings billed issuance index（右轴 = 单月同比 / single-month y/y）',
-    'ylab': 'index, 2024 same month = 100', 'ylab2': '% y/y（单月）',
+    'ylab': f'index, {BASE_Y} same month = 100', 'ylab2': '% y/y（单月）',
     'legend': 'Monthly index',
     'values': [r6(v) for v in idx_w],
     'note': ('<b>指数不是公司披露值</b>：官方每月只给 billed issuance 的同比百分比，'
-             '本图把这些百分比链式接到「2024 年同月 = 100」上。因此每根柱各自以自己的'
-             '2024 同月为基数，<b>跨月读高低会混进 2024 年的季节性</b>，柱与柱之间'
+             f'本图把这些百分比链式接到「{BASE_Y} 年同月 = 100」上。因此每根柱各自以自己的'
+             f'{BASE_Y} 同月为基数，<b>跨月读高低会混进基期年的季节性</b>，柱与柱之间'
              '不能相减、也不能取平均（汇总表的 m/m 与分位为同一原因留空）。'
-             + (f'干净的只有金线（右轴）那条同比：2024 同月基数在分子分母上精确对消，'
+             f'<b>链越长这条毛病越重</b>：本图的链已经跨 {LY - BASE_Y} 年，'
+             f'某一格的水平值是它自己那个月份 {BASE_Y} 年以来逐年同比连乘的结果，'
+             f'所以同一年内各月之间那道两倍上下的落差，主要是各月基数漂移的差异，'
+             f'不是当年的季节性 —— 这也是本图只能竖着看（同月对同月）、不能横着看的原因。'
+             + (f'干净的只有金线（右轴）那条同比：{BASE_Y} 同月基数在分子分母上精确对消，'
                 f'{idx_yoy:+.0f}% 与官方披露的 {BIY[at(CUR)]:+.0f}% 一致。'
                 f'指数从 {mlab(idx_months[0])} 起才有，故同比从 {idxy_from} 起'
                 f'才存在（窗口内 {idxy_n} 个点）。'
@@ -417,7 +460,9 @@ if idxy_from:
                   'values': [r6(v) for v in idxy_w]}
 
 # ────────────────────────── Exhibit 4：两条披露 y/y ──────────────────────────
-W4 = 18                                        # 照搬 deck 的 win=18
+# deck 的 win=18 同样是短序列时代定的。两条披露 y/y 都从 BIY_FROM 起，
+# lines_endlabels 不接受缺口，所以窗口取「两列都有读数」的全长。
+W4 = min(N_BIY, N_ADVY)
 m4 = tail(MONTHS, W4)
 biy4 = [r6(BIY[at(m)]) for m in m4]
 advy4 = [r6(ADVY[at(m)]) for m in m4]
@@ -451,7 +496,7 @@ ex4 = {
 }
 
 # ────────────────────────── Exhibit 5：季度 ADV ──────────────────────────
-QN = 10                                        # 照搬 deck 的 win=10
+QN = 999                                       # deck 是 win=10；回填后画全部季度
 qmap = {}
 for m in MONTHS:
     if ADV[at(m)] is None:
@@ -486,14 +531,13 @@ ex5 = {
              'yfmt': 'pct1'},
     'note': ('季度值是该季各月 ADV 的<b>简单平均</b>（日均口径不能相加），'
              '右轴 y/y 用 4 个季度前作分母，故前 4 个季度留空。'
-             '2024 各季用的是反算出来的月度 ADV。'
+             + (f'{DERIVED_TXT} 各季用的是反算出来的月度 ADV。' if DERIVED_TXT else '')
              + ('2025Q4 起口径变更只影响该季的 12 月一个月，红色竖虚线标在该季左缘 —— '
                 '季度柱本身跨了新旧两套口径（季内两个月旧、一个月新），是本图最脏的一根，'
                 '它右侧各季的 y/y 也都是跨口径比值。' if q_brk else '')
              + (f'最新一季只含 {qn_last} 个月，柱为浅蓝、右轴 y/y 已作废。'
                 if qn_last < 3 else '')
-             + '左轴刻度延到 0 以下几格是双轴零点对齐的副作用（右轴同比有负值），'
-             'ADV 本身恒为正，零线下方是空的。'),
+             ),   # 轴行为那句不在这里写死：见下方 _axes 之后按复刻件判定当场补
     'src_extra': DNOTE + '.',
 }
 if q_brk:
@@ -504,8 +548,9 @@ if q_brk:
     ex5['break_label'] = BRK_LABEL
 
 # ────────────────────────── Exhibit 6：分年 ADV 路径 ──────────────────────────
-NY = 3                                         # 照搬 deck 的 n_years=3
-years = sorted({int(m[:4]) for m in MONTHS if ADV[at(m)] is not None})[-NY:]
+# deck 的 n_years=3 是序列只有两三年时定的。回填之后画**全部**有 ADV 的年份 ——
+# 本图正是「看跨年路径」的那张，把补回来的历史挡在外面就等于白回填。
+years = sorted({int(m[:4]) for m in MONTHS if ADV[at(m)] is not None})
 yser = []
 for y in years:
     vals = [None] * 12
@@ -547,7 +592,10 @@ ex6 = {
 }
 
 # ────────────────────────── Exhibit 7：billed issuance y/y 热力矩阵 ──────────
-hy = sorted({int(m[:4]) for m in MONTHS})[-NY:]
+# 只取**确实有 billed issuance 同比**的年份：ADV 比它多一年（BASE_Y 是反算出来的，
+# 那一年 billed issuance 连同比都没有）。把那一年也排进来只会多出一整行灰格，
+# 而热力图的行标签已经不需要再解释「这一行为什么是空的」。
+hy = sorted({int(m[:4]) for m in MONTHS if BIY[at(m)] is not None})
 BIY_FROM = next(m for m in MONTHS if BIY[at(m)] is not None)
 matrix = []
 rowlab = []
@@ -616,6 +664,55 @@ if BRK_Y in years:
                  '那条年线自身就是混口径')
 BRK_MORE = ('受影响的不只是柱本身：' + '；'.join(_more) + '。') if _more else ''
 
+# ── 双轴的实际行为同样现读，不手写 ─────────────────────────────────────────
+# 起因：2026-08 把 Ex2 的窗口从 25 个月拉到全序列之后，右轴同比的量程变宽，
+# 对齐零点的画布浪费从阈值以下翻到 42.9% —— 引擎当场改走「各自缩放」兜底分支，
+# 而当时的口径说明还写着「左轴会被拉到 0 以下（Exhibit 2 / 5）」，正好说反。
+# 这类「图注说的轴行为 ≠ 引擎做的」正是 tools/align_replica.py 被造出来要挡的东西
+# （见该文件 docstring 里 schw Ex3 那次），所以这里直接调它，别再手写编号。
+def _align_replica():
+    spec = importlib.util.spec_from_file_location(
+        'align_replica', os.path.join(ROOT, 'tools', 'align_replica.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_AR = _align_replica()
+
+
+def _axes_of(ex):
+    """复刻件算不了的图型（如 heat_matrix 没有 values）直接跳过 —— 它们本来也不是双轴。
+
+    吞掉的只有 ValueError（复刻件对未知 kind 的明确拒绝）；别的异常照旧冒出去，
+    那说明复刻件与 charts.js 已经对不上了，属于必须有人来看的情况。"""
+    try:
+        return _AR.compute_axes_from_exhibit(ex)
+    except ValueError:
+        return None
+
+
+_axes = {e['n']: a for e in EXHIBITS for a in [_axes_of(e)] if a}
+# 「左轴被拉到 0 以下」= 对齐零点且左轴下界真的为负；「各自缩放」= 触发兜底分支。
+AX_DIP = [n for n, a in sorted(_axes.items())
+          if a['dual'] and a['zero_aligned'] and a['left_min'] < 0]
+AX_FALLBACK = [n for n, a in sorted(_axes.items()) if a['dual'] and a['fallback_triggered']]
+
+
+def _exl(ns):
+    return 'Exhibit ' + '、'.join(str(n) for n in ns)
+
+
+# Ex5 图注末尾那句轴行为同样现补：它随窗口长度翻面（Ex2 就在 2026-08 这次翻了），
+# 写死在图注里的话，翻面那天就成了一句指着空气说话的假断言。
+_a5 = _axes.get(5)
+if _a5 and _a5['zero_aligned'] and _a5['left_min'] < 0:
+    ex5['note'] += ('左轴刻度延到 0 以下几格是双轴零点对齐的副作用（右轴同比有负值），'
+                    'ADV 本身恒为正，零线下方是空的。')
+elif _a5 and _a5['fallback_triggered']:
+    ex5['note'] += ('左右两轴零点不同高（对齐代价过大，引擎改为各自缩放），'
+                    '图内那行红字就是这个意思，不是报错。')
+
 # ────────────────────────── Exhibit 8：核对表 ──────────────────────────
 TN = 13
 tm = tail(MONTHS, TN)
@@ -627,7 +724,7 @@ table = {
         ['SPDJI ADV（mn 张/日）', 'adv'],
         ['ADV y/y（%，披露）', 'advy'],
         ['Billed issuance y/y（%，披露）', 'biy'],
-        ['Billed issuance 指数（推导，2024 同月 = 100）', 'idx'],
+        [f'Billed issuance 指数（推导，{BASE_Y} 同月 = 100）', 'idx'],
     ],
     'rows': [{
         'xl': mlab(m),
@@ -647,18 +744,40 @@ NOTES = [
     ('<b>公司每月只给两个数</b>：Ratings billed issuance 的 y/y 百分比、SPDJI 交易所交易衍生品的 ADV。'
      '本页比其他标的薄不是漏做，是披露就这么多 —— 没有收入、没有 AUM、没有分部拆分。'),
     ('⚠️ <b>Billed issuance 没有绝对面值</b>：官方只披露同比百分比，从不给面值。'
-     'Exhibit 3 的指数是把这些百分比链式接到「2024 年同月 = 100」上构造的，'
-     '<b>指数本身不是公司披露值</b>；每个月各自以自己的 2024 同月为基数，'
-     '跨月比较会混进 2024 年的季节性，指数的 m/m 不可当趋势读。'),
-    ('⚠️ <b>2024 年的 ADV 是反算值</b>：官方给绝对值，但每份 xlsx 只含当年与上年两年。'
-     '2024 年的月度 ADV 由 2025 年同月值与官方「\'25 v. \'24 % Change」反算得到 —— '
-     '这是对披露数据的算术推导，不是估计，但精度受官方那个百分比的四舍五入限制。'
-     'Exhibit 2 里这些月份画成斜纹柱。'),
+     f'Exhibit 3 的指数是把这些百分比链式接到「{BASE_Y} 年同月 = 100」上构造的，'
+     f'<b>指数本身不是公司披露值</b>；每个月各自以自己的 {BASE_Y} 同月为基数，'
+     f'跨月比较会混进基期年的季节性，指数的 m/m 不可当趋势读。'
+     f'链现在跨 {LY - BASE_Y} 年，各月基数的漂移已经大到能主导同一年内各月的高低 —— '
+     f'那张图只能同月对同月竖着看。'),
+    ((f'⚠️ <b>{DERIVED_TXT} 年的 ADV 是反算值</b>：官方给绝对值，但每份 xlsx 只含当年与'
+      f'上年两年，最早那一份（as of March 2023）的上年列就是 {DERIVED_TXT} 年。'
+      f'{DERIVED_TXT} 年的月度 ADV 由 {DERIVED_Y0 + 1} 年同月值与官方'
+      f'「\'{str(DERIVED_Y0 + 1)[2:]} v. \'{str(DERIVED_Y0)[2:]} % Change」反算得到 —— '
+      '这是对披露数据的算术推导，不是估计，但精度受官方那个百分比的四舍五入限制'
+      '（官方那一列只存到 0.1 个百分点，反算值可信到小数点后第二位，第三位不要当真）。'
+      'Exhibit 2 里这些月份画成斜纹柱。'
+      f'（2026-08 回填之前 2024 年也是反算的；那一年现在改用 Dec-2024 工作簿里公司'
+      '<b>直接披露</b>的绝对值，两者最大差 0.056%。）')
+     if DERIVED_Y0 else
+     ('<b>本页当前没有反算月份</b>：所有月份的 ADV 都是公司直接披露的绝对值，'
+      'Exhibit 2 里没有斜纹柱。')),
     (f'⚠️ <b>口径断点 {BRK_M}</b>：从 {BRK_Y} 年 {int(BRK_M[5:])} 月起，ADV 的定义剔除 '
      'event contracts，且<b>不追溯重述</b>更早的月份。' + BRK_TXT + BRK_MORE +
      'Ratings billed issuance（Exhibit 3 / 7）与这次变更无关，不画断点。'),
-    ('<b>序列起点 2024-01</b>：更早年份的 xlsx 在 CDN 上已不可访问，'
-     '所以本页没有疫情前的基准，也做不出真正意义上的长历史图与 3 年以上的分位。'),
+    (f'<b>序列起点 {MONTHS[0]}，再往前官方从来没有按月披露过</b>：公司在 2023-02-09 的 '
+     'Q4/FY2022 财报 8-K（SEC accession 0000064040-23-000055）「Upcoming Disclosures」'
+     '一节里预先宣布，这两条月度指标「beginning with results in 2023」才开始披露；'
+     '工作簿也确实<b>创刊于 2023 Q1</b>（as of March 2023，Published 4/27/2023），'
+     '它的上年列把 ADV '
+     f'带回 {MONTHS[0][:4]} 年。2011-2022 各季在 IR 上只有财报稿 / slides / prepared '
+     'remarks / proxy / 年报，没有任何一份带月度颗粒度'
+     '（那几份 2019-2021 的「Supplemental Information」PDF 是 <b>IHS Markit 的</b>'
+     '文件，并购后 IR 站吞并了对方的文档历史才挂在同一个 CDN 上）。'
+     '所以本页仍然<b>没有疫情前的基准</b>，'
+     '而且这不是抓取能力问题，是披露本身不存在：要 2016-2021 的月度数只能改用'
+     '非官方口径的替代品（第三方数据商，或拿 CME / Cboe 的合约量去凑 SPDJI 的 ADV），'
+     '本仓只用公司一手披露，那条路不走。取数与逐条实测见 '
+     '<code>build/basefill/spgi_history.py</code>。'),
     ('<b>Exhibit 5 的季度值是月度 ADV 的简单平均</b>，不是合计 —— ADV 已是日均口径，'
      '相加会得到一个没有单位含义的数。右轴 y/y 用 4 个季度前作分母，前 4 个季度留空；'
      '未满季时引擎会强制作废该季 y/y（拿 2 个月比上年完整 3 个月必然砸出假坑）。'),
@@ -667,18 +786,26 @@ NOTES = [
      '3Y %ile = 当月读数在近 36 个月里高于百分之多少的观测，由全站共用的 '
      '<code>build/pctile.py</code> 统一给出（同一条序列在两页得到相反判定，'
      '正是因为从前各页各写各的）：它会把「近两年回放里几乎恒定钉在 0 或 100」的行整列留空。'
-     '本页三行都不是死列，所以都出了数；但两条 y/y 与指数序列只有 2025-01 以来的 '
-     '18 个观测垫底，分位只能当粗略刻度。'),
+     f'本页三行都不是死列，所以都出了数；两条 y/y 与指数序列自 {mlab(BIY_FROM)} 起'
+     f'共 {N_BIY} 个观测，'
+     + ('分位窗口已经填满。' if N_BIY >= 36 else '仍不足 36 个月，分位只能当粗略刻度。')),
     ('<b>与 PDF 版的差异</b>：Exhibit 2/3 已回到 PDF 的原型 —— 浅蓝柱 + 右轴金色 y/y 折线，'
      '<b>不画 12 个月均线</b>（deck 的 <code>gsx.lvl_bar</code> 原话：均线只是把柱子再平滑'
      '一遍、不带新信息）。此前网页版用「Prior 12mo Avg.」虚线顶替，那条线在 Exhibit 3 上'
      '等于对本页自己宣布「跨月不可比」的链式指数取 12 个月平均，在 Exhibit 2 上又六比六地'
      '横跨了 2025-12 的口径断点却被当成一个单一数字引用 —— 两处都已随虚线一起删掉。'
      '其余的顺序、编号、标题、图注、断点、窗口长度与 PDF 逐条一致。'),
-    ('<b>双轴图的左轴会被拉到 0 以下</b>（Exhibit 2 / 5）：本引擎强制「左右两轴的零点画在'
-     '同一条水平线上」，右轴同比含负值时，左轴就得跟着往下扩出一段空白 —— PDF 版的 '
-     'matplotlib 不对齐零点，所以 deck 上左轴是从 0 起的。ADV 恒为正，零线下方那几格'
-     '一定是空的，不是数据；代价过大（浪费四成以上画布）时引擎会改为不对齐并在图上标红字。'),
+    ('<b>双轴图的零点对齐</b>：本引擎默认把「左右两轴的零点画在同一条水平线上」，'
+     '右轴同比含负值时，左轴就得跟着往下扩出一段空白 —— PDF 版的 matplotlib 不对齐零点，'
+     '所以 deck 上左轴是从 0 起的。浪费超过四成画布时引擎放弃对齐、改为两轴各自缩放，'
+     '并在图内标一行红字「左右轴零点不同高」。本页当前的实际情况'
+     '（由 <code>tools/align_replica.py</code> 复刻引擎算法当场判定，不是手写）：'
+     + (f'{_exl(AX_DIP)} 走对齐，左轴下界被压到 0 以下；'
+        f'那几格一定是空的，不是数据（ADV 与指数都恒为正）。' if AX_DIP else '')
+     + (f'{_exl(AX_FALLBACK)} 因对齐代价过大走了兜底分支，两轴各自缩放、'
+        f'左轴仍从 0 起，图内那行红字就是这个意思 —— 它<b>不是</b>报错。'
+        if AX_FALLBACK else '')
+     + ('本页当前没有双轴图触发这两种情况。' if not (AX_DIP or AX_FALLBACK) else '')),
     ('<b>核对表保持官方原始单位</b>：ADV 为 mn 张/日、两条 y/y 为百分比，均未换算；'
      '指数那一列是本页推导值，已在表头标注，拿它去核对官方文件会对不上。'),
     (f'<b>同比口径：本页每一处都是单月同比</b>（当月 ÷ 去年同月 − 1），'
@@ -698,8 +825,11 @@ NOTES = [
      f'滚动口径无从算起。(3) <b>Exhibit 5</b> 是季度对照、<b>Exhibit 7</b> 是热力矩阵，'
      f'按 §6 本就豁免。(4) 两张表的 y/y 列必须恒等于表内算术，读者拿相邻两列去除'
      f'要能得到同一个数 —— 表内自相矛盾比口径混用更糟。'
-     f'序列长到能画滚动口径（约需再攒 {max(0, Y.TTM_WIN * 2 - len(MONTHS))} 个月）之后，'
-     f'Exhibit 2 应当改回默认口径。'),
+     f'<b>其中 (1) 那条理由在 2026-08 的历史回填之后已经失效</b>：序列现在有 '
+     f'{len(MONTHS)} 个月，早够画滚动口径了。Exhibit 2 仍留在单月，靠的是上面 (2)(3)(4) '
+     f'三条 —— 尤其是口径断点：滚动窗口会把 {mlab(BRK_M)} 那次变更一次抹到 '
+     f'{Y.TTM_WIN} 个月上，比单月更难说清哪几个读数跨了口径。断点滚出全序列、'
+     f'或官方开始披露 billed issuance 的绝对面值之后，应当重新审这个选择。'),
 ]
 
 adv_c, advy_c, biy_c, bidx_c = ADV[at(CUR)], ADVY[at(CUR)], BIY[at(CUR)], BIDX[at(CUR)]
@@ -709,7 +839,7 @@ adv_mixed = mkey(CUR) >= mkey(BRK_M) > mkey(YAG)
 headline = (f'SPDJI ADV {adv_c:,.2f} mn 张/日（{advy_c:+.1f}% y/y，公司披露'
             + ('；分子已剔除 event contracts、分母未重述，同比跨口径' if adv_mixed else '')
             + f'） · Ratings billed issuance {biy_c:+.0f}% y/y'
-            f' · issuance 指数 {bidx_c:,.1f}（2024 同月 = 100，推导值，跨月不可比）'
+            f' · issuance 指数 {bidx_c:,.1f}（{BASE_Y} 同月 = 100，推导值，跨月不可比）'
             f' · 序列 {MONTHS[0]} 起共 {len(MONTHS)} 个月')
 
 
@@ -775,9 +905,9 @@ def compose_brief(months, adv_raw, advy_raw, biy_raw, derived_raw):
         不复述）。剩下能读的就是「它踩的是什么基数」—— 本页对它只写这个。
       · **R4（单位恒等）无处可用**：公司每月只给两个数，没有任何一对分子/分母
         （没有收入、没有 AUM、没有账户数），构造不出人均/户均型指标。
-      · **排名类表述必须写清样本，且本页的样本有两处要标注**：2024 全年的 ADV 是用
-        官方百分比反推的**推导值**、序列横跨 2025-12「剔除 event contracts」的口径
-        断点（序列本身也只有 30 个月 —— 更早的 xlsx 已从 CDN 撤下）。两处标注
+      · **排名类表述必须写清样本，且本页的样本有两处要标注**：基期年（当前是 2022）
+        全年的 ADV 是用官方百分比反推的**推导值**、序列横跨 2025-12「剔除 event
+        contracts」的口径断点。两处标注
         一个都不能为省字删掉，但每一处后面**紧跟它自己那一句当场判定**：推导月里有
         没有高过本月的、剔掉断点前的月份后名次变没变。不给「样本有 N 处不干净」这类
         统一总述 —— 两处的约束力本来就不一样，并列成一句会让读者去折价一个其实很结实
@@ -881,7 +1011,7 @@ def compose_brief(months, adv_raw, advy_raw, biy_raw, derived_raw):
     # ── R2：这个同比踩的是什么分母。本页没有量价、没有分部，能拆的只有「分子在哪、
     #    分母在哪」这一层，所以只报两个位置：去年同月那个分母在全样本的名次，以及下个月
     #    要换成哪一个（它就是序列里 12 个月前那个已落库的读数，不是预测）。
-    #    两处都缺就整句不写 —— 序列头一年（2024）没有对位的去年同月。
+    #    两处都缺就整句不写 —— 序列头一年（当前是 2022）没有对位的去年同月。
     if i >= 12 and B.need(adv[i], adv[i - 12]):
         # 「这个同比」是指上一句那个读数，所以指代词跟着 advy 在不在走：公司没披露同比的
         # 月份写「这个」就指了个空。分母本身照算不误 —— 它是序列里的水平值，与披露无关。
@@ -966,7 +1096,8 @@ payload = {
     'notes': NOTES,
     'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                '仅供个人研究，不构成投资建议 · '
-               'Billed issuance 指数与 2024 年 ADV 为推导值，已在对应图注标注'),
+               + (f'Billed issuance 指数与 {DERIVED_TXT} 年 ADV 为推导值，已在对应图注标注'
+                  if DERIVED_TXT else 'Billed issuance 指数为推导值，已在对应图注标注')),
 }
 
 # 抬头那行「官方发布于」——取台账里 data_through 这个月的发布日，源头是 xlsx 页脚

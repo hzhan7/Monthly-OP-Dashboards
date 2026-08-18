@@ -41,13 +41,23 @@ EARLY_BY['spgi'] 照最早的第 13-14 天开闸，宁可空跑几周也不能�
 
 ════════ 口径坑（决定了本模块能产出什么、不能产出什么）════════
 1. Billed Issuance 官方**只披露同比百分比，从不给绝对面值**。所以
-   billed_issuance_index 是我们自己按同比链式构造的指数（2024 年同月 = 100），
+   billed_issuance_index 是我们自己按同比链式构造的指数（BASE_YEAR 同月 = 100），
    不是公司披露值。链式规则：index[y,m] = index[y-1,m] * (1 + yoy_fraction)，
-   2024 年各月的基数固定为 100（因为 2024 年没有可用的同比数据）。
+   BASE_YEAR（=2022）各月的基数固定为 100 —— 那是同比链第一环 '23 v. '22 的分母年，
+   它自己没有可用的同比数据。
 2. SPDJI ADV 给绝对值，但每份 xlsx 只有「当年 + 上年」两列。
-   spgi_clean.csv 里 2024 年的绝对值是用 2025 年值除以官方 '25 v. '24 同比反算出来的
+   序列起点是 2022-01：2022 年的绝对值由 2023 年值除以官方 '23 v. '22 同比反算
    （adv_derived=1 标记这一点）——是披露数据的算术推导，不是估计。
-   更早年份的 xlsx 在 CDN 上已不可访问，故序列起点固定为 2024-01。
+   **再往前不是拿不到，是从来没有过**：公司在 2023-02-09 的 Q4/FY2022 财报 8-K
+   （SEC accession 0000064040-23-000055）"Upcoming Disclosures" 一节里预先宣布，
+   这两条月度指标"beginning with results in 2023"才开始披露；工作簿也确实创刊于
+   2023 Q1（as of March 2023）。2011-2022 各季在 Q4 feed 里只有财报稿 / slides /
+   proxy / 年报，没有任何月度颗粒度的附件（那几份 2019-2021 的 "Supplemental
+   Information" PDF 是**IHS Markit 的**文件，并购后被 IR 站吞并了文档历史才挂在
+   同一个 CDN 上，两条序列它一条都没有）。取数与逐条实测见
+   build/basefill/spgi_history.py。
+   （历史回填靠那个脚本，不靠本模块：本模块每次只下载**最新一份** xlsx，
+   正常跑一年序列也不会往回长一个月。）
 3. 2025 年 12 月起 ADV 定义**剔除 event contracts，且官方不重述更早月份**。
    也就是说 2025-11 与 2025-12 之间存在一处口径断点，画图时要标注（build_spgi.py 已标）。
 4. 百分比在 xlsx 里存的是小数（0.03 = +3%），CSV 里存的是百分数（3）。
@@ -95,6 +105,11 @@ CDN_BASE = 'https://s29.q4cdn.com/690959130/files/doc_financials'
 # 走浏览器 UA 是硬要求：Cloudflare 对 python-urllib/3.x 这种 UA 直接 403。
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+
+# billed_issuance_index 链式基期年：2023 是链上第一环（'23 v. '22），基数年就是 2022。
+# build/basefill/spgi_history.py::BASE_YEAR 与本常数是同一个判断，改一个必须改另一个
+# —— 不一致时增量追加会拿 100 当错误年份的基数，把整条链接歪且不报错。
+BASE_YEAR = 2022
 
 SHEET_RATINGS = 'Ratings'          # 子串匹配，防官方改全名
 SHEET_INDICES = 'Dow Jones'
@@ -305,8 +320,14 @@ def _yoy_columns(ws, hrow):
     return out
 
 
-def _adv_columns(ws, hrow):
-    """把 "2026 ADV (in millions of contracts)" 解析成 {年份: 列号}。"""
+def _adv_columns(ws, hrow, default_year=None):
+    """把 "2026 ADV (in millions of contracts)" 解析成 {年份: 列号}。
+
+    2023 年那四份（本工作簿系列的头四期）表头里**不写年份**，只有一句
+    "ADV (in millions of contracts)" —— 因为当时表里只有一年，不需要区分。
+    那种表头拿 default_year 兜底（调用方从月份行标签 "Jan 2023" 里取到的年份）。
+    没有 default_year 又读不出年份时照旧报错：宁可炸也不能把一列数安到猜的年份上。
+    """
     out = {}
     for col in range(1, ws.max_column + 1):
         v = ws.cell(hrow, col).value
@@ -314,21 +335,67 @@ def _adv_columns(ws, hrow):
             hit = re.search(r'(20\d{2})', v)
             if hit:
                 out[int(hit.group(1))] = col
+            elif default_year is not None and 'million' in v.lower():
+                # 无年份表头只允许出现一次：出现两列就说明这份表里有多年数据却都不标年，
+                # 那时 default_year 会把两列覆盖成同一年，属于静默错配，必须炸。
+                if default_year in out:
+                    raise SpgiFetchError(
+                        'Indices sheet 有多列不带年份的 ADV 表头，无法判定各属哪一年')
+                out[default_year] = col
     if not out:
         raise SpgiFetchError('Indices sheet 表头行没有 ADV 绝对值列')
     return out
 
 
+# 月份行标签的两种写法：现行版式是裸月名（"January"），2023 年那四份带年份且
+# 月名缩写不统一（"Jan 2023" / "June 2023" / "September 2023" 混排）。
+# 英文月名的前三个字母互不重复，所以按前缀匹配是唯一的。
+_MONTH_LABEL_RE = re.compile(r'^([A-Za-z]{3,9})\.?\s*(20\d{2})?$')
+
+
+def _month_label(text):
+    """月份行标签 → (月份序号 1..12, 年份或 None)；不是月份标签返回 (None, None)。"""
+    hit = _MONTH_LABEL_RE.match((text or '').strip())
+    if not hit:
+        return None, None
+    word = hit.group(1).lower()
+    got = [i + 1 for i, name in enumerate(MONTHS) if name.lower().startswith(word)]
+    if len(got) != 1:
+        return None, None
+    return got[0], (int(hit.group(2)) if hit.group(2) else None)
+
+
 def _month_rows(ws, hrow):
-    """表头之后连续的 12 个月份行，返回 {月份序号: 行号}。"""
-    out = {}
+    """表头之后的月份行，返回 ({月份序号: 行号}, 标签里的年份或 None)。
+
+    版式约束（这是这个函数存在的理由 —— 它挡的是官方改版后静默读错行）：
+    月份必须**从 1 月起逐月连续**。现行版式恒为 12 行（未披露的月份是空值行，
+    行还在）；2023 年那四份是当季截断的（3 / 6 / 9 / 12 行），所以不能一律要求 12。
+    改成「从 1 月起连续」既覆盖了这两种真实版式，又保留了原判据的作用：
+    官方哪天挪行或漏行，认出来的就不再是 1..N 的连续段，照样炸。
+    """
+    out, years = {}, set()
     for row in range(hrow + 1, min(ws.max_row, hrow + 30) + 1):
         v = ws.cell(row, 1).value
-        if isinstance(v, str) and v.strip() in MONTHS:
-            out[MONTHS.index(v.strip()) + 1] = row
-    if len(out) != 12:
-        raise SpgiFetchError('sheet %r 只认出 %d 个月份行，期望 12' % (ws.title, len(out)))
-    return out
+        if not isinstance(v, str):
+            continue
+        mno, yr = _month_label(v)
+        if mno is None:
+            continue
+        if mno in out:
+            raise SpgiFetchError('sheet %r 里 %s 出现了两次（行 %d 与 %d）'
+                                 % (ws.title, MONTHS[mno - 1], out[mno], row))
+        out[mno] = row
+        if yr:
+            years.add(yr)
+    if not out:
+        raise SpgiFetchError('sheet %r 里一个月份行都没认出来' % ws.title)
+    if sorted(out) != list(range(1, len(out) + 1)):
+        raise SpgiFetchError('sheet %r 的月份行不是从 1 月起逐月连续，认出的是 %r'
+                             % (ws.title, sorted(out)))
+    if len(years) > 1:
+        raise SpgiFetchError('sheet %r 的月份标签跨了多个年份 %r' % (ws.title, sorted(years)))
+    return out, (years.pop() if years else None)
 
 
 def _num(cell):
@@ -350,11 +417,15 @@ def parse(xlsx_path):
 
     ws_r = _sheet(wb, SHEET_RATINGS)
     hr = _header_row(ws_r)
-    r_yoy, r_rows = _yoy_columns(ws_r, hr), _month_rows(ws_r, hr)
+    r_yoy = _yoy_columns(ws_r, hr)
+    r_rows, _ = _month_rows(ws_r, hr)
 
     ws_i = _sheet(wb, SHEET_INDICES)
     hi = _header_row(ws_i)
-    i_yoy, i_adv, i_rows = _yoy_columns(ws_i, hi), _adv_columns(ws_i, hi), _month_rows(ws_i, hi)
+    i_yoy = _yoy_columns(ws_i, hi)
+    # 先读月份行：2023 年那四份的 ADV 表头不带年份，年份只能从行标签 "Jan 2023" 里取。
+    i_rows, i_label_year = _month_rows(ws_i, hi)
+    i_adv = _adv_columns(ws_i, hi, default_year=i_label_year)
 
     data = {}
     for year, col in sorted(r_yoy.items()):
@@ -502,8 +573,8 @@ def update(series_dir, cache_dir):
        SpgiFetchError（见该函数：本模块只追加、不从零建库），SPGI 抓取当场失败。
     2. 官方重述体检的**唯一基线**。下面那段循环逐行拿本期 xlsx 重算 spgi.csv
        的历史月份，不一致就告警（不改历史，改写历史必须人工决定）。
-       这件事 spgi_clean.csv 顶不了：它的数值是 repr 未清洗写法，且 2024 年的
-       绝对值是拿 2025 年值除以官方同比反算出来的（见模块 docstring 坑 3/4），
+       这件事 spgi_clean.csv 顶不了：它的数值是 repr 未清洗写法，且 2022 年的
+       绝对值是拿 2023 年值除以官方同比反算出来的（见模块 docstring 坑 3/4），
        拿它当基线会满屏假告警。基线丢了，官方悄悄重述历史就再没人发现。
 
     结论：spgi.csv = 本模块的私有台账 + 重述基线，只被 fetch 读回、不进 build。
@@ -547,10 +618,10 @@ def update(series_dir, cache_dir):
             continue
         d = data[p]
 
-        # billed_issuance_index 需要上一年同月的指数；2024 年是约定基数 100。
+        # billed_issuance_index 需要上一年同月的指数；BASE_YEAR 是约定基数 100。
         prev = _prev_year(p)
         prev_key = _ym(prev)
-        if prev[0] <= 2024:
+        if prev[0] <= BASE_YEAR:
             base = 100.0
         else:
             prev_row = clean_by_month.get(prev_key)
