@@ -13,6 +13,21 @@
 注意：侦察稿里的 vol_us_matched_shares_mm / us_trading_days / us_*_shares_bn 等名字
 **都不是最终列名**，fetcher 落库时改过；docs/verify/_design.md 里引用的也是旧名。以 CSV 为准。
 
+━━ 2026-08-18：原来「只有 19 个月」的四列里，有两列已经回补 ━━━━━━━━━━━━━
+本文件此前整篇建立在「A 组四列只有 2025-01 起 19 个月且不可回补」这个前提上
+（头条为什么不取 A 组、次轴为什么只能用单月同比、ttm_yoy 为什么不取 IR 那条，
+理由全指向它）。**那个前提对其中两列已经不成立**：
+  · `vol_nordic_derivs_mmcontracts` → **2013-01** 起（163 个月）。来源是 Nasdaq Nordic
+    交易所公告的 "Derivative Volumes per Month" 月报，19 个重叠月与 IR 印刷值一位小数全等。
+  · `vol_us_cash_matched_mnsh`       → **2010-10** 起（190 个月）。2025-01 起仍是 IR 原值，
+    更早是同一张 CSV 里 nasdaqtrader 三盘口（Nasdaq + NTX + PSX）的和 ÷ 1e6。
+    19 个重叠月里 18 个 |差| ≤ 0.0101% ⇒ 拼接落差在 0.01% 量级。
+另外两列仍然只有 19 个月，而且是**两种不同的「不能」**（别混为一谈）：
+  · `vol_us_options_mmcontracts`  Nasdaq 一方确实没有月度档案（source_hard）。
+  · `vol_nordic_cash_value_usdbn` 官方月度原件是**欧元**的，换算不回 IR 那条美元
+    （13 个重叠月系统性低 0.77%~2.50%）—— 是口径断点，不是抓取难题。
+两条的实测证据都在 `fetch/ndaq.py` 的模块 docstring（A 组「历史深度」一节 + 口径坑 19/20）。
+
 ━━ 📌 本页做不了量价分解：金额与股数分属两个法域 ━━━━━━━━━━━━━━━━━━━━━━━
 量价分解要一对**同口径**的（金额，数量）。本表唯一的金额列是
 `vol_nordic_cash_value_usdbn`（**北欧 + 波罗的海**现货成交额），
@@ -70,9 +85,24 @@ def _tradingday_spread():
     return min(v), max(v), (max(v) / min(v) - 1.0) * 100.0
 
 
-_A0, _A1, _AN = _span('vol_us_cash_matched_mnsh')          # A 组（IR PDF）
+_MN0, _MN1, _MNN = _span('vol_us_cash_matched_mnsh')       # 拼接列：IR + 三盘口和
+_OPT0, _OPT1, _OPTN = _span('vol_us_options_mmcontracts')  # 纯 IR，只有 19 个月
+_ND0, _ND1, _NDN = _span('vol_nordic_derivs_mmcontracts')  # 交易所公告档案回补
+_NC0, _NC1, _NCN = _span('vol_nordic_cash_value_usdbn')    # 纯 IR，只有 19 个月
 _B0, _B1, _BN = _span('vol_us_cash_matched_nasdaq_sh')     # B 组（nasdaqtrader）
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
+
+
+def _span_zh(m0, n, fallback=''):
+    """图注里那半句「X 起 N 个月」。算不出就退回不含数字的写法。"""
+    return f'{m0} 起 {n} 个月' if m0 else fallback
+
+
+# 拼接列的接缝：IR 段从哪个月起，用**探针列**现算，不写死 '2025-01'。
+# 探针 = `vol_us_options_mmcontracts` 的首月 —— 那一列只来自 IR 那份 PDF、从来没被回补过，
+# 所以它在 CSV 里的首月就是「IR 第一次进这张表」的那个月，正是接缝的位置。
+# （它不会随 PDF 的滚动窗口移动：已入库的月份永不删除，见 fetch/ndaq.py 的幂等约定。）
+_SPLICE_AT = _OPT0
 
 _NO_DECOMP_NOTE = (
     '📌 <b>本页不具备量价分解的数据条件 —— 金额与股数分属两个法域。</b>'
@@ -86,15 +116,20 @@ _NO_DECOMP_NOTE = (
 )
 
 _NOTE_TTM = (
-    '<b>这张图用的是本页历史最长的一条流量序列</b>'
-    + (f'（<code>vol_us_cash_matched_nasdaq_sh</code>，{_B0} 起 {_BN} 个月）'
-       if _B0 else '')
-    + '，而不是 IR 月报那条'
-    + (f'（<code>vol_us_cash_matched_mnsh</code>，{_A0} 起只有 {_AN} 个月）'
-       if _A0 else '')
-    + '。理由很硬：12 个月滚动同比要两个不重叠的 12 个月窗口，'
-      '也就是至少 24 个月的连续历史 —— IR 那条<b>还不够</b>，'
-      '在它攒够之前，本页任何滚动同比都只能画在 nasdaqtrader 这条上。'
+    '<b>这张图用的是本页历史最长、而且<u>单一来源</u>的那条流量序列</b>'
+    + (f'（<code>vol_us_cash_matched_nasdaq_sh</code>，{_B0} 起 {_BN} 个月，'
+       f'整条都来自 nasdaqtrader 的月度市占 xlsx）' if _B0 else '')
+    + '，而不是三盘口合计那条'
+    + (f'（<code>vol_us_cash_matched_mnsh</code>，{_MN0} 起 {_MNN} 个月）'
+       if _MN0 else '')
+    + '。⚠ 这里的理由 2026-08 换过一次：'
+      '原先是「IR 那条只有 19 个月，滚动同比要 24 个月，够不到」；'
+    + (f'现在它已回补到 {_MN0}，够了，但它是<b>拼接列</b>'
+       f'（{_SPLICE_AT} 起 IR 原值、更早是 nasdaqtrader 三盘口和）。'
+       if _MN0 and _SPLICE_AT else '现在它已经够长了，但它是拼接列。')
+    + '滚动同比把 24 个月压成一个数，接缝落在窗口里时读者没法把它挑出来，'
+      '所以这张图仍然留在单一来源那条上 —— 两条的水平值差在 0.01% 量级，'
+      '换列不会改变图形，只会让来源变得不好交代。'
 
       '<b>为什么这一列不在上面的分组里。</b>它的单位是裸股数/月、量级 10¹¹，'
       '唯一能读的显示方式是 ×1e-9 换成「十亿股/月」；而底座给带 scale 的列生成的'
@@ -110,15 +145,24 @@ _NOTE_TTM = (
 )
 
 # ── 本页最要命的一件事：两组数据的发布节奏差一周多 ─────────────────────────
-# A 组（IR Monthly Reporting Sheet PDF，4 列）：次月第 6~8 个日历日发布，只有 19 个月，
-#     因为那份 PDF 每月**原地替换**同一个 uuid，历史不可回溯（Wayback 本机硬禁）。
+# A 组（IR Monthly Reporting Sheet PDF，4 列）：次月第 6~8 个日历日发布；那份 PDF 每月
+#     **原地替换**同一个 uuid，所以 **IR 自己**只有 2025-01 起 19 个月的窗口。
 # B 组（nasdaqtrader.com marketshare{YY}.xlsx，9 列）：可回溯到 2005-09，
 #     但发布晚得多 —— 2026-06 那份的 Last-Modified 是 07-13，而 IR 的 07 月数据 08-05 就发了。
 # ⇒ 直觉是「头条取 A 组、B 组进 slow_cols」，但实测行不通：底座要求头条有 ≥24 个月
-#   共同历史，A 组只有 19 个月，这一页要等到 2026-12 才发得出来。
+#   共同历史，A 组四列里最新那期只有 19 个月的 IR 窗口，这一页要等到 2026-12 才发得出来。
 #   所以本页反过来 —— **以慢而长的 B 组为脊梁**，A 组当「发布更快的腿」。
 #   代价是本页数据月比 Nasdaq IR 官方晚一期（见 headline 处的完整推理）。
-#   等 A 组攒够 24 个月（2026-12）应当翻回来，那时 B 组九列才填进 slow_cols。
+#
+# ⚠ 2026-08-18 起「A 组 = 短、B 组 = 长」这个二分法**只对四列里的两列成立**了。
+#   回补之后各列真实长度（本文件在 import 期从 CSV 现算，不写死）：
+#       vol_us_options_mmcontracts     19 个月   纯 IR，source_hard
+#       vol_nordic_cash_value_usdbn    19 个月   纯 IR，欧元原件换不回美元
+#       vol_us_cash_matched_mnsh      190 个月   拼接（IR + nasdaqtrader 三盘口和）
+#       vol_nordic_derivs_mmcontracts 163 个月   Nasdaq Nordic 交易所公告档案
+#   头条与 slow_cols 的结论**不变**：头条要的是「四列共同历史」，那仍然被 19 个月的
+#   两条卡着；发布节奏也没变（IR 仍比 nasdaqtrader 早一个多星期）。变的只是
+#   分组的组织方式 —— 长短两类不再共用一个组标题，见下面 groups 的注释。
 
 SPEC = {
     'ticker': 'ndaq',
@@ -126,18 +170,22 @@ SPEC = {
     'title':  '纳斯达克（NDAQ）月度经营指标',
     'csv':    'ndaq.csv',
     'ccy':    'USD',
-    'source': 'Source: Nasdaq IR Monthly Reporting Sheet (ir.nasdaq.com) and '
-              'nasdaqtrader.com monthly market share files; format after Goldman Sachs GIR',
+    'source': 'Source: Nasdaq IR Monthly Reporting Sheet (ir.nasdaq.com), nasdaqtrader.com '
+              'monthly market share files and Nasdaq Nordic exchange notices '
+              '("Derivative Volumes per Month"); format after Goldman Sachs GIR',
 
     # ── 头条为什么不是 A 组：这家的两条腿是「快而短」对「慢而长」，只能二选一。
     # 底座的门槛要求头条列有 ≥24 个月的共同历史（同比与 3Y 分位算不出来就不该发页）。
-    # A 组（IR PDF，最新月更快）只有 19 个月 —— 拿它当头条，这一页要等到 2026-12
-    # 才够 24 个月，现在根本出不来（实测：底座打印「共同历史只有 19 个月」并退出码 0）。
-    # 所以头条取 B 组的份额列：share_us_cash_matched_group 有 189 个月（2010-10 起）、
-    # share_us_cash_matched_nasdaq 有 250 个月（2005-09 起），共同历史 189 个月，够。
+    # A 组四列里，美股期权与北欧现货至今只有 19 个月（另两列 2026-08-18 已回补，
+    # 见文件头那一段）—— 拿 A 组整组当头条，共同历史仍然是那 19 个月，过不了门槛。
+    # 所以头条取 B 组的份额列：share_us_cash_matched_group 有 190 个月（2010-10 起）、
+    # share_us_cash_matched_nasdaq 有 251 个月（2005-09 起），共同历史 190 个月，够。
     # 代价是本页数据月跟着 B 组走（比 IR 晚一期）；A 组因此变成「发布更快的腿」，
     # 在核对表尾部会多出一行、其余列显示「—」，这是底座内建的正常形态。
     # ⇒ slow_cols 因此为空：没有任何一列比头条更晚。
+    # ⚠ 回补**没有**给「换头条」开门：`vol_us_cash_matched_mnsh` 现在够长了，但它是
+    #   月度流量、量级 5 万，而头条那两格是份额（%）—— 换过去等于把这一页的主线从
+    #   「Nasdaq 在美股里占多少」改成「美股这个月成交了多少」，是换页不是换列。
     'headline': [
         {'col': 'share_us_cash_matched_group', 'zh': '美股 matched 市占率（三盘口合计）',
          'unit': '%', 'fmt': 'pct1', 'scale': 100},
@@ -146,28 +194,65 @@ SPEC = {
     ],
 
     'groups': [
-        # ── A 组：IR 月报口径，权威值，但只有 2025-01 起 19 个月。
-        # 两列两个单位 ⇒ 两个单桶 ⇒ 两张 gs_bar，次轴都是**单月同比**。
-        # 这两列只有 2025-01 起 19 个月，**够不到滚动同比所需的 24 个月**
-        # （两个不重叠的 12 个月窗口），所以单月同比在这里不是取舍而是唯一可行的口径。
-        # 契约允许用单月同比，条件是标题里声明（CONTRACT.md §6）⇒ 口径写进组名。
-        # 等这两列攒够 24 个月（约 2026-12），应改用 ttm_yoy 并把声明去掉。
-        {'zh': '美国市场（IR 月报口径，当月总量；次轴：单月同比）', 'cols': [
+        # ══ 为什么这里是四个单列组，而不是原来的两个双列组 ═══════════════════
+        # 底座对每个组**按单位分桶、一桶一图**（build/single.py 的 `buckets`）。
+        # 原来的「美国市场」组里两列两个单位，本来就出两张 gs_bar；组标题只是被
+        # 原样贴到两张图前面。回补之后这两列一条 19 个月、一条 190 个月，
+        # 再共用一句「IR 月报口径」的标题就是**在其中一张图上印假话**。
+        # 拆成四个单列组，出图数量、顺序、图型全不变，变的只是每张图的标题说的是它自己。
+        #
+        # 四张图的次轴一律是**单月同比**（底座 `ex_single` 给的就是它，本页无法改）。
+        # 契约允许，条件是标题里声明（CONTRACT.md §6）⇒ 四个组名里都带那半句。
+        # ⚠ 别再写「等攒够 24 个月就改用 ttm_yoy」—— 那是底座的图型问题，不是数据长度问题：
+        #   groups 走的是 ex_single，它只会画单月同比；要滚动同比得用 `ttm_yoy` 那条路。
+
+        # ── ① 美股期权：本页唯一一条**源头上就没有月度档案**的列（source_hard）。
+        #    与下面第 ③ 条不同：③ 的官方原件存在、只是币种口径接不上；这一条是根本没有。
+        #    Nasdaq 一方没有月度档案：IR 落地页只有一条 static-file、没有年份归档；
+        #    2016 的新闻稿 slug 404、2024 的新闻稿正文一个千分位数字都没有；
+        #    同目录的 msoption{YY}.xlsx 只有三家所（不含 ISE/GEMX/MRX）、只有三个月的快照。
+        #    三条 2026-08-18 都重新实测过，证据在 fetch/ndaq.py 的 A 组「历史深度」一节。
+        {'zh': '美股期权（IR 月报口径，%s；当月总量，次轴：单月同比）'
+               % _span_zh(_OPT0, _OPTN, '仅最近一段'), 'cols': [
             {'col': 'vol_us_options_mmcontracts', 'zh': '美股期权成交量（六所合计，含指数期权）',
              'unit': 'mn contracts/month', 'fmt': 'f0c'},
+        ]},
+
+        # ── ② 美股 matched 成交股数：拼接列。接缝在 _SPLICE_AT，落差 0.01% 量级。
+        #    组名里必须写出两段来源 —— 这是全页唯一一条「同一根线上有两个数据源」的序列，
+        #    不写出来读者会以为整条都是 IR 发的。
+        #    为什么不给它挂一条红色断点竖线：`breaks` 的语义是「从这一期起与左侧不可比」，
+        #    而这两段实测就是同一个东西（19 个重叠月里 18 个 |差| ≤ 0.0101%）。
+        #    画红线会把一个 0.01% 的来源切换说成口径换代，比不画更误导。理由同下面 breaks 处。
+        {'zh': ('美股 matched 成交股数（%s 起 IR 原值、更早为 nasdaqtrader 三盘口和；'
+                '当月总量，次轴：单月同比）' % _SPLICE_AT) if _SPLICE_AT else
+               '美股 matched 成交股数（当月总量，次轴：单月同比）', 'cols': [
             {'col': 'vol_us_cash_matched_mnsh', 'zh': '美股 matched 成交股数（Nasdaq+NTX+PSX）',
              'unit': 'mn shares/month', 'fmt': 'f0c'},
         ]},
 
-        # ── 北欧与波罗的海：**不是泛欧**。本机用仓内数据实算 2026-06：
+        # ── ③ 北欧与波罗的海现货成交额：**不是泛欧**。本机用仓内数据实算 2026-06：
         #    本列 Nasdaq = $93.2bn/月，而 Cboe Europe = 14.95 EURbn/日 × 22 个观察日
         #    × EURUSD 1.1518 ≈ $379bn/月 —— Cboe 是 Nasdaq 的 4.1 倍。
         #    Nasdaq 自报的「欧洲份额 74.5%」是北欧/波罗的海本地分母，与 Cboe 的泛欧份额
         #    不是同一个市场。所以只放绝对值，不放份额（CSV 里也没有份额列）。
-        # 同上：两列两个单位、同样只有 19 个月，滚动同比算不出来 ⇒ 口径写进组名。
-        {'zh': '北欧与波罗的海市场（Nordic + Baltic 口径，当月总量；次轴：单月同比）', 'cols': [
+        #    这一列同样只有 19 个月，但**原因与美股期权不同**：官方月度原件是欧元的
+        #    （交易所公告 'Main Market Total Equity Trading'，2022-03 起逐月连续），
+        #    折美元后与 IR 系统性低 0.77%~2.50%，scope 复原不了 ⇒ 是口径断点不是抓不到。
+        {'zh': '北欧与波罗的海现货成交额（Nordic + Baltic 口径，%s；当月总量，次轴：单月同比）'
+               % _span_zh(_NC0, _NCN, '仅最近一段'), 'cols': [
             {'col': 'vol_nordic_cash_value_usdbn', 'zh': '北欧+波罗的海现货成交额',
              'unit': 'USD bn/month', 'fmt': 'f1'},
+        ]},
+
+        # ── ④ 北欧与波罗的海衍生品：2026-08-18 从交易所公告档案回补到 2013-01。
+        #    重建口径 = 各权益类产品族 sheet 的 Cleared volumes / No. of Contracts 求和，
+        #    与 IR 印刷值在 19 个重叠月上一位小数全等（fetch/ndaq.py 口径坑 19）。
+        #    ⚠ 产品族是逐年长出来的（Mini Index 2020、OMXESG 2023、Custom Basket 2024），
+        #      2013-2019 只有股票与指数两族 —— 这不是口径变更（那些产品当时不存在），
+        #      但读者若拿 2013 与 2026 直接比"覆盖面"会想错，所以写进 notes。
+        {'zh': '北欧与波罗的海期权与期货（Nordic + Baltic 口径，%s；当月总量，次轴：单月同比）'
+               % _span_zh(_ND0, _NDN, '仅最近一段'), 'cols': [
             {'col': 'vol_nordic_derivs_mmcontracts', 'zh': '北欧+波罗的海期权与期货成交量',
              'unit': 'mn contracts/month', 'fmt': 'f1'},
         ]},
@@ -217,16 +302,31 @@ SPEC = {
     # 无口径断点。复核实测：2025-12 定格的 marketshare25.xlsx 与 2026-06 版的
     # marketshare26.xlsx 在 244 个重叠月 × 5 字段上逐格比对，不一致数 = 0 ——
     # Nasdaq 不重述美股月度成交量。NTX 只是 BX 的改名，不是换盘口。
-    # 各列不同的起点（2005-09 / 2009-01 / 2010-10 / 2025-01）是序列起点不是断点，
-    # 写成断点会在 187 个月的图上画出四条与口径无关的红线。
+    # 各列不同的起点（2005-09 / 2009-01 / 2010-10 / 2013-01 / 2025-01）是序列起点不是断点，
+    # 写成断点会在 127 个月的图上画出好几条与口径无关的红线。
+    #
+    # ⚠ 2026-08-18 回补之后专门重新想过两处「要不要登记断点」，结论都是**不登记**：
+    #  (a) `vol_us_cash_matched_mnsh` 在 2025-01 换来源（nasdaqtrader 三盘口和 → IR 原值）。
+    #      `breaks` 的语义是「从这一期起与左侧不可比」。这两段实测就是同一个东西：
+    #      19 个重叠月里 18 个 |差| ≤ 0.0101%（唯一的例外 2026-07 差 -0.2896%，
+    #      在 IR 段内部，与接缝无关，且第三方 Cboe tape 裁定 IR 对）。
+    #      接缝那一格 2024-12 → 2025-01 的环比 -2.69%，与同月三个盘口分列的环比
+    #      （Nasdaq -2.65%、合成份额 -2.66%）完全同步 ⇒ 那是真实的市场波动，不是接缝台阶。
+    #      画红线会把一个 0.01% 的来源切换说成口径换代。改写进组名与 notes，不画线。
+    #  (b) `vol_nordic_derivs_mmcontracts` 的产品族逐年增加（Mini Index 2020、OMXESG 2023、
+    #      Custom Basket 2024）。新产品上线不是口径变更 —— 上线前它们的成交量是 0 而不是
+    #      「没被统计」，与 PSX 2010-10 上线同型，本页对 PSX 也没有登记断点。
     'breaks': [],
 
     # 📌 'decomp' 刻意留空：金额列在北欧、股数列在美国，跨法域相除没有经济含义。
     # 完整理由见 _NO_DECOMP_NOTE（它进了下面 notes 的第一条）。
 
     # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
-    # ⚠ level 用的是 vol_us_cash_matched_nasdaq_sh 而**不是** IR 那条 ——
-    #   IR 那条只有 19 个月，滚动同比要 24 个月（两个不重叠的 12 个月窗口），画不出来。
+    # ⚠ level 用的是 vol_us_cash_matched_nasdaq_sh 而**不是**三盘口合计那条。
+    #   理由 2026-08-18 换过：原先是「那条只有 19 个月、够不到 24 个月」，现在它已经
+    #   回补到 2010-10，但它成了拼接列（2025-01 起 IR 原值、更早是三盘口和）。
+    #   滚动同比把 24 个月压成一个数，接缝混在里面读者挑不出来；这里这条整段单一来源，
+    #   而且更长（2005-09 起）。两条的水平值差在 0.01% 量级，换过去不会改变图形。
     # ⚠ 这一列**不在** groups 里（理由见上面的注释：底座给带 scale 的列生成的
     #   核对表脚注对非比率列是假话）。ttm_yoy 不走核对表那条路径，所以这里用 scale 安全。
     #   底座只校验它真实存在于 CSV，不会把它塞进核对表 ⇒ 那句假话不会被印出来。
@@ -242,17 +342,43 @@ SPEC = {
     'notes': [
         _NO_DECOMP_NOTE,
 
-        '本页有两个数据源、两种发布节奏。<b>A 组</b>（美国期权、美股 matched、北欧两列）来自 Nasdaq IR 的 '
+        '本页有三个数据源、两种发布节奏。<b>A 组</b>（美国期权、美股 matched、北欧两列）来自 Nasdaq IR 的 '
         'Monthly Reporting Sheet PDF，次月第 6~8 个日历日发布，是官方权威值；'
         '<b>B 组</b>（成交股数、份额、交易日）来自 nasdaqtrader.com 的月度市占率 xlsx，'
-        '历史深但发布晚一周多（2026-06 那份的 Last-Modified 是 2026-07-13，而 IR 的 07 月数据 08-05 就发了）。'
+        '历史深但发布晚一周多（2026-06 那份的 Last-Modified 是 2026-07-13，而 IR 的 07 月数据 08-05 就发了）；'
+        '<b>D 组</b>（只用于历史，不用于当期）是 Nasdaq Nordic 交易所公告的衍生品月报。'
         '<b>本页以 B 组为脊梁</b> —— 只有它够 24 个月历史、过得了发布门槛，'
         '因此页面数据月比 Nasdaq IR 官方晚一期；A 组反而是「发布更快的腿」，'
         '在末尾核对表里会多出一行、其余列显示「—」。这是刻意的取舍，不是抓取失败。',
 
-        '<b>A 组只有 2025-01 起 19 个月，且不可回补。</b>那份 PDF 每月原地替换同一个 static-file uuid，'
-        'IR 站不保留历史版本（老路径 302 回同一个 uuid，?year= 参数无效，2016/2019 的新闻稿正文里一个数字都没有）。'
-        '⇒ 2026-12 之前这四列做不了同比。',
+        '<b>IR 那份 PDF 只有 %s 起的滚动窗口，但四条 IR 序列里有两条已经从别的官方档案回补。</b>'
+        'PDF 每月原地替换同一个 static-file uuid，IR 站不保留历史版本（2026-08-18 复测：落地页全页只有 1 条 '
+        'static-file、无年份归档；2016 的新闻稿 slug 404；2024-10 那篇 200 但正文里一个千分位数字都没有）。'
+        '不过「PDF 回不去」不等于「这四列回不去」——'
+        '<b>北欧期权与期货</b>已按 Nasdaq Nordic 交易所公告的 "Derivative Volumes per Month" 月报重建到 %s'
+        '（19 个重叠月与 IR 印刷值一位小数全等）；'
+        '<b>美股 matched 成交股数</b>已按同一张表里 nasdaqtrader 的三个盘口分列相加补到 %s。'
+        '仍然只有 %s 起的是<b>美股期权</b>（Nasdaq 一方确实没有月度档案）与'
+        '<b>北欧现货成交额</b>（官方月度原件是欧元的，折美元后与 IR 系统性低 0.77%%~2.50%%，'
+        'scope 复原不了 —— 那是口径断点，不是抓取难题）。'
+        % (_SPLICE_AT or '最近一段', _ND0 or '更早', _MN0 or '更早', _SPLICE_AT or '最近一段'),
+
+        '<b>美股 matched 成交股数那条线上有一处来源切换，落差在 0.01%% 量级。</b>'
+        '%s 起是 IR 月报的原值，更早是同一张 CSV 里 nasdaqtrader 三个盘口（Nasdaq + NTX + PSX）'
+        '撮合量之和 ÷ 1e6。两段实测是同一个东西：19 个重叠月里 18 个月 |差| ≤ 0.0101%%。'
+        '（唯一的例外是 2026-07，差 -0.2896%% —— 那一格在 IR 段内部、与接缝无关，'
+        '是 nasdaqtrader 自己当月少计，用第三方 Cboe 日频 tape 逐日求和裁定 IR 对。）'
+        '接缝那一格 2024-12 → 2025-01 环比 -2.69%%，与同月三个盘口分列的环比'
+        '（Nasdaq -2.65%%、三盘口合成份额 -2.66%%）完全同步 ⇒ 那是真实的市场波动，不是接缝台阶。'
+        % (_SPLICE_AT or '最近一段'),
+
+        '<b>北欧期权与期货那条线的产品覆盖面是逐年扩的，但那不是口径变更。</b>'
+        '重建口径 = 交易所月报里各<b>权益类</b>产品族的 "Cleared volumes / No. of Contracts" 求和。'
+        '产品族随年份增加：2013–2019 只有股票与指数两族，Mini Index Futures 2020 才出现、'
+        'OMXESG Index Futures 2023、Custom Basket Forwards and Futures 2024。'
+        '新产品上线前它们的成交量是 0 而不是「没被统计」，所以序列前后可比（与 PSX 2010-10 上线同型）。'
+        '⚠ 但 Custom Basket 这一族偶尔会一个月放出很大的量 —— 2026-03 那 7.6mm 里有 1.831mm 来自它，'
+        '所以那一格的跳升是真实的大宗，不是解析错。',
 
         '<b>A 组给的是「当月总量」不是日均。</b>官方 PDF 段落标题原文是 '
         '"U.S. equity options volume (millions of contracts)" / "U.S. matched equity volume (millions of shares)"，'

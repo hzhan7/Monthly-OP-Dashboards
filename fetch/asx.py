@@ -24,8 +24,10 @@ Release of market announcement authorised by: Andrew Tobin, Chief Financial Offi
 不是技术问题。所以本模块把两条路分开：
 
   · `update()` / `latest_month()`（cron 跑的）**只走媒体中心**，全程不碰同意页；
-  · 历史一次性回补走 `python3 fetch/asx.py --backfill 2017-10 2020-01`，**人工跑**。
+  · 历史一次性回补走 `python3 fetch/asx.py --backfill 2016-01 2020-01`，**人工跑**。
     series/asx.csv 里 2020-01 及更早的行就是这样来的，之后再没人需要跑它。
+    （2026-08：起点由 2017-10 前推到 2016-01，跑的就是 `--backfill 2016-01 2017-09`
+    这一次；理由与实测记录见下方 `SERIES_START`。）
 
 裸 `urllib`（默认 Python-urllib UA、零 header）对三个入口全部 200：无 Cloudflare、
 无 Akamai、无 JS 渲染、无登录墙、不校验 UA。满足无人值守。
@@ -167,6 +169,13 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     另外 `S&P/ASX 200 VIX` 行 **2019-10** 才出现，`Entities de-listed` 等四行 **2024-05** 才出现。
     ⇒ 每一列都带 `since`/`until` 月份边界（`COLUMN_SPEC`），越界为空是合法的，
     界内为空一律抛异常。
+    2026-08 起点前推到 2016-01 之后，这些 `since` 全都落在 series 内部，于是**同一张图上
+    会出现起点不同的两条线**：现货成交额那张图里「含场外报告」自 2016-01、「仅场内」自
+    2017-10；参与者数那两列自 2016-07（2016-01…2016-06 的 MAR 里根本没有
+    `…Participants at month end` 这一行，实测 2016-01 / 2016-06 均无）。
+    这是官方披露起点的差异，**不是数据缺失**，更不许用 open+auctions+centre point
+    相加去把 `value_cash_onmarket_audbn` 倒推补齐（2017-09 实测能算出 80.829，与官方
+    2017-10 的 80.296 量级一致 —— 但那是派生量，写进 series 就分不清哪个是官方印的）。
 
 16. **2017-04 那一期 PDF 的期货期权小块整体错行，本模块拒绝解析它。** 实测该页
     `Options on futures volume`（小标题行）上挂着 `Total contracts` 的值，
@@ -178,7 +187,10 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     `adv_options_on_futures_contracts` 两列取不到值），不是加总恒等式 ——
     错行错得够狠时值列直接落空，轮不到恒等式说话；恒等式管的是另一种情况：
     **每个格子都有数、但装错了格子**（见 `_check_identities`）。两道闸门各守一边。
-    series 起点定在 2017-10 之后，这一期落在起点之前，实际不影响 cron。
+    2026-08 起点前推到 2016-01 之后，这一期**进了 series**：那两格由
+    `_KNOWN_SOURCE_GAPS` 显式豁免、**留空**（不写恒等式反推出来的数）。
+    ⇒ series/asx.csv 里 2017-04 这一行的这两列是全表唯一的「界内空格」，
+    下游任何「界内为空即异常」的检查都要认这条豁免，否则它会变成沉默的 NaN。
 
 17. **同月有更正稿时必须用更正稿，且要跳过第 1 页。** 更正稿第 1 页是
     「Incorrect figure / Correct figure」对照表，**错值就印在第 1 页上**
@@ -191,6 +203,31 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     "Group" 不能强求（2016-07…2016-10、2017-04 是 `ASX Monthly Activity Report`）、
     月份支持缩写（`… - Jan 2025`）、**标题不带年份时数据月 = 发布月 − 1**
     （2017-10、2017-11、2018-02/03/08/11 等期标题只有月名）。
+
+19. **2016–2018 那一代排版会把千分位逗号印成小数点，错值本身完全合法。**
+    实测两例，方向相反，所以不是「早期版本都要 ×1000」这种能一刀切的东西：
+        2016-09 本期列 `Average value per trade ($)` = `4.852`（真值 4,852）
+        2018-01 的 pcp 列同一行         = `4.433`（那是 2017-01 的值，真值 4,433）
+    底层字符是真的 U+002E，不是渲染成句点的逗号 ⇒ 解析没错，是官方印错了。
+    这种错**过不了任何一条加总恒等式**（这一行不参与任何加总），也不会让 `_validate`
+    报缺列 —— 它就是一个安安静静小一千倍的数，画在图上是一根扎到零的刺。
+    ⇒ 靠**跨期自证**抓：t 期报告的第 2 个值列就是 t−12 月的值，拿它撞 series 里已有的
+    那一行。本次回补用这条把 2016-01…2017-09 的 776 格全撞了一遍，760 格一致，
+    16 格不一致里 13 格是精度（见下）、2 格是后期报告自己印错、1 格就是 2016-09 这个。
+    **不给它写替代值**（恒等式反推 4,851.6、2017-09 的 pcp 列印着 4852，两个都不是
+    当期原值），列进 `_KNOWN_SOURCE_GAPS` 留空。
+
+20. **`Dominant settlement messages` 的印刷精度 2017-10 换过：1 位小数 → 3 位小数。**
+    实测 2017-09 期印 `1.5`、2017-10 期印 `1.433`；后期报告回看同一个月时给的是
+    3 位数（2018-09 期的 pcp 列把 2017-09 印成 `1.453`）。
+    **定义没变，只是印得细了**，所以不算口径断点、不打红线；但 2016-01…2017-09 那段
+    被量化到 0.1（约 ±3% 的格），单月环比 / 同比在那一段有一层纯粹的取整噪声。
+    入库一律用**当期公告原值**（1.5），不拿后期报告的 3 位数去盖 —— 那是重述值。
+    同理还有两处后期报告自己印错、而当期是对的，都以当期为准：
+    2018-05 期把 pcp(2017-05) 的 `Open notional` 印成 `2903990`（真值 2,903.990，
+    夹在 2017-04 的 2,695.544 与 2017-06 的 2,924.287 中间）；
+    2018-01 期把 pcp(2017-01) 的参与者数印成 122，而 2017-01 当期印的是 121
+    （2016-07…2017-05 连续 11 个月都是 121）。
 
 ━━ 依赖 ━━ pymupdf（import 名 fitz）。不依赖 pandas / requests。
 """
@@ -215,11 +252,27 @@ ARCHIVE_ITEM_URL = (ASX_HOST + '/asx/v2/statistics/displayAnnouncement.do'
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
 
-# series/asx.csv 的第一行数据月。定在 2017-10 的理由见口径坑 15 / 16：
-#   · 2017-10 是现货段行名换代的那一月，从它开始一套标签映射走到底；
-#   · 再往前那 21 个月要第二套映射，而且 2017-04 那期 PDF 本身错行（口径坑 16）。
-# 老口径的别名仍写在 COLUMN_SPEC 里（--backfill 到更早的月份能解析），只是不入库。
-SERIES_START = '2017-10'
+# series/asx.csv 的第一行数据月。
+#
+# 2026-08 由 2017-10 改为 2016-01（全站短窗口图的共同起点，见 build/single.py 的
+# `WIN_FROM`）。原先定在 2017-10 的两条理由**逐条实测后都不成立**：
+#   · 「再往前那 21 个月要第二套标签映射」—— 不需要。COLUMN_SPEC 里那几条老口径别名
+#     （`total value` / `average daily value on-market` / `average daily value`）本来
+#     就把 2015-09 起那一代行名覆盖住了，2016-01…2017-09 这 21 期用**未改动的**
+#     `parse_mar` 全部解析成功，34 列 21/21 期期有值（本次逐期实发 HTTP 复核）。
+#     零改动的天花板其实是 2015-10（2015-10/11/12 三期 `_validate` 直接过），
+#     2015-09 及更早才要第二套映射 —— 与 2016-01 这个目标无关。
+#   · 「2017-04 那期 PDF 错行」—— 属实，但只影响该月的两格，不影响另外 20 期。
+#     现在按 `_KNOWN_SOURCE_GAPS` 显式豁免那两格（留空，不写反推值）。
+# 顺带纠正一条记在 docs/verify/asx.md 里的误记：「Listings 段在 2016/2017 之间换过
+# 定义」是错的。`capital_initial_raised_audmn` 与 `capital_total_raised_incl_other_audmn`
+# 在这 21 期里 21/21 都有，`mktcap_new_listings_audmn` 一期都没有 ⇒ 上市融资的口径断点
+# 只有 2023-10 一处（口径坑 10），回补 2016 不新增断点。
+#
+# 改这个常量不会让 cron 凭空多抓：`update()` 的 index 来自媒体中心，实测最早 2019-12，
+# todo 取 `m >= SERIES_START and m not in have`，够不着的月份根本不在 index 里。
+# 2016-01…2019-11 只能由人跑一次 `--backfill`（走公告存档，要过同意页，见 docstring）。
+SERIES_START = '2016-01'
 
 _MONTHS = {m.lower(): i for i, m in enumerate(
     ['January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -628,9 +681,16 @@ COLUMN_SPEC = [
      ['austraclear securities holdings - period end'], None, None),
     ('participants_asx_total', 'participants', None,
      ['market/clearing/settlement participants at month end',
-      # 2017-06 那一期这一行断成两截（"…at month" / "end"），只在 --backfill 到
-      # 2017 年中时才用得上；截断形态不会与别的标签撞车。
-      'market/clearing/settlement participants at month'], '2016-07', None),
+      # 这一行在 2016–2017 那一代版式里会被 pymupdf 按视觉行切断，断点有两个位置，
+      # 两种都要认。**别名按「长→短」排**：完整形态先匹配，短形态只在长的取不到时兜底。
+      #   · 2017-01…2017-06：'…Participants at month' / 'end'（断在 month 之后）
+      #   · 2016-09…2016-12：'…Participants at' / '' / 'month end'（断在 at 之后，
+      #     值挂在中间那行的空标签上，靠 `_values_for` 的向下前瞻取到；
+      #     实测 2016-09 rows[212]='…Participants at' 空值、rows[213]=('', ['121','120'])）
+      # 都是纯断行，不是官方换了行名 —— 2016-08 与 2017-07 的同一行是完整的。
+      # 三种形态互不包含（`table` 的键是整串相等），不会与别的标签撞车。
+      'market/clearing/settlement participants at month',
+      'market/clearing/settlement participants at'], '2016-07', None),
     ('participants_asx24_total', 'participants', None,
      ['trading/clearing participants at month end'], '2016-07', None),
 ]
@@ -914,10 +974,84 @@ def _in_window(month, since, until):
     return (since is None or month >= since) and (until is None or month <= until)
 
 
+# 单格黑名单：{(数据月, 列名): (官方那一期印的原样字符串 | None, 理由)}。
+#
+# 这张表**只登记「官方那一期 PDF 自己坏了」的单格**，不登记「本模块还没写好解析」的。
+# 判据是能不能指出坏在哪一行 —— 指不出来就说明是我们的解析有问题，该去修解析。
+# 两种坏法，用第一个元素区分：
+#   · None       = 那一格在 PDF 里**取不到值**（排版错行，值列落空）。`_validate` 放行空。
+#   · '4.852' 等 = 那一格**取得到，但官方印错了**。`_drop_source_errors()` 先核对我们
+#                  解析出来的确实就是这个错值，再**删掉它**，于是也走上面那条放行。
+#
+# 一律**留空，不写替代值**。恒等式能反推、后一期报告的 pcp 列也印着正确值，但那两种
+# 都不是「当期官方公告原值」：写进去就再也分不清哪些数是 ASX 印的、哪些是我们凑的。
+# 空格在图上是断笔（一个月），比一个看不出来的错数好得多。
+#
+# 黑名单只处理这几格，不放行「值可疑但没登记」—— 未登记的格照常走 `_check_identities`。
+_KNOWN_SOURCE_GAPS = {
+    # 口径坑 16：2017-04 那一期官方 PDF 的期货期权小块**值列整体上移一行**。
+    # 实测行流（未改动的 `_page_rows`）：
+    #     rows[96] 'Options on futures volume'（小标题）挂着 ['124649','144826',…]
+    #     rows[97] 'Total contracts'            空
+    #     rows[98] 'Change on pcp'              挂着 ['6925','6896',…]
+    #     rows[99] 'Average daily contracts'    空
+    # 对照 2017-03 同一段：rows[96] 小标题空、rows[97] 'Total contracts' 带值 —— 版式没变，
+    # 是这一期排版坏了。真值可由官方在同一张表里印出的合计反推
+    # （8,901,810 + 124,649 = 9,026,459 ✔；494,545 + 6,925 = 501,470 ✔），
+    # 但那是**人拿算术推回来的，不是解析出来的**，所以这两格留空。
+    # 该月其余 36 列正常，五条加总恒等式里凡是两侧齐全的都照常校验并通过。
+    ('2017-04', 'contracts_options_on_futures_total'):
+        (None, '官方 PDF 值列错行（口径坑 16），真值只能靠恒等式反推 ⇒ 留空'),
+    ('2017-04', 'adv_options_on_futures_contracts'):
+        (None, '官方 PDF 值列错行（口径坑 16），真值只能靠恒等式反推 ⇒ 留空'),
+
+    # 口径坑 19：2016-09 那一期把千分位逗号印成了小数点。
+    #     'Average value per trade ($)'  ['4.852', '5710', '4.701', '5784']
+    # 四列里两列带点、两列不带 —— 同一行同一个单位，不可能既是 4.852 又是 5710。
+    # 底层字符实测是真的 U+002E（不是渲染成句点的逗号），所以解析没错，是印错了。
+    # 两条独立证据指向真值 4,852：
+    #   ① 官方在同一张表里印的成交额与笔数：108.913e9 ÷ 22,449,067 = 4,851.6；
+    #   ② 2017-09 那一期的「去年同月」列印的是 4852（同一家、同一个月、印对了）。
+    # 但这两个都不是**当期公告原值**，所以这一格留空。
+    ('2016-09', 'avg_value_per_trade_aud'):
+        ('4.852', '官方 2016-09 期把千分位逗号印成小数点（口径坑 19），真值 4,852 '
+                  '只能由别处佐证 ⇒ 留空'),
+}
+
+# 列名写错的黑名单条目会**静默失效**（那一格照旧被 `missing` 拦下，而黑名单那条谁也没在用），
+# 所以在 import 期就撞一次。
+_bad_gap = [k for k in _KNOWN_SOURCE_GAPS if k[1] not in MAR_COLUMNS]
+if _bad_gap:
+    raise AsxFetchError('_KNOWN_SOURCE_GAPS 里有不存在的列名：%s' % _bad_gap)
+
+
+def _drop_source_errors(month, rec):
+    """删掉黑名单里「官方印错了」的那几格，删之前先核对错值还是那个错值。
+
+    为什么要核对而不是闷头删：官方随时可能重发一份修好的 PDF（口径坑 17 就发生过 4 次），
+    到那天这一格会变成正确值，而闷头删会把**已经修好的官方数据**继续扔掉，
+    并且永远没人发现。核对不上就炸，逼人来看一眼那一期到底变成什么样了。
+    """
+    for (mon, name), (printed, why) in _KNOWN_SOURCE_GAPS.items():
+        if mon != month or printed is None:
+            continue
+        got = rec.get(name)
+        if got is None:
+            continue                    # 本来就没取到，交给 `_validate` 按空处理
+        if got != printed:
+            raise AsxFetchError(
+                '%s 的 %s：黑名单登记的官方错值是 %r，这次解析出来的是 %r —— '
+                '要么官方重发了修正版（那就把这条从 _KNOWN_SOURCE_GAPS 删掉、'
+                '让真值入库），要么本模块的解析变了。两种都得人来看，拒绝写入。'
+                '（登记理由：%s）' % (month, name, printed, got, why))
+        del rec[name]
+
+
 def _validate(month, rec):
     """界内为空一律炸。宁可整月不更新，也不要写出一列悄悄全空的 CSV。"""
     missing = [name for name, _s, _sb, _a, since, until in COLUMN_SPEC
-               if _in_window(month, since, until) and not rec.get(name)]
+               if _in_window(month, since, until) and not rec.get(name)
+               and (month, name) not in _KNOWN_SOURCE_GAPS]
     if missing:
         raise AsxFetchError(
             '%s 解析缺列 %s —— 官方表结构可能已变，或抓到的是 ASX Compliance 版'
@@ -959,6 +1093,9 @@ def _fetch_one(month, urls, cache_dir, want_sfe=True):
 
     path = corr_path or orig_path
     rec = parse_mar(path, skip_first_page=bool(corr_path))
+    # 先剔掉「官方那一期自己印错」的单格（口径坑 19），再校验 —— 顺序不能反：
+    # 错值留在 rec 里会让 `_check_identities` 报一条与真实原因无关的恒等式失败。
+    _drop_source_errors(month, rec)
     _validate(month, rec)
     day, evidence = _pub_date(orig_path or corr_path)
 

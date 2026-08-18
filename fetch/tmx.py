@@ -52,11 +52,40 @@ r"""TMX Group (TSX:X) 月度经营指标 —— 无人值守抓取。
     是包在 `'tenq'`（Report To Shareholders）那份大 PDF 里的，所以 mdna 缺席时回落到 tenq。
   · PDF 有完整文字层，pymupdf 直接抽得出，**不需要 OCR**。
 
+源 4（两条指数列的历史，一次性回补）TMX Money 的行情 GraphQL：
+    POST https://app-money.tmx.com/graphql
+        operationName=getTimeSeriesData，variables={symbol:'^TSX'|'^JX', freq:'month', …}
+  · 本机实测 200、**无需登录**，`^TSX`（S&P/TSX Composite）与 `^JX`（S&P/TSX Venture
+    Composite）各回 298 条、2001-12 起，`close` 就是月末收盘点位。
+  · 与 CSV 里 CTS 解析出来的 120 格重叠值**逐位相同**（差 <0.005），所以这条源不是
+    「另一套数」，只是同一套数更长的那一段。
+  · **它没有官方契约文档**（前端自用端点，query 形状可能随改版而变），所以它
+    **不进 update()**：只由 `backfill_index()` 手工调用，且每次都拿重叠月做断言，
+    对不上就抛异常而不是静默写空。日常 cron 的指数列仍然只来自 CTS 表格。
+    这与 BOX 的 `backfill_box()` 是同一条摆放原则：一次性、易变的路子不摆进无人值守链路。
+    重跑（幂等，只填空不覆盖）：
+        python3 -c "import sys;sys.path.insert(0,'fetch');import tmx;\
+                    tmx.backfill_index('series','cache/tmx')"
+
+源 5（现货 12 列 2015-01~2021-07，一次性回补，**不在本模块**）CIRO
+    『Report of Marketshare by Marketplace (Historical 2015–Present)』xlsx。
+  · 落地页 https://www.ciro.ca/markets/reports-statistics-and-other-information/
+        reports-market-share-marketplace（WAF 会间歇 403，要退避重试）
+  · 代码在 `build/basefill/tmx_ciro_2015.py`，**不写进本模块**：那是监管方 CIRO 的
+    另一个源、另一种版式，而且 2015-01~2021-07 这个洞补完就永远关上了（2021-08 起
+    CTS 正文自己有表）。口径差与接缝台阶见口径坑 16。
+
 拿不到的：`www.tmx.com` / `www.tsx.com` 对本网络整体返回 CloudFront 403（curl / urllib /
 nscurl / curl_cffi / 本机真实 Chrome 全部 403，只有搜索引擎 UA 能过）。2014-12~2021-07 的
-现货明细只存在于 `tmx.com/en/resource/<id>` 里，所以那 80 个月**线上没有正当通道**。
+**TMX 自报**现货明细只存在于 `tmx.com/en/resource/<id>` 里，那 80 个月至今**线上没有
+正当通道**（2026-08-18 复核：feed 条目里的 `DocumentPath` 指向 s21.q4cdn.com 且可下载，
+但 2021-08 及更早那些 PDF 正文只有百分比叙述、**一张统计表都没有**，表格落在 PDF 内嵌的
+`tmxgroup2019ir.q4web.com/resource/en/<id>` 上，该域整段 404；换成 www.tmx.com /
+www.tsx.com 的同号 resource 仍是 403，Wayback 也没存成序列）。
 冒充 Googlebot 能绕开，但那是对一条明确针对本出口 IP 的封禁规则做规避、且冒用搜索引擎身份，
-**不写进生产代码**。真要补，正当做法是换出口线路或向 TMX 索取，然后一次性人工写进 CSV。
+**不写进生产代码**。
+⇒ 这 80 个月改由**监管方**补：CIRO 的同口径月报回到 2015-01（源 5），已入库。
+   它不是 TMX 自报值的替代品，是另一把尺子 —— 差多少、在哪一列，口径坑 16 逐列量过。
 
 ━━ 发布节奏 ━━
 
@@ -205,9 +234,12 @@ series/tmx_box_q.csv，一行一个自然季，`quarter` 为 `YYYY-Qn`。
    `<月名><4 位年>` 的表，其余（YTD 表、正文末尾那张排版换过三种的脚注表）一概丢掉。
 
 7. **现货表格 2021-08 才进新闻稿正文。** 2021-07 及更早的 `Body` 只有一段摘要加一条
-   `/resource/en/<id>` 链接，`<table>` 计数为 0。139 期里 59 期有表、80 期没有，
+   `/resource/en/<id>` 链接，`<table>` 计数为 0。2026-08-18 复核：feed 共 140 期，
+   有表 60 期（2021-09-08 → 2026-08-07 发布）、无表 80 期（2015-01-06 → 2021-08-05），
    边界干净无交叉。「这一期没有表格」是**明确可识别的状态**（本模块直接跳过该期），
    不是解析失败，更不能解析出一堆空值混进 CSV。
+   ⇒ 所以 `SPOT_START` 不是保守设置，是 feed 本身的上限；2015-01~2021-07 由 CIRO 补
+   （源 5 / 口径坑 16），**不是**由本模块补。
 
 8. **MX xlsx 里 `Total` 这个行名在 5 个 section 各出现一次**（STIR 期货 / STIR 期权 /
    债券期货 / 股指期货 / 股指期权），且**行号逐年漂移**：`GRAND TOTAL` 在 2015/2019 档是
@@ -254,6 +286,49 @@ series/tmx_box_q.csv，一行一个自然季，`quarter` 为 `YYYY-Qn`。
     汇率行 2023 年前叫 `Average CAD-USD FX rate`、之后叫 `Average USD-CAD FX rate`，
     **数字含义没变**（都是 1 美元兑多少加元，用 27.7 CAD / 1.35 = 20.5 USD 验过）。
 
+16. **现货 12 列在 2021-08 换源：左边 CIRO、右边 TMX 自报。两把尺子不完全一样。**
+    2015-01~2021-07 由 `build/basefill/tmx_ciro_2015.py` 从 CIRO 的
+    "All Trade All Listing Total" 行写入，2021-08 起仍是 CTS 新闻稿（本模块）。
+    60 个重叠月（2021-08~2026-07）逐月对过，比值 = TMX 自报 ÷ CIRO 的中位数：
+
+        tsxv_transactions        1.00000（59/60 逐位相同）   ─┐
+        alpha_volume_shares      1.00000（49/60 逐位相同）    │ 同一套数，
+        alpha_transactions       1.00000（49/60 逐位相同）    │ 换源无台阶
+        tsx_transactions         1.00000（20/60 逐位相同）    │
+        tsxv_value_cad           1.00000                      │
+        tsxv_volume_shares       0.99989                     ─┘
+        tsx_value_cad            1.00162  ┐
+        alpha_value_cad          1.00249  │ 有系统性水平差，60 个月里
+        tmx_all_value_cad        1.00165  │ **一次逐位相同都没有**
+        tmx_all_volume_shares    0.99131  │
+        tsx_volume_shares        0.98683  ┘（TMX 自报比 CIRO 低约 1.3%）
+
+    **不是「含不含 intentional cross」**：2021-08 TMX 自报 TSX 成交 6,324,849,035 股，
+    夹在 CIRO 的 Non-Cross 6,185,693,468 与 All Trade 6,429,009,165 之间；把它写成
+    「Non-Cross + f × 大宗对敲」去解 f，60 个月的 f 在 0.09~0.73 之间乱跳（中位 0.54），
+    成交额那边的 f 甚至常年 >1。⇒ 是两家各自的**统计口径**不同，不是可加减的一块。
+    2022-01 六列比值同时探底（tsx_volume 0.96715 / tsx_value 0.98143 /
+    tsx_transactions 0.98752 / tsxv_volume 0.99783），像是某一方对该月做过重述。
+
+    实际接缝台阶（CIRO 2021-07 → TMX 2021-08，把口径差从真实环比里剥出来）：
+        tsx_volume_shares −1.62%、tmx_all_volume_shares −0.98%、
+        tsx_value_cad +0.15%、tmx_all_value_cad +0.15%、alpha_value_cad +0.17%，
+        其余 7 列 |台阶| ≤ 0.11%（笔数三列与 tsxv_value 恰为 0.00%）。
+    ⇒ build/specs/tmx.py 只给**台阶 ≥0.5% 的那两列**画 2021-08 断点线；其余列画了
+      等于说假话（它们跨这个月是可比的）。
+
+    ⚠ **换源的方向只能是「往左补」**。CIRO 的历史报每月更新、含最新月，理论上能整段
+    覆盖 12 列 —— **别这么做**：那等于把 TMX 官方新闻稿印出来的数换成第三方重算值，
+    还要把 `tmx_all_*` 从官方披露列降级成我们自己的加总。本仓的做法是
+    「已有值永不覆盖」（`_merge`），CIRO 只填 2021-08 之前的空格。
+
+17. **CIRO 没有「TMX 合计」列，回补段的 `tmx_all_*` 是本仓加总出来的。**
+    CIRO 的 `All Traded Marketplaces` 是全加拿大（含 CSE / Nasdaq CXC / MATCHNow / NEO…），
+    不是 TMX 集团。所以回补段 `tmx_all_* = TSX + TSXV + Alpha`
+    （Alpha-X / Alpha-DRK 在 CIRO 里同样 2023-11 才有值，2015~2021 段天然不参与）。
+    这与 2021-08 起 TMX 自报的恒等式（`_cts_to_row` 每期都验）是同一条式子，
+    但**加总方是我们**，写进图注时要说清楚。
+
 ━━ 依赖 ━━ openpyxl（读 xlsx）、beautifulsoup4 + lxml（解析新闻稿 HTML，见口径坑 4）、
 pymupdf（抽 MD&A 文字层，只有 BOX 那条路用）。不依赖 pandas。
 
@@ -286,7 +361,10 @@ FEED_URL = ('https://investors.tmx.com/feed/PressRelease.svc/GetPressReleaseList
             '?LanguageId=1&bodyType=1&pressReleaseDateFilter=3&categoryId='
             '&pageSize={n}&pageNumber=0&tagList=trading-statistics'
             '&includeTags=true&year=-1&excludeSelection=1')
-# 现货表格最早出现的月份（更早的新闻稿正文里没有 <table>，见口径坑 7）
+# 现货表格最早出现的月份（更早的新闻稿正文里没有 <table>，见口径坑 7）。
+# **这是 feed 本身的上限，不是保守设置**：2026-08-18 复核 140 期，无表的 80 期与有表的
+# 60 期边界干净无交叉。2015-01~2021-07 由 build/basefill/tmx_ciro_2015.py 从 CIRO 补
+# （源 5 / 口径坑 16），本模块一行都不往那边伸手 —— 换源的边界就钉在这个常量上。
 SPOT_START = '2021-08'
 
 # ── 源 2：MX 月度 xlsx ────────────────────────────────────────────────────
@@ -299,6 +377,24 @@ MX_START = '2002-01'
 FINREP_URL = ('https://investors.tmx.com/feed/FinancialReport.svc/GetFinancialReportList'
               '?LanguageId=1&bodyType=0&year=-1&pageSize=100&pageNumber=0'
               '&excludeSelection=1&reportSubTypeList=&reportTypeList=')
+
+# ── 源 4：TMX Money 指数月线（只给 backfill_index()，不进 update()，见源 4 那段）──
+MONEY_URL = 'https://app-money.tmx.com/graphql'
+# 只要 dateTime 与 close 两个字段：多要一个字段就多一分随前端改版而失效的机会。
+MONEY_QUERY = (
+    'query getTimeSeriesData($symbol: String!, $freq: String, $interval: Int, '
+    '$start: String, $end: String) {\n'
+    '  getTimeSeriesData(symbol: $symbol, freq: $freq, interval: $interval, '
+    'start: $start, end: $end) {\n'
+    '    dateTime\n    close\n  }\n}')
+# (行情代码, CSV 列)。^TSX = S&P/TSX Composite，^JX = S&P/TSX Venture Composite。
+MONEY_SPEC = (('^TSX', 'tsx_composite_close'), ('^JX', 'tsxv_composite_close'))
+# 两条指数的真实源底（实测各回 298 条，最老 2001-12）。
+INDEX_START = '2001-12'
+# 回补前必须先在重叠月上验一遍：少于这么多个月能对照就不敢写（说明 CSV 或端点不对劲）。
+INDEX_MIN_OVERLAP = 24
+# 指数点位官方就印两位小数，重叠月实测差 0（<0.005）。超过这个容差 = 不是同一条序列。
+INDEX_TOL = 0.005
 
 # investors.tmx.com 认 UA：默认 UA 一律 403（见 docstring 源 1）。
 # m-x.ca 不认 UA，但带着也没坏处，统一用同一个。
@@ -963,6 +1059,134 @@ def mx_latest_month(cache_dir):
                             + MX_LANDING)
     yy, mm = max(hits)
     return '20%s-%s' % (yy, mm)
+
+
+# ═════════════ 源 4：TMX Money 指数月线（一次性回补，不进 update()）═════════════
+def _money_series(symbol, cache_dir, timeout=120):
+    """拉一条指数的月线 -> {'YYYY-MM': 月末收盘}。
+
+    端点没有官方契约文档（前端自用），所以每一步都当它随时会变形：
+    结构对不上一律抛，绝不返回半张表让调用方以为「这个月官方没发」。
+    """
+    body = json.dumps({
+        'operationName': 'getTimeSeriesData',
+        'variables': {'symbol': symbol, 'freq': 'month', 'interval': 1,
+                      'start': '1990-01-01',
+                      'end': datetime.now().strftime('%Y-%m-%d')},
+        'query': MONEY_QUERY,
+    }).encode('utf-8')
+    req = urllib.request.Request(MONEY_URL, data=body, headers={
+        'Content-Type': 'application/json',
+        'User-Agent': _UA,
+        'Accept': '*/*',
+        'Origin': 'https://money.tmx.com',
+        'Referer': 'https://money.tmx.com/',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except Exception as e:                                # noqa: BLE001
+        raise TmxFetchError('TMX Money 取 %s 失败：%r' % (symbol, e)) from e
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        fn = 'money_%s.json' % symbol.replace('^', '').lower()
+        with open(os.path.join(cache_dir, fn), 'wb') as f:
+            f.write(raw)                # 存原始响应：端点改版时可以事后取证
+    try:
+        rows = json.loads(raw)['data']['getTimeSeriesData']
+    except Exception as e:                                # noqa: BLE001
+        raise TmxFetchError('TMX Money 返回的不是预期结构（%s）：%s'
+                            % (symbol, raw[:200])) from e
+    if not rows:
+        raise TmxFetchError('TMX Money 对 %s 返回 0 条 —— 代码或参数被改过' % symbol)
+
+    # **只收已经收完的月份**：当月那根 bar 的 close 是「到今天为止」，不是月末收盘。
+    # 响应里当月还会多出一条以当天为 dateTime 的重复 bar（实测 2026-08-01 与
+    # 2026-08-18 同时出现），一起被这道闸挡在外面。
+    cutoff = datetime.now().strftime('%Y-%m')
+    out = {}
+    for r in rows:
+        dt = (r.get('dateTime') or '')[:7]
+        if len(dt) != 7 or dt[4] != '-' or dt >= cutoff:
+            continue
+        v = r.get('close')
+        if v is None:
+            continue
+        if dt in out and abs(out[dt] - float(v)) > INDEX_TOL:
+            raise TmxFetchError('TMX Money 对 %s %s 给了两个不同的 close：%r / %r'
+                                % (symbol, dt, out[dt], v))
+        out[dt] = float(v)
+    if not out:
+        raise TmxFetchError('TMX Money 对 %s 一个完整月都没给出' % symbol)
+    return out
+
+
+def fetch_index_history(cache_dir):
+    """两条指数列的全历史 -> {'YYYY-MM': {列: 点位}}；顺带做连续性自检。
+
+    自检只查「有没有洞」，不查数值 —— 数值的把关在 backfill_index() 里靠重叠月做。
+    """
+    got = {sym: _money_series(sym, cache_dir) for sym, _c in MONEY_SPEC}
+    out = {}
+    for sym, col in MONEY_SPEC:
+        s = got[sym]
+        months = sorted(s)
+        if months[0] > INDEX_START:
+            raise TmxFetchError('%s 只回到 %s，比已知源底 %s 还晚 —— 端点被改过'
+                                % (sym, months[0], INDEX_START))
+        want = [months[0]] + _month_range(months[0], months[-1])
+        holes = [m for m in want if m not in s]
+        if holes:
+            raise TmxFetchError('%s 的月线中间有洞：%s' % (sym, holes[:6]))
+        for m in months:
+            out.setdefault(m, {})[col] = s[m]
+    return out
+
+
+def backfill_index(series_dir, cache_dir):
+    """把 tsx_composite_close / tsxv_composite_close 回补到 2001-12，返回新增月份。
+
+    **update() 不调它**，理由见模块 docstring 源 4：这个端点没有官方契约，
+    形状随前端改版而变，不该摆进无人值守链路。日常增量仍由 CTS 表格提供这两列。
+
+    幂等与安全：
+      · 走同一个 `_merge`，**已有值一格都不覆盖** —— CTS 那 60 个月保持原样；
+      · 写之前先拿重叠月做断言：至少 `INDEX_MIN_OVERLAP` 格能对照、且每一格差
+        小于 `INDEX_TOL`，否则抛异常。端点哪天换了口径（比如改成总回报指数），
+        这道闸会当场拦下，而不是让一条对不上的历史悄悄接在 CTS 前面。
+    """
+    csv_path = os.path.join(series_dir, 'tmx.csv')
+    header, body, have = _load_csv(csv_path, COLUMNS, 'month')
+    idx = {n: i for i, n in enumerate(header)}
+    data = fetch_index_history(cache_dir)
+
+    n_ov, worst = 0, (0.0, None)
+    for month, row in have.items():
+        for _sym, col in MONEY_SPEC:
+            cur = row[idx[col]].strip()
+            if not cur or month not in data or col not in data[month]:
+                continue
+            n_ov += 1
+            d = abs(float(cur) - data[month][col])
+            if d > worst[0]:
+                worst = (d, '%s %s（CSV %s vs 端点 %s）'
+                         % (month, col, cur, data[month][col]))
+    if n_ov < INDEX_MIN_OVERLAP:
+        raise TmxFetchError('只有 %d 格能与 CSV 对照（要求 ≥%d），不敢写'
+                            % (n_ov, INDEX_MIN_OVERLAP))
+    if worst[0] > INDEX_TOL:
+        raise TmxFetchError('重叠月对不上，最大差 %.4f > %.4f：%s —— '
+                            'TMX Money 与 CTS 表格不是同一条序列了，拒绝回补'
+                            % (worst[0], INDEX_TOL, worst[1]))
+
+    added = []
+    for month in sorted(data):
+        if _merge(header, body, have, month, data[month]):
+            added.append(month)
+    _write_csv(csv_path, header, body)
+    print('· 指数重叠 %d 格全部吻合（最大差 %.4f）；新增 %d 行，'
+          '两列现自 %s 起' % (n_ov, worst[0], len(added), min(data)))
+    return added
 
 
 # ══════════════════════ BOX：季度 MD&A ═════════════════════════════════

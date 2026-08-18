@@ -114,6 +114,83 @@ def _num(r, col):
         return None
 
 
+#: 现货那 10 列 2026-08-18 由 build/basefill/db1_spot_2016.py 回填到 2016 年，
+#: 各列的首月、月数、空洞都不一样（官方那几个月压根没有可用披露）。
+#: 图注里凡是要报这些数的地方**一律现算**，别再写死 —— 上一版写死的
+#: 「turnover_xetra_eurbn 只有 2024-01 起 31 个月」在回填后当场变成假话。
+_SPOT_COLS = [
+    'turnover_xetra_eurbn', 'turnover_fwb_eurbn',
+    'turnover_xetra_equities_eurbn', 'turnover_xetra_etp_eurbn',
+    'turnover_xetra_structured_eurbn', 'turnover_fwb_equities_eurbn',
+    'turnover_fwb_etp_eurbn', 'turnover_fwb_bonds_eurbn',
+    'turnover_fwb_funds_eurbn', 'turnover_fwb_structured_eurbn',
+]
+
+
+def _mi(m):
+    return int(m[:4]) * 12 + int(m[5:7])
+
+
+def _runs(months):
+    """['2017-06','2017-07','2019-12'] -> ['2017-06~2017-07', '2019-12']"""
+    out, s, p = [], None, None
+    for m in months:
+        if s is None:
+            s = p = m
+        elif _mi(m) - _mi(p) == 1:
+            p = m
+        else:
+            out.append(s if s == p else '%s~%s' % (s, p))
+            s = p = m
+    if s:
+        out.append(s if s == p else '%s~%s' % (s, p))
+    return out
+
+
+def _coverage(col):
+    """(首月, 有数月数, 无洞连续起点, 空洞段列表)；算不出返回 (None, None, None, [])。"""
+    rows = _rows()
+    if not rows:
+        return None, None, None, []
+    months = [r['month'] for r in rows]
+    nz = [r['month'] for r in rows if _num(r, col) is not None]
+    if not nz:
+        return None, 0, None, []
+    have = set(nz)
+    holes = [m for m in months if nz[0] <= m <= nz[-1] and m not in have]
+    cont = nz[-1]
+    for i in range(len(nz) - 1, 0, -1):
+        if _mi(nz[i]) - _mi(nz[i - 1]) != 1:
+            break
+        cont = nz[i - 1]
+    return nz[0], len(nz), cont, _runs(holes)
+
+
+def _xetra_adv_check():
+    """最新一个「月总额与现货交易日都有值」的月：(月, 月总额, 交易日, 相除得到的 ADV)。
+
+    这是「本页为什么只画月度总额、不画 Xetra ADV」那条注的算术底：
+    官方新闻稿印的 ADV 正是这个商，但除数 trading_days_cash 是**慢腿**，
+    每个月总有几天它是空的 —— 那几天这张图会缺最新一格。
+    """
+    for r in reversed(_rows()):
+        t, d = _num(r, 'turnover_xetra_eurbn'), _num(r, 'trading_days_cash')
+        if t and d:
+            return r['month'], t, d, t / d
+    return (None,) * 4
+
+
+def _slow_leg_lag():
+    """快腿最新月与慢腿最新月各是几月 —— slow_cols 那条注的实测底。"""
+    fast = slow = None
+    for r in _rows():
+        if _num(r, 'adv_eurex_total_contracts') is not None:
+            fast = r['month']
+        if _num(r, 'trading_days_cash') is not None:
+            slow = r['month']
+    return fast, slow
+
+
 def _calendar_gap():
     """两套交易日日历（Eurex vs Xetra）有几个月不等 —— 「不能互相顶替」的判据。
 
@@ -128,6 +205,20 @@ def _calendar_gap():
         if a != b:
             diff += 1
     return (n, diff) if n else (None, None)
+
+
+_SPOT_COV = {c: _coverage(c) for c in _SPOT_COLS}
+_ADVM, _ADVT, _ADVD, _ADVV = _xetra_adv_check()
+_FASTM, _SLOWM = _slow_leg_lag()
+
+
+def _cov_txt(col):
+    """'2016-01 起 127 个月，无空洞' / '2016-06 起 62 个月，空洞 2016-07；2017-06~2022-04'"""
+    first, n, _cont, holes = _SPOT_COV.get(col, (None, None, None, []))
+    if first is None:
+        return '（读不到 series/db1.csv）'
+    return '%s 起 %d 个月，%s' % (first, n,
+                                 '无空洞' if not holes else '空洞 ' + '；'.join(holes))
 
 
 _NMONEY, _NCONTRACTS, _NQTY = _column_census()
@@ -221,7 +312,10 @@ def _slow_universe():
 # ── 头条 ───────────────────────────────────────────────────────────────────
 # Eurex 全所日均成交合约数：2008-01 起 223 个月零空洞、快腿（月末后第 2–6 天）、
 # 官方工作簿自己就发 Daily average（不是本仓算的）。三条都满足「历史长 / 发布快 / 无空洞」。
-# 不用 Xetra 现货做头条：turnover_xetra_eurbn 只有 2024-01 起 31 个月，历史太短。
+# 不用 Xetra 现货做头条：它 2026-08-18 已经回填到 2016-01（build/basefill/db1_spot_2016.py），
+# 长度不再是理由，但**成色**是 —— 2016-01~2023-12 那一段里有 55 个月只有官方新闻稿的
+# 四舍五入值（法兰克福那一格相对误差最坏 2.2%），而 Eurex ADV 全程是官方工作簿原值。
+# 头条要的是「最长 + 最快 + 最干净」那一条，三条里 Eurex ADV 仍然全占。
 HEADLINE = [
     {'col': 'adv_eurex_total_contracts', 'zh': 'Eurex 衍生品 ADV',
      'unit': 'contracts/day', 'fmt': 'f0c'},
@@ -229,9 +323,14 @@ HEADLINE = [
 
 # ── 分组 ───────────────────────────────────────────────────────────────────
 # 每组一个 exhibit 群。列名全部 head -1 series/db1.csv 核过。
-# 刻意排除 turnover_xetra_structured_eurbn：它 2025-10→2026-07 之间只有 5 个值、
-# 中间 5 个月是空的（本机实测 gaps=5）。平滑类图型遇到 null 会把它当 0 画出塌到零的假线，
-# gs_line 还会 null.toFixed() 抛 TypeError 让该卡片之后的 exhibit 全不渲染。
+# 刻意排除 turnover_xetra_structured_eurbn：**官方多数月压根不发这一格**
+# （工作簿里留空、新闻稿里印 '-'），所以它天生是一条稀疏序列，回填也救不了 ——
+# 2026-08-18 回填后它反而更稀（首月往前挪到 2016-06，中间的洞比有数的月还多，
+# 实测覆盖见 notes 里那条现算的 _cov_txt）。平滑类图型遇到 null 会把它当 0
+# 画出塌到零的假线，gs_line 还会 null.toFixed() 抛 TypeError 让该卡片之后的 exhibit 全不渲染。
+# 同理不入图的还有 turnover_fwb_etp / bonds / funds 三列（本来就没进过任何 exhibit）：
+# 它们在 0.03~1.0 €bn 量级，回填源里 1 位小数时代的相对误差 5%~50%，
+# build/basefill/db1_spot_2016.py 的精度闸门已经把那些格子整组丢掉，序列因此是断的。
 GROUPS = [
     # 头条那一列在这里再出现一次是**故意的**：头条的契约职责是「定共同最新月与门槛」，
     # 它会不会同时被画成图由底座决定。列在组里 ⇒ 底座只画组时不会丢掉旗舰序列；
@@ -461,9 +560,12 @@ SPEC = {
     'title':  '德意志交易所（DB1）月度经营指标',
     'csv':    'db1.csv',
     'ccy':    'EUR',
+    # 现货那 10 列 2016-01~2023-12 那一段来自后两个源（回填，见 notes 的精度分层那条），
+    # 所以出处栏必须把它们写出来 —— 页面上印的「Source:」是读者判断可信度的唯一入口。
     'source': ('Source: Deutsche Börse Group IR "Major business figures"、'
-               'Eurex Monthly Statistics、FWB Monthly Cash Market Statistics; '
-               'format after Goldman Sachs GIR'),
+               'Eurex Monthly Statistics、FWB Monthly Cash Market Statistics'
+               '（2016-01–2023-12 现货历史取自 web.archive.org 存档的同名官方工作簿'
+               '与 Deutsche Börse 月度现货新闻稿）; format after Goldman Sachs GIR'),
 
     'headline': HEADLINE,
     'groups':   GROUPS,
@@ -527,13 +629,19 @@ SPEC = {
         '本页是 EUR 本币页、不做换算，所以不影响当前呈现；notional.py 接手之前必须先解决这个冲突。',
 
         '⚠ 现货那一组是**月度总额**不是 ADV。官方现货工作簿只发月总额；'
-        'ADV = 月总额 ÷ trading_days_cash。2026-07 官方新闻稿自己给的是 '
-        '"average daily Xetra trading volume to €6.85 billion"，而本机 CSV 里 '
-        'turnover_xetra_eurbn = 157.511，157.511 ÷ 23 = 6.848 —— 对得上；'
-        '但 **trading_days_cash 的 2026-07 那一格此刻还是空的**（慢腿，要等台账），'
-        '这正是本页画不出 Xetra ADV、只能画月度总额的原因。'
-        '除数 trading_days_cash 是慢腿列，且与 trading_days_eurex 在 222 个可比月里有 27 个'
-        '不等（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），两个日历不能互相顶替。',
+        'ADV = 月总额 ÷ trading_days_cash，官方新闻稿印的 ADV 正是这个商。'
+        + ((f'本机最新一个两列都有值的月是 {_ADVM}：'
+            f'turnover_xetra_eurbn = {_ADVT:.3f} ÷ {_ADVD:.0f} 个现货交易日 = {_ADVV:.3f} €bn/日。'
+            if _ADVM else '')
+           + ('但 <b>trading_days_cash 是慢腿</b>（次月约第 10 天才随集团台账到齐；'
+              + (f'本机此刻快腿列与慢腿列都到 {_FASTM}，赶上了'
+                 if _FASTM and _FASTM == _SLOWM else
+                 f'本机此刻快腿列到 {_FASTM}、慢腿列只到 {_SLOWM}，正差着'
+                 if _FASTM else '每个月总有几天它落在后面')
+              + '）：拿它当除数，')
+           + '算出来的 ADV 会跟着变成慢腿列，正好丢掉快腿的意义 —— 这就是本页只画月度总额的原因。')
+        + '除数与 trading_days_eurex 在 222 个可比月里有 27 个不等'
+          '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），两个日历不能互相顶替。',
 
         '⚠ vol_fd_*（台账口径）与 adv_eurex_* / oi_eurex_*（Eurex 工作簿口径）是两套并行口径，'
         '**永不互校、也不要放进同一条线**。全量实测：vol_fd_rates 与 Eurex 利率组小计'
@@ -552,8 +660,11 @@ SPEC = {
         'adv_360t_fx_eurbn 自 2018-07 起含 GTX，跨那个月的同比不是纯内生增长。'
         '这是列级口径变化、不是全页断点，所以不画红线。',
 
-        'turnover_xetra_structured_eurbn 刻意不入图：本机实测 2025-10→2026-07 之间只有 5 个值、'
-        '中间 5 个月为空。平滑类图型遇到 null 会把它当 0 画出塌到零的假线。',
+        'turnover_xetra_structured_eurbn 刻意不入图：官方多数月本来就不发这一格'
+        '（工作簿留空、新闻稿印 "-"），本机实测 ' + _cov_txt('turnover_xetra_structured_eurbn')
+        + '。平滑类图型遇到 null 会把它当 0 画出塌到零的假线。'
+        '同样不入图的还有 turnover_fwb_etp / bonds / funds（' + _cov_txt('turnover_fwb_etp_eurbn')
+        + '）—— 它们在 0.03~1.0 €bn 量级，官方新闻稿的位数不够，回填时被精度闸门整段丢弃。',
 
         '成交额一律**单边计**（single-counted）：FWB 工作簿「Explanation Report」表与 IR 台账 PDF '
         '现货行的脚注都写明了。跨家比要注意 HKEX 的南向 ADT 是双边。'
@@ -568,7 +679,25 @@ SPEC = {
         '各列首个非空月（实测）：vol_fd_index/equity/rates 自 2002-01；gsf_collateral 自 2007-01；'
         'Eurex 各列自 2008-01（股息组 2008-06、FVS 2009-05、FBTP 2009-09、FOAT 2012-04）；'
         'vol_fd_total / turnover_cash_total / settle_* 自 2010-01；auc_* 与 aum_stoxx_dax_etf '
-        '自 2012-01；360T 与 EEX 与 cash_balances 自 2015-01；otc_* 与 vol_licensed 自 2016-01；'
-        'turnover_xetra/fwb 自 2024-01；现货分资产类别列自 2024-12。早于首月为空是官方就没有。',
+        '自 2012-01；360T 与 EEX 与 cash_balances 自 2015-01；otc_* 与 vol_licensed 自 2016-01。'
+        '早于首月为空是官方就没有。现货那几列 2026-08-18 回填过，逐列现算如下 —— '
+        + '；'.join('<code>%s</code> %s' % (c, _cov_txt(c)) for c in (
+            'turnover_xetra_eurbn', 'turnover_fwb_eurbn',
+            'turnover_xetra_equities_eurbn', 'turnover_xetra_etp_eurbn',
+            'turnover_fwb_equities_eurbn', 'turnover_fwb_structured_eurbn')) + '。',
+
+        '⚠ <b>现货那一组有精度分层，跨年比要知道哪一段是四舍五入值。</b>'
+        '2016-01~2023-12 不是本仓抓的，是 build/basefill/db1_spot_2016.py 一次性回填的：'
+        '满精度（官方工作簿原值）只有 2016-06、2016-08~2017-05、2022-01~2024-05 与 2024-12 起；'
+        '其余月份取自同站<b>月度现货新闻稿</b>，2016-01~2022-07 是 1 位小数 €bn、'
+        '2022-08 起是 2 位小数。对两条场所总额，四舍五入的最大相对误差 '
+        'Xetra ≤0.06%、法兰克福 ≤2.2%（画月度形状够用，但别拿它做小数点后两位的对账）；'
+        '分资产类别列里位数不够的格子已经在回填时被精度闸门整组丢弃，'
+        '所以它们是断的而不是被凑出来的。'
+        '<b>口径没有变</b>：回填值与本仓其余月份同为单边计的 order book turnover、同两个场所，'
+        '逐月都过了「Xetra + 法兰克福 ≡ turnover_cash_total_eurbn」的台账闭合检验'
+        '（46 个工作簿月残差 ≤6.7e-5 €bn、2022 年起逐位相等；123 个新闻稿月最大残差 '
+        '0.0947 €bn @2020-11，全在四舍五入界内）。'
+        '所以 breaks 仍然留空 —— 这是精度断点，不是口径断点，画红竖线会误导。',
     ],
 }

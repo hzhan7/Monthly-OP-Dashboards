@@ -10,11 +10,22 @@
   · 「重述只发生在 industry_adv_equities 一列」是错的 —— rpc_futures_ag_usd 也被改过
     （2026-04 从 1.981 改到 1.977）。
 
-列名全部对着 `head -1 series/miax.csv` 逐字核过（25 列，136 个月，2015-04..2026-07）。
+列名全部对着 `head -1 series/miax.csv` 逐字核过（26 列，2015-04 起）。
+第 26 列 `vol_futures_ag_contracts` 是 2026-08 这一轮回补新加的：MIAX Futures 农产品
+**月度总张数**，源 C（miaxglobal.com/miax_futures_historical_volume.pdf）第 13 页，
+把本页的期货叙事从 IR 月报那 19 个月拉到与 API 段一样长。逐月核对与三道护栏见 fetch/miax.py。
 
 本页最容易被误读的一件事：<b>成交量与 RPC 的历史长度差 10 年</b>。
-API 口径的四所 ADV 回到 2015-04（136 个月），而 IR 月报 PDF 口径的一切（含全部 RPC）
-只有 2025-01 起 19 个月。这不是同一段历史，横轴必须分开读。
+API 口径的四所 ADV 与源 C 的农产品月度总张数都回到 2015-04，而 IR 月报 PDF 口径的一切
+（含**全部** RPC / capture）只有 2025-01 起。这不是同一段历史，横轴必须分开读；
+这一轮回补拉长的只有「量」，RPC 一条都没变长。
+
+第二件容易误读的：农产品那条长历史**跨过一次所有权变更**。MIH 2020-12-04 才全资收购
+MGEX，断点左侧不是 MIH 的经营数据 —— breaks 里已经按列绑好，图上有红色竖虚线。
+
+⚠️ 正文里凡是「N 个月」「××~×× 共 N 个月」这类数字，一律用 `_span_zh` / `_overlap_zh`
+从 CSV 现算（本文件开头那条规矩）。以前写死的 19 / 136 / 18 每发一期就少 1，
+这一轮已全部换掉；再往里加数字请照办。
 
 ━━ 量价分解（decomp / ttm_yoy）━━
 本页有**两对**成对的股票列，都在 indsum API 段、都覆盖 2020-12..2026-07 共 68 个月零断档：
@@ -94,6 +105,32 @@ def _num(r, col):
         return float(v)
     except ValueError:
         return None
+
+
+def _span(col):
+    """一列的覆盖 → (首月, 末月, 有值月数)；一格都没有返回 (None, None, 0)。
+
+    页面正文里的「××× 起 N 个月」以前是写死的（19 / 68 / 136 / 18 …）。
+    写死的坏处不是当时错，是**下个月就错**：每多发一期，每一个这样的数字都少 1。
+    2026-08 这一轮回补新增了 vol_futures_ag_contracts（136 个月），
+    顺手把正文里全部这类数字改成从 CSV 现算 —— 与本文件开头那条规矩一致。
+    """
+    ms = sorted(r['month'] for r in _rows() if _num(r, col) is not None)
+    return (ms[0], ms[-1], len(ms)) if ms else (None, None, 0)
+
+
+def _span_zh(col, tail='起'):
+    """'2015-04 起，136 个月'；算不出来就返回空串（正文那句话自己退化，不抛异常）。"""
+    a, b, n = _span(col)
+    return '' if not n else f'{a} {tail} {n} 个月（至 {b}）'
+
+
+def _overlap_zh(c1, c2):
+    """两列共同有值的窗口 → '2025-01~2026-07 共 19 个月'；没有交集返回空串。"""
+    s1 = {r['month'] for r in _rows() if _num(r, c1) is not None}
+    s2 = {r['month'] for r in _rows() if _num(r, c2) is not None}
+    ov = sorted(s1 & s2)
+    return '' if not ov else f'{ov[0]}~{ov[-1]} 共 {len(ov)} 个月'
 
 
 def _eq_cover():
@@ -197,6 +234,13 @@ def _tdays():
 
 
 _N4, _M0, _M1, _SAME4 = _eq_cover()
+
+# 正文里要报的三段历史长度，全部现算。
+_SPAN_API = _span_zh('adv_miax_options_api_kcontracts')      # API 段（最长）
+_SPAN_PDF = _span_zh('adv_multilist_options_kcontracts')     # IR 月报段（最短）
+_SPAN_VOL = _span_zh('vol_futures_ag_contracts')             # 源 C 历史档案段
+_OV_MIAX_CBOE = _overlap_zh('adv_multilist_options_kcontracts',
+                            'rpc_multilist_options_usd')
 _REC = _ind_recon()
 _PN, _PPREM, _PLAST, _PMIN, _PMAX, _PCUR = _px_rel()
 _TDN, _TDMIN, _TDMAX, _TDSPR, _TDMISS = _tdays()
@@ -387,6 +431,31 @@ SPEC = {
             {'col': 'trading_days_futures', 'zh': '期货交易日数',
              'unit': 'days/month', 'fmt': 'f0'},
         ]},
+
+        # ── 农产品月度总张数：本页唯一一段与 API 段一样长的期货历史（源 C）。
+        #
+        #    为什么**单独成组**而不是塞进上面那组：
+        #    ① 单位不同（张/月 vs 张/日）本来就不能同轴，塞进去也是各自成图；
+        #    ② 上面那组已经有两个会画成 gs_bar 的单列桶（RPC 那两列合桶、交易日一桶），
+        #       而组名里写「次轴：单月同比」的组**只允许含一个 gs_bar 桶**
+        #       （build/specs/lseg.py 的那条规矩），写上去会把声明贴到不相干的图上；
+        #    ③ 这一列的历史比同组任何一列长 10 年，且中间有一次**所有权变更**，
+        #       与 IR 月报那几列不是同一件事，混在一个组名下会误导。
+        #
+        #    组名里为什么必须写「次轴：单月同比」：底座对单列桶画 gs_bar，
+        #    而 gs_bar 的次轴写死是单月同比（build/single.py 的 ex_single → yoy_rhs）。
+        #    本序列是硬红春小麦一个品种的月度总量，季节性极强 ——
+        #    实测窗口内有 36 个月单月同比与 12 个月滚动口径**符号相反**
+        #    （2017-03 单月 +38.8% vs 滚动 −0.8%；2017-10 −21.4% vs +23.8%）。
+        #    CONTRACT §6 允许用单月，条件是标题里声明；不声明会被
+        #    tools/check_yoy_caliber.py 的 R1 当场拦下（本轮就是这么被拦下来的）。
+        #    这一列该用单月的**理由**：它是当月合计张数（流量、无存量含义），
+        #    而滚动口径会把 MGEX 收购断点前后的 12 个月混进同一格 ——
+        #    断点两侧不是同一家公司的经营数据，滚动跨断点比单月跨断点更难拆开看。
+        {'zh': 'MIAX Futures 农产品月度总张数（历史档案口径；次轴：单月同比）', 'cols': [
+            {'col': 'vol_futures_ag_contracts', 'zh': '农产品期货当月合计张数',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+        ]},
     ],
 
     # ── 图 A：Pearl Equities 成交额增长的量价分解，**走三分法** ────────────────
@@ -464,13 +533,42 @@ SPEC = {
         {'month': '2024-08', 'col': c, 'zh': 'MIAX Sapphire 上线（变 4 所）'}
         for c in ('adv_miax_options_api_kcontracts', 'adv_multilist_options_kcontracts',
                   'share_multilist_options_pct')
+    ] + [
+        # ── 所有权断点，与上面三条「开新所」性质完全不同 ──────────────────
+        # vol_futures_ag_contracts 回补到 2015-04，但 MIH 是 **2020-12-04** 才全资收购
+        # Minneapolis Grain Exchange（一手出处 miaxglobal.com/company/about/history-of-growth
+        # 的时间轴条目 "December 04, 2020 MIAX Acquires Full Ownership of Minneapolis
+        # Grain Exchange (MGEX™), now MIAX Futures"）。
+        # 断点左边那 68 个月是**被收购方的历史**，不是 MIH 的经营业绩。
+        # 不标这条线，「MIAX 农产品期货量从 2015 年画到今天」就会被读成十年经营史。
+        # 只绑这一列：收购不改期权、股票任何一端的口径。
+        {'month': '2020-12', 'col': 'vol_futures_ag_contracts',
+         'zh': 'MIH 全资收购 MGEX（左侧非 MIH 经营数据）'},
     ],
 
     'notes': [
-        '<b>本页有两段长度差 10 年的历史，不要当成同一段。</b>'
-        'indsum API 口径的四所 ADV 与行业分母回到 2015-04（136 个月）；'
-        'IR 月报 PDF 口径的一切（多挂牌 ADV/份额/RPC、Pearl 股票、期货）只有 2025-01 起 19 个月。'
-        '成交量与 RPC 的起点差整整 10 年。',
+        '<b>本页有三段长度差十年的历史，不要当成同一段。</b>'
+        f'① indsum API 口径的四所 ADV 与行业分母：{_SPAN_API or "（算不出）"}；'
+        f'② MIAX Futures 历史档案 PDF 的农产品<b>月度总张数</b>：{_SPAN_VOL or "（算不出）"}；'
+        f'③ IR 月报 PDF 口径的一切（多挂牌 ADV/份额/RPC、Pearl 股票、期货 ADV 与 RPC）：'
+        f'{_SPAN_PDF or "（算不出）"}。'
+        '成交量与 RPC 的起点差整整 10 年 —— <b>回补的是量，不是价</b>：'
+        '本页四条 RPC/capture 线一条都没有变长，「量 × 单价」类读法的可用窗口不受影响。',
+
+        '<b>农产品那条长历史跨过了一次所有权变更，别读成 MIH 的十年经营史。</b>'
+        'MIH 是 <b>2020-12-04</b> 才全资收购 Minneapolis Grain Exchange（现 MIAX Futures）——'
+        '一手出处是 miaxglobal.com/company/about/history-of-growth 的时间轴。'
+        '2020-11 及更早那段量是<b>被收购方</b>的经营数据，图上已用红色竖虚线标出这条断点。'
+        '断点左右可以看趋势、看季节性，<b>但不要跨断点算 MIH 的复合增速</b>。',
+
+        '<b>月度总张数与农产品 ADV 不是两个口径，是同一批成交的两种表述。</b>'
+        '总张数 ÷ 当月官方交易日 = ADV，fetch/miax.py 在两源重叠的月份逐月复现过'
+        '（最大差 0.50 张/日、0.0084%，纯粹是官方把 ADV 四舍五入到整数的痕迹）。'
+        '之所以仍然分两列、分两张图：ADV 那一列的权威定义是 IR 月报，'
+        '把回补值写进去会让重述体检失去基线；而单位不同（张/月 vs 张/日）本来也不能同轴。'
+        '另外历史档案里的「农产品」是<b>减出来的</b>（TOTAL − SPIKES/BRIXX/税率/Bloomberg 股指'
+        '等金融类产品表），所以 2026-05 起 Bloomberg 股指期货上线并不会污染这条线 —— '
+        '这一条已由跨源接缝检验逐月验证。',
 
         '两个源的关系：<b>PDF 是权威值</b>（与 FY2025 10-K 对账，多挂牌 ADV 9,538、行业 55,798、'
         'Pearl 股票 183、农产品 12,989 四项误差均 ≤0.11%），'
@@ -480,8 +578,9 @@ SPEC = {
 
         '<b>多挂牌期权 RPC 是全仓唯一能做单价对照的第二家。</b>MIAX 与 Cboe 的 RPC 定义逐字相同'
         '（净交易费 ÷ 总成交张数），单位都是千张/日，不需要任何换算。'
-        '但重叠窗口只有 2025-01~2026-06 共 18 个月（Cboe 侧有 114 个月），'
-        '<b>2026-12 之前做不了同比与指数化</b>，并排图上必须写明 MIAX 线的起点。',
+        f'但 MIAX 这边「ADV 与 RPC 同时有值」的窗口只有 {_OV_MIAX_CBOE or "（算不出）"}'
+        '（Cboe 侧长十倍不止），'
+        '<b>够 24 个月之前做不了同比与指数化</b>，并排图上必须写明 MIAX 线的起点。',
 
         '<b>industry_adv_equities_mnshares 与 ICE 的三个 tape 合并量是同一个分母。</b>'
         '本机实测 2026-06 = 23,383 vs ICE 的 tapeA+B+C = 23,382、2026-07 = 17,437 vs 17,437 —— '

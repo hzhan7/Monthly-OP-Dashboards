@@ -8,7 +8,7 @@
 
 ━━━━━━━━━━━━━━━━━━━━ 数据源 ━━━━━━━━━━━━━━━━━━━━
 
-三个域，全部是 Nasdaq 自营，没有任何第三方聚合站：
+四个域，全部是 Nasdaq 自营，没有任何第三方聚合站：
 
 A 组 · IR「Monthly Reporting Sheet」PDF —— 四条月度序列 + 一张季度面板
     落地页 https://ir.nasdaq.com/financials/volume-statistics
@@ -26,9 +26,24 @@ A 组 · IR「Monthly Reporting Sheet」PDF —— 四条月度序列 + 一张�
     里的 `Monthly Reporting Sheet - July 2026 Final.pdf`（"Final" 说明存在过非 Final 版）。
     本模块把 Content-Disposition 当**交叉校验**（对不上就抛），不当唯一判据。
 
-    历史深度：这份文件恒含「上一整年 + 本年 YTD」= 19–24 个月，**2025-01 之前回不去**
-    （IR 站不留历史副本；2016 与 2019 的新闻稿附件实测只是新闻稿本身、一个数字都没有；
-    唯一副本在 Wayback，本机 hook 硬禁）。跨年不掉数据：12 月那期含全年 12 个月。
+    历史深度：这份文件恒含「上一整年 + 本年 YTD」= 19–24 个月，**这份 PDF 本身 2025-01
+    之前回不去**（IR 站不留历史副本；2016 的新闻稿 slug 实测 404、2024-10 那篇 200 但
+    正文里千分位数字命中 0 个、`/static-files/` 链接 0 条；落地页全页只有 1 条 static-file、
+    没有任何年份归档链接 —— 三条都在 2026-08-18 重新实测过）。跨年不掉数据：12 月那期含全年 12 个月。
+
+    ⚠ **「PDF 回不去」≠「这四列回不去」。** 四列里有两列在别的 Nasdaq 官方档案里躺着完整历史，
+    2026-08-18 已接上（见 D 组与下面的口径坑 19 / 20）：
+        vol_nordic_derivs_mmcontracts  → D 组交易所公告档案，2013-01 起，19 个重叠月逐月全等
+        vol_us_cash_matched_mnsh       → B 组三盘口和，2010-10 起，19 个重叠月里 18 个 |差| ≤ 0.0101%
+    另外两列仍然只有 2025-01 起（**2026-08-18 复核后维持原判**）：
+        vol_us_options_mmcontracts   Nasdaq 一方确实没有月度档案。同目录的 msoption{YY}.xlsx
+                                     2016/2020 年份下的是 43,120 B 的 HTML 错误页；2023/2026
+                                     是真 xlsx 但只有 Combined/BX(NTX)/NOM/PHLX 四行、
+                                     本月/上月/去年同月三列（2023-12 Combined 160.6mm，
+                                     而 IR 的六所口径是它的两倍多）—— 见口径坑 14。
+        vol_nordic_cash_value_usdbn  官方月度原件是**欧元**的（D 组同一个 feed 里的
+                                     'Main Market Total Equity Trading'），换算不回 IR 那条美元
+                                     —— 见下面「未找到」一节，那是口径断点不是抓取难题。
 
 B 组 · nasdaqtrader「marketshare{YY}.xlsx」—— 美股现货深度历史 + 分盘口 + 交易日
     列表页 https://www.nasdaqtrader.com/Trader.aspx?id=MarketShare
@@ -46,6 +61,26 @@ C 组 · 发布日证人 —— IR 新闻稿电头
     https://ir.nasdaq.com/news-releases/news-release-details/nasdaq-reports-{month}-{year}-volumes
     季末月（3/6/9/12）改成 …-volumes-and-{Q}q{yy}-statistics
     新闻稿正文一个数字都没有（只写「数据已挂在 IR 网站」），唯一用途就是作发布日的证人。
+
+D 组 · Nasdaq Nordic 交易所公告档案 —— 北欧衍生品的长历史（**只用于回补，不用于当期**）
+    检索  https://api.news.eu.nasdaq.com/news/query.action
+          （globalGroup=exchangeNotice & globalName=NordicExchangeNotices，JSON、免登录）
+    附件  https://attachment.news.eu.nasdaq.com/<不可推导的 hash>
+    月报「Statistics report - Derivatives volumes per month January-{Month} {Year}」，
+    附件名 `Derivative Volumes per Month {YYMM}.xls`（2016-12 及更早）/
+           `Derivative Volumes per Month {YYYY}-{MM}.xlsx`（2017-01 起）。
+    **每一册含当年 YTD**，所以每年只要下 12 月那一期就拿到整年。
+    2026-08-18 实测：162 册，发布月 2013-02..2026-07 零缺口，展开成数据月 2013-01..2026-07
+    也零缺口。附件 URL 里那串 hash 不可推导，必须每次从 JSON 现取（与 A 组的 uuid 同型）。
+
+    ⚠ 这个 feed 的三条实测行为，写死在这里免得下一个人再踩：
+      (a) **fromDate / toDate 被静默忽略**，dir=ASC 也无效（传 2019 的日期照样返回今天的公告）；
+          start 深翻在 5000..50000 之间截断 ⇒ **不能靠时间窗或分页拿历史**。
+      (b) **freeText 是全量相关性检索、不受时间窗限制**，这才是历史唯一的入口。
+          检索词是打分不是短语匹配：'Statistics from Nasdaq Nordic Exchange' 命中 0，
+          'Derivatives volumes per month' 一次返回 165 条（其中 162 条是要的月报）。
+      (c) freeText 结果**硬上限 200 条**（start=200 返回空）。162 < 200，当前够用；
+          将来册数超过 200 就必须按年分词检索，那时 `_nordic_derivs_index` 要改。
 
 ━━━━━━━━━━━━━━━━━━━━ 发布节奏 ━━━━━━━━━━━━━━━━━━━━
 
@@ -269,6 +304,41 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
     ⇒ **用户 2026-08-15 决定：不因两个官方源互不吻合而拒发，照官方公布值出网站。**
       因此本模块的 IR↔B 组恒等式改成两档（见 XCHECK_TOL / XCHECK_HARD_TOL）。
 
+19. **北欧衍生品的长历史是「拼出来的」，拼法必须一字不差 —— 而且它有自检。**
+    D 组月报按**产品族**分 sheet，IR 那一行是它们的和。2026-08-18 实测的重建口径：
+        取每张**权益类** sheet 的 **"Cleared volumes"** 段（不是 "Traded volumes"）的
+        **"No. of Contracts"** 列，逐月求和，÷1e6 后**四舍五入到 1 位小数**（IR 就印 1 位）。
+    「权益类」= 2026-07 那册的 Stock Products / Index Products / OMXESG Index Futures /
+    Mini Index Futures / Custom Basket Forwards and Futures 五张；固定收益的
+    Mortgage / Treasury / STIBOR / Repos / Swaps 五类**不算**。
+    产品族是逐年长出来的（Mini Index 2020 才有、OMXESG 2023、Custom Basket 2024），
+    2016 那册只有 Stock / Index 两张 —— 所以解析器**不许写死 sheet 清单**。
+    ⚠ 三个已经踩到的坑：
+      (a) **不能按 sheet 首行标题分类。** derivs_2015-12.xls 的 "Stock Products" 首行是
+          "Nasdaq Nordic Exchange" 而不是 "Stock Related Products 2015"，按标题筛会把
+          整张股票 sheet 丢掉 —— 症状是 2015 年整年低估约 40%（4.6 vs 8.1），
+          曲线还很顺眼。本模块因此按 **sheet 名**分类，并且**认不出的 sheet 直接抛**
+          （见 `_NORDIC_EQ_SHEETS` / `_NORDIC_FI_SHEETS`）：官方哪天新增一族权益产品，
+          宁可整月不更新，也不要静默少算一族。
+      (b) **数据格可能是字符串。** OMXESG / Mini Index / Custom Basket 三张的数字格
+          openpyxl 读出来是 '33362' 这样的文本，只判 isinstance(v,(int,float)) 会全部漏掉。
+      (c) **每个小节的列位置都不一样**（同一册里 No. of Contracts 时而在第 4 列、时而在第 6/8 列），
+          必须逐个表头行重新定位，不能整张 sheet 用一个列号。
+    自检：`_nordic_derivs_backfill` 每次回补都把重建值与 CSV 里**已有的 IR 值**逐月比，
+    19 个重叠月（2025-01..2026-07）2026-08-18 实测**一位小数全等**。差 0.1 只 WARN，
+    差更多就抛 —— 那说明官方改了产品族或改了 cleared/traded 的分段。
+
+20. **`vol_us_cash_matched_mnsh` 是拼接列：2025-01 起是 IR 原值，更早是 B 组三盘口和。**
+    两段口径**不是同一个数字来源**，但实测是同一个东西：19 个重叠月里 18 个月
+    |差| ≤ 0.0101%，只有 2026-07 差 -0.2896%（那是 nasdaqtrader 自己少计，见口径坑 18，
+    第三方 Cboe tape 裁定 IR 对）。拼接点在 2024-12 / 2025-01，那一处的口径落差
+    因此上界是 0.01% 量级 —— 图上看不见，但**必须在图注里写明**，否则读者会以为
+    整条线都是 IR 发的。
+    ⚠ 三盘口齐全从 **2010-10** 起（PSX 最后上线），所以拼接段最早只能到 2010-10。
+    硬拉到 2005-09（只有 Nasdaq 一家、或 Nasdaq+BX）就是换口径，本模块不做。
+    ⚠ 拼接值用 `sum/1e6` **不四舍五入**，与 `build/exchanges_na.py:305` 的
+    `__ndaq_venues__` 回落列逐位相同 —— 那条回落列已经在北美页上跑了，两处必须给出同一个数。
+
 ━━━━━━━━━━━ 📌 未找到（查过，确实没有）━━━━━━━━━━━
 
 · **IPO 募资金额（capital raised / proceeds）：Nasdaq 官方任何一处都不披露，只披露 IPO 家数。**
@@ -287,38 +357,47 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
   ⇒ 对照 HKEX 有 `ipo_funds_hkdbn`，Nasdaq 这一格在本仓只能永远留空。上市公司数走
   `q_listed_cos_*`（季度）。IPO **家数**若以后要，去 8-K EX-99.1 取，那是另一条抓取链。
 
-· **北欧现货的欧元口径 ADV 与北欧交易日：找到了官方原件，但没有可无人值守的检索路径。**
-  官方原件确实存在且是一手的：Nasdaq Nordic 交易所公告
-  「Statistics from Nasdaq Nordic Exchange {Month} {Year}」，附件
-  `Statistics_{Month}_{Year}_summary_.pdf`，正文写
-  "The value of average daily share trading amounted to EUR 3.3 billion …
-   Vilnius had 22 trading days, and all other exchanges had 23 trading days."
-  取件接口 `https://api.news.eu.nasdaq.com/news/query.action`（JSON、免登录、免 UA）。
-  **两条实测的阻断原因**：
-    (a) 侦察稿给的 `freeText=Statistics from Nasdaq Nordic Exchange` 检索**命中 0 条**
-        —— freeText 是按词打分排序而不是短语匹配，翻 200 条全是公司公告；
-    (b) 更硬的一条：**`fromDate` / `toDate` 被静默忽略**。实测传
-        `fromDate=2019-08-01&toDate=2019-08-10` 返回的仍是 2026-08-06 的最新公告。
-        整个 feed 只能从最新往回翻页（200 条/页、约 2 s/页），而这个 feed 被
-        J.P. Morgan 之流的权证挂牌公告刷屏，**历史月份不可达**，也就没法回补。
-  唯一能用的是「按 headline 正则 `Statistics from Nasdaq Nordic` 扫最新几页」，
-  只在发布后几天内有效。加上正文那个 EUR 数只有 2 位有效数字（3.3），
-  写进真值 CSV 会造成假精度 —— 所以本模块**不接这条链**。
-  北欧现货用 IR 的 `vol_nordic_cash_value_usdbn`（美元、3 位有效数字、与该 EUR 数已互证：
-  3.3 × 23 = EUR 75.9bn ≈ USD 88.0bn，正是 IR 2026-07 的 88.0）。
+· **北欧现货那条美元列（`vol_nordic_cash_value_usdbn`）回不到 2016：是口径断点，不是抓不到。**
+  ⚠ 这一条 2026-08-18 **改写过**。原文说「历史月份不可达」，那半句被证伪了 —— 上面 D 组
+  的 freeText 检索同样能把北欧现货的官方月报翻出来（`Main Market Total Equity Trading
+  {YYMM}.xls(x)`，实测清单 2022-03..2026-07 连续，每册含 13 个月滚动窗；更早一代是
+  2011-09..2014-07 的 `Monthly statistics_Nordics_{Month}_{YYYY}_eng.pdf`）。
+  真正的阻断在**币种与 scope**：
+    (a) 官方月报给的是 **on-exchange turnover EUR**（精确到分，2026-07 = 76,480,547,244.95），
+        IR 那条是**美元**。拿 `series/fx.csv` 的 fx_avg_eurusd 折美元与 IR 逐月比，
+        13 个重叠月**系统性低 0.77%~2.50%**；换 fx_eom 更差（-0.18%~-4.21%）。
+        再把 Other Lists（First North，光 STO 2026-07 就 16.19bn）加进去又高出一大截
+        ⇒ IR 那条美元列的确切 scope 与汇率口径**没能复原**。
+    (b) 另有 'Trading Statistics {Month} {Year}' 公告正文（无附件）写 EUR 日均，
+        实测覆盖 2016-01..2026-07 的 116/127 个月，但只有 2 位有效数字（"3.327bn"），
+        写进真值 CSV 是假精度。
+  ⇒ 结论不变但理由换了：**不能拿 EUR 原件首尾相接去接 IR 那条美元线**。要接就得新开一列
+  `vol_nordic_cash_value_eurbn`（官方原值、不折汇），而那会连带改 `build/exchanges_eu.py`
+  的 NDAQ_MON_COL 与 Exhibit 17 核对表（它现在把这列当 US$bn 直接列示、并用 EURUSD 反折
+  欧元与 Cboe 对撞）—— 是一次跨页改动，不在单家回补的边界内。
+  北欧现货因此仍只有 IR 的 2025-01 起 19 个月。
+
+· **北欧交易日**：IR 一个字都不给；D 组月报里倒是有（每张 sheet 的 "Trading Days" 列，
+  2026 年 1-7 月 = 20/20/22/20/19/21/23）。本模块**没有落库** —— 北欧两条列在页面上画的是
+  当月总量、不换 ADV，落一列没人用的交易日只会给下一个人一个「可以除」的错误暗示。
 
 · **Nasdaq Commodities（北欧电力/商品）月报**：`nasdaq.com/solutions/monthly-market-reports-european-commodities`
   上有 2014-01 起的逐月 PDF，但 IR 那四条序列**根本不含它**，且页面 2024-05 之后就没再更新。
   不要拿它去凑「北欧衍生品」。
 
 ━━━━━━━━━━━━━━━━ 依赖 ━━━━━━━━━━━━━━━━
-PyMuPDF（读 PDF，需要 `line['dir']`）+ openpyxl（读 xlsx）。不依赖 pandas，
-避免 to_csv 重排既有行的格式（幂等要求：没变的行必须字节级不变）。
+PyMuPDF（读 PDF，需要 `line['dir']`）+ openpyxl（读 xlsx）+ **xlrd ≥ 2.0**（读 D 组
+2016-12 及更早那批 .xls；xlrd 2.x 只支持 .xls，正好是我们要它做的事）。
+xlrd 是**延迟 import** 的：只有真的要回补 2017 年以前的月份才会用到，
+装不上也不影响每月的常规更新（那条路只碰 PDF 与 xlsx）。
+不依赖 pandas，避免 to_csv 重排既有行的格式（幂等要求：没变的行必须字节级不变）。
 """
 
 import csv
+import json
 import os
 import re
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -332,6 +411,18 @@ IR_ORIGIN = 'https://ir.nasdaq.com'
 PR_BASE = 'https://ir.nasdaq.com/news-releases/news-release-details/'
 MS_URL = ('https://www.nasdaqtrader.com/content/marketstatistics/marketshare/'
           '{year}/marketshare{yy}.xlsx')
+# D 组（历史回补，见模块 docstring 的 D 组一节与口径坑 19）。
+# 参数照抄浏览器实测那一串：fromDate/toDate/dir 全部无效，唯一起作用的是 freeText + limit。
+NORDIC_NEWS_URL = (
+    'https://api.news.eu.nasdaq.com/news/query.action'
+    '?type=handleResponse&showAttachments=true&showCnsSpecific=true&showCompany=true'
+    '&countResults=false&freeText={q}&company=&market=&cnscategory='
+    '&globalGroup=exchangeNotice&globalName=NordicExchangeNotices'
+    '&displayLanguage=en&language=&timeZone=CET&dateMask=yyyy-MM-dd+HH%3Amm%3Ass'
+    '&limit=200&start=0&dir=DESC')
+NORDIC_DERIVS_QUERY = 'Derivatives volumes per month'
+# 官方档案实测可达的最早**数据**月（最早那册是 1302，含 2013-01 与 2013-02）。
+NORDIC_DERIVS_START = '2013-01'
 
 # 口径坑 7：static-file 路径对默认 UA 是「挂住 30 秒」而不是快速失败，UA 是硬要求。
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
@@ -373,6 +464,26 @@ MS_GROUP_COL = 'share_us_cash_matched_group'      # 合成列 = 三个官方份�
 NTX_START = '2009-01'
 PSX_START = '2010-10'
 GROUP_START = PSX_START            # 三家齐了才有合成份额
+# 口径坑 20：`vol_us_cash_matched_mnsh` 的拼接段（B 组三盘口和）最早只能到三家齐的那个月。
+VENUE_SPLICE_START = PSX_START
+VENUE_SPLICE_COLS = ('vol_us_cash_matched_nasdaq_sh',
+                     'vol_us_cash_matched_ntx_sh',
+                     'vol_us_cash_matched_psx_sh')
+
+# ── D 组的 sheet 分类（口径坑 19a：**按 sheet 名，不按首行标题**）────────────
+# 归一化 = 折叠空白 + 小写；判前缀而不是全等（'Index  Products' 双空格、
+# 'Custom Basket Forwards' 在 2024 册被截断成 'Custom Basket Forwards and Futu'）。
+_NORDIC_EQ_SHEETS = ('stock products', 'index products', 'omxesg',
+                     'mini index futures', 'custom basket')
+_NORDIC_FI_SHEETS = ('mortgage', 'treasury', 'stibor', 'nibor', 'cibor',
+                     'repos', 'repo', 'swaps')
+# 这两张在 2013-01..2026-07 的每一册里都在，缺了就是下错文件/官方改版。
+_NORDIC_CORE_SHEETS = ('stock products', 'index products')
+_NORDIC_DERIVS_COL = 'vol_nordic_derivs_mmcontracts'
+# 重建值 vs CSV 已有 IR 值的两档容差（单位：百万张，官方就印 1 位小数）。
+# 实测 19 个重叠月全等 ⇒ 差 1 个末位（0.1）只 WARN，差更多就抛。
+NORDIC_XCHECK_WARN = 0.1
+NORDIC_XCHECK_HARD = 0.15
 
 # C 组：(csv 列名, PDF 第 2 页的段落标题前缀, 行标签前缀)
 # 段内**长标签必须排在短标签前面**（口径坑 9），本模块另外在匹配时再排一次序，双保险。
@@ -578,6 +689,318 @@ def _fetch_marketshare(cache_dir, year):
     path = os.path.join(cache_dir, 'ndaq_marketshare%02d.xlsx' % (year % 100))
     _write_bytes(path, body)
     return path
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# D 组 · Nasdaq Nordic 交易所公告档案 —— 北欧衍生品的历史回补
+#
+# 只在 series/ndaq.csv 里**真的有洞**时才发请求：没有洞就一次网络都不走。
+# 这是「抓取器自己能长回去」而不是一次性脚本的原因 —— 下个月有人删了几行、
+# 或者 IR 那份 PDF 某个月漏了，下一次 monthly_run 会自己把洞补上。
+# ══════════════════════════════════════════════════════════════════════════
+_DERIV_FILE = re.compile(
+    r'^Derivative Volumes per Month\s+(?:(20\d{2})-(\d{2})|(\d{2})(\d{2}))\.xlsx?$', re.I)
+
+
+def _month_seq(lo, hi):
+    """['YYYY-MM', …]，闭区间。lo > hi 时返回空表。"""
+    out = []
+    y, m = int(lo[:4]), int(lo[5:7])
+    while '%04d-%02d' % (y, m) <= hi:
+        out.append('%04d-%02d' % (y, m))
+        m += 1
+        if m == 13:
+            y, m = y + 1, 1
+    return out
+
+
+def _csv_col(csv_path, col):
+    """{'YYYY-MM': float}，只收有值的格。文件/列不存在返回空 dict（不抛）。"""
+    try:
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            rows = list(csv.DictReader(f))
+    except OSError:
+        return {}
+    out = {}
+    for r in rows:
+        v = (r.get(col) or '').strip()
+        if v:
+            try:
+                out[r['month']] = float(v)
+            except ValueError:
+                pass
+    return out
+
+
+def _norm(v):
+    """一个格 → 归一化文本。数值型的整数不要变成 '20.0'（月份表里的交易日列会撞上）。"""
+    if v is None:
+        return ''
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    return re.sub(r'\s+', ' ', str(v).replace('\xa0', ' ')).strip()
+
+
+def _nordic_derivs_index(cache_dir):
+    """freeText 检索 → {'YYYY-MM'(册次): (文件名, 附件直链)}。
+
+    册次 = 该期覆盖到的最后一个数据月（2016-12 那册含 2016-01..2016-12）。
+    附件 URL 里那串 hash **不可推导**，只能每次从 JSON 现取。
+    """
+    url = NORDIC_NEWS_URL.format(q=urllib.parse.quote(NORDIC_DERIVS_QUERY))
+    body, _hdr = _http_get(url)
+    _write_bytes(os.path.join(cache_dir, 'ndaq_nordic', 'news_derivs.json'), body)
+    txt = body.decode('utf-8', 'replace')
+    i, j = txt.find('{'), txt.rfind('}')          # type=handleResponse 可能包 JSONP 壳
+    if i < 0 or j < 0:
+        raise NdaqFetchError('Nordic news 检索返回的不是 JSON（前 120 字节 %r）' % body[:120])
+    try:
+        items = json.loads(txt[i:j + 1])['results']['item']
+    except (ValueError, KeyError, TypeError) as e:
+        raise NdaqFetchError('Nordic news 检索的 JSON 结构变了：%r' % (e,)) from e
+    if isinstance(items, dict):
+        items = [items]
+
+    out = {}
+    for it in items:
+        att = it.get('attachment') or []
+        if isinstance(att, dict):
+            att = [att]
+        for a in att:
+            m = _DERIV_FILE.match((a.get('fileName') or '').strip())
+            if not m:
+                continue                       # 同一次检索里混着别的公告，正常
+            edition = ('%s-%s' % (m.group(1), m.group(2)) if m.group(1)
+                       else '20%s-%s' % (m.group(3), m.group(4)))
+            href = a.get('attachmentUrl') or a.get('url')
+            if not href:
+                raise NdaqFetchError('Nordic 月报 %s 的附件没有直链' % edition)
+            out[edition] = ((a.get('fileName') or '').strip(), href)
+    if not out:
+        raise NdaqFetchError(
+            'freeText=%r 一册 "Derivative Volumes per Month" 都没检索到 —— '
+            '检索词是打分排序不是短语匹配，官方改了 headline 就会这样（见 D 组注释 b）'
+            % NORDIC_DERIVS_QUERY)
+    return out
+
+
+def _fetch_nordic_derivs(cache_dir, edition, filename, href):
+    """下载某一册，返回本地路径。已在 cache 里就直接用（这批文件永不改版）。"""
+    ext = '.xls' if filename.lower().endswith('.xls') else '.xlsx'
+    path = os.path.join(cache_dir, 'ndaq_nordic', 'derivs_%s%s' % (edition, ext))
+    if os.path.exists(path) and os.path.getsize(path) > 4096:
+        return path
+    body, _hdr = _http_get(href)
+    head = body[:4]
+    ok = head == b'PK\x03\x04' if ext == '.xlsx' else head == b'\xd0\xcf\x11\xe0'
+    if not ok:
+        raise NdaqFetchError('%s 下回来的不是 %s（首字节 %r）' % (filename, ext, head))
+    _write_bytes(path, body)
+    return path
+
+
+def _have_xlrd():
+    """本机能不能读 .xls。xlrd **不在 requirements.txt 里**（只服务这一条回补链的
+    2017 年以前那一段），所以缺它是「少回补几年」而不是「这家挂了」。"""
+    try:
+        import xlrd                                     # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _nordic_grid(path):
+    """一册 → [(sheet 名, 二维 list)]。.xls 走 xlrd、.xlsx 走 openpyxl，下游共用一套解析。"""
+    if path.lower().endswith('.xlsx'):
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        try:
+            return [(nm, [[c.value for c in row] for row in wb[nm].iter_rows()])
+                    for nm in wb.sheetnames]
+        finally:
+            wb.close()
+    try:
+        import xlrd                       # 只有 2017 年以前的册子才需要，故延迟 import
+    except ImportError as e:
+        raise NdaqFetchError(
+            '%s 是 .xls，需要 xlrd（pip install "xlrd>=2.0"）。'
+            '2017-01 起官方改发 .xlsx，不装 xlrd 只是回补不到 2017 年以前，'
+            '不影响每月常规更新' % os.path.basename(path)) from e
+    bk = xlrd.open_workbook(path)
+    out = []
+    for nm in bk.sheet_names():
+        sh = bk.sheet_by_name(nm)
+        out.append((nm, [[sh.cell_value(r, c) for c in range(sh.ncols)]
+                         for r in range(sh.nrows)]))
+    return out
+
+
+def _row_label(row):
+    """行里第一个非空格的文本。这批表的数据不一定从 A 列开始（口径坑 19c 的同源问题）。"""
+    for cell in row:
+        t = _norm(cell)
+        if t:
+            return t
+    return ''
+
+
+def _nordic_num(v, where):
+    """一个张数格 → float 或 None。**必须容忍字符串**（口径坑 19b）。"""
+    if isinstance(v, bool):
+        raise NdaqFetchError('%s 是布尔值' % where)
+    if isinstance(v, (int, float)):
+        return float(v)
+    t = _norm(v).replace(',', '')
+    if t in ('', '-', '–', '—', 'n/a', 'N/A'):
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        raise NdaqFetchError('%s 不是数字：%r' % (where, v))
+
+
+def _parse_nordic_derivs(path, year):
+    """一册 → {'YYYY-MM': 百万张}，口径 = 权益类 sheet 的 Cleared volumes / No. of Contracts。
+
+    口径与三个坑见模块 docstring 的口径坑 19。这里只强调一条：
+    **认不出的 sheet 直接抛**。官方新增一族权益产品时，静默跳过会让整条历史低估，
+    而曲线依旧顺眼 —— 2015 那册就是这么骗过第一版解析器的。
+    """
+    tot, used = {}, []
+    base = os.path.basename(path)
+    for name, rows in _nordic_grid(path):
+        nm = re.sub(r'\s+', ' ', name).strip().lower()
+        if nm.startswith(_NORDIC_FI_SHEETS):
+            continue                                    # 固定收益，不进 IR 那一行
+        if not nm.startswith(_NORDIC_EQ_SHEETS):
+            raise NdaqFetchError(
+                '%s 里有认不出的 sheet %r —— 官方多半新增了一族产品。'
+                '**不要直接把它加进 _NORDIC_FI_SHEETS 了事**：先确认它是不是权益衍生品，'
+                '是就加进 _NORDIC_EQ_SHEETS 并重跑 19 个重叠月的自检（口径坑 19）'
+                % (base, name))
+        used.append(nm)
+        section, col = 'cleared', None       # 2016 及更早没有 Cleared/Traded 分段，默认就是 cleared
+        for row in rows:
+            lab = _row_label(row)
+            low = lab.lower()
+            if low in ('cleared volumes', 'traded volumes'):
+                section, col = low.split()[0], None
+                continue
+            if low.startswith('nordic exchange') and 'products' in low:
+                col = next((j for j, c in enumerate(row)
+                            if _norm(c).lower().replace(' ', '').replace('.', '')
+                            == 'noofcontracts'), None)
+                if col is None:
+                    raise NdaqFetchError(
+                        '%s / %s 的表头行里没有 "No. of Contracts"：%r'
+                        % (base, name, [_norm(c) for c in row][:10]))
+                continue
+            if lab not in _MONTH_NAMES or section != 'cleared':
+                continue
+            if col is None:
+                raise NdaqFetchError('%s / %s：%s 行之前没有出现表头行' % (base, name, lab))
+            v = _nordic_num(row[col] if col < len(row) else None,
+                            '%s / %s / %s' % (base, name, lab))
+            if v is None:
+                continue
+            key = '%04d-%02d' % (year, _MONTH_NAMES.index(lab) + 1)
+            tot[key] = tot.get(key, 0.0) + v
+    miss = [c for c in _NORDIC_CORE_SHEETS if not any(u.startswith(c) for u in used)]
+    if miss:
+        raise NdaqFetchError('%s 缺核心 sheet %s（实际拿到 %s）' % (base, miss, used))
+    if not tot:
+        raise NdaqFetchError('%s 一个月份都没解析出来' % base)
+    # ÷1e6 换成百万张、四舍五入到 1 位 —— IR 那一列就印 1 位小数，两段必须同精度才接得上
+    return {k: round(v / 1e6, 1) for k, v in sorted(tot.items())}
+
+
+def _nordic_derivs_backfill(series_dir, cache_dir, upto, ir_months=()):
+    """把 `vol_nordic_derivs_mmcontracts` 的历史洞补上，返回 {'YYYY-MM': 百万张}。
+
+    · **CSV 里没有洞 ⇒ 一次网络请求都不发，返回 {}。** 也就是说这条链平时是静默的，
+      历史一旦补齐就再也不跑 —— 定期体检不在这里，在 `python3 fetch/ndaq.py --crosscheck`
+      的 [4] 段（那一段会把整条列拿去逐年重算）。
+    · 一旦要跑，除了缺口那几年，**还会把 IR 覆盖到的那几年一并下下来对账**。
+      这是本条链唯一的正确性证明：重建值 vs 同月 IR 印刷值，2026-08-18 实测 19 个重叠月
+      一位小数全等。少了这一步，回补就成了「拿一个没人验过的公式去写 144 个月的历史」。
+    · 检索/下载失败只 WARN 不抛 —— 历史档案临时取不到，不该拖垮当月的 IR 数据入库。
+      解析结构变化与对账超硬阈值**照抛**：那两种是「会写进一个看上去正常的错数」。
+    """
+    csv_path = os.path.join(series_dir, 'ndaq.csv')
+    have = _csv_col(csv_path, _NORDIC_DERIVS_COL)
+    want = [m for m in _month_seq(NORDIC_DERIVS_START, upto) if m not in have]
+    if not want:
+        return {}
+
+    try:
+        index = _nordic_derivs_index(cache_dir)
+    except NdaqFetchError as e:
+        print('[ndaq] WARN 北欧衍生品历史档案检索失败，本次不回补（%d 个月仍留空）：%s'
+              % (len(want), e))
+        return {}
+
+    # 缺口所在的年份 + IR 有原值的年份（后者是对账年，不写入任何东西，只用来验公式）
+    years = {m[:4] for m in want} | {m[:4] for m in ir_months}
+    out = {}
+    for year in sorted(years):
+        # 每册含当年 YTD ⇒ 每年只取该年**最后一期**（往年就是 12 月那期）
+        editions = sorted(k for k in index if k[:4] == year)
+        if not editions:
+            print('[ndaq] WARN 北欧衍生品 %s 年没有任何一册在检索结果里，该年留空' % year)
+            continue
+        edition = editions[-1]
+        try:
+            path = _fetch_nordic_derivs(cache_dir, edition, *index[edition])
+        except NdaqFetchError as e:
+            print('[ndaq] WARN 北欧衍生品 %s 册下载失败，该年留空：%s' % (edition, e))
+            continue
+        # xlrd 不在 requirements.txt 里（它只服务这一条回补链的 2017 年以前那一段）。
+        # 没装就跳过 .xls 那些年、WARN 一句 —— **不许让它拖垮整个 ndaq 的月度更新**。
+        if path.lower().endswith('.xls') and not _have_xlrd():
+            print('[ndaq] WARN 北欧衍生品 %s 册是 .xls，本机没有 xlrd（pip install "xlrd>=2.0"），'
+                  '%s 年留空；2017-01 起官方改发 .xlsx，不影响更近的年份' % (edition, year))
+            continue
+        book = _parse_nordic_derivs(path, int(year))     # 结构不对就抛，见 docstring
+
+        for mon, val in sorted(book.items()):
+            old = have.get(mon)
+            if old is not None:
+                d = abs(val - old)
+                if d > NORDIC_XCHECK_HARD:
+                    raise NdaqFetchError(
+                        '北欧衍生品 %s：交易所公告重建 %.1f mm 与 CSV 里的 IR 值 %.1f mm '
+                        '相差 %.1f，超过硬阈值 %.2f —— 重建口径与 IR 不再是同一个东西了'
+                        '（官方多半改了产品族或 cleared/traded 分段），拒绝写入。'
+                        '口径坑 19 有完整的重建口径，改之前先把它读完'
+                        % (mon, val, old, d, NORDIC_XCHECK_HARD))
+                if d > 1e-9:
+                    print('[ndaq] WARN 北欧衍生品 %s：重建 %.1f vs IR %.1f（差 %.1f，'
+                          '在末位 1 个单位内，按四舍五入分歧处理，不覆盖 IR 原值）'
+                          % (mon, val, old, d))
+                continue                     # 已有 IR 原值 ⇒ 永不覆盖（幂等约定）
+            if mon in want:
+                out[mon] = val
+    if out:
+        print('[ndaq] 北欧衍生品历史回补：%d 个月（%s..%s），来源 = Nasdaq Nordic 交易所公告'
+              ' "Derivative Volumes per Month"，口径见 fetch/ndaq.py 口径坑 19'
+              % (len(out), min(out), max(out)))
+    return out
+
+
+def _venue_splice(ms, ir_start):
+    """`vol_us_cash_matched_mnsh` 的历史段 = B 组三盘口和 ÷ 1e6（口径坑 20）。
+
+    只覆盖 **ir_start 之前**的月份：IR 有原值的月份一律用 IR 的，不拿合成值去竞争。
+    不四舍五入 —— 要与 `build/exchanges_na.py` 的 `__ndaq_venues__` 回落列逐位相同。
+    """
+    out = {}
+    for mon in sorted(ms):
+        if mon < VENUE_SPLICE_START or mon >= ir_start:
+            continue
+        parts = [ms[mon].get(c) for c in VENUE_SPLICE_COLS]
+        if any(p is None for p in parts):
+            continue                       # 三家没齐（不该发生，VENUE_SPLICE_START 之后）
+        out[mon] = sum(parts) / 1e6
+    return out
 
 
 # ── PDF 解析 ─────────────────────────────────────────────────────────────
@@ -1117,6 +1540,20 @@ def update(series_dir, cache_dir):
         rec.update(ms.get(mon, {}))
         monthly[mon] = rec
 
+    # ── 历史回补（两条，都只填 IR 那份 PDF 够不到的月份）──────────────────────
+    # 顺序要紧：**放在 _crosscheck_ir_vs_ms 之后**。那道恒等式是本模块最强的解析证明，
+    # 它比的是「IR 印的 matched」对「B 组三盘口和」；先把合成值塞进 ir/ms 会让它自我对照。
+    #
+    # ① 美股 matched：2025-01 之前用 B 组三盘口和（口径坑 20）。
+    for mon, val in _venue_splice(ms, min(ir)).items():
+        monthly.setdefault(mon, {}).setdefault('vol_us_cash_matched_mnsh', val)
+    # ② 北欧衍生品：2013-01 起用交易所公告档案（口径坑 19）。CSV 没有洞就不发请求。
+    #    传 set(ir) 进去是为了让它顺手把「IR 覆盖到的那几年」也下下来对账 —— 那是这条
+    #    重建公式唯一的正确性证明，不能只在缺口那几年上跑。
+    for mon, val in _nordic_derivs_backfill(series_dir, cache_dir, newest,
+                                            set(ir)).items():
+        monthly.setdefault(mon, {}).setdefault(_NORDIC_DERIVS_COL, val)
+
     for q in sorted(quarterly):
         miss = [c for c in QUARTER_COLS if quarterly[q].get(c) is None]
         if miss:
@@ -1196,6 +1633,44 @@ def _crosscheck(series_dir, cache_dir):
                     print('    %s %s %s: CSV=%s 官方=%s' % (name, k, c, old, new))
                     nbad += 1
     print('    差异格子数 =', nbad)
+
+    # [4] 北欧衍生品：把 CSV 整条列拿去和交易所公告档案逐年重算一遍。
+    # 回补链平时只在「有洞」时才跑，跑完就再也不动 —— 这一节是它唯一的定期体检：
+    # 官方哪天新增一族权益产品、或改了 cleared/traded 分段，只有这里看得见。
+    print('[4] 北欧衍生品 vs 交易所公告档案（逐年重算，阈值 %.2f mm）:' % NORDIC_XCHECK_HARD)
+    have = _csv_col(os.path.join(series_dir, 'ndaq.csv'), _NORDIC_DERIVS_COL)
+    index = _nordic_derivs_index(cache_dir)
+    ncmp = nbadn = 0
+    for yr in sorted({m[:4] for m in have}):
+        eds = sorted(k for k in index if k[:4] == yr)
+        if not eds:
+            print('    %s 年档案里没有册子' % yr)
+            continue
+        book = _parse_nordic_derivs(
+            _fetch_nordic_derivs(cache_dir, eds[-1], *index[eds[-1]]), int(yr))
+        for mon, val in sorted(book.items()):
+            if mon not in have:
+                continue
+            ncmp += 1
+            d = abs(val - have[mon])
+            if d > 1e-9:
+                nbadn += 1
+                print('    %s 重建 %.1f vs CSV %.1f（差 %.1f）%s'
+                      % (mon, val, have[mon], d,
+                         '  <== 超硬阈值' if d > NORDIC_XCHECK_HARD else ''))
+    print('    比对 %d 个月，不一致 %d 个' % (ncmp, nbadn))
+
+    # [5] 美股 matched 拼接列：接缝两侧各看一眼，别让口径坑 20 的落差悄悄变大。
+    print('[5] vol_us_cash_matched_mnsh 拼接接缝（口径坑 20）:')
+    mn = _csv_col(os.path.join(series_dir, 'ndaq.csv'), 'vol_us_cash_matched_mnsh')
+    ir0 = min(ir) if ir else None
+    if ir0 and ir0 in mn:
+        prev = max((m for m in mn if m < ir0), default=None)
+        print('    IR 段起点 %s = %.3f；拼接段末月 %s = %s'
+              % (ir0, mn[ir0], prev, ('%.3f' % mn[prev]) if prev else '—'))
+        if prev:
+            print('    接缝环比 %+.2f%%（两段口径的落差上界在 0.01%% 量级，'
+                  '这里看到的是真实的月环比）' % ((mn[ir0] / mn[prev] - 1) * 100))
 
 
 if __name__ == '__main__':

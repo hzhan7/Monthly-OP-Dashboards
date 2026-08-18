@@ -8,7 +8,10 @@
   模版来源 Goldman Sachs「Hong Kong Exchanges (0388.HK): New listings and profit growth
   inflection to drive sustainable ADT growth」（Exhibit 1-15）与「Multiple tailwinds in
   2026E despite weak Nov ADT」（Exhibit 1-28）。核心做法：
-    1) 三层时间窗：超长历史判周期位置 / 中长期判趋势 / 近 13-25 个月讲当下；
+    1) 三层时间窗：超长历史判周期位置 / 中长期判趋势 / 近 13-25 个月讲当下
+       （2026-08-18 起「近 13-25 个月」那一层改成 WIN_FROM='2016-01' 的现算窗口 ——
+        deck 是 2019 年写的、当时 25 个月就到 2017 年，本页序列已回补到 2016-01，
+        照抄 25 这个常数只会把回补来的历史又切掉）；
     2) 双图开场：整体 ADT 与南向 ADT 并列；
     3) 驱动量置顶：ADT / 衍生品张数这类经营量指标放在汇总表最上方，先于市值等存量。
 
@@ -63,6 +66,16 @@ def mlab(p):
 def qlab(q):
     """PeriodIndex(freq='Q') 的一格 → 「2026-Q2」，与 series/fee_rates.csv 的 period 列同写法。"""
     return f'{q.year}-Q{q.quarter}'
+
+
+def since_title(stem, idx):
+    """「… since YYYY」标题的起始年**现算**，不写死。
+
+    2026-08-18 之前这三张长历史图的标题里写死的是 "since 2019"（当时序列就是 2019-01 起）。
+    序列一往前铺（现在自 2016-01），写死的年份当场变成假话，而且没有任何检查会响 ——
+    与 schw「过去 32 个季度单边降」、cost「Exhibit 4 画了红线」是同一类失效。
+    """
+    return f'{stem} since {idx[0].year}'
 
 
 def load():
@@ -169,7 +182,7 @@ def vintage_quarterly(last_plotted_q, month_of_page, what):
 
 
 def tail_contiguous(s):
-    """只保留末尾逐月连续的一段（南向通 2022-2024 断档 40 个月，直接取尾 N 个点
+    """只保留末尾逐月连续的一段（南向通 2022-01~2025-06 断档 42 个月，直接取尾 N 个点
     会把相隔数年的月份并排画成相邻期 —— 那是假的时间轴）。同 gsx._tail_contiguous。"""
     s = s.dropna()
     if len(s) < 3:
@@ -242,8 +255,12 @@ def ppf(x, dec=0):
 # 同比从 2019 年砍到 2025 年。既有做法优先，不引入第二套。
 #: 时序图窗口的左端。2026-08-18 从写死的 `.iloc[-25:]` 改成「2016-01 起」，
 #: 与 build/single.py 的 WIN_FROM、build/cboe.py、build/cme.py、build/msci.py 的 WIN0 同一个口径。
-#: 本页序列自 2019-01 起（更早的回补是另一件事，见 fetch/hkex.py 口径坑），
-#: 所以今天实际拿到的是序列自己的全长；哪天序列往前长，图自动跟着长。
+#: 同一天 series/hkex.csv 也回补到了 2016-01（fetch/hkex.py 的 START_MONTH，
+#: 逐日档案重算 + HKEX Fact Book 2016/2017/2018 逐位核过），所以「2016-01 起」现在
+#: 真的是一条边界，而不是恰好等于序列首月的巧合。哪天序列再往前长，图自动跟着长。
+#: 注意 derivatives_adv_contracts 与 southbound_adt_hkdbn 只到 2018-01（机器可读源的深度，
+#: 见 fetch/hkex.py「历史深度」），它们在窗口左端有**前导空格** —— 那不是缺数事故，
+#: 各图用 tail_contiguous / 留 null 各自处理，图注里都写明了。
 WIN_FROM = '2016-01'
 
 
@@ -408,7 +425,8 @@ def compose_brief(df, LATEST, NEWEST):
         三年窗口（Exhibit 1 的 3Y %ile 对它留空正是这个理由）。句子里报的是**当场从
         观测索引算出的缺口长度**与「凑满 36 个观测要回溯到哪个月」，不报「跨 N 年」——
         `(末月 − 首月) // 12` 的地板除会把 7.42 年写成「7 年」，而且与 Exhibit 1 表注
-        的「最近 36 个观测横跨六年多」并列在同一页上，读者会以为其中一个算错了。
+        的「最近 36 个观测横跨 X.X 年」（那一处现算、留一位小数，见 SB36_YEARS）
+        并列在同一页上，读者会以为其中一个算错了。
         排名改在 `tail_contiguous()` 取出的**恢复披露后连续段**里算，与 Exhibit 5
         「缺口不用直线连」是同一条口径。
       · **各列截止月不一样**：HKEX 是分列到货的（当前是 IPO 募资 / 衍生品 ADV / 南向
@@ -677,9 +695,9 @@ def main():
 
     # ── 序列完整性体检：中间缺月必须响，不能静默降级 ──
     # 近期图的窗口一律由 tail_contiguous 取「末尾逐月连续段」。这个函数是为南向通
-    # 2022-01~2025-06 那 40 个月的**真实停发**设计的（Exhibit 5 的图注专门讲它，
+    # 2022-01~2025-06 那 42 个月的**真实停发**设计的（Exhibit 5 的图注专门讲它，
     # 缺口不用直线连 —— CONTRACT 规矩 3），所以对南向的空洞必须保留原行为。
-    # 但对逐月必发的列，中间少一个月会让「末尾连续段」只剩最后 1 个点：25 点窗口塌成
+    # 但对逐月必发的列，中间少一个月会让「末尾连续段」只剩最后 1 个点：整个窗口塌成
     # 1 点、y/y 与 m/m 全变「—」、Exhibit 3 还会写出字面 NaN，而退出码仍是 0，
     # 页面照常发布且肉眼看不出 —— 正是 CONTRACT 规矩 5 要禁的「静默写 NaN 上线」。
     # 尾部半行（当前 2026-07 只有衍生品/IPO/南向）不受影响：那是各列自己的末月之后，
@@ -695,13 +713,24 @@ def main():
             raise SystemExit(
                 f'series/hkex.csv 的 {c} 在 {s.index[0]}~{s.index[-1]} 之间缺 {len(holes)} 个月：'
                 f'{holes[:6]}{" …" if len(holes) > 6 else ""}。近期图窗口取末尾逐月连续段，'
-                f'中间缺月会把 25 点窗口砍成 1 点并写出 NaN，请先补齐 series/hkex.csv 再重建')
+                f'中间缺月会把整个窗口砍成 1 点并写出 NaN，请先补齐 series/hkex.csv 再重建')
 
     # 汇总表用「核心量指标已齐备」的最后一个月；衍生品 / IPO / 南向更新更快，图上保留最新月
     CORE = df['adt_hkdbn'].dropna()
     LATEST = CORE.index[-1]
     NEWEST = df.index[-1]
     dfc = df.loc[:LATEST].copy()
+
+    # ── 南向停发窗口：长度与起讫**现算** ──
+    # 本页原先五处文案写死「40 个月」，实测是 **42** 个月（2022-01~2025-06）——
+    # 而同一页的 brief 段是现算的、印的就是 42，两个数并排放在一起，读者只能认为
+    # 其中一个错了。写死的口径数字迟早会与数据脱节，这一条是现成的样本。
+    _sb_all = df['southbound_adt_hkdbn'].dropna()
+    _sb_holes = list(pd.period_range(_sb_all.index[0], _sb_all.index[-1],
+                                     freq='M').difference(_sb_all.index)) if len(_sb_all) > 1 else []
+    SB_GAP_N = len(_sb_holes)
+    SB_GAP_TXT = (f'{SB_GAP_N} 个月（{_sb_holes[0]} 至 {_sb_holes[-1]}）'
+                  if _sb_holes else '无断档')
 
     for d in (df, dfc):
         d['deriv_adv_k'] = d['derivatives_adv_contracts'] / 1000.0
@@ -856,13 +885,16 @@ def main():
     ex.append({
         # zero_base：deck 的 long_line 是 set_ylim(0, max*1.16) 的零基线面积图。不给它时
         # 引擎走 y0 = min − 极差×5%，那是一次没有任何标注的隐性截轴，长历史图上会把
-        # 振幅凭空放大（Ex15 实测放大约 3 倍）。full：90 个点塞进半栏每点不到 3px。
+        # 振幅凭空放大（Ex15 实测放大约 3 倍）。full：一百多个点塞进半栏每点不到 3px
+        #（具体每点几 px 由 mrwin 按实测算式复算，图注末尾会印出来）。
         'n': 4, 'kind': 'lines', 'fmt': 'f0', 'xlabels': XL_LONG, 'xstep': 6,
         'zero_base': True, 'end_label': True, 'full': True,
-        'title': 'Full ADT history since 2019',
+        'title': since_title('Full ADT history', adt_long.index),
         'ylab': 'HK$bn / day',
         'series': [{'name': 'Average daily turnover', 'color': 'NAVY', 'values': L(adt_long.values)}],
-        'note': f'Full disclosed history（{XL_LONG[0]} → {XL_LONG[-1]}，{len(adt_long)} 个月）。'
+        'note': f'本页收录的全部历史（{XL_LONG[0]} → {XL_LONG[-1]}，{len(adt_long)} 个月）。'
+                f'起点是本站统一口径（全站时序图一律自 {WIN_FROM} 起），不是源的上限 —— '
+                f'HKEX 的逐日成交档案本身可回到 1986 年。'
                 f'纵轴从 0 起（同原 deck），末点标出数值。原 deck 另在末 3 个月打红圈标记，'
                 f'网页 lines 图型没有该标记，最新 3 个月为 {last3}（HK$bn/日）。',
     })
@@ -871,19 +903,30 @@ def main():
     # 窗口就是 deck 的 _w(df)，两条线各画各的可用月份，缺口留 null 由引擎断笔
     # （CONTRACT 规矩 3：不可比的相邻期不能连成一条线）。
     # 原先这里取「两条同时有值的连续末段」，代价是把整体 ADT 这条**没有缺口**的线
-    # 从 25 个月砍到 12 个月，还丢掉了南向最新的一个月（南向比现货多披露一个月）——
+    # 从整窗砍到 12 个月，还丢掉了南向最新的一个月（南向比现货多披露一个月）——
     # 为了迁就另一条序列的空洞去删自己有的数据，那是把缺口的成本转嫁给了完整序列。
     # 之所以从 lines_endlabels 换成 lines：前者无条件取 values[0] / values[-1] 做端点标签，
     # 序列里有 null 就会标出一个 NaN；后者的 end_label 走「最后一个有限点」。
     sb_win = _w(df)
     sb_av = sb_win['southbound_adt_hkdbn'].dropna()
     # 图注里凡是引用南向具体读数的句子，都要在「窗口里一个南向观测都没有」时整段消失，
-    # 而不是抛 IndexError —— 南向停发过 40 个月，再停一次这一页不能就此停更
+    # 而不是抛 IndexError —— 南向停发过 42 个月，再停一次这一页不能就此停更
     # （build/lpla.py 的断点硬失败正是这类失效的样板）。
     if len(sb_av):
         sb0, sb0_adt = float(sb_av.iloc[0]), float(df['adt_hkdbn'].get(sb_av.index[0], np.nan))
+        # 窗口左端的前导空格与中间那 42 个月的断档**性质不同**，必须分开说：
+        #   · 前导（2016-01~2017-12）：HKEX 当年**发过**南向逐月数（Fact Book 里有），
+        #     只是本仓能自动抓的源最早到 2018-01（月度 js 只挂 13 个月）。是抓取深度，
+        #     不是停发。写成「才恢复披露」就是把我们的抓取限制说成官方的披露行为。
+        #   · 中间（2022-01~2025-06）：官方**真的**停发了 42 个月。
+        # 两句都由数据现算：窗口一变、断档一补，句子自己跟着变。
         SB_TXT = (
-            f'南向自 {mlab(sb_av.index[0])} 才恢复披露，此前各月留空、线在缺口处断开，不用直线连；'
+            (f'窗口最左那 {sum(1 for p in sb_win.index if p < sb_av.index[0])} 个月'
+             f'（{mlab(sb_win.index[0])} → {mlab(sb_av.index[0] - 1)}）南向留空：'
+             f'HKEX 当年发过这些月的南向数字，但只印在 Fact Book 里，'
+             f'本仓的机器可读源最早到 {mlab(sb_av.index[0])} —— 这是抓取深度，不是停发。'
+             if sb_av.index[0] > sb_win.index[0] else '')
+            + f'南向线自 {mlab(sb_av.index[0])} 起画，中间各断档月留空、线在缺口处断开，不用直线连；'
             f'整体 ADT 则到 {mlab(LATEST)} 为止（南向与衍生品比现货多披露一个月）。'
             + (f'南向占整体 ADT 的比例从 {sb0 / sb0_adt * 100:.1f}%（{mlab(sb_av.index[0])}）'
                f'变为 {df["sb_share"].get(LATEST):.1f}%（{mlab(LATEST)}）；'
@@ -910,9 +953,11 @@ def main():
             {'name': 'Southbound ADT', 'color': 'MBLUE',
              'values': LN(sb_win['southbound_adt_hkdbn'].values)},
         ],
-        'note': 'Southbound carries a lower fee take, so mix matters to revenue. Its 40-month '
-                'publication gap (2022-2024) is why it is shown here and not as a bar chart。'
-                f'窗口 {mlab(sb_win.index[0])} → {mlab(sb_win.index[-1])}（同原 deck 的 25 个月）：'
+        'note': 'Southbound carries a lower fee take, so mix matters to revenue. Its '
+                f'{SB_GAP_N}-month publication gap ({_sb_holes[0]} to {_sb_holes[-1]}) is why it '
+                'is shown here and not as a bar chart。'
+                f'窗口 {mlab(sb_win.index[0])} → {mlab(sb_win.index[-1])}'
+                f'（{len(sb_win)} 个月；原 deck 是固定 25 个月，本页改成自 {WIN_FROM} 起）：'
                 + SB_TXT + '两条线只标末点数值（原 deck 首末两端都标）。',
     })
 
@@ -933,7 +978,14 @@ def main():
                 f'（核对表里给原始张数）。{mlab(dv.index[-1])} 的 ADV 为 {dv_v[-1]:,.0f} 千张/日，'
                 f'TTM 同比 {ttm_yoy("deriv_adv_k", dv.index[-1])}'
                 f'（单月同比 {pctf(yoy(dv_v), 1)}）。衍生品比现货多披露一个月。'
-                f'本序列的单月同比比现货更毛：{CALIB_DV["n"]} 个可比月里有 {CALIB_DV["n_opp"]} 个月'
+                # 本图比 Exhibit 2 短两年，读者会以为漏了 —— 说清是源的深度，不是漏抓。
+                + (f'<b>本图自 {mlab(dv.index[0])} 起</b>，比 Exhibit 2 的现货 ADT 短 '
+                   f'{len(adt) - len(dv)} 个月：衍生品逐月张数的机器可读源最早只到 '
+                   f'{mlab(dv.index[0])}（更早的只印在 HKEX Fact Book 的约 50 张分品种月表里，'
+                   f'没有月度合计表，求和试解析在 2018 年 12 个月全部比官方低 6.6%~8.7%、'
+                   f'未闭合，所以宁可不画）。'
+                   if len(dv) < len(adt) else '')
+                + f'本序列的单月同比比现货更毛：{CALIB_DV["n"]} 个可比月里有 {CALIB_DV["n_opp"]} 个月'
                 f'（{CALIB_DV["n_opp"] / CALIB_DV["n"] * 100:.0f}%）与滚动口径符号相反，'
                 f'单月同比标准差 {CALIB_DV["sd_m"]:.1f}pp、滚动口径 {CALIB_DV["sd_r"]:.1f}pp。'
                 + YOY_CAL,
@@ -1124,7 +1176,7 @@ def main():
     ex.append({
         'n': 14, 'kind': 'lines', 'fmt': 'f0c', 'xlabels': XL_DV, 'xstep': 6,
         'zero_base': True, 'end_label': True, 'full': True,
-        'title': 'Derivatives ADV history since 2019',
+        'title': since_title('Derivatives ADV history', dv_long.index),
         'ylab': 'k contracts / day',
         'series': [{'name': 'Derivatives ADV', 'color': 'NAVY', 'values': L(dv_long.values)}],
         'note': f'{XL_DV[0]} → {XL_DV[-1]}，{len(dv_long)} 个月，纵轴从 0 起（同原 deck）、'
@@ -1141,7 +1193,7 @@ def main():
         # 市值的振幅会被放大约 3 倍（实测轴底 ≈30 而非 0），对照本身就被扭曲了。
         'n': 15, 'kind': 'lines', 'fmt': 'f1', 'xlabels': XL_MC, 'xstep': 6,
         'zero_base': True, 'end_label': True, 'full': True,
-        'title': 'Market capitalisation since 2019',
+        'title': since_title('Market capitalisation', mc_long.index),
         'ylab': 'HK$tn',
         'series': [{'name': 'Securities market cap', 'color': 'NAVY', 'values': L(mc_long.values)}],
         'note': f'{XL_MC[0]} → {XL_MC[-1]}，{len(mc_long)} 个月，期末口径，纵轴从 0 起、末点标出数值。'
@@ -1167,7 +1219,13 @@ def main():
         'ylab': 'HK$bn / day', 'series': yseries, 'highlight': len(yrs) - 1,
         'note': f'Red = current year。画的是每月 ADT 的水平值（原 deck cumulative=False），'
                 f'不是年初至今累计。{yrs[-1]} 年只有 {sum(1 for v in yseries[-1]["values"] if v is not None)} '
-                f'个月，后面留空。',
+                f'个月，后面留空。'
+                # 序列 2026-08-18 回补到 2016-01 之后比这张图长得多，不说清读者会以为
+                # 数据只有这几年。年数是排版取舍（12 条线叠在一起谁也看不清），不是数据边界。
+                + (f'<b>只画最近 {len(yrs)} 年</b>（{yrs[0]}–{yrs[-1]}）：序列实际自 '
+                   f'{mlab(adt_long.index[0])} 起、共 {len(adt_long)} 个月，'
+                   f'更多年份叠上来线会糊成一团，全长看 Exhibit 4。'
+                   if len(yrs) < len({p.year for p in adt_long.index}) else ''),
     })
 
     # ══════════ Exhibit 17：ADT 热力矩阵（gsx.heat_matrix, n_years=8）══════════
@@ -1187,7 +1245,10 @@ def main():
         'title': 'Average daily turnover (HK$bn)',
         'rows': rows17, 'matrix': M17, 'legend': 'Average daily turnover (HK$bn)',
         'row_head': '年',
-        'note': 'Green = heavier turnover。色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。',
+        'note': 'Green = heavier turnover。色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。'
+                + (f'表里是最近 {len(rows17)} 年（{rows17[0]}–{rows17[-1]}）；序列实际自 '
+                   f'{mlab(adt_long.index[0])} 起，更早的年份见 Exhibit 4。'
+                   if len(rows17) < len({p.year for p in adt_long.index}) else ''),
     })
 
     rows18, M18 = heat(dv_long)
@@ -1197,7 +1258,10 @@ def main():
         'rows': rows18, 'matrix': M18, 'legend': 'Derivatives ADV (k contracts / day)',
         'row_head': '年',
         'note': 'Green = heavier derivatives activity。同 Exhibit 17 的色标口径（5/95 分位）。'
-                '与 Exhibit 17 对照：衍生品的季节性形状与现货并不完全同步。',
+                '与 Exhibit 17 对照：衍生品的季节性形状与现货并不完全同步。'
+                + (f'表里是最近 {len(rows18)} 年（{rows18[0]}–{rows18[-1]}）；'
+                   f'衍生品序列自 {mlab(dv_long.index[0])} 起，本身就比现货短。'
+                   if len(rows18) < len({p.year for p in dv_long.index}) else ''),
     })
 
     # ══════════ Exhibit 19：现货成交额的三段分解（真·量价，不是费率分解）══════════
@@ -1510,9 +1574,10 @@ def main():
     SUM = [
         ('group', 'Cash market drivers'),
         ('row', 'Average daily turnover (HK$bn)', 'adt_hkdbn', 1, 'ratio', False, None),
-        # 南向两行：可用观测跨 2019-2021 与 2025-2026 两段，「最近 36 个观测」实际横跨
-        # 六年多，那算出来的不是 3Y 分位，是一个被 40 个月断档拼起来的假窗口 —— 留空，
-        # 理由写在表注里（这是本页自己的口径原因，与 pctile.py 的死列判据无关）
+        # 南向两行：可用观测跨 2018-2021 与 2025-2026 两段（2026-08-18 回补后左端多了 2018 年，
+        # 中间那 42 个月的断档一格没变），「最近 36 个观测」横跨的年数由 SB36_YEARS 现算，那不是
+        # 3Y 分位，是一个被断档拼起来的假窗口 —— 留空，理由写在表注里
+        # （这是本页自己的口径原因，与 pctile.py 的死列判据无关）
         ('row', 'Southbound ADT (HK$bn)', 'southbound_adt_hkdbn', 1, 'ratio', False, '断档'),
         ('row', 'Southbound share of ADT (%)', 'sb_share', 1, 'pp', True, '断档'),
         ('row', 'Implied market velocity (%)', 'velocity', 1, 'pp', True, None),
@@ -1558,6 +1623,14 @@ def main():
         if txt.lstrip('+-') in ('0', '0.0', '0bp', '0.0pp', '0.0%', '0%'):
             return {'v': txt.lstrip('+-'), 'cls': ''}
         return {'v': txt, 'cls': 'pos' if v > 0 else ('neg' if v < 0 else '')}
+
+    # 「最近 36 个观测横跨几年」现算，不写死。原先写的是「六年多」—— 那个字面值今天
+    # 仍然对（2026-08-18 回补 2018 年之后也没变，因为末 36 个观测根本够不到 2018），
+    # 但它是一句会随断档长度悄悄变假的话，而且没有任何检查会响。
+    # 不用 `(末月 − 首月) // 12`：地板除会把 6.4 年写成「6 年」（本文件顶部 R4 那段
+    # 专门讲过这条坑），所以留一位小数。
+    _sb36 = dfc['southbound_adt_hkdbn'].dropna().iloc[-36:]
+    SB36_YEARS = ((_sb36.index[-1] - _sb36.index[0]).n + 1) / 12.0 if len(_sb36) else float('nan')
 
     dead_rows, gappy_rows = [], []
     srows = []
@@ -1608,8 +1681,9 @@ def main():
                 '由全站唯一的 <code>build/pctile.py</code> 算出（判据：回放近 24 个月，'
                 '若 ≥70% 的月份钉在 0 或 100，这一列对该行没有区分度，留空）。'
                 '比率类指标（南向占比、换手率）的差异一律用 pp／bp，不用百分比的百分比变化。'
-                + (f'<b>{"、".join(gappy_rows)}</b> 的分位留空：南向 ADT 2022-01 起断档 40 个月，'
-                   '「最近 36 个观测」实际横跨六年多，那不是 3Y 分位。' if gappy_rows else '')
+                + (f'<b>{"、".join(gappy_rows)}</b> 的分位留空：南向 ADT 断档 {SB_GAP_TXT}，'
+                   f'「最近 36 个观测」实际横跨 {SB36_YEARS:.1f} 年，那不是 3Y 分位。'
+                   if gappy_rows else '')
                 + (''.join(f'<b>{lab}</b> 的分位留空：{why}。' for lab, why in dead_rows))
                 + '去年同月无披露时 y/y 留空。',
     }
@@ -1657,12 +1731,50 @@ def main():
     }
 
     # ══════════ notes ══════════
+    # 南向那条注：窗口一变长，左端就多出一段**性质不同**的空白，两者必须分开讲，
+    # 否则读者会把「本仓抓不到」读成「官方停发」。整段现算，窗口再变也不会说错。
+    SB_GAP_NOTE = (
+        f'<b>⚠️ 南向 ADT 有 {SB_GAP_TXT}断档</b>：这些月的月度概况未披露南向成交额，'
+        f'{mlab(_sb_holes[-1] + 1)} 起恢复。缺口不用直线连（不可比的相邻期不能画成连续序列）：'
+        f'Exhibit 5 画满 {len(sb_win)} 个月的窗口（{mlab(sb_win.index[0])} → '
+        f'{mlab(sb_win.index[-1])}），南向在断档各月留空、线在缺口处断开，'
+        '整体 ADT 那条没有缺口的线则一个月都不砍。汇总表里南向那一行的「去年同月」是空的，'
+        '<b>3Y %ile</b> 也留空 —— 它的「最近 36 个观测」横跨的年数远超三年，那不是 3Y 分位。')
+    if len(sb_av) and sb_av.index[0] > sb_win.index[0]:
+        SB_GAP_NOTE += (
+            f'另请把窗口左端 {mlab(sb_win.index[0])}–{mlab(sb_av.index[0] - 1)} 的空白'
+            f'<b>与这 {SB_GAP_N} 个月分开看</b>：那一段 HKEX 是发过数的（印在 Fact Book 里），'
+            '只是没有机器可读源可供无人值守抓取 —— 属本仓的抓取深度，不是官方停发。')
+
     notes = [
-        '<b>数据源</b>：HKEX 每月公布的 Monthly Market Highlights（月度市场概况）与季度业绩'
-        '中的现货分部收入、费率与交易日数。版式沿用 Goldman Sachs GIR 两份 HKEX note'
+        '<b>数据源</b>：HKEX 每月公布的 Monthly Market Highlights（月度市场概况）、'
+        'HKEX Monthly Bulletin 与 Securities Statistics Archive 的逐日档案（成交与市值），'
+        '以及季度业绩中的现货分部收入、费率与交易日数。版式沿用 Goldman Sachs GIR 两份 HKEX note'
         '（「New listings and profit growth inflection to drive sustainable ADT growth」'
         'Exhibit 1-15 与「Multiple tailwinds in 2026E despite weak Nov ADT」Exhibit 1-28）：'
-        '三层时间窗（超长历史判周期位置 / 中长期判趋势 / 近 25 个月讲当下）、双图开场、驱动量置顶。',
+        f'三层时间窗（超长历史判周期位置 / 中长期判趋势 / 近期图讲当下）、双图开场、驱动量置顶。'
+        f'原 deck 的「近期」那一层是固定 25 个月；本页改成自 {mlab(adt.index[0])} 起'
+        f'（{len(adt)} 个月）—— deck 是 2019 年写的，照抄 25 这个常数会把回补来的历史又切掉。',
+
+        # ── 历史深度与两列的前导空格：读者一眼会问「为什么有些图短两年」 ──
+        f'<b>现货序列自 {mlab(adt_long.index[0])} 起，衍生品与南向自 {mlab(dv_long.index[0])} 起。</b>'
+        f'现货 ADT、市值与成交股数／笔数回补到 {mlab(adt_long.index[0])}：'
+        f'{mlab(adt_long.index[0])}–{mlab(dv_long.index[0] - 1)} 由 HKEX Securities Statistics '
+        'Archive 的<b>逐日</b>档案'
+        '（主板 + GEM）重算 —— 成交额取当月合计 ÷ 当月交易日数，市值取当月最后一个交易日两板之和，'
+        '与 2018 年起官方 Monthly Market Highlights 印出来的值是同一套底稿'
+        '（实测 103 个重叠月：市值 103/103 在 4 位小数上逐位相同，成交额 102/103，'
+        '唯一一处差 1 个末位单位）；这些月份另经 HKEX Fact Book 2016/2017/2018 逐位复核，'
+        '360 项全对，含「半日市照算一整天」这条官方日均口径。'
+        f'衍生品 ADV 与南向 ADT 只到 {mlab(dv_long.index[0])}：更早的月度数字没有机器可读源，'
+        '只存在于 Fact Book PDF 的分品种月表里（衍生品求和试解析未闭合，系统性低 6.6%~8.7%）。'
+        '<b>宁可让这两条线短两年，也不放一条肉眼看不出偏低的曲线上去。</b>'
+        f'另：新上市家数（{mlab(adt_long.index[0])}–'
+        f'{mlab(df["new_listings"].dropna().index[0] - 1)}）与 IPO 募资额'
+        f'（{mlab(adt_long.index[0])}–{mlab(df["ipo_funds_hkdbn"].dropna().index[0] - 1)}）'
+        f'一格未填 —— '
+        '官方今天的工作簿其实有这段历史，但 series 在这两列上还有 2019 年起的多年留白，'
+        '只填 2018 会在序列中间造出空洞；要填得连那几年一起填，那是改看板叙事的人工决策。',
 
         # ── 同比口径：本页最容易被读反的一条，紧跟在数据源之后 ──
         f'<b>同比一律用 12 个月滚动合计，不是单月同比。</b>单月同比把「去年那<b>一个</b>月'
@@ -1797,11 +1909,7 @@ def main():
         f'比 Exhibit 2/4/17 多一个月；Exhibit 5 里整体 ADT 那条线到 {mlab(LATEST)} 为止，'
         '末点比南向早一格，不是数据缺失。',
 
-        '<b>⚠️ 南向 ADT 有 40 个月断档</b>：2022-01 至 2025-06 的月度概况未披露南向成交额，'
-        '2025-07 起恢复。缺口不用直线连（不可比的相邻期不能画成连续序列）：'
-        'Exhibit 5 画满 25 个月的窗口，南向在断档各月留空、线在缺口处断开，'
-        '整体 ADT 那条没有缺口的线则一个月都不砍。汇总表里南向那一行的「去年同月」是空的，'
-        '<b>3Y %ile</b> 也留空 —— 它的「最近 36 个观测」实际横跨六年多，那不是 3Y 分位。',
+        SB_GAP_NOTE,
 
         '<b>换手率是推导值，不是披露值</b>：Implied market velocity = ADT × 252 ÷ 市值。'
         '252 是惯例年化交易日数（不是港股当年实际交易日数），分母用当月期末市值。'
@@ -1851,7 +1959,7 @@ def main():
         '由全站唯一的 <code>build/pctile.py</code> 算出：把这一列在过去 24 个月里逐月回放，'
         '若 ≥70% 的月份都钉在 0 或 100，说明这一列对该行没有区分度，那一行留空'
         '（旧判据「差分非负的比例 ≥ 90%」测的是序列形状，拦不住「上下波动但分位常年钉 100」'
-        '的行，已废弃）。本页另有一条自己的口径留空：南向两行的可用观测跨越 40 个月断档，'
+        f'的行，已废弃）。本页另有一条自己的口径留空：南向两行的可用观测跨越 {SB_GAP_N} 个月断档，'
         '窗口不是连续的三年。比率类指标的变化一律用 pp／bp（差额绝对值小于 1pp 时写 bp）。',
 
         f'<b>核对表（Exhibit {EX_TABLE}）保持官方原始单位</b>：衍生品 ADV 给原始张数（不是千张），'
@@ -1869,7 +1977,7 @@ def main():
     # 领先一个月的读数不会丢：Exhibit 6 / 18 逐点带月份标签地展示它们。
     # 月份对不上时：**只有 ADT 硬失败**，其余指标那一段整段略过。
     # ADT 是 data_through 的定义者，它对不上说明管道自相矛盾，必须响。其余指标只是
-    # 「本月还没披露」——南向就停发过 40 个月，若为此抛异常退出，那一天起这一页永久停更
+    # 「本月还没披露」——南向就停发过 42 个月，若为此抛异常退出，那一天起这一页永久停更
     # （build/lpla.py 的断点硬失败正是这个失效模式）。略过的读数不会丢：汇总表那一行
     # 显示「—」，各图仍画到自己序列的最新月。
     def hv(col, name, required=False):

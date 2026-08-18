@@ -5,8 +5,11 @@
 索引页（唯一入口，必须爬，不能硬编码文件 URL）：
     https://investor.lpl.com/financials/monthly-results
 真正要下的文件：该页每月挂两个 PDF，我们只用后者——
-    "<Month> <Year> Monthly Metrics"            → 当月新闻稿，只有当月 / 上月 / 去年同月三列
-    "<Month> <Year> Monthly Metrics Historical File" → **滚动 13 个月的全表**，本模块的唯一解析对象
+    "<Month> <Year> Monthly Metrics"            → 当月新闻稿，2018-05 期起有当月/上月/去年同月
+                                                  三列；2017-01…2018-02 那几期只有两列、没有 Y/Y
+    "<Month> <Year> Monthly Metrics Historical File" → **滚动 13 个月的全表**，update() 的唯一解析对象
+外加**第三类、只用于一次性回补**：
+    "Historical Monthly Activity through <Month> <Year>" → 2017-01…2019-05 那 19 期的老挂法
 文件本体走 https://investor.lpl.com/static-files/<uuid>，uuid 每期都变且无规律，
 所以 latest_month() / update() 每次都要重新爬索引页拿链接——**任何"记住的" URL 都会过期**。
 
@@ -70,20 +73,57 @@ PDF 元数据里的 CreationDate 是 Workiva 的排版时间（2026-05 那期是
    所以本模块**不做 total = adv + brk 的硬校验**，只做"列必须存在"的硬校验。
 9) 2025 年的 organic NNA 里含 OSJ（misaligned large OSJ）分离造成的流出，官方在脚注里逐月列出。
    本模块不做该调整——真值表存官方口径，调整留给 build 层。
+10) **两处历史口径断点，都发生在 2019-2020 年，真值表里都已存在**（本模块只记录，不改写）：
+   a) **NNA 定义**：官方在 **2020-04 期**把 Total Net New Assets 拆成两块相加，原文脚注
+      "**Total Net New Assets equals the combination of Asset Inflows minus Outflows as well
+      as Dividends plus Interest, minus Advisory Fees"。老定义 = 新表里
+      "Asset Inflows minus Outflows" 那一行。同一个 2019-06：老册 1.9、新册 3.3。
+      官方给得出新定义的最早月份是 2019-04（2020-04 期窗口最左列），而真值表 2019-04
+      存的是老定义 0.7（新定义 0.9）、2019-05 起存的是新定义 —— 所以
+      **真值表的断点落在 2019-04 | 2019-05 之间**，与本模块的回补无关。
+      回补只是把老定义那一段从 2018-07 往前延到 2016-01，不新增断点。
+   b) **client cash 口径**：2016-01…2019-03 官方行名是 'Total Cash Sweep Balances'
+      （ICA + DCA + MMA）；2019-04 期改名 'Total Client Cash Balances' 并开始计入
+      Purchased Money Market Funds（2019-04 是 0.4bn，到 2020-01 涨到 2.5bn）。
+      真值表 2019-03=30.7（sweep）、2019-04=29.6（含 purchased MMF），断点同样早就在。
+   两条都在 build/lpla.py 的 CAL_BREAKS 里登记并画成竖线，不靠图注一句话带过。
+11) 2016-07 DCA 上线时 8.2bn 从 Money Market Account 转入 Deposit Cash Account，
+   拆分行有台阶而 Total Cash Sweep 连续 —— 本仓只取合计行，不受影响。
 
-═══ 解析器覆盖范围（实测） ═══
-官网索引页共挂 51 期 Historical File（2020-02 … 2026-05）。本解析器跑通 **2022-07 起的 32 期**；
-2022-05 及更早的 19 期是另一套版式（月份表头不在同一行），会抛 ParseError。
-这不影响 update()——它只读最新一期，而真值表 2022-07 以前的部分早已入库。
+═══ 解析器覆盖范围（实测，2026-08-18 全量回归） ═══
+官网索引页共挂 51 期现行标签的 Historical File（2020-02 … 2026-05）+ 19 期老标签的
+"Historical Monthly Activity through …"（2017-01 … 2019-05）+ 5 期**标题缺年份**的
+"<Month> Monthly Metrics Historical File"（实为 2019-07/08/10/11、2020-01）。
+本解析器把 51 期现行标签 **51/51 全部跑通**（此前只跑通 2022-07 起的 32 期，卡点是
+两行式表头与单元格星号，已修）；老标签 19 期里 **17 期跑通**，2017-01 / 2017-02
+两期原件整张表没有 Net New Assets 三行（官方当年未披露）故跳过 —— 也正因如此，
+7 列俱全的最早月份是 **2016-01**（唯一出处是 2017-04 期那份 16 列的册子）。
+标题缺年份那 5 期不接进任何通道：period 只能下载后从 PDF 标题反读，而它们覆盖的
+2018-07…2020-01 早已在真值表里，接进来只增加取错期的风险。
 
-═══ 真值表已知遗留偏差（本模块不改，只记录） ═══
-把 32 期官方文件与 series/lpla.csv 全量交叉核对，发现 19 处 (月, 列) 不一致：
-  · 17 处是 client_cash_usdbn，全部落在 2021-07…2021-12 与 2023-04，
-    成因是上面口径坑 3 的 CCA 回溯重述——series 这些月停在重述前的旧值。
-  · 2 处是 **2024-05 的 brokerage_assets_usdbn(657.0) 与 total_assets_usdbn(1466.4)**，
-    覆盖该月的 8 期官方文件（2024-05 期到 2025-04 期）**无一例外都是 655.0 / 1464.4**，
-    且 advisory 809.4 两边一致 → 这是真值表自己的录入错误，不是官方重述。
-    要不要改由人决定（改了 build 出来的 2024-05 环比会动），update() 默认不碰。
+═══ 真值表已知遗留偏差（本模块不改，只记录）═══
+2026-08-18 重测：解析器修好之后现行标签 51 期全部可读，逐月取**覆盖该月的最新一期**
+与 series/lpla.csv 全量交叉核对，(月, 列) 不一致共 **13 处**：
+  · **7 处 client_cash_usdbn**（2021-07…2021-12 与 2023-04），成因是上面口径坑 3 的
+    CCA 回溯重述——series 这些月停在重述前的旧值。要不要跟进由人决定。
+  · **3 处 2019-04 的 nna_***（series 0.7/1.6/−1.0，官方 0.9/1.5/−0.6）：那是口径坑 10a
+    的老/新定义之差，不是错值。真值表在这里从老定义切到新定义，断点已在 build 层登记。
+  · **3 处 2019-08 的 nna_***（series 5.9/4.3/1.6，官方 3.0/3.3/−0.2）：2020-08 期起官方
+    把这个月改印成**剔除 Allen & Company 之后**的数（差额正是脚注写的 1.0 advisory +
+    1.8 brokerage）。series 存的是 as-reported（口径坑 1 要求如此），build/lpla.py 的
+    ACQ['2019-08']=2.9 相减后得到 3.0，与官方那个 ex-Allen 值逐值相等 —— 两边其实一致，
+    只是分工不同：真值表存 as-reported，还原留给 build 层。
+  · **2024-05 的 brokerage/total 不再是偏差**。旧版这段曾断言「覆盖该月的 8 期官方文件
+    无一例外都是 655.0 / 1464.4 → 真值表录入错误」。那个结论是抽样不足造成的：第 9 期
+    （**2025-05 期**）已改印 **657.0 / 1466.4**，与真值表逐值相同。所以这是一次官方回溯
+    重述，不是录入错误，**不需要改**。
+
+═══ 两个入口 ═══
+    python3 fetch/lpla.py --update     增量：下最新一期，往后长一格（monthly_run 走这条）
+    python3 fetch/lpla.py --backfill   存量：把老标签那 19 期一次扫完，把 2016-01…2018-06
+                                       补进 series（一次性；跑第二遍返回空列表）
+两条通道**物理隔离**（_index_entries 的 want='historical' vs want='legacy'），
+回补的老册永远不可能被 update() 当成「最新一期」。
 
 ═══ 幂等与不写 NaN ═══
 update() 只追加 series 里没有的月份；已有月份一律不动（默认 revise=False，
@@ -157,34 +197,65 @@ def _get(url, tries=3, timeout=60):
     raise SourceError('下载失败 %s: %r' % (url, last))
 
 
+#: 索引页上一条链接文字的可分辨形态。
+#: 实测（2026-08-18 抓下整页 161,437 bytes，264 条带文字的 <a> 全量聚类）共四类标签：
+#:     'May 2026 Monthly Metrics'                    74 条 → 月度新闻稿（want='monthly'）
+#:     'May 2026 Monthly Metrics Historical File'    51 条 → 现行滚动全表（want='historical'）
+#:     'May 2026 Monthly Metrics Dashboard'          29 条 → 图表版，本模块不用
+#:     'Historical Monthly Activity through May 2019' 19 条 → **2017-01…2019-05 的老版全表**
+#: 最后这一类是 2019-05 及更早那 19 期的挂法，标题格式与现行完全不同。原先的正则
+#: `^<Mon> <Yr> Monthly Metrics…` 对它一条都不命中，于是这 19 期在索引页上明明挂着、
+#: update() 却永远看不见 —— 真值表 2018-07 以前的 30 个月因此一直是空的。
+#:
+#: **老标签单独一个桶（want='legacy'），不并进 'historical'**：update() 取的是
+#: `entries[0]`（按 period 倒序的第一条 = 最新一期）。老标签的 period 都在 2019 年，
+#: 并进去今天不会改变 entries[0]，但那是靠「2026 > 2019」这个巧合成立的；
+#: 一旦官方哪天补挂一份老格式的新月份，update() 就会拿老版式去当最新期解析。
+#: 分桶之后 update() 的取数通道与回补通道物理隔离，这种事不可能发生。
+_LEGACY_LABEL = re.compile(
+    r'^Historical Monthly Activity through\s+([A-Z][a-z]+)\s+(\d{4})$', re.I)
+
+
 def _index_entries(html_text, want='historical'):
     """从索引页 HTML 里抽出 (period 'YYYY-MM', 绝对 URL) 列表，按月份倒序。
 
-    条目文本形如 'May 2026 Monthly Metrics Historical File' / 'May 2026 Monthly Metrics'。
-    两者只差尾巴，所以必须精确区分，不能只 in 'Monthly Metrics'。
+    want='historical' 现行滚动全表 / want='monthly' 月度新闻稿 / want='legacy' 老版全表。
+    前两者的条目文本形如 'May 2026 Monthly Metrics Historical File' / 'May 2026 Monthly
+    Metrics'，只差尾巴，所以必须精确区分，不能只 in 'Monthly Metrics'；
+    'legacy' 是完全另一套写法，见上面 _LABELS 的实测统计。
     """
+    if want not in ('historical', 'monthly', 'legacy'):
+        raise ValueError('want 只能是 historical / monthly / legacy，给的是 %r' % want)
     out = {}
     for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html_text, re.S):
         href = m.group(1)
         txt = re.sub(r'<[^>]+>', ' ', m.group(2))
         txt = re.sub(r'&[a-z]+;', ' ', txt)
         txt = re.sub(r'\s+', ' ', txt).strip()
-        mm = re.match(r'^([A-Z][a-z]+)\s+(\d{4})\s+Monthly Metrics(.*)$', txt)
-        if not mm:
+        period = None
+        if want == 'legacy':
+            mm = _LEGACY_LABEL.match(txt)
+            if mm and _MON_FULL.get(mm.group(1).lower()):
+                period = '%s-%02d' % (mm.group(2), _MON_FULL[mm.group(1).lower()])
+        else:
+            mm = re.match(r'^([A-Z][a-z]+)\s+(\d{4})\s+Monthly Metrics(.*)$', txt)
+            if not mm:
+                continue
+            mon = _MON_FULL.get(mm.group(1).lower())
+            if not mon:
+                continue
+            tail = mm.group(3).strip().lower()
+            is_hist = tail.startswith('historical')
+            if (want == 'historical') != is_hist:
+                continue
+            period = '%s-%02d' % (mm.group(2), mon)
+        if period is None:
             continue
-        mon = _MON_FULL.get(mm.group(1).lower())
-        if not mon:
-            continue
-        tail = mm.group(3).strip().lower()
-        is_hist = tail.startswith('historical')
-        if (want == 'historical') != is_hist:
-            continue
-        period = '%s-%02d' % (mm.group(2), mon)
         if not href.startswith('http'):
             href = BASE + href
         out.setdefault(period, href)          # 同期重复时保留先出现的（页面按新→旧排）
     if not out:
-        raise SourceError('索引页里没找到任何 Monthly Metrics 条目，页面结构可能改了：' + INDEX_URL)
+        raise SourceError('索引页里没找到任何 %s 条目，页面结构可能改了：%s' % (want, INDEX_URL))
     return sorted(out.items(), key=lambda kv: kv[0], reverse=True)
 
 
@@ -216,10 +287,23 @@ def _pdf_text(path):
         return '\n'.join(p.extract_text() or '' for p in pdf.pages)
 
 
+def _star(tok):
+    """去掉单元格上的脚注星号。
+
+    官方在**个别单元格**上直接挂星号而不是角标：'4.0*'（2019-08 那三个 NNA 单元格，
+    指向 Allen & Company 那条注）、'34.2**'（2020-02 的客户现金，指向 NNA 定义变更那条注）。
+    不剥星号的后果不是报错而是**静默少一列**：'4.0*' 匹配不上数字正则，
+    那一行就只剩 12 个值配 13 个月表头，parse_historical 的长度校验会把整期判成解析失败。
+    实测这一个字符卡掉了 2019-10…2020-07 共 6 期。
+    """
+    return tok.strip('*')
+
+
 def _numbers(s):
     """把一行里的数字取出来。会计负号是括号；千分位逗号要去掉；百分比 / bps 不算数字列。"""
     out = []
     for tok in s.split():
+        tok = _star(tok)
         if tok.endswith('%') or tok.endswith('bps') or tok.endswith('bps)'):
             continue
         if not re.fullmatch(r'\(?-?\$?[\d,]+(\.\d+)?\)?', tok):
@@ -236,8 +320,24 @@ def _numbers(s):
     return out
 
 
+#: 「影子块」：官方在正表下面再印一遍**同名行、不同数值**的 pro-forma 版本，
+#: 用来展示「如果没有这笔并购会是多少」。实测出现过三种写法：
+#:     'Assets Served Prior to NPH*' / 'Net New Assets Prior to NPH*' /
+#:     'Cash Sweep Balances Prior to NPH*' / 'Client Cash Balances Prior to NPH *'（2018-01…2019-05 期）
+#:     'Net New Assets prior to Acquisitions'（2020-10…2021-02 期）
+#: 三块与正表**交错排列**（正表资产 → 影子资产 → 正表 NNA → 影子 NNA → …），
+#: 所以不能像脚注那样一刀截断，只能逐块跳过。
+#: 现行代码靠 `rows.setdefault()`「先出现者胜」侥幸取到正表那份（影子块总在正表之后），
+#: 但那是运气不是判据：影子块的值域与正表重叠（2018-04 期正表总资产 652.3、影子 580.1），
+#: 一旦官方换个排序就会静默取错一整期。这里改成显式识别、显式跳过。
+_SHADOW = re.compile(r'\bprior to\b', re.I)
+
+
 def _rows(text):
-    """把表格文本切成 {(节, 行名小写): [数值...]}。节用来给新格式的裸 Advisory/Brokerage 消歧。"""
+    """把表格文本切成 {(节, 行名小写): [数值...]}。节用来给新格式的裸 Advisory/Brokerage 消歧。
+
+    'Prior to …' 影子块整块跳过（见 _SHADOW）。
+    """
     lines = [l.rstrip() for l in text.split('\n')]
     # 口径坑 4：脚注区还有同名行的小表，先截断
     for i, l in enumerate(lines):
@@ -245,7 +345,7 @@ def _rows(text):
             lines = lines[:i]
             break
 
-    section, rows = None, {}
+    section, rows, shadow = None, {}, False
     for raw in lines:
         s = re.sub(r'\(\d+\)', '', raw).strip()      # 去掉行内脚注角标 (1)(2)…
         if not s:
@@ -253,6 +353,10 @@ def _rows(text):
         vals = _numbers(s)
         low = s.lower()
         if not vals:                                  # 无数字 = 节标题
+            # 影子块由它自己的标题开启，由下一个**不带 'prior to' 的**标题关闭。
+            shadow = bool(_SHADOW.search(low))
+            if shadow:
+                continue
             for pat, tag in (('client assets', 'assets'),
                              ('organic net new assets', 'organic'),
                              ('organic nna', 'organic'),
@@ -264,11 +368,16 @@ def _rows(text):
                     section = tag
                     break
             continue
+        if shadow:
+            continue
         # 行名 = 开头那串"非数值"词。不能用正则从第一个数字处切，
         # 因为季报里金额写成 "Advisory $ 1,548.4"，货币符号和数字之间有空格，会把 "$" 粘进行名。
         head = []
         for tok in s.split():
-            if re.match(r'^\(?-?\$?[\d,]+(\.\d+)?\)?$', tok) or tok in ('$', '—', '-', '(', 'n/m'):
+            # 与 _numbers() 用同一把尺子（含剥星号），否则 'Total Client Cash Balances 34.2**'
+            # 会把 '34.2**' 当成行名的一部分，行名对不上 _PICK、整期解析失败。
+            t = _star(tok)
+            if re.match(r'^\(?-?\$?[\d,]+(\.\d+)?\)?$', t) or t in ('$', '—', '-', '(', 'n/m'):
                 break
             head.append(tok)
         label = ' '.join(head).rstrip('$ ').strip().lower()
@@ -277,11 +386,38 @@ def _rows(text):
 
 
 def _header_months(text):
-    """表头那一行的 13 个 'May 2026' → ['2026-05', '2026-04', ...]，顺序即数据列顺序。"""
-    for l in text.split('\n'):
+    """表头 → ['2026-05', '2026-04', ...]，顺序即数据列顺序。两种版式都认。
+
+    A) 现行（≥2020-10 期）：月份与年份挤在同一行，'May 2026 Apr 2026 …'。
+    B) 老版（≤2020-07 期）：**月份一行、年份另一行**，中间还夹着单位说明 ——
+           Apr Mar Feb Jan Dec Nov Oct Sep Aug Jul Jun May Apr
+           (End of Period $ in billions, unless noted)
+           2017 2017 2017 2017 2016 2016 2016 2016 2016 2016 2016 2016 2016
+       只认 A 的话这一整代文件全部抛 ParseError，2019-05 及更早一个月都进不来。
+
+    **列数不固定**：绝大多数期是 13 列，但 2017-04 期是 **16 列**（窗口 Jan-2016…Apr-2017）——
+    正是这多出来的 3 列让 2016-01…2016-03 有了唯一的官方出处。所以这里返回多少给多少，
+    不做「必须 13 列」的假设；长度由调用方与数据行逐一对齐校验。
+    """
+    lines = text.split('\n')
+    for l in lines:
         ms = re.findall(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})\b', l)
         if len(ms) >= 6:
             return ['%s-%02d' % (y, _MON[m.lower()]) for m, y in ms]
+    # 版式 B：月份行之后 3 行内找一行年份，个数必须**恰好相等**才敢配对。
+    # 不等就抛而不是截断对齐 —— 错位一列会让整期数据整体挪一个月，而且看不出来。
+    for i, l in enumerate(lines):
+        mons = re.findall(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b', l)
+        if len(mons) < 6:
+            continue
+        for j in range(i + 1, min(i + 4, len(lines))):
+            yrs = re.findall(r'\b((?:19|20)\d\d)\b', lines[j])
+            if not yrs:
+                continue
+            if len(yrs) != len(mons):
+                raise ParseError('两行式表头对不齐：月份 %d 个（%r）、年份 %d 个（%r）'
+                                 % (len(mons), l.strip()[:60], len(yrs), lines[j].strip()[:60]))
+            return ['%s-%02d' % (y, _MON[m.lower()]) for m, y in zip(mons, yrs)]
     raise ParseError('找不到月份表头行，PDF 版式可能改了')
 
 
@@ -297,17 +433,25 @@ _PICK = {
                                'loose': ['advisory assets']},
     'brokerage_assets_usdbn': {'strict': [('assets', 'brokerage')],
                                'loose': ['brokerage assets']},
+    # 'total brokerage and advisory assets' 是 ≤2020-07 期的写法，与现行
+    # 'total advisory and brokerage assets' **词序相反**。两条都得列，缺一整代文件取不到值。
     'total_assets_usdbn':     {'strict': [('assets', 'total client assets')],
                                'loose': ['total advisory and brokerage assets',
-                                         'total client assets']},
+                                         'total client assets',
+                                         'total brokerage and advisory assets']},
     'nna_advisory_usdbn':     {'strict': [('total_nna', 'advisory')],
                                'loose': ['net new advisory assets']},
     'nna_brokerage_usdbn':    {'strict': [('total_nna', 'brokerage')],
                                'loose': ['net new brokerage assets']},
     'nna_total_usdbn':        {'strict': [('total_nna', 'total nna')],
                                'loose': ['total net new assets']},
+    # 'total cash sweep balances' 是 ≤2019-03 的行名（ICA + DCA + MMA）。官方在 2019-04 期
+    # 把这一行改名 'Total Client Cash Balances' 并开始把 Purchased Money Market Funds 计入
+    # （2019-04 是 0.4bn）—— 这是**口径断点**，不是纯改名，见口径坑 10。
+    # 排序有意：先认现行行名，两条同时存在的文件目前一份都没有，但真出现时应以现行为准。
     'client_cash_usdbn':      {'strict': [('cash', 'total client cash balances')],
-                               'loose': ['total client cash balances']},
+                               'loose': ['total client cash balances',
+                                         'total cash sweep balances']},
 }
 
 
@@ -598,6 +742,186 @@ def update(series_dir, cache_dir, revise=False, verbose=True):
     return new_months
 
 
+# ────────────────────────── 存量回补（老版 Historical File） ──────────────────────────
+
+#: 回补时**允许**与既有真值表不一致的格子。每一条都要写清「为什么两边都对」。
+#: 不在这张表里的任何一处不一致 → 整次回补失败（宁可不补，也不静默改口径）。
+#:
+#: 2019-05 三个 NNA 列：官方在 **2020-04 期**把 Total Net New Assets 的定义改了 ——
+#: 那一期起表里多出两块（Asset Inflows minus Outflows / Dividends plus Interest minus
+#: Advisory Fees），原文脚注写明「**Total Net New Assets equals the combination of Asset
+#: Inflows minus Outflows as well as Dividends plus Interest, minus Advisory Fees」。
+#: 老定义 = 新表里的「Asset Inflows minus Outflows」那一行。
+#: 2019-05 在老册里是 1.4/2.5/(1.1)（老定义），真值表里存的 2.0/2.8/(0.8) 是新定义。
+#: 官方能给出新定义的最早月份就是 2019-04（2020-04 期窗口的最左列），而真值表 2019-04
+#: 存的又是老定义 0.7/1.6/(1.0) —— 所以**真值表自己的口径断点落在 2019-04|2019-05 之间**，
+#: 与本次回补无关，回补只是把老定义那一段从 2018-07 往前延长到 2016-01。
+#: 这条断点在 build/lpla.py 的 CAL_BREAKS 里登记、并在图上画出来。
+_KNOWN_DRIFT = {
+    ('2019-05', 'nna_total_usdbn'),
+    ('2019-05', 'nna_advisory_usdbn'),
+    ('2019-05', 'nna_brokerage_usdbn'),
+}
+
+
+def _fetch_legacy(cache_dir, period, url):
+    """下一期老版 Historical File 到 cache，返回本地路径。已在 cache 里就直接用。"""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, 'lpla_legacy_%s.pdf' % period)
+    if os.path.exists(path) and os.path.getsize(path) > 4096:
+        return path
+    blob = _get(url)
+    if not blob.startswith(b'%PDF'):
+        raise SourceError('%s 拿回来的不是 PDF（前 16 字节 %r）' % (url, blob[:16]))
+    with open(path, 'wb') as f:
+        f.write(blob)
+    return path
+
+
+def backfill(series_dir, cache_dir, verbose=True):
+    """把 2016-01…2018-06 的历史月份补进 series/lpla.csv，返回新增月份（升序）。
+
+    ═══ 与 update() 的分工 ═══
+    update() 管**增量**：只下最新一期 Historical File，往后长一格。它永远够不到存量，
+    因为老月份的唯一出处是**老标签**（'Historical Monthly Activity through …'）那 19 期，
+    而 update() 的取数通道（want='historical'）按设计只认现行标签。
+    backfill() 管**存量**：把那 19 期一次扫完，谁也不越界。
+
+    ═══ 三道自检，任何一道不过就整次失败（宁可不补）═══
+    1) **跨册对账**：19 期两两之间有大量重叠月（每期 13 列、相邻期只差 1–3 个月）。
+       同一个月在不同册里必须逐值相等。实测 17 期可解析、41 个月、**0 处冲突** ——
+       这是「行名取对了没有、列有没有错位」最硬的一道检验，比任何肉眼核对都强。
+    2) **与真值表对账**：老册覆盖到 2018-07…2019-05 共 11 个月，那 11 个月已在 series 里。
+       77 个格子必须逐格相等，例外只允许出现在 _KNOWN_DRIFT 里（当前 3 格，见上）。
+       实测 74/77 相等。
+    3) **逐月连号**：写完之后整张表必须一个月不缺（load() 也会再查一次，这里提前拦）。
+
+    ═══ 取哪一册的值 ═══
+    同一个月被多册覆盖时取**最新的那一册**（口径坑 3：官方会回溯重述）。因为第 1 道
+    自检要求跨册全等，这条规则今天等于没有分歧，但它是正确的默认。
+    **只在老标签这 19 期里选**，不掺现行标签的册子 —— 掺进来就会把 2020-04 期之后的
+    NNA 新定义带回 2019 年，那才是真的「拿后期重述值盖历史」。
+
+    ═══ 幂等 ═══
+    只追加 series 里没有的月份；已有行一个字符都不动（连重排都不做，沿用 update() 的
+    「原始行文本原样搬过去」写法）。跑第二遍返回空列表。
+
+    ═══ 发布日为什么不写 ═══
+    2016-01…2016-11 的月度新闻稿根本不在索引页上（最老的一期是 2017-01），
+    release_date() 对它们必抛 SourceError；而 series/source_dates.csv 是全站共用台账，
+    一次性回补往里塞 30 行「查不到」的记录只会污染它。这些月份的页面抬头不会有
+    「官方发布于」半句 —— 数据本身不受影响，抬头只对最新月印那半句。
+    """
+    csv_path = os.path.join(series_dir, 'lpla.csv')
+    header_line, idx, existing, raw_lines = _read_series(csv_path)
+    ncol = len(next(csv.reader([header_line])))
+
+    def log(*a):
+        if verbose:
+            print(*a)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    html_text = _get(INDEX_URL).decode('utf-8', 'replace')
+    with open(os.path.join(cache_dir, 'lpla_monthly_results_index.html'), 'w') as f:
+        f.write(html_text)
+    entries = _index_entries(html_text, want='legacy')
+    log('[lpla] 索引页上的老版 Historical File %d 期：%s … %s'
+        % (len(entries), entries[0][0], entries[-1][0]))
+
+    merged, origin, skipped = {}, {}, []
+    conflicts = []
+    for period, url in entries:                       # 新 → 旧
+        path = _fetch_legacy(cache_dir, period, url)
+        try:
+            parsed = parse_historical(path)
+        except ParseError as e:
+            # 只容忍一种已知缺列：2017-02 及更早的册子**整张表没有 NNA 三行**
+            # （'Net New' 全文不出现），那是官方当年就没披露，不是解析坏了。
+            # 其余任何 ParseError 都是版式变了，必须炸出来。
+            if 'nna_' not in str(e):
+                raise
+            skipped.append((period, '该期原件没有 Net New Assets 三行（官方当年未披露）'))
+            continue
+        said = source_month(path)
+        if said != period:
+            raise ParseError('索引页 %s 那期挂的却是 %s 的文件（%s）' % (period, said, path))
+        for mth, vals in parsed.items():
+            if mth in merged:
+                for c in VALUE_COLS:
+                    if abs(merged[mth][c] - vals[c]) > 0.05:
+                        conflicts.append((mth, c, origin[mth], merged[mth][c], period, vals[c]))
+                continue
+            merged[mth], origin[mth] = vals, period
+
+    for period, why in skipped:
+        log('[lpla] 跳过 %s 期：%s' % (period, why))
+    if conflicts:
+        for mth, c, p1, v1, p2, v2 in conflicts:
+            print('[lpla] 跨册冲突 %s %s：%s 期=%.1f，%s 期=%.1f' % (mth, c, p1, v1, p2, v2))
+        raise ParseError('老册之间对不上 %d 处（见上），回补中止 —— '
+                         '要么解析取错了行/列，要么官方重述过，两种都得人看' % len(conflicts))
+    if not merged:
+        raise SourceError('一期老册都没解析成功，回补中止')
+    log('[lpla] %d 期解析成功，覆盖 %s … %s（%d 个月），跨册冲突 0 处'
+        % (len(entries) - len(skipped), min(merged), max(merged), len(merged)))
+
+    # 自检 2：与真值表逐格对账
+    ov = sorted(set(merged) & set(existing))
+    bad = []
+    for mth in ov:
+        for c in VALUE_COLS:
+            if abs(merged[mth][c] - existing[mth][c]) <= 0.05:
+                continue
+            if (mth, c) in _KNOWN_DRIFT:
+                log('[lpla] 已登记的口径差异 %s %s：series=%.1f（新定义） 老册=%.1f（老定义）'
+                    % (mth, c, existing[mth][c], merged[mth][c]))
+            else:
+                bad.append((mth, c, existing[mth][c], merged[mth][c]))
+    if bad:
+        for mth, c, a, b in bad:
+            print('[lpla] 重叠月不一致 %s %s：series=%.1f 老册=%.1f' % (mth, c, a, b))
+        raise ParseError('老册与 series 在 %d 处对不上且未登记（见上），回补中止' % len(bad))
+    log('[lpla] 与真值表重叠 %d 个月 × %d 列 = %d 格，未登记的不一致 0 处'
+        % (len(ov), len(VALUE_COLS), len(ov) * len(VALUE_COLS)))
+
+    new_months = sorted(set(merged) - set(existing))
+    if not new_months:
+        log('[lpla] 没有可补的月份，series 已自 %s 起' % min(existing))
+        return []
+
+    def render(mth, vals):
+        row = [''] * ncol
+        row[idx[MONTH_COL]] = mth
+        for c in VALUE_COLS:
+            row[idx[c]] = _fmt(vals[c])
+        buf = io.StringIO()
+        csv.writer(buf, lineterminator='').writerow(row)
+        return buf.getvalue()
+
+    out = dict(raw_lines)                       # 已有行原样保留，一个字符都不动
+    for mth in new_months:
+        out[mth] = render(mth, merged[mth])
+
+    # 自检 3：逐月连号（写盘之前查，别把断档的表写出去再让 build 炸）
+    keys = sorted(out)
+    for a, b in zip(keys, keys[1:]):
+        ya, ma = int(a[:4]), int(a[5:7])
+        yb, mb = int(b[:4]), int(b[5:7])
+        if (yb * 12 + mb) - (ya * 12 + ma) != 1:
+            raise ParseError('回补后月份不连续：%s → %s' % (a, b))
+
+    tmp = csv_path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(header_line + '\n')
+        for mth in keys:
+            f.write(out[mth] + '\n')
+    os.replace(tmp, csv_path)
+    log('[lpla] 回补 %d 个月：%s … %s（各月出处：%s）'
+        % (len(new_months), new_months[0], new_months[-1],
+           '、'.join('%s←%s 期' % (m, origin[m]) for m in new_months[:3]) + ' …'))
+    return new_months
+
+
 # ────────────────────────── 季末月倒挤（默认不用） ──────────────────────────
 
 def quarter_end_estimate(series_dir, cache_dir, quarter=None):
@@ -665,6 +989,10 @@ def quarter_end_estimate(series_dir, cache_dir, quarter=None):
 if __name__ == '__main__':
     import sys
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if '--backfill' in sys.argv:
+        # 存量回补是一次性动作，跑它时不必先去探最新月（那是 update() 的事）
+        print(backfill(os.path.join(root, 'series'), os.path.join(root, 'cache')))
+        sys.exit(0)
     print('latest:', latest_month(os.path.join(root, 'cache')))
     if '--update' in sys.argv:
         print(update(os.path.join(root, 'series'), os.path.join(root, 'cache')))

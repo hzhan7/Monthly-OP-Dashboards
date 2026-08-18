@@ -15,7 +15,7 @@
    凡是画 as-reported 客户资产 / 现金 / NNA 的图都以红色竖虚线标出（见 ACQ_BREAKS）。
 
 输入（只读，一律来自 series/）：
-    series/lpla.csv       月度经营指标（2018-07 起）
+    series/lpla.csv       月度经营指标（2016-01 起；2018-07 以前由 fetch/lpla.py --backfill 补入）
     series/fee_rates.csv  季度费率与季度实际收入（company = LPLA）
 输出：
     data/lpla.js          window.DASH = {...}
@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import brief as B       # 顶部 brief 的规则库（R1-R6），只算事实、不出文字
+import mrwin            # 通栏 / x 标签抽稀的裁决层，与 single.py 及其余 11 个生成器共用
 import payload_guard
 import pctile           # 汇总表 3Y %ile 的唯一实现，不在本文件里另写一套
 import yoy              # 同比口径的唯一实现（build/yoy.py）：本文件不再自己写一份滚动同比
@@ -48,32 +49,129 @@ SRC = ('Source: LPL Financial monthly activity and quarterly reports; '
 QNOTE = ('Quarter-end months have no standalone monthly report; those values come from '
          'the quarterly release')
 
-# 官方同页披露的 Acquired NNA（$bn）。2022 年起完整；更早年份原件用旧行名，未解析，故不调整。
-# 逐条与 build/build_lpla.py 的 ACQ 表一致 —— 它不是 series/lpla.csv 的一列，
-# 而是 deck 里登记的公司披露常量，移植时原样带过来（见 notes 第 4 条）。
-ACQ = {'2023-01': 3.2, '2023-03': 0.5, '2024-04': 5.0, '2024-08': 0.3, '2024-09': 0.3,
+# 官方同页披露的 Acquired NNA（$bn）。**逐条都有官方出处**，一条估算都没有：
+#   · 2019-08 起：官方在 Historical File 里同时印 "Total NNA" 与 "Total Organic NNA"
+#     两行，acquired = 前者 − 后者，逐月现成。
+#   · 2017-12…2018-04（NPH）：那一代文件没有 organic 行，印的是影子块
+#     "Net New Assets Prior to NPH"，acquired = as-reported − prior to NPH。
+#     **只取并表进行中的那 5 个月**：2018-05 起两者之差转负（−0.5 / −0.2），
+#     那已经不是并表导入而是 NPH 存量顾问自己的净流出，属有机口径，不许扣。
+#     交叉校验：这 5 个月合计 72.3bn，而同一份 2018-04 期文件里
+#     "Assets Served Prior to NPH" 与正表的总资产之差是 72.2bn（652.3 − 580.1），
+#     两条独立披露互相印证，误差 0.1 是四舍五入。
+#   · 2019-08 Allen & Company 用官方脚注的原话：「$2.9 billion of total brokerage and
+#     advisory assets …, of which $1.8 billion were brokerage assets and $1.0 billion
+#     were advisory assets」。1.8 + 1.0 = 2.8，官方自己写 2.9（各自四舍五入），这里取
+#     官方给的合计 2.9。
+# 2026 年至今官方逐月印的 "Total Acquired NNA" 都是 0.0（2026-05 期原件可查），所以没有条目。
+#
+# ⚠️ **2024-08 保留 0.3 不改**：现行文件算出来是 0.2（6.8 − 6.6，两行各自已四舍五入，
+#    真值落在 0.15–0.25 之间，两个写法都对）。它是既有真值，改它属于「拿今天的四舍五入
+#    盖历史」，不在本轮范围内。
+#
+# ⚠️ **与 build/wealth.py 的同名表已不再逐条相同**：那一份仍是 2023-01 起的旧版。
+#    本轮把 lpla 页的时序窗口放宽到 2016-01，2017-2021 那几笔并表第一次进到图里，
+#    所以这张表必须补齐；wealth 页是横截面页、LPL 的窗口只到近年，补不补不影响它今天的
+#    读数。**哪天 wealth 页也放宽窗口，必须把下面 2017-12…2021-09 这几条一并带过去**，
+#    否则同一条 LPL 有机 NNA 会在两页给出不同的值（那正是当年 Atria 断点两页打架的老病）。
+ACQ = {'2017-12': 34.1, '2018-01': 2.5, '2018-02': 29.8, '2018-03': 3.7, '2018-04': 2.2,
+       '2019-08': 2.9,
+       '2020-10': 1.5, '2020-11': 2.5,
+       '2021-04': 67.1, '2021-06': 1.8, '2021-09': 2.3,
+       '2023-01': 3.2, '2023-03': 0.5, '2024-04': 5.0, '2024-08': 0.3, '2024-09': 0.3,
        '2024-10': 88.3, '2024-11': 0.8, '2024-12': 0.3, '2025-01': 0.1, '2025-02': 0.7,
-       '2025-03': 7.1, '2025-08': 275.0, '2025-12': 2.0}
+       '2025-03': 7.1, '2025-07': 0.1, '2025-08': 275.0, '2025-12': 2.0}
 
-# ── 结构性断点 ──────────────────────────────────────────────────────────────
-# ACQ 里的两笔**整体并表**：Atria（2024-10，$88.3bn，约当月资产的 5%）与
-# Commonwealth（2025-08，$275.0bn，约 14%）。凡是画 as-reported 客户资产 / 客户现金 /
-# 总 NNA 的图都要把它们画出来（CONTRACT.md §5.2：口径断点必须画出来，不能靠图注提一句
-# 就算数）。与 ACQ 挨着放是因为它们是同一件事的两种用法，改一处必须改另一处；
-# build/wealth.py 的 ACQ_BREAKS 是同一张表的横截面页副本。
+# ── 结构性断点 ①：整体并表 ──────────────────────────────────────────────────
+# 判据写在这里，别靠记忆：**当月 Acquired NNA ≥ 当月末客户资产的 5%** 就登记为断点 ——
+# 那种量级的并表会把存量序列整体抬一个台阶，断点两侧不可直读。按这条判据当前有四笔：
+#   NPH          2017-12 起分批，合计 $72.3bn ÷ 2018-04 的 652.3 = 11.1%
+#   Waddell&Reed 2021-04  $67.1bn ÷ 958.3（上月末）= 7.0%
+#   Atria        2024-10  $88.3bn ÷ 1,673.3 = 5.3%
+#   Commonwealth 2025-08  $275.0bn ÷ 2,263.5 = 12.1%
+# 不属于这四笔的条目全在 1% 以下（最大的 2025-03 的 7.1bn 只占 0.4%），只进 ACQ、不画线。
+# 这条判据在 main() 里**机器复核**：有月份达到 5% 却没登记，构建直接停更。
+# CONTRACT.md §5.2：口径断点必须画出来，不能靠图注提一句就算数。
+#
+# NPH 的线画在 **2017-12**（第一笔导入落地的那个月），不画在并表完成的 2018-04：
+# break_at 的语义是「从这一期起与左侧不可比」，而 2017-12 那根柱本身就已经含并表。
 #
 # 曾经这里只有 Commonwealth 一条，于是同一条 LPL as-reported 序列在本页被判成
 # 「Oct-24 可比」、在 /wealth/ 被判成「Oct-24 不可比」，两页互相矛盾。
-ACQ_BREAKS = [(pd.Period('2024-10', 'M'), 'Atria'),
+ACQ_BREAKS = [(pd.Period('2017-12', 'M'), 'NPH'),
+              (pd.Period('2021-04', 'M'), 'Waddell & Reed'),
+              (pd.Period('2024-10', 'M'), 'Atria'),
               (pd.Period('2025-08', 'M'), 'Commonwealth')]
-BRK_TXT = {'Atria': 'Oct-2024 Atria ($88.3bn)',
+#: 每条断点实际覆盖的 ACQ 月份。NPH 是唯一一笔**跨月分批**导入的：线画在第一笔落地的
+#: 2017-12，但 ACQ 里 2017-12…2018-04 五条都属于这一笔。判据复核与「其余小额并购」的统计
+#: 都按这张表算 —— 否则 2018-02 那 29.8bn 会被当成「一笔没登记的 4.6% 并购」，
+#: 判据复核当场误报停更。
+ACQ_BREAK_MONTHS = {'2017-12', '2018-01', '2018-02', '2018-03', '2018-04',
+                    '2021-04', '2024-10', '2025-08'}
+BRK_TXT = {'NPH': 'Dec-2017 NPH（分批导入至 Apr-2018，合计 $72.3bn）',
+           'Waddell & Reed': 'Apr-2021 Waddell & Reed ($67.1bn)',
+           'Atria': 'Oct-2024 Atria ($88.3bn)',
            'Commonwealth': 'Aug-2025 Commonwealth ($275.0bn)'}
 
-WIN_L = 25          # gsx.lvl_bar / multi_line 在原 deck 里的窗口
-WIN_S = 13          # gsx.stack_share / bridge_bar 的窗口
+# ── 结构性断点 ②：官方改了定义（不是并表）──────────────────────────────────
+# 这两条是**真值表里早就存在、以前没人标出来**的口径断点。窗口从「近 25 个月」放宽到
+# 2016-01 之后它们第一次进到图里，不标就是让读者拿两把尺子量同一条线。
+# 两条的证据都在 fetch/lpla.py 的「口径坑 10」里，都是官方原件里的原话。
+#
+# 分成 'nna' / 'cash' 两族，是因为它们各自只影响一族序列：把现金那条画到 NNA 图上、
+# 或者反过来，等于告诉读者「这里不可比」而其实那条线一点没受影响。
+CAL_BREAKS = {
+    # 2020-04 期起 Total NNA = Asset Inflows minus Outflows + Dividends plus Interest
+    # minus Advisory Fees。真值表 2019-04 存老定义、2019-05 起存新定义，断点落在两者之间。
+    'nna': [(pd.Period('2019-05', 'M'), 'NNA 定义',
+             'May-2019 起 Total NNA 改为「净流入 + 股息利息 − 投顾费」'
+             '（官方 2020-04 期脚注），左侧是只含净流入的老定义')],
+    # 2019-04 期把 Total Cash Sweep Balances 改名 Total Client Cash Balances 并开始
+    # 计入 Purchased Money Market Funds（当月 0.4bn，到 2020-01 已是 2.5bn）。
+    'cash': [(pd.Period('2019-04', 'M'), '现金口径',
+              'Apr-2019 起客户现金改用 Total Client Cash Balances（含 purchased money '
+              'market funds），左侧是只含 ICA + DCA + MMA 的 Total Cash Sweep Balances')],
+}
+
+#: 时序主窗口的左端。2026-08-18 从写死的「近 25 个月」改成「2016-01 起」，与
+#: build/single.py 的 WIN_FROM、build/cboe.py / build/cme.py 的同名常量、build/msci.py 的
+#: WIN0 同一个口径、同一个理由：数据回补到 2016 而窗口停在近两年，等于回补给谁看。
+#: 序列比它短就用序列自己的起点（**只往右让、不往左借**）。
+WIN_FROM = '2016-01'
+WIN_S = 13          # gsx.stack_share / bridge_bar 的窗口（近端对比图，保持 13 个月）
 WIN_Q = 14          # gsx.qtr_bar / implied_vs_actual 的窗口（季度）
 
-DRAWN = []          # 真正画出了断点线的 exhibit 编号，供 notes 现算文案用
+
+def _w(obj):
+    """把一条 Series / DataFrame 按 WIN_FROM 截左端（取代原先写死的 `.iloc[-25:]`）。
+
+    只往右让、不往左借：序列比 WIN_FROM 晚就原样返回。写法与 build/hkex.py 的同名助手一致。
+    """
+    idx = obj.index
+    keep = [i for i, p in enumerate(idx) if f'{p.year}-{p.month:02d}' >= WIN_FROM]
+    return obj.iloc[keep[0]:] if keep else obj
+
+
+def _w_finite(df_, col):
+    """同 `_w()`，但左端再往右推到 `col` **第一个算得出来的月**。
+
+    派生列（环比 / 年化增速 / 滚动比率）在序列首月定义上不存在 —— 年化有机增速要用
+    上月末资产，序列第一个月没有上月。窗口一放宽到序列起点，那一格就成了 null：
+    柱图上是一个不画的空位，`cap_pack` / 量程按 null 处理不报错，但 x 轴第一格永远空着，
+    读者只会以为「那个月没数据」。**丢掉那一格，不补零、不前向填充** —— 补出来的值
+    在数据里不存在。
+    """
+    s = df_[col]
+    ok = [i for i, v in enumerate(s.values) if v is not None and np.isfinite(float(v))]
+    w = _w(df_)
+    if not ok:
+        return w
+    first = df_.index[ok[0]]
+    return w if w.index[0] >= first else df_.loc[first:]
+
+DRAWN = []          # 真正画出了**并购**断点线的 exhibit 编号，供 notes 现算文案用
+DRAWN_CAL = []      # 真正画出了**口径**断点线的（两族分开记：两条 notes 各说各的，
+                    # 合成一张名单会让「有机口径的图不画并购线」那句自相矛盾）
 CAPPED = []         # 真正截了轴的 (编号, 说明)，同理
 
 
@@ -97,8 +195,14 @@ def cap_pack(n, desc, vals, hi=None, lo=None, cap_note='axis capped — true val
     return out, len(over)
 
 
-def brk_pack(idx, n=None):
+def brk_pack(idx, n=None, acq=True, cal=()):
     """把结构性断点映射到某张图窗口里的 x 索引，返回 (exhibit 字段, 该图的断点图注)。
+
+    acq=True   画整体并表断点（ACQ_BREAKS）。画 **as-reported** 存量 / 流量的图要开；
+               有机口径的图（已按公司披露把并购导入扣掉）关掉 —— 那条线本来就没有台阶，
+               画一条「这里不可比」的线反而是假话。
+    cal        额外要画的**口径断点**族名，取自 CAL_BREAKS 的键（'nna' / 'cash'）。
+               引擎每张图只吃一条 break_at 列表，所以两类断点在这里合并、按 x 位置排序。
 
     窗口盖不到的断点自动省略，一条都盖不到时返回 ({}, '') —— 图上不画、图注也不会
     声称画了。**断点滚出窗口是常态而不是错误**：窗口每月往前滚，2025-08 迟早会掉出
@@ -112,21 +216,40 @@ def brk_pack(idx, n=None):
     if not lst:
         return {}, ''
     fr = lst[0].freq
-    at, lb, tx = [], [], []
-    for p, lab in ACQ_BREAKS:
+    hits = []                       # (x 位置, 短标签, 长说明, 是不是并表)
+    seen = set()
+    src = ([(p, lab, BRK_TXT[lab], True) for p, lab in ACQ_BREAKS] if acq else [])
+    for fam in cal:
+        src += [(p, lab, tx, False) for p, lab, tx in CAL_BREAKS[fam]]
+    for p, lab, tx, is_acq in src:
         q = p.asfreq(fr) if fr != p.freq else p
-        if q in lst and lst.index(q) not in at:
-            at.append(lst.index(q))
-            lb.append(lab)
-            tx.append(BRK_TXT[lab])
-    if not at:
+        if q not in lst:
+            continue
+        i = lst.index(q)
+        if i in seen:               # 同一根柱上两个断点：引擎只画得下一条线
+            continue
+        seen.add(i)
+        hits.append((i, lab, tx, is_acq))
+    if not hits:
         return {}, ''
+    hits.sort()
     if n is not None:
-        DRAWN.append(n)
-    note = ('Red dashed line' + ('s' if len(tx) > 1 else '') + ' = ' + ' and '.join(tx)
-            + ' — whole-firm onboardings, not organic flow; readings to the left of each '
-              'line are not directly comparable with those to the right')
-    return {'break_at': at, 'break_label': lb}, note
+        if any(h[3] for h in hits):
+            DRAWN.append(n)
+        if any(not h[3] for h in hits):
+            DRAWN_CAL.append(n)
+    a_tx = [h[2] for h in hits if h[3]]
+    c_tx = [h[2] for h in hits if not h[3]]
+    bits = []
+    if a_tx:
+        bits.append('Red dashed line' + ('s' if len(a_tx) > 1 else '') + ' = '
+                    + ' and '.join(a_tx)
+                    + ' — whole-firm onboardings, not organic flow; readings to the left of '
+                      'each line are not directly comparable with those to the right')
+    if c_tx:
+        bits.append('红色竖虚线还标出<b>官方改定义</b>的月份：' + '；'.join(c_tx)
+                    + '。这类断点不是并表，序列本身没有台阶，但线两侧量的不是同一个东西')
+    return {'break_at': [h[0] for h in hits], 'break_label': [h[1] for h in hits]}, '；'.join(bits)
 
 
 # ────────────────────────────── 读数 ──────────────────────────────
@@ -650,6 +773,12 @@ def main():
     df['organic_growth_roll'] = df['nna_ex'].rolling(12).sum() / tot.shift(12) * 100
     df['total_tn'] = tot / 1000.0
 
+    # ── 时序主窗口的**索引**先定住（下面的费率文案要引用它；切片本身要等派生列都齐了）──
+    # 从写死的 df.iloc[-25:] 改成「WIN_FROM 起」。今天 series 自 2016-01 起、WIN_FROM 也是
+    # 2016-01，所以拿到的就是全序列；序列哪天更短，_w() 自动退回序列自己的起点。
+    WIDX = _w(df).index
+    WSPAN = f'{mlab(WIDX[0])}–{mlab(WIDX[-1])}（{len(WIDX)} 个月）'
+
     # ── 量→收入桥：client cash revenue = 月末客户现金 x 披露净收益率 / 12 ──
     cy = rate_series('client_cash_net_yield')                    # bp, annualised
     q_of_month = pd.PeriodIndex(df.index).asfreq('Q')
@@ -678,7 +807,7 @@ def main():
     # 正常节奏下 LAG_Q 只会是 0 或 1（季初一两个月还没等到当季财报），那是口径不是异常。
     FEE_STALE = LAG_Q is not None and LAG_Q >= 2
     # 窗口内所属季度尚无披露费率、只能沿用上一季的月份
-    CARRY_M = [p for p in df.index[-WIN_L:] if p.asfreq('Q') not in cy.index]
+    CARRY_M = [p for p in WIDX if p.asfreq('Q') not in cy.index]
     _carry_span = ('' if not CARRY_M else
                    mlab(CARRY_M[0]) if len(CARRY_M) == 1
                    else f'{mlab(CARRY_M[0])}–{mlab(CARRY_M[-1])}')
@@ -688,9 +817,9 @@ def main():
            + ('（与该月同季，无滞后）。' if LAG_Q == 0 else
               f'（{LAT_Q} 尚无披露费率，沿用上一可得季度，滞后 {LAG_Q} 个季度）。')
            if RQ_LAT is not None else '最新月早于任何一个可得费率季度，隐含值留空。')
-        + (f'近 {WIN_L} 个月窗口里有 {len(CARRY_M)} 个月（{_carry_span}）所属季度尚无披露费率、'
+        + (f'主窗口 {WSPAN} 里有 {len(CARRY_M)} 个月（{_carry_span}）所属季度尚无披露费率、'
            '沿用上一季费率，其余月份用的是本季费率。' if CARRY_M else
-           f'近 {WIN_L} 个月窗口里每个月都用到了自己所属季度的披露费率。')
+           f'主窗口 {WSPAN} 里每个月都用到了自己所属季度的披露费率。')
         + (f'<b>⚠️ 费率尚未更新至 {LAT_Q}，也未更新至 {LAT_Q - 1}</b> —— 本图仍用 '
            f'{RQ_LAST} 的读数（滞后 {LAG_Q} 个季度，通常是公司财报延后）。'
            '这期间利率环境若已变化，隐含值不会跟着动，落差要算在费率口径上、不是业务上。'
@@ -704,15 +833,24 @@ def main():
     imp_q = imp_q.loc[[q for q in imp_q.index if cnt.get(q, 0) == 3]]
     act_q = rate_series('client_cash_revenue', to='mn')
 
-    # ── 三个窗口 ──
-    W25 = df.iloc[-WIN_L:]
+    # ── 三个窗口（W25 的左端在上面已定为 WIDX，这里才切 —— 派生列到此刻才齐）──
+    W25 = df.loc[WIDX]
+    # 近端对比图（堆叠 / 滚存桥）仍是 13 个月：它们要看的是「最近一年发生了什么」，
+    # 拉到十年只会把 12 根有意义的柱压成一堵墙。这与「时序图放宽到 2016」不矛盾 ——
+    # 放宽的是**趋势图**的窗口，不是所有图的窗口（cboe / cme 两页也是这么分的）。
     W13 = df.iloc[-WIN_S:]
     XL25 = [mlab(p) for p in W25.index]
     XL13 = [mlab(p) for p in W13.index]
     XLALL = [mlab(p) for p in df.index]
-    BK25, BN25 = brk_pack(W25.index)
+    # 四套断点组合：谁画并表、谁画口径断点，按那张图画的是哪条序列决定（见 brk_pack）。
+    BK25, BN25 = brk_pack(W25.index)                            # as-reported 资产
+    BKC, BNC = brk_pack(W25.index, cal=('cash',))               # 客户现金一族
+    BKN, BNN = brk_pack(W25.index, acq=False, cal=('nna',))     # 有机 NNA（并表已扣）
+    BKNA, BNNA = brk_pack(W25.index, cal=('nna',))              # as-reported NNA
     BK13, BN13 = brk_pack(W13.index)
+    BK13N, BN13N = brk_pack(W13.index, cal=('nna',))
     BKALL, BNALL = brk_pack(df.index)
+    BKALLC, BNALLC = brk_pack(df.index, cal=('cash',))
 
     # gsx.lvl_bar 的 docstring：「次轴画的是同比而不是滚动均线 —— 均线只是把柱子再平滑
     # 一遍、不带新信息，同比才回答『相对去年这个月是好是坏』」。本页是从 gsx deck 移植
@@ -769,7 +907,12 @@ def main():
         if breaks:
             ex.update(breaks)
             if n is not None:
-                DRAWN.append(n)
+                _cal_lab = {l for _p, l, _t in CAL_BREAKS['nna'] + CAL_BREAKS['cash']}
+                _lbs = breaks.get('break_label', [])
+                if any(l not in _cal_lab for l in _lbs):
+                    DRAWN.append(n)
+                if any(l in _cal_lab for l in _lbs):
+                    DRAWN_CAL.append(n)
         if note or brk_note:
             ex['note'] = ((note or '') + ((brk_note + '。') if brk_note else ''))
         if extra:
@@ -778,36 +921,48 @@ def main():
 
     ex = []
 
-    def add(exd, breaks=None):
+    def add(exd, breaks=None, cal_only=False):
         """把断点字段并进 exhibit 再登记编号 —— notes 里「哪几张图画了断点线」那句现算，
-        写死一串编号，窗口滚过断点的那个月就变成假话。"""
+        写死一串编号，窗口滚过断点的那个月就变成假话。
+
+        cal_only=True：这张图画的只有口径断点，不该登记进「并购断点」那份名单。
+        """
         if breaks:
             exd.update(breaks)
-            DRAWN.append(exd['n'])
+            (DRAWN_CAL if cal_only else DRAWN).append(exd['n'])
+            if not cal_only and any(lb in {l for _p, l, _t in
+                                           CAL_BREAKS['nna'] + CAL_BREAKS['cash']}
+                                    for lb in breaks.get('break_label', [])):
+                DRAWN_CAL.append(exd['n'])
         ex.append(exd)
         return exd
 
-    # ── Exhibit 2：Total client assets（gsx.lvl_bar, win=25, dec=2, $tn）──
+    # ── Exhibit 2：Total client assets（gsx.lvl_bar, 主窗口, dec=2, $tn）──
     # 存量：月末余额，次轴保留单月同比（roll=False）。
     ex.append(bar(2, 'total_tn', 'Total client assets', 'Total client assets',
-                  'Total client assets ($tn)', 'usd2',
-                  '原 deck 的 gsx.lvl_bar（win=25、dec=2、单位 $tn）。柱为月末客户资产总额。'
-                  + YOY_NOTE,
+                  'Total client assets ($tn)', 'f2',
+                  f'原 deck 的 gsx.lvl_bar（dec=2、单位 $tn）。柱为月末客户资产总额。'
+                  f'<b>窗口 {WSPAN}</b>：原 deck 写死「近 25 个月」，序列回补到 {df.index[0]} '
+                  f'之后改成日历常量 {WIN_FROM} 起（右端跟着数据最新月走）。' + YOY_NOTE,
                   breaks=BK25, brk_note=BN25, roll=False,
                   keep_why='客户资产是<b>月末存量</b>。'))
 
-    # ── Exhibit 3：Organic net new assets（gsx.lvl_bar, win=25, dec=1, $bn）──
+    # ── Exhibit 3：Organic net new assets（gsx.lvl_bar, 主窗口, dec=1, $bn）──
     # 这张原来一条同比线都不画，理由是「单月同比在本窗口内 −88%~+1,600%，读不出东西」——
     # 那个理由针对的是**单月**口径，不是「同比本身没意义」。换成 12 个月滚动合计同比之后
     # 读数区间收到两位数，线就能读了，所以本轮把它加回来（口径变了，结论跟着变，
     # 不能因为上一版写过一句「本页只有这一张不画」就一直不画）。
     _ST3 = caliber_stats(yoy_series(df['nna_ex'], W25.index),
                          roll_yoy_series(df['nna_ex'], W25.index), W25.index)
+    _acq_big = '、'.join(f'{lab} {mlab(p)} ${ACQ[str(p)]:,.1f}bn' if str(p) in ACQ
+                        else f'{lab} {mlab(p)}'
+                        for p, lab in ACQ_BREAKS if p in W25.index)
     ex.append(bar(3, 'nna_ex', 'Organic net new assets', 'Organic NNA',
                   'Organic net new assets ($bn)', 'usd1',
-                  'Total NNA less the Acquired NNA that LPL discloses on the same page '
-                  '(Atria Oct-24 $88.3bn, Commonwealth Aug-25 $275.0bn)。'
-                  '并购导入按公司披露的拆分逐月扣除，不整月置零。'
+                  'Total NNA less the Acquired NNA that LPL discloses on the same page'
+                  + (f'（窗口内最大的几笔：{_acq_big}；NPH 是 Dec-17 起分批导入）。'
+                     if _acq_big else '。')
+                  + '并购导入按公司披露的拆分逐月扣除，不整月置零。'
                   '<b>本轮把次轴同比加回来了</b>：上一版不画，理由是实算的单月同比在本窗口内'
                   + (f'介于 {_ST3["lo_m"]:+,.0f}% 与 {_ST3["hi_m"]:+,.0f}% 之间'
                      if _ST3 else '在三位数以上') +
@@ -817,19 +972,30 @@ def main():
                      if _ST3 else '收敛到两位数') +
                   '，右轴不再被单点撑爆，线本身能读了。'
                   'GS 规矩 1「流量不算百分比」针对的是<b>环比</b>与单月同比；'
-                  '年化有机增长率（Exhibit 4）仍是读流量趋势的首选。'))
+                  '年化有机增长率（Exhibit 4）仍是读流量趋势的首选。',
+                  breaks=BKN, brk_note=BNN))
 
     # ── Exhibit 4：Annualised organic growth rate（gsx.lvl_bar, pct_series）──
+    # 派生列：年化增速要用**上月末**资产，序列第一个月算不出来。窗口左端因此比其余各图
+    # 晚一格（_w_finite），而不是留一个空柱假装那个月没数据。
+    W4 = _w_finite(df, 'organic_growth_ex')
+    XL4 = [mlab(p) for p in W4.index]
+    BK4, BN4 = brk_pack(W4.index, acq=False, cal=('nna',))
+    _lag4 = ('' if W4.index[0] == W25.index[0] else
+             f'本图左端是 {mlab(W4.index[0])}、比其余各图晚一格：年化增速 = 当月有机 NNA × 12 ÷ '
+             f'<b>上月末</b>资产，而 {mlab(df.index[0])} 是序列第一个月、没有上月，'
+             f'那一格在数据里不存在（不补零、不前向填充）。')
     ex.append(bar(4, 'organic_growth_ex', 'Annualised organic growth rate',
                   'Annualised organic growth', 'Organic growth (% annualised)', 'pct1',
                   'Organic NNA x 12 / prior month-end assets, the GS convention; acquired '
-                  'assets stripped out using the disclosed split。'
+                  'assets stripped out using the disclosed split。' + _lag4 +
                   '比率序列的同比用百分点差（GS 规矩 2），所以右轴单位是 pp。'
                   '<b>柱是当月年化率，右轴换成了滚动口径的同比</b>：右轴画的是'
                   '「滚动 12 个月有机 NNA ÷ 12 个月前的月末客户资产」这条比率的百分点差，'
                   '不是当月年化率的百分点差。' + YOY_NOTE +
                   '本图右轴同比跨零、左轴柱值恒正，两轴零点对齐的代价可能超过阈值，'
                   '届时引擎改为两轴独立缩放并在绘图区左上角标出（红色斜体）。',
+                  window=W4, xl=XL4, breaks=BK4, brk_note=BN4,
                   pct_series=True, roll_col='organic_growth_roll'))
 
     # ── Exhibit 5：Client assets advisory vs brokerage（gsx.stack_share, win=13）──
@@ -867,10 +1033,10 @@ def main():
         'net_color': 'INK',
         'note': 'Identity: opening assets + NNA + market gains = closing assets. '
                 'Market gains 是恒等式的配平项（当月资产变动 − 当月 NNA），不是公司披露值。'
-                + (BN13 + '。' if BN13 else ''),
-    }, BK13)
+                + (BN13N + '。' if BN13N else ''),
+    }, BK13N)
 
-    # ── Exhibit 7：NNA by channel（gsx.multi_line, win=25）──
+    # ── Exhibit 7：NNA by channel（gsx.multi_line, 主窗口）──
     # 截轴（规矩 7）：两笔并表把 Advisory NNA 顶到 $211.1bn、Brokerage NNA 顶到 $81.7bn，
     # 而其余 23 个月两条线都在 -$3 ~ +$15bn 之间 —— 不截轴的话整张图就是「两条压在
     # 零线上的平线 + 两根尖峰」，日常经营的那点差异一个都读不出。截轴不删点：超界的点
@@ -903,17 +1069,18 @@ def main():
                    f'（{ex7_top}），不截轴则其余各月全部压成贴零的平线。'
                    '<b>截轴不删点</b> —— 超界的点画成空心红圈，真值竖排标在图上，'
                    '表格视图与 tooltip 里也是真值。' if CAP7 else '')
-                + (BN25 + '。' if BN25 else ''),
-    }, BK25)
+                + (BNNA + '。' if BNNA else ''),
+    }, BKNA)
 
-    # ── Exhibit 8：Total client assets since 2018（gsx.long_line）──
+    # ── Exhibit 8：Total client assets（gsx.long_line，全序列；标题年份现算）──
     # zero_base + end_label = 补回 gsx.long_line 的 set_ylim(0, max*1.16) 与 n_label。
     # 不给 zero_base 时引擎走 y0 = min − 极差×5%，那是一次没有任何标注的隐性截轴，
     # 在长历史图上等于把增长幅度凭空放大（本图实测轴底原为 0.8，数据最低 0.67）。
     add({
         'n': 8, 'kind': 'lines', 'x': 'long', 'full': True, 'fmt': 'usd1', 'xstep': 6,
         'zero_base': True, 'end_label': True, 'label_fmt': 'usd2',
-        'title': 'Total client assets since 2018', 'ylab': 'Total client assets ($tn)',
+        'title': f'Total client assets since {df.index[0].year}',
+        'ylab': 'Total client assets ($tn)',
         'series': [{'name': 'Total client assets', 'color': 'NAVY', 'values': L(df['total_tn'].values)}],
         'note': (BNALL + '。' if BNALL else '') +
                 '纵轴从 0 起（同原 deck 的 long_line），末点标出最新读数 —— '
@@ -922,26 +1089,26 @@ def main():
                 '网页版没有等价元素，改由末点数值标注与表格视图直接读数。',
     }, BKALL)
 
-    # ── Exhibit 9：Client cash balances（gsx.lvl_bar, win=25）──
+    # ── Exhibit 9：Client cash balances（gsx.lvl_bar, 主窗口）──
     # 客户现金同样跨并表：2025-07 $49.5bn → 2025-08 $52.7bn（+6.5% m/m，2018 年以来
     # 8 个 8 月里最大的一个），Commonwealth 把客户现金一起带了进来。原先这一族
     # （Ex9/10/13/17）一条断点线都没画，而页面 notes 却声称「凡是跨这一期读的图都画了」。
     # 存量：月末余额。本页实测里最有说服力的一条反例 —— 强行做滚动合计标准差反而变大。
     ex.append(bar(9, 'client_cash_usdbn', 'Client cash balances', 'Client cash balances',
-                  'Client cash ($bn)', 'usd1',
+                  'Client cash ($bn)', 'f1',
                   '月末客户现金余额（含银行存款 sweep）。' + QNOTE + '。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25, roll=False,
+                  breaks=BKC, brk_note=BNC, roll=False,
                   keep_why='客户现金是<b>月末存量</b>。'))
 
     # ── Exhibit 10：Client cash as % of client assets（gsx.lvl_bar, pct_series）──
     ex.append(bar(10, 'cash_pct_assets', 'Client cash as % of client assets',
                   'Client cash / client assets', 'Client cash (% of client assets)', 'pct1',
                   'Cash share is the key net-interest-revenue driver; a falling share is a '
-                  'headwind。原 deck 这张图取两位小数；网页图上取一位 —— 25 根柱的两位小数'
-                  '标签会横向叠成一片（引擎只能把它们抽稀掉一半），两位小数见本图的'
-                  '「表格」视图与末尾 Exhibit 20 核对表。分子分母跨并表同时跳，'
+                  f'headwind。原 deck 这张图取两位小数；网页图上取一位 —— {len(W25)} 根柱的'
+                  '两位小数标签会横向叠成一片（引擎只能把它们抽稀掉一半），两位小数见本图的'
+                  '「表格」视图与末尾核对表。分子分母跨并表同时跳，'
                   '断点两侧的占比不可直读。' + YOY_NOTE,
-                  pct_series=True, breaks=BK25, brk_note=BN25, roll=False,
+                  pct_series=True, breaks=BKC, brk_note=BNC, roll=False,
                   keep_why='客户现金 ÷ 客户资产（两个月末存量之比）'))
 
     # ── Exhibit 11：NNA by quarter（gsx.qtr_bar, win=14）──
@@ -956,7 +1123,7 @@ def main():
     qy = q_yoy.iloc[-WIN_Q:]
     partial = int(q_cnt.iloc[-1])
     qlabs = [str(p) for p in qw.index]
-    BKQ, BNQ = brk_pack(qw.index)
+    BKQ, BNQ = brk_pack(qw.index, cal=('nna',))
     # 右轴同比撤掉的依据不是「看着难看」，是逐季实算：并购污染率 = 该季 Acquired NNA ÷
     # 该季总 NNA；自身 ≥10% 或去年同期 ≥10% 的季度，同比就不是可比读数。
     acq_q = acq.groupby(pd.PeriodIndex(df.index).asfreq('Q')).sum().reindex(q_sum.index).fillna(0.0)
@@ -990,23 +1157,24 @@ def main():
                 '换成滚动口径也救不了：滚动窗口一样会把那两笔并表整整背 12 个月。'
                 '季度趋势请读 Exhibit 3（有机 NNA 的 12 个月滚动合计同比）、'
                 'Exhibit 4 与 Exhibit 18 的年化有机增速，'
-                '各季 NNA 合计与并表金额见本图的「表格」视图与 Exhibit 20。'
+                '各季 NNA 合计与并表金额见本图的「表格」视图与末尾核对表。'
                 + (BNQ + '。' if BNQ else ''),
     }, BKQ)
 
-    # ── Exhibit 12：Advisory assets（gsx.lvl_bar, win=25）──
+    # ── Exhibit 12：Advisory assets（gsx.lvl_bar, 主窗口）──
     ex.append(bar(12, 'advisory_assets_usdbn', 'Advisory assets', 'Advisory assets',
                   'Advisory assets ($bn)', 'f0c',
                   '月末 advisory 口径客户资产。' + YOY_NOTE,
                   breaks=BK25, brk_note=BN25, roll=False,
                   keep_why='advisory 资产是<b>月末存量</b>。'))
 
-    # ── Exhibit 13：Implied client-cash revenue（gsx.lvl_bar, win=25）──
+    # ── Exhibit 13：Implied client-cash revenue（gsx.lvl_bar, 主窗口）──
     ex.append(bar(13, 'implied_cash_rev_usdmn', 'Implied client-cash revenue',
                   'Implied client-cash revenue', 'Implied client-cash revenue ($mn / month)',
-                  'usd0', BR_NOTE + '。<b>推导值，非公司披露</b>，验证见 Exhibit 14。'
-                  '规模基数是月末客户现金，因此与 Exhibit 9 一样跨并表跳升。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25, extra=FEE_Q_NOTE, roll=False,
+                  'f0c', BR_NOTE + '。<b>推导值，非公司披露</b>，验证见 Exhibit 14。'
+                  '规模基数是月末客户现金，因此与 Exhibit 9 一样跨并表跳升、'
+                  '也一样承接 Apr-2019 的客户现金口径变更。' + YOY_NOTE,
+                  breaks=BKC, brk_note=BNC, extra=FEE_Q_NOTE, roll=False,
                   keep_why='它名义上是「每月多少收入」的流量，但 = <b>月末</b>客户现金 × '
                            '季度净收益率 ÷ 12，规模基数是存量、行为跟着存量走，'
                            '所以按<b>期末存量</b>处理。'))
@@ -1051,7 +1219,7 @@ def main():
         'src_extra': FEE_Q14,
     })
 
-    # ── Exhibit 15：Brokerage assets（gsx.lvl_bar, win=25）──
+    # ── Exhibit 15：Brokerage assets（gsx.lvl_bar, 主窗口）──
     ex.append(bar(15, 'brokerage_assets_usdbn', 'Brokerage assets', 'Brokerage assets',
                   'Brokerage assets ($bn)', 'f0c',
                   '月末 brokerage 口径客户资产。' + YOY_NOTE,
@@ -1062,28 +1230,38 @@ def main():
     ex.append(bar(16, 'pct_advisory', 'Advisory share of client assets',
                   'Advisory share', 'Advisory share (% of client assets)', 'pct1',
                   'Advisory assets carry a higher payout-adjusted margin than brokerage, so the '
-                  'mix shift is a structural profit driver。原 deck 取两位小数；'
-                  '网页图上取一位 —— 25 根柱的两位小数标签会横向叠成一片，'
-                  '两位小数见本图的「表格」视图与末尾 Exhibit 20 核对表。'
-                  '两笔并表都直接改变了业务口径的构成（Atria 偏 brokerage、'
-                  'Commonwealth 偏 advisory），断点两侧的占比不可直读。' + YOY_NOTE,
+                  f'mix shift is a structural profit driver。原 deck 取两位小数；'
+                  f'网页图上取一位 —— {len(W25)} 根柱的两位小数标签会横向叠成一片，'
+                  '两位小数见本图的「表格」视图与末尾核对表。'
+                  '每一笔整体并表都直接改变了业务口径的构成（NPH 与 Atria 偏 brokerage、'
+                  'Waddell & Reed 与 Commonwealth 偏 advisory），断点两侧的占比不可直读。'
+                  + YOY_NOTE,
                   pct_series=True, breaks=BK25, brk_note=BN25, roll=False,
                   keep_why='advisory 资产 ÷ 总客户资产（两个月末存量之比）'))
 
-    # ── Exhibit 17：Client cash since 2018（gsx.long_line）──
+    # ── Exhibit 17：Client cash（gsx.long_line，全序列；标题年份现算）──
+    # 「不给 zero_base 会放大多少倍」现算：引擎的默认下界是 min − 极差×5%，
+    # 放大倍数 = 零基线下的纵向跨度 ÷ 浮动基线下的纵向跨度。写死数字的话，
+    # 窗口一变（本轮从 2018 起变成 2016 起）那句话立刻是假的。
+    _c17 = df['client_cash_usdbn'].dropna()
+    _c17_lo, _c17_hi = float(_c17.min()), float(_c17.max())
+    _c17_floor = _c17_lo - (_c17_hi - _c17_lo) * 0.05
+    _c17_amp = (_c17_hi / (_c17_hi - _c17_floor)) if _c17_hi > _c17_floor else float('nan')
     add({
         # fmt 用 f1 而不是 deck 的 dec=0：末点标注与表格视图共用 fmt，f0c 会把 54.8 印成 55
         'n': 17, 'kind': 'lines', 'x': 'long', 'full': True, 'fmt': 'f1', 'xstep': 6,
         'zero_base': True, 'end_label': True,
-        'title': 'Client cash since 2018', 'ylab': 'Client cash ($bn)',
+        'title': f'Client cash since {df.index[0].year}', 'ylab': 'Client cash ($bn)',
         'series': [{'name': 'Client cash', 'color': 'NAVY',
                     'values': L(df['client_cash_usdbn'].values)}],
         'note': '2020 的台阶是疫情期间的现金堆积，2022-24 的回落是现金搬家（cash sorting）；'
                 '这条线是 Exhibit 13 隐含收入的规模基数。'
                 '纵轴从 0 起（同原 deck 的 long_line）、末点标出最新读数：'
-                '之前轴底浮在 30 附近，把 2020 台阶与 2022-24 回落的幅度视觉上放大了约 2.5 倍。'
-                + (BNALL + '。' if BNALL else ''),
-    }, BKALL)
+                f'不给 zero_base 时引擎走「最小值 − 极差 × 5%」，本序列会把轴底浮到 '
+                f'{_c17_floor:,.0f} 附近，纵向落差被放大约 {_c17_amp:,.1f} 倍 —— '
+                '那是一次没有任何标注的隐性截轴。'
+                + (BNALLC + '。' if BNALLC else ''),
+    }, BKALLC)
 
     # ── Exhibit 18：Organic growth path by year（gsx.year_lines, n_years=6）──
     og = df['organic_growth_ex'].dropna()
@@ -1095,10 +1273,11 @@ def main():
             if p.year == y:
                 vals[p.month - 1] = round(float(v), 6)
         yl_series.append({'name': str(y), 'values': vals})
-    # 截轴（规矩 7）：2021-04 的 Waddell & Reed 导入让当月年化增速冲到 92.4%，
-    # 而 6 条线的其余 71 个月全部落在 1.2%–29.0%。不截轴的话六年全部压成贴零的一小团，
-    # 年份之间的对比一个都做不了。yfloor=0 与截轴一起给：这 6 年里没有负值月份，
-    # 不给 yfloor 的话通用留白会把轴底压到 -3.3，凭空多出一段空区。
+    # 截轴（规矩 7）：本轮把 2021-04 Waddell & Reed 的 $67.1bn 按官方披露的
+    # "Total Organic NNA" 行扣进了 ACQ，那根 92.4% 的尖峰因此消失。截轴留着不删 ——
+    # 它是**现算**的（cap_pack 只在窗口里真有越界点时才截），下一次大并表出现时自动生效。
+    # yfloor 与截轴一起给：这几年没有负值月份，不给的话通用留白会把轴底压到零下、
+    # 凭空多出一段空区。
     ex18_cap = 32.0
     y18_all = [v for s_ in yl_series for v in s_['values'] if v is not None]
     y18_max = max(y18_all)
@@ -1116,18 +1295,23 @@ def main():
         **CAP18,
         'note': 'Red = current year。画的是各月的年化有机增速本身（非累计，同原 deck 的 '
                 'cumulative=False）。'
-                + (f'2021 年 4 月是 Waddell & Reed 导入（当月 NNA $73.8bn），'
-                   '公司当年用旧行名披露 Acquired NNA、未解析，故未从有机口径里扣除，'
-                   f'该点实际为 {y18_max:.1f}%。'
-                   f'纵轴截在 {ex18_cap:.0f}%（其余各月最高 {y18_next:.1f}%）—— '
+                + f'画 {yrs6[0]}–{yrs6[-1]} 共 {len(yrs6)} 年（同原 deck 的 n_years=6）——'
+                  '逐年对照图上再多几条线就分不清哪条是哪年了，更长的历史请看下一张热力矩阵。'
+                + (f'纵轴截在 {ex18_cap:.0f}%（其余各月最高 {y18_next:.1f}%，'
+                   f'越界的最高点 {y18_max:.1f}%）—— '
                    '<b>截轴不删点</b>：越界的点画成空心红圈、真值竖排标在旁边，'
-                   '表格视图与 tooltip 里也是真值；不截轴则六条线全部压成贴零的一团，'
+                   '表格视图与 tooltip 里也是真值；不截轴则各条线全部压成贴零的一团，'
                    '年份之间无法比较。' if CAP18.get('cap_note') else
-                   f'纵轴从 0 起，本图窗口内最高 {y18_max:.1f}%，无需截轴。'),
+                   f'纵轴从 0 起，本图窗口内最高 {y18_max:.1f}%，无需截轴 —— '
+                   'Apr-2021 Waddell & Reed 的 $67.1bn 已按公司披露的 Organic NNA 行扣除，'
+                   '此前那根 92% 的尖峰不再存在。'),
     })
 
-    # ── Exhibit 19：Organic growth heat matrix（gsx.heat_matrix, n_years=9）──
-    yrs9 = sorted({p.year for p in og.index})[-9:]
+    # ── Exhibit 19：Organic growth heat matrix（gsx.heat_matrix）──
+    # 原 deck 写死 n_years=9。改成「与其余时序图同一个左端」：热力矩阵是本页唯一
+    # 一张能把全部历史一次摆开的图，回补到 2016 之后还只画最近 9 年，等于把新补的
+    # 两年藏起来。行数由 WIN_FROM 决定，跟着窗口走，不再是一个与窗口无关的常数。
+    yrs9 = [y for y in sorted({p.year for p in og.index}) if y >= int(WIN_FROM[:4])]
     matrix = []
     for y in yrs9:
         row = [None] * 12
@@ -1148,8 +1332,8 @@ def main():
         'note': '格内是<b>单月</b>年化增速（当月有机 NNA x 12 ÷ 上月末资产），'
                 '不是 Exhibit 4 右轴的滚动口径 —— 逐格的季节形状正是这张图要看的东西。'
                 'Green = faster organic asset gathering; acquired assets removed using the '
-                'disclosed split (complete from 2022 onward)。色标取全部有限值的 5/95 分位，'
-                '2021-04 那类离群月不会把整表压平。'
+                f'disclosed split（{min(ACQ)} 起逐笔扣除，见页尾「有机口径」一条）。'
+                '色标取全部有限值的 5/95 分位，离群月不会把整表压平。'
                 f'{yrs9[0]} 行只有 {sum(v is not None for v in matrix[0])} 格有数、'
                 f'{yrs9[-1]} 行只有 {sum(v is not None for v in matrix[-1])} 格：'
                 f'序列自 {df.index[0]} 起，而年化增速要用到上月末资产，所以首月算不出；'
@@ -1375,21 +1559,67 @@ def main():
     # Exhibit 2、5、6、7、8、11、12、15」，而客户现金一族（9/10/13/17）同样跨并表却
     # 一条线都没画，Atria 更是整页一条都没有 —— 说明与渲染对不上。现在名单从 DRAWN 现算。
     drawn = sorted(set(DRAWN))
+    drawn_cal = sorted(set(DRAWN_CAL))
     _in_win = [BRK_TXT[lab] for p, lab in ACQ_BREAKS
                if p in df.index or p.asfreq('Q') in q_sum.index]
+    # ACQ_BREAKS 的登记判据（当月 Acquired NNA ≥ 当月末客户资产的 5%）**机器复核一遍**：
+    # 判据写在注释里而名单靠手维护，下一次并表进来时没人会想起来对一遍。
+    _share = {k: v / float(df['total_assets_usdbn'].loc[pd.Period(k, 'M')]) * 100
+              for k, v in ACQ.items() if pd.Period(k, 'M') in df.index}
+    _reg = ACQ_BREAK_MONTHS
+    _missing = sorted(k for k, sh in _share.items() if sh >= 5.0 and k not in _reg)
+    if _missing:
+        raise SystemExit(f'ACQ 里 {_missing} 当月并购导入已达客户资产的 5% 以上，'
+                         f'却不属于任何一条已登记的断点（判据见 ACQ_BREAKS 上方）')
+    _orphan = sorted(m for m in ACQ_BREAK_MONTHS if m not in ACQ)
+    if _orphan:
+        raise SystemExit(f'ACQ_BREAK_MONTHS 里 {_orphan} 在 ACQ 表里没有对应条目，两表已漂')
+    _small = {k: sh for k, sh in _share.items() if k not in _reg}
+    _small_max = max(_small.values()) if _small else 0.0
     if drawn:
-        BRK_NOTE = ('<b>⚠️ 并购断点。</b>' + '、'.join(_in_win) +
-                    ' 是整体并表导入，当月既不是有机流入、并表后的存量也与左侧不可直读。'
+        BRK_NOTE = ('<b>⚠️ 并购断点。</b>本页序列覆盖到的整体并表共'
+                    + B.cn(len(_in_win)) + '笔：' + '、'.join(_in_win) +
+                    '。它们都是整体并表导入，当月既不是有机流入、并表后的存量也与左侧不可直读。'
+                    '登记判据写在 <code>build/lpla.py</code> 的 ACQ_BREAKS 上方：'
+                    '<b>当月 Acquired NNA ≥ 当月末客户资产的 5%</b>，构建时会机器复核一遍'
+                    '（有漏登记的直接停更，不会静默少画一条线）。'
+                    f'公司披露的并购导入本页共登记 {len(ACQ)} 个月，其中 '
+                    f'{len(ACQ_BREAK_MONTHS)} 个月属于上面这几笔（NPH 分 5 个月导入）；'
+                    f'其余 {len(_small)} 个月最大的一笔也只占当月资产的 {_small_max:.1f}%，'
+                    '只从有机口径里扣除、不画线。'
                     '凡是画 as-reported 客户资产 / 客户现金 / 总 NNA 的图，都在该期柱的'
                     '左缘画了红色竖虚线并标出并购名：从这一期起与左侧不可比。'
-                    '本期真正画出断点线的是 Exhibit ' +
+                    '本期真正画出<b>并购</b>断点线的是 Exhibit ' +
                     '、'.join(str(i) for i in drawn) +
                     '（各图窗口不同，盖不到的断点自动不画，也不会在图注里声称画了）。'
-                    'Exhibit 3/4/18/19 走有机口径、已按公司披露的拆分把并购导入扣除，'
-                    '所以不画断点线。')
+                    'Exhibit 3/4 走有机口径、已按公司披露的拆分把并购导入扣除，'
+                    '所以不在这份名单里（它们画的是口径断点，见下一条）；'
+                    'Exhibit 18/19 是逐年 / 逐格的类别轴，引擎没有竖线可画，'
+                    '相应说明写在那两张图的图注里。')
     else:
         BRK_NOTE = ('<b>并购断点。</b>' + '、'.join(_in_win) +
-                    ' 两笔整体并表已全部滚出各图窗口，本期没有任何一张图需要画断点线。')
+                    ' 这几笔整体并表已全部滚出各图窗口，本期没有任何一张图需要画断点线。')
+
+    # ── 口径断点说明：与并购断点分开写，因为它们是两件事 ────────────────────
+    # 并表是「数变了」，改定义是「量的东西变了」。混在一句里，读者会以为 2019 年也并了表。
+    _cal_in = [(p, lab, tx) for fam in ('nna', 'cash') for p, lab, tx in CAL_BREAKS[fam]
+               if p in df.index]
+    if _cal_in:
+        CAL_NOTE = ('<b>⚠️ 口径断点（官方改定义，不是并表）。</b>窗口放宽到 '
+                    f'{WIN_FROM} 之后，两处历史口径变更第一次进到图里 —— 它们在'
+                    '<code>series/lpla.csv</code> 里早就存在，只是以前落在窗口外没人看见：'
+                    + '；'.join(f'<b>{tx}</b>' for _p, _lab, tx in _cal_in) +
+                    '。本期真正画出口径断点线的是 Exhibit '
+                    + '、'.join(str(i) for i in drawn_cal)
+                    + '（NNA 那条画在总 NNA / 有机 NNA 一族，现金那条画在客户现金一族，'
+                      '窗口盖不到的自动不画，也不会在图注里声称画了）。'
+                    '<b>本站不改写历史值去「拉平」这两处</b>：真值表存的是各期官方公告原值，'
+                    '拿后来的定义回算过去，等于把一个官方从未发布过的数字印成事实。'
+                    'Exhibit 1 汇总表的 y/y 与本页所有跨过这两条线的同比，'
+                    '分子分母分属两套定义，读的时候要记住这一点。')
+    else:
+        CAL_NOTE = ('<b>口径断点。</b>已知的两处历史口径变更（May-2019 的 NNA 定义、'
+                    'Apr-2019 的客户现金口径）都在本页序列覆盖范围之外，本期无需标注。')
 
     # ── 双轴零点对齐的代价：现算「右轴跨零而左轴柱恒正」的图，不写死编号 ──
     DUAL_NEG = []
@@ -1404,8 +1634,10 @@ def main():
             lv_ = [v for g in e_['groups'] for v in g['values'] if v is not None]
         else:
             continue
-        # 必须是**跨零**：整条右轴都在零下时引擎根本不做对齐（Exhibit 10 即如此），
-        # 左轴不会被拉下去，写进来就是一句假话。
+        # 必须是**跨零**：整条右轴都在零下（或全在零上）时引擎根本不做对齐，左轴不会被
+        # 拉下去，写进来就是一句假话。窗口从 25 期放宽到 2016-01 之后，Exhibit 9/10/13 的
+        # 右轴同比第一次跨到零两边（此前 Ex10 的右轴整条在零下、不入选），
+        # 所以这张名单是现算的、不能写死 —— 换个窗口成员就变。
         if rv_ and lv_ and min(rv_) < 0 < max(rv_) and min(lv_) >= 0:
             DUAL_NEG.append(e_['n'])
 
@@ -1423,6 +1655,14 @@ def main():
         CAP_NOTE = ('<b>本期没有截轴。</b>各图窗口内都没有把其余各期压平的离群值，'
                     '所以纵轴全部按数据自然范围画；一旦再出现并表这类离群期，'
                     '会自动改为截轴 + 标出真值（规矩 7），并在图右上角标明。')
+
+    # ── 通栏 / x 标签抽稀：必须在组 payload 之前跑 ────────────────────────────
+    # 窗口从 25 期变成 100+ 期之后，半栏卡片里每期只剩 2–3px，柱图会糊成一片色带。
+    # 判据不在本文件里另写一份：mrwin 是全站共用的裁决层（与 build/single.py 及
+    # cboe / hkex / cme 等共用同一份量边距算式），本文件**只调用、不修改**它。
+    # 它就地给 exhibit 补 full / xrot / xstep，并把「为什么通栏、为什么每 N 期标一个」
+    # 追加进各自的图注 —— 那段说明是算出来的，不是写死的。
+    mrwin.layout_all(ex)
 
     payload = {
         'ticker': 'lpla',
@@ -1461,20 +1701,29 @@ def main():
             f'两份源的更新节奏不同：月度序列到 {mlab(LATEST)}，净收益率到 {RQ_LAST}、'
             f'季度实际客户现金收入到 {act_q.index[-1]}。费率按季度披露而月度数字每月往前走，'
             '所以某个月所属季度尚未披露费率时，该月的隐含值沿用上一可得季度的费率；'
-            + (f'本期近 {WIN_L} 个月窗口里有 {len(CARRY_M)} 个月是这样算的。' if CARRY_M
-               else f'本期近 {WIN_L} 个月窗口里没有这样的月份。')
+            + (f'本期主窗口 {WSPAN} 里有 {len(CARRY_M)} 个月是这样算的。' if CARRY_M
+               else f'本期主窗口 {WSPAN} 里没有这样的月份。')
             + '逐图的期间说明见 Exhibit 13 / 14 图下的「费率期间」一行。',
             '<b>季末月口径。</b>' + QNOTE + '（3/6/9/12 月无独立月报，取自当季季报），'
             '因此这几个月的披露时点与其余月份不同，但口径一致。',
             BRK_NOTE,
+            CAL_NOTE,
             '<b>有机口径与 Acquired NNA。</b>Exhibit 3/4/18/19 用的是有机 NNA = 总 NNA − '
-            '公司同页披露的 Acquired NNA。该拆分自 2022 年起完整（Atria Oct-24 $88.3bn、'
-            'Commonwealth Aug-25 $275.0bn 等），更早年份原件用旧行名、未解析，故未调整 —— '
-            '2021 年 4 月 Waddell &amp; Reed 导入的 $73.8bn 仍留在有机序列里，'
-            f'Exhibit 18 该月因此高达 {y18_max:.1f}%，纵轴已截在 {ex18_cap:.0f}% 并把真值标出。'
-            '这张 Acquired NNA 常量表随原 deck 一并移植，'
-            '不是 <code>series/lpla.csv</code> 的一列，与 <code>build/wealth.py</code> 里的'
-            '同名表逐条一致（改一处必须改另一处）。',
+            f'公司同页披露的 Acquired NNA。本页登记 {len(ACQ)} 笔、覆盖 {min(ACQ)} … {max(ACQ)}，'
+            '<b>逐笔都有官方出处、一笔估算都没有</b>：'
+            '2019-08 起官方在同一份文件里并排印 Total NNA 与 Total Organic NNA 两行，两者之差'
+            '就是当月并购导入；2017-12…2018-04 的 NPH 分批导入那一代文件没有 organic 行，'
+            '用的是官方印的影子块「Net New Assets Prior to NPH」，差额合计 $72.3bn，'
+            '与同一份文件里「Assets Served Prior to NPH」和正表总资产之差 $72.2bn 互相印证；'
+            'Aug-2019 的 Allen &amp; Company $2.9bn 取自官方脚注原话。'
+            '<b>2018-05 起 NPH 影子块与正表之差转负</b>（−0.5 / −0.2），那已经是 NPH 存量顾问'
+            '自己的净流出、属有机口径，所以没有扣 —— 并表只扣「导入进行中」的那几个月。'
+            '这张常量表不是 <code>series/lpla.csv</code> 的一列（官方只在正文注里给），'
+            '所以硬编码在 <code>build/lpla.py</code>。'
+            '⚠️ <code>build/wealth.py</code> 里的同名副本仍是 2023-01 起的旧版：'
+            '那一页 LPL 的窗口只到近年、今天读数不受影响，但<b>它哪天放宽窗口，'
+            '必须把 2017-12…2021-09 这几条一并带过去</b>，否则同一条 LPL 有机 NNA 会在两页'
+            '给出不同的值。',
             CAP_NOTE,
             '<b>GS 规矩 1：流量不算百分比。</b>这条规矩针对的是<b>环比</b>与<b>单月同比</b>：'
             'NNA 是流量，拿上个月或去年那一个月当分母都没有经济含义。'
@@ -1534,16 +1783,35 @@ def main():
             '配平项（当月资产变动 − 当月 NNA），同样不是披露值。Exhibit 14 把桥算出的季度值'
             f'与公司披露的实际值并排，窗口内平均绝对误差 {mae:.1f}% —— 误差主要来自'
             '「月末余额 vs 季度平均余额」这一个近似。' + FEE_Q_NOTE,
-            '<b>窗口。</b>近期柱图与双序列线图沿用原 deck 的 25 个月窗口，堆叠图与滚存桥用 13 个月，'
-            '季度图用 14 个季度，长历史图用全序列。窗口一律从数据最新月倒推，不依赖构建当天的日期。'
+            f'<b>窗口。</b>时序柱图与双序列线图的左端是<b>日历常量 {WIN_FROM}</b>'
+            f'（本期 {WSPAN}），右端跟着数据最新月走 —— 原 deck 写死「近 25 个月」，'
+            f'而 <code>series/lpla.csv</code> 已回补到 {df.index[0]}，'
+            '窗口停在近两年等于把回补的历史藏起来。序列若比这个起点晚，就用序列自己的起点'
+            '（<b>只往右让、不往左借</b>），与 <code>build/single.py</code> 的 '
+            '<code>WIN_FROM</code>、cboe / cme / hkex / msci 各页同一个口径。'
+            f'Exhibit 4 的左端比其余各图晚一格（{mlab(W4.index[0])}）：年化增速要用上月末资产，'
+            '序列第一个月算不出来，那一格在数据里不存在，不补零也不前向填充。'
+            f'堆叠图与滚存桥仍用 {WIN_S} 个月、季度图用 {WIN_Q} 个季度 —— '
+            '它们回答的是「最近一年发生了什么」，拉到十年只会把有意义的柱压成一堵墙。'
+            '窗口一律从数据最新月倒推，不依赖构建当天的日期。'
             '断点线也随窗口现算：滚出窗口就不画，同时这段说明里的编号清单也跟着少一张，'
-            '不会留下「图注说画了、图上却没有」的死文案。',
+            '不会留下「图注说画了、图上却没有」的死文案。'
+            f'{len(W25)} 期塞不进半栏卡片，通栏与 x 标签抽稀由共享判据 '
+            '<code>build/mrwin.py</code> 按引擎自己的量边距算式现算（抽的是标签不是数据点），'
+            '逐图结论追加在各自图注末尾。',
             '<b>与原 PDF 的已知差异。</b>'
-            '(1) 比率图（Exhibit 10/16）原 deck 取两位小数，网页图上取一位 —— 25 根柱的'
+            f'(1) 比率图（Exhibit 10/16）原 deck 取两位小数，网页图上取一位 —— {len(W25)} 根柱的'
             '两位小数标签会横向叠成一片；两位小数见这两张图的「表格」视图、汇总表与末尾核对表。'
-            '(2) Exhibit 6/12/14/15 的数值标签去掉了 <code>$</code> 前缀（改用带千分位的 '
-            '<code>f0c</code>）：引擎的 <code>usd0</code> 没有千分位，会把 advisory 印成 '
-            '$1537；单位写在纵轴标题里。Exhibit 2/3/9/13 数值较短，仍保留 $。'
+            '(2) 柱顶数值标签去掉了 <code>$</code> 前缀（改用不带货币符号的 '
+            '<code>f2</code> / <code>f1</code> / <code>f0c</code>），单位一律写在纵轴标题里。'
+            '原因有两层：引擎的 <code>usd0</code> 没有千分位，会把 advisory 印成 $1537；'
+            f'而窗口拉到 {len(W25)} 期之后，一格只有 '
+            f'{mrwin.band_px(ex[0], full=True):.1f}px，'
+            '<code>build/mrwin.py</code> 的 <code>label_clash()</code> 按引擎自己的量边距'
+            '算式实测：带 $ 的 <code>$54.8</code> 宽 20.0px、预算只有 17.5px，'
+            '末柱标签会压进右轴刻度栏（<code>$1.94</code> 与 <code>$150</code> 同样超）。'
+            '去掉 $ 之后三张都回到预算内。Exhibit 3 的 <code>$8.8</code> 本来就在预算内，'
+            '保留 $。'
             '(3) 原 deck 长历史图末端的红色虚线圈没有网页等价元素，改由末点数值标注'
             '（Exhibit 8/17 已补上）与表格视图读数。'
             '(4) Exhibit 11 撤掉了原 deck 的右轴季度同比、Exhibit 3 保留均线不画同比'
@@ -1559,9 +1827,10 @@ def main():
             '(1) 红色断点竖虚线画在所有系列之上（这是刻意的，否则会被柱子盖住），'
             '于是紧贴断点左侧那根柱的数值标签会被削掉一个角，例如 Exhibit 2 的「$1.94」、'
             'Exhibit 12 的「1,077」—— 真值可在该图的「表格」视图里读到。'
-            '(2) 逐柱数值标签在 25 根柱下会互相压住，引擎按实测 bbox 抽稀（通常隔一根标一次，'
-            '最新一期永远保留），被抽掉的数值同样在「表格」视图里一个不少。',
-            '<b>核对表。</b>末尾 Exhibit 20 是官方原始单位、未做任何换算的近 13 个月明细，'
+            f'(2) 逐柱数值标签在 {len(W25)} 根柱下必然互相压住，引擎按实测 bbox 抽稀'
+            '（最新一期永远保留），被抽掉的数值同样在「表格」视图里一个不少 —— '
+            '窗口拉长之后抽稀比例大幅上升，逐月读数请一律走「表格」按钮而不是柱顶标签。',
+            f'<b>核对表。</b>末尾 Exhibit {table["n"]} 是官方原始单位、未做任何换算的近 13 个月明细，'
             '用来与 LPL 新闻稿逐条对账。每张图右上角的「表格」按钮同样给出该图的源数值。',
         ],
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
@@ -1578,8 +1847,8 @@ def main():
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(path, payload, 'lpla')
 
-    print(f'数据截至 {LATEST} | 25 个月窗口 {W25.index[0]} → {W25.index[-1]} | '
-          f'长历史 {df.index[0]} → {df.index[-1]}（{len(df)} 个月）')
+    print(f'数据截至 {LATEST} | 主窗口 {W25.index[0]} → {W25.index[-1]}（{len(W25)} 个月，'
+          f'自 WIN_FROM={WIN_FROM}）| 长历史 {df.index[0]} → {df.index[-1]}（{len(df)} 个月）')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张图）+ '
           f'Exhibit {table["n"]} 核对表')
     print(f'桥验证：{len(qs)} 个完整季度，平均绝对误差 {mae:.2f}%')

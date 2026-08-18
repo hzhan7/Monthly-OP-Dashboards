@@ -27,7 +27,19 @@
   ⚠ 它同时报出 Cboe / Nasdaq / NYSE / BOX / MEMX 各家的量 —— **那部分对别家而言是第三方，
   只入库 MIAX 自己的四家 + 全市场分母，绝不许倒灌进 series/cboe.csv**。
 
-两个源都不需要浏览器登录态、不需要 curl_cffi / nscurl，标准库 urllib 加 UA 即可 —— 满足无人值守。
+【源 C】miaxglobal.com「MIAX Futures 历史成交量」PDF —— 农产品月度总张数，1987 起
+  直链   : https://www.miaxglobal.com/miax_futures_historical_volume.pdf
+  14 页、约 350 KB、27 张结构相同的宽表（YEAR × JAN..DEC + ANNUAL VOLUME）。
+  www 站，**无 UA 校验**（ir 站那套 403 规避在这里用不上），标准库 urllib 直取 200。
+  每月随月报一起重发（实测 Last-Modified Thu, 06 Aug 2026 19:26:12 GMT）。
+  第 13 页的 `TOTAL MIAX FUTURES VOLUME` 是**逐月**总张数（= 期货腿 + 期货期权腿），
+  2026 一路回到 1987；HRSW 单品种那张表回到 1965（页首另有 1883 起的年度序列）。
+  本模块从它派生**一列**：`vol_futures_ag_contracts` = TOTAL − Σ(金融类产品表)。
+  ⚠ 它给的是**当月合计张数**，不是 ADV —— 与源 A 的 adv_futures_ag_contracts
+  是同一批成交的两种表述，除以官方交易日即可互换（实测 19/19 个月复现，见口径坑 16），
+  但**两列分开存**：ADV 那一列的权威定义是 IR 月报，混源会让重述体检失去基线。
+
+三个源都不需要浏览器登录态、不需要 curl_cffi / nscurl，标准库 urllib 加 UA 即可 —— 满足无人值守。
 
 ━━ 每一列的确切口径（下游换算定基名义额全靠这一节，写错比抓错更难发现）━━
 月份键 `month` = 'YYYY-MM'，指**数据所属自然月**，不是发布月。
@@ -101,6 +113,19 @@
   industry_adnv_equities_api_usdbn     全美股票市场日均名义额，十亿美元/日，含 TRF，2020-12 起。
       取交易所行的 TOTAL_MARKET_AVERAGE_NOTIONAL_VALUE。
       这一列兼任「本月股票 API 已入库」的哨兵。
+
+▍历史档案段（源 C，2015-04 起；这份 PDF 本身能到 1987，入库起点由 FUT_HIST_START 定）
+  vol_futures_ag_contracts             MIAX Futures **农产品当月合计张数**（不是日均、
+      不是千张）。= 第 13 页 `TOTAL MIAX FUTURES VOLUME` 该月值 − 同月全部金融类产品表
+      （SPIKES / CORPORATE TAX / BRIXX ×4 / CAPITAL GAINS / Tini Bloomberg 100 /
+      Tini Bloomberg 500 / Bloomberg 500）之和。加减的每一项都是官方公布的原值，
+      本模块不做除法、不补 0、不用后期重述值盖历史。
+      ⚠ **这是本表唯一一列跨越 MGEX 收购断点的序列**：MIH 2020-12-04 才全资收购
+      Minneapolis Grain Exchange（一手出处 miaxglobal.com/company/about/history-of-growth）。
+      2020-11 及更早那段量**不是 MIH 的经营数据**，是被收购方的历史。
+      画图必须标断点，否则会被读成「MIH 十年农产品经营史」。
+      与 adv_futures_ag_contracts 的关系：vol ÷ trading_days_futures = adv，
+      实测两源重叠的 19 个月逐月复现（最大差 0.50 张/日、0.0084%，见口径坑 16）。
 
 **本模块不做任何口径换算**：官方发张数就存张数、发金额就存金额并在列名注明币种。
 唯一做的是**量纲对齐**（÷1000 / ÷1e6 / ÷1e9），因为列名后缀已经把单位写死了。
@@ -216,8 +241,39 @@ HTTP Last-Modified **不是**权威字段：实测 5 份里 3 份与 PDF 自述�
     只有两份都空才报错。放行的前提是表头与全部 14 个行标签都还在（缺任何一个仍然抛异常）。
     另外「至少跑成一条闭合检验」这条要求只在有 ≥2 个有数月时才生效 ——
     年初只填一个月、且版式恰好没有 Year to Date 列时，季度/年度列一个都凑不齐。
+16. **源 C 的行不一定从 JAN 开始，按 token 顺序对齐会错得很像真的。**（口径坑 1 的加强版）
+    Tini Bloomberg 100 那张表 2026 年**只印了 MAY/JUN/JUL 三个数**
+    （117,942 / 87,234 / 43,504 + 年度合计 248,680），中间没有占位的 0。
+    按顺序对齐 → 117,942 被记成一月，而 117,942 ÷ 20 = **5,897**，
+    恰好等于官方公布的**五月**金融期货 ADV —— 数字完全合理、任何单行校验都看不出来。
+    SPIKES 2019 那行同理（只有 NOV/DEC）。所以源 C 也走 x 中心分桶，并且**逐行**用
+    「12 个月求和 == 年度 VOLUME 列」自检（1996 年起 497 行全过；1995 及更早有 33 行
+    差 1~3 张，是官方自己的历史遗留，那些年份不入库）。
+    另：年度列的数字**右对齐**而表头 'VOLUME' 居中且更宽，实测偏右 0.71 个列宽
+    （SPIKES 2024 那个孤零零的 '0' 差 28.2pt / 39.9pt），所以年度桶的容差单独放宽。
+17. **源 C 的农产品是「减出来」的，减法名单漏一个新产品就静默偏高。**
+    本模块因此设三道网：① 表名白名单 —— 27 张表全部要在 _FUT_AG_TABLES /
+    _FUT_FIN_TABLES / 合计表 三个集合里，冒出没见过的表名当场抛异常；
+    ② 产品闭合 —— TOTAL − Σ(全部产品表) 必须落在 [0, 0.5%×TOTAL]，
+    真出现「进了 TOTAL 却没单独挂表」的新产品时这个差额会跳到百分之几
+    （实测 2015-04…2026-07 差额恒 ≥0、最大 106 张 = 0.042%，2017-07 起逐月恰好为 0，
+    那点差额是 MGEX 时代某个没挂表的老品种）；
+    ③ 跨源接缝 —— TOTAL−金融 ÷ 官方交易日 必须复现 IR 月报的 adv_futures_ag_contracts。
+    ③ 是唯一一条跨源的，也是这一列敢与 ADV 并排画的全部依据。
 
 ━━ 交叉核对（建库时实测，出处均为一手披露）━━
+· 源 C vs 源 A（两源重叠的 19 个月 2025-01…2026-07，逐月跑）：
+  历史 PDF 的农产品张数 ÷ IR 月报的 trading_days_futures = IR 月报的农产品 ADV，
+  **19/19 全部命中**，最大绝对差 0.50 张/日、最大相对差 0.0084%（纯粹是官方把 ADV
+  四舍五入到整数的痕迹）。含 2026-05 起 TOTAL 里混进 Bloomberg 股指期货的三个月：
+  2026-05 320,170 − 117,942 = 202,228，÷20 = 10,111.4 vs 官方 10,111；
+  2026-06 460,814 − 120,541 = 340,273，÷21 = 16,203.5 vs 16,203；
+  2026-07 358,964 −  92,266 = 266,698，÷22 = 12,122.6 vs 12,123。
+· 源 C vs S-1 / 10-K 的年度农产品张数（口径坑 17 那条减法的年度体检）：
+  FY2023 2,659,095 = S-1 逐字相同；FY2024 3,188,735 = S-1 逐字相同；
+  FY2025 3,260,353 = 10-K 逐字相同（10-K 另给 ÷251 = 12,989.5，与 CSV 加权回算一致）。
+  **唯一对不上的是 FY2022**：源 C 算出 2,508,551，S-1 写 2,508,494，差 **57 张**
+  （0.002%）。两份都是官方文件，谁对不知道 —— 所以这里**不设硬断言**，只记在这。
 · 2026-08-05 新闻稿 https://ir.miaxglobal.com/2026-08-05-Miami-International-Holdings-
   Reports-July-2026-Trading-Results（PRNewswire 原表）：Jul-26 / Jul-25 / Jun-26 三列
   共 **32 格与 series/miax.csv 逐字全等**（含 Trading Days 两段、行业与 MIH 的期权与股票
@@ -265,6 +321,85 @@ _API_DELAY = 0.15
 API_OPTIONS_START = '2015-04'      # 2015-03 → []
 API_EQUITIES_START = '2020-12'     # 2020-11 → []
 FIN_FUTURES_START = '2026-05'      # PDF 脚注 4：金融期货 2026-05-17 上线（trade date 05-18）
+
+# ── 源 C：MIAX Futures 历史成交量 PDF ────────────────────────────────────
+# www 站，无 UA 校验（ir 站那套 403 规避不适用于它）。每月随月报一起重发，
+# Last-Modified 实测 2026-08-06，14 页，350 KB 左右。
+FUT_HIST_URL = 'https://www.miaxglobal.com/miax_futures_historical_volume.pdf'
+
+#: 这份 PDF 技术上能给到 1987-01（HRSW 单表甚至到 1883），但本模块**只入库到
+#: `API_OPTIONS_START`（2015-04）**，与本表其余各列的起点对齐。
+#: 理由不是数据不可信，是**页面的横轴是全表共用的**：多出 28 年只有这一列有值的行，
+#: 会让所有其它列的图前面拖 300 多个前导 null（平滑图型把 null 当 0 画塌线，
+#: build/single.py 的 WIN_FROM 也只到 2016-01），代价远大于收益。
+#: 真要更早的历史，改这一个常数即可，解析侧一行都不用动。
+FUT_HIST_START = API_OPTIONS_START
+
+#: 农产品月度总张数列。**不是 ADV**，是当月合计张数（官方原值，不除交易日）。
+FUT_HIST_COL = 'vol_futures_ag_contracts'
+
+# PDF 里 27 张表的名字。分成四类，**任何一个不在名单里的表名 → 抛异常**：
+# 这是「官方上了新产品而我们不知道」唯一能自动发现的地方（见口径坑 17）。
+_FUT_TOTAL = 'TOTAL MIAX FUTURES VOLUME'      # = 期货 + 期货期权，本列的被减数
+_FUT_TOTALS_OTHER = frozenset({
+    'TOTAL FUTURES VOLUME',        # 只有期货腿
+    'TOTAL OPTIONS VOLUME',        # 只有期货期权腿
+    'TOTAL ELECTRONIC VOLUME',     # 电子成交（TOTAL 的子集，不参与任何求和）
+})
+# 金融类产品：从 TOTAL 里扣掉它们才是「农产品」。
+# 前三张是 2026 年上线的 Bloomberg 股指期货（PDF 里首字母大小写与其余表不同，照抄）；
+# 中间是已退市的 SPIKES 波动率期货（2019-11…2023-12）；
+# 其余五张是 2021-2022 年的 BRIXX 房地产与两只税率期货，量几乎全是 0。
+_FUT_FIN_TABLES = frozenset({
+    'Tini Bloomberg 100 Index Futures',
+    'Tini Bloomberg 500 Index Futures',
+    'Bloomberg 500 Index Futures',
+    'SPIKES FUTURES',
+    'CORPORATE TAX FUTURES',
+    'BRIXX RETAIL FUTURES',
+    'BRIXX OFFICE FUTURES',
+    'BRIXX HOSPITALITY FUTURES',
+    'BRIXX RESIDENTIAL FUTURES',
+    'CAPITAL GAINS TAX FUTURES',
+})
+# 农产品：小麦/玉米/大豆的期货与期货期权。它们不参与减法（本列走 TOTAL − 金融），
+# 只用来做「产品表求和 ≈ TOTAL」这条闭合检验。
+_FUT_AG_TABLES = frozenset({
+    'MINNEAPOLIS HARD RED SPRING WHEAT FUTURES',
+    'NATIONAL CORN INDEX FUTURES',
+    'NATIONAL SOYBEAN INDEX FUTURES',
+    'HARD RED WINTER WHEAT INDEX FUTURES',
+    'HARD RED SPRING WHEAT INDEX FUTURES',
+    'SOFT RED WINTER WHEAT INDEX FUTURES',
+    'HARD RED SPRING WHEAT CALENDAR SPREAD OPTIONS',
+    'MINNEAPOLIS HARD RED SPRING WHEAT OPTIONS',
+    'NATIONAL CORN INDEX OPTIONS',
+    'NATIONAL SOYBEAN INDEX OPTIONS',
+    'HARD RED WINTER WHEAT INDEX OPTIONS',
+    'HARD RED SPRING WHEAT INDEX OPTIONS',
+    'SOFT RED WINTER WHEAT INDEX OPTIONS',
+})
+
+#: 「产品表求和」允许比 TOTAL 少多少（比例）。实测 2015-04…2026-07：
+#: 差额恒 ≥ 0、最大 106 张（2017-01，占当月 0.042%），2017-07 起逐月**恰好为 0**。
+#: 那点差额是 MGEX 时代某个没有单独挂表的老品种，不影响农产品口径。
+#: 取 0.5% 的意义是：真出现一个没挂表的新产品时（它会整块落进 TOTAL 而扣不掉），
+#: 差额会跳到百分之几，当场炸。
+_FUT_RESIDUAL_TOL = 0.005
+
+#: 接缝自检的容差（张/日）。TOTAL − 金融 ÷ 官方交易日 应当复现 IR 月报的
+#: adv_futures_ag_contracts。两边都是四舍五入到整数发布的，理论上界 0.5；
+#: 实测两源重叠的 19 个月最大 0.50、相对偏差最大 0.0084%。取 1.0 留一倍余量。
+_FUT_SEAM_TOL = 1.0
+
+#: 逐行闭合（JAN..DEC 求和 == ANNUAL VOLUME 列）从哪一年起当硬断言。
+#: 实测 1996 年起 497 行**全部**闭合；1995 及更早有 33 行差 1~3 张 ——
+#: 那是官方自己的历史遗留（HRSW 表与 TOTAL 表同步差），不是解析错，
+#: 而且那些年份根本不入库，所以不去动它。
+_FUT_CLOSE_FROM_YEAR = 1996
+
+_FUT_MONTHS = ('JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+               'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC')
 
 # ── PDF 表结构：(csv 列名, section, sub, 归一化后的行标签) ────────────────────
 # section / sub 用表里的小标题定位，见「口径坑 2」。同名标签在三段里各出现一次。
@@ -323,9 +458,11 @@ API_EQ_COLS = ['adv_equities_api_mnshares', 'adnv_equities_api_usdbn',
 _SENTINEL_OPT = 'industry_adv_options_api_kcontracts'
 _SENTINEL_EQ = 'industry_adnv_equities_api_usdbn'
 
-COLUMNS = ['month'] + PDF_COLS + API_OPT_COLS + API_EQ_COLS
+COLUMNS = ['month'] + PDF_COLS + API_OPT_COLS + API_EQ_COLS + [FUT_HIST_COL]
 
 _MONTH_HDR = re.compile(r"^[A-Z][a-z]{2}-\d{2}$")
+_FUT_HDR_YEAR = re.compile(r'^\d{4}$')
+_FUT_NUM = re.compile(r'^-?[\d,]+$')
 _QTR_HDR = re.compile(r"^Q([1-4])'(\d{2})$")
 _FY_HDR = re.compile(r"^FY'(\d{2})$")
 _FOOTNOTE_ROW = re.compile(r'^\d\)$')
@@ -828,6 +965,240 @@ def _validate_pdf(data, fname):
     return newest
 
 
+# ── 源 C：MIAX Futures 历史成交量 PDF ────────────────────────────────────
+def _fut_tables(path):
+    """把 miax_futures_historical_volume.pdf 解析成 {表名: {'YYYY-MM': int}}。
+
+    版式：27 张结构相同的宽表，散在 14 页上，一张表可以跨页续排（续排页**不重复表头**）。
+    每张表长这样 ——
+
+        MINNEAPOLIS HARD RED SPRING WHEAT FUTURES     ← 表名（HIGH 行之后的第一段文字）
+        ANNUAL
+        YEAR JAN FEB … DEC VOLUME                      ← 表头
+        2026 145,497 … 356,949 2,046,024               ← 一年一行
+        …
+        HIGH …                                         ← 表尾
+
+    ⚠ 为什么必须按 x 坐标分桶，不能按 token 顺序（与口径坑 1 同一个坑，但这里更凶）：
+      **部分年度的行不是从 JAN 开始的**。Tini Bloomberg 100 那张表 2026 年只有
+      MAY/JUN/JUL 三个数（117,942 / 87,234 / 43,504 + 年度合计），按顺序对齐会把
+      117,942 记成一月，而 117,942 ÷ 20 = 5,897 恰好是官方公布的**五月** ADV ——
+      错三格，数字却完全合理，任何单行校验都看不出来。
+      SPIKES 2019 那行同理（只有 NOV/DEC 两个数）。
+    """
+    import pdfplumber                              # 延迟 import：报错更好定位
+
+    fname = os.path.basename(path)
+    try:
+        pdf = pdfplumber.open(path)
+    except Exception as e:                          # noqa: BLE001
+        raise MiaxFetchError('%s 打不开，不是有效 PDF：%r' % (fname, e)) from e
+
+    tables, cur, title = {}, None, []
+    try:
+        for page in pdf.pages:
+            for row in _rows(page):
+                txts = [w['text'] for w in row]
+                if txts[0] == 'YEAR' and 'VOLUME' in txts and 'JAN' in txts:
+                    centers = {w['text']: (w['x0'] + w['x1']) / 2.0
+                               for w in row if w['text'] in _FUT_MONTHS}
+                    if len(centers) != 12:
+                        raise MiaxFetchError('%s 有一张表的表头不足 12 个月份列：%s'
+                                             % (fname, txts))
+                    centers['ANN'] = [(w['x0'] + w['x1']) / 2.0
+                                      for w in row if w['text'] == 'VOLUME'][0]
+                    # 表名 = 表头之上最后一段不是 'ANNUAL' 的文字。'ANNUAL' 是每张表
+                    # 都有的副标题，拿它当表名会让 27 张表全叫一个名字。
+                    name = next((t for t in reversed(title)
+                                 if t.strip().upper() != 'ANNUAL'), None)
+                    if not name:
+                        raise MiaxFetchError('%s 有一张表读不出表名（表头上方没有文字）'
+                                             % fname)
+                    if name in tables:
+                        raise MiaxFetchError('%s 里出现两张同名表 %r' % (fname, name))
+                    cur = {'name': name, 'centers': centers, 'rows': {}}
+                    tables[name] = cur
+                    title = []
+                    continue
+                if txts[0] == 'HIGH':               # 表尾：下一段文字就是下一张表的名字
+                    cur = None
+                    title = []
+                    continue
+                if (cur is not None and _FUT_HDR_YEAR.match(txts[0]) and len(txts) > 1
+                        and all(_FUT_NUM.match(t) for t in txts[1:])):
+                    _fut_row(cur, row, int(txts[0]), fname)
+                    continue
+                title.append(_norm(' '.join(txts)))
+                title = title[-3:]
+    finally:
+        pdf.close()
+
+    if not tables:
+        raise MiaxFetchError('%s 里一张 YEAR/JAN…DEC/VOLUME 表都没找到' % fname)
+    unknown = sorted(set(tables) - _FUT_AG_TABLES - _FUT_FIN_TABLES
+                     - _FUT_TOTALS_OTHER - {_FUT_TOTAL})
+    if unknown:
+        raise MiaxFetchError(
+            '%s 里出现没见过的产品表 %s —— MIAX Futures 上了新品而本模块不知道它算'
+            '农产品还是金融品。在 _FUT_AG_TABLES / _FUT_FIN_TABLES 里归类之后再跑；'
+            '静默跳过会让 %s 从此偏高。' % (fname, unknown, FUT_HIST_COL))
+    missing = sorted(({_FUT_TOTAL} | _FUT_TOTALS_OTHER) - set(tables))
+    if missing:
+        raise MiaxFetchError('%s 里少了这几张合计表：%s —— 版式变了' % (fname, missing))
+    return {n: t['rows'] for n, t in tables.items()}
+
+
+def _fut_row(tbl, row, year, fname):
+    """一行 'YYYY v1 … vN 合计' → 按 x 中心分桶写进 tbl['rows']。
+
+    桶内多个 word 按 x 拼串再 float（'53,135' 被字距拆成 '5' + '3,135' 的那个坑）。
+    分桶后立刻跑逐行闭合：12 个月求和必须等于 VOLUME 列。整列平移、桶归错，
+    都会在这一步暴露 —— 这是本表唯一一条不依赖外部基准的自检。
+    """
+    centers, spacing = tbl['centers'], None
+    mcx = sorted(centers[m] for m in _FUT_MONTHS)
+    spacing = min(mcx[i + 1] - mcx[i] for i in range(len(mcx) - 1))
+    buckets = {}
+    for w in row[1:]:
+        cx = (w['x0'] + w['x1']) / 2.0
+        k = min(centers, key=lambda k: abs(centers[k] - cx))
+        # 月份列：数字右对齐、表头居中，实测偏移 ≤0.36 个列宽，容差沿用 _BUCKET_TOL。
+        # 年度列：'VOLUME' 这个词比它下面的数字宽得多且靠左，数字实测偏右 0.71 个列宽
+        #        （SPIKES 2024 那个孤零零的 '0' 就差 28.2pt / 39.9pt），所以单独放宽到 1.0。
+        #        放宽不会把 DEC 的值吸走 —— 归桶只看**最近**，DEC 与 ANN 的中点在
+        #        两者正中间，而真正的越界会被逐行闭合（12 个月求和 == 年度合计）当场抓住。
+        tol = (1.0 if k == 'ANN' else _BUCKET_TOL) * spacing
+        if abs(centers[k] - cx) > tol:
+            raise MiaxFetchError(
+                '%s 表 %r 的 %d 年行里，word %r 距最近列 %s 有 %.1fpt（列间距 %.1f，'
+                '容差 %.1f）—— 分桶可能已错位，拒绝写入'
+                % (fname, tbl['name'], year, w['text'], k,
+                   abs(centers[k] - cx), spacing, tol))
+        buckets.setdefault(k, []).append(w)
+
+    vals = {}
+    for k, ws in buckets.items():
+        txt = ''.join(w['text'] for w in sorted(ws, key=lambda x: x['x0']))
+        v = _num(txt, '%s 表 %r %d 年 %s 列' % (fname, tbl['name'], year, k))
+        if v is None or v != int(v) or v < 0:
+            raise MiaxFetchError('%s 表 %r %d 年 %s 列不是非负整数张数：%r'
+                                 % (fname, tbl['name'], year, k, txt))
+        vals[k] = int(v)
+
+    if 'ANN' not in vals:
+        raise MiaxFetchError('%s 表 %r %d 年缺 VOLUME（年度合计）列'
+                             % (fname, tbl['name'], year))
+    got = sum(v for k, v in vals.items() if k != 'ANN')
+    if year >= _FUT_CLOSE_FROM_YEAR and got != vals['ANN']:
+        raise MiaxFetchError(
+            '%s 表 %r %d 年逐行闭合失败：12 个月求和 %d ≠ 年度合计 %d —— '
+            'x 分桶错位或官方版式变了' % (fname, tbl['name'], year, got, vals['ANN']))
+    for k, v in vals.items():
+        if k != 'ANN':
+            tbl['rows']['%04d-%02d' % (year, _FUT_MONTHS.index(k) + 1)] = v
+
+
+def parse_futures_history(path, start=None):
+    """返回 {'YYYY-MM': int}：**农产品**当月合计张数，start（含）起。
+
+    定义式（每一项都是官方公布的原值，本函数只做加减，不做任何除法/换算）：
+
+        农产品张数 = TOTAL MIAX FUTURES VOLUME − Σ(金融类产品表)
+
+    三道自检，任何一道不过一律抛异常：
+      ① 逐行闭合  —— 在 _fut_row 里，12 个月求和 == 年度合计（1996 年起 497 行全过）；
+      ② 两腿相加  —— TOTAL FUTURES + TOTAL OPTIONS == TOTAL MIAX FUTURES（逐月，全等）；
+      ③ 产品闭合  —— TOTAL − Σ(全部产品表) 必须落在 [0, 0.5%×TOTAL]（见 _FUT_RESIDUAL_TOL）。
+    第四道（跨源接缝）在 _futures_seam_check 里，需要 IR 月报的交易日才能跑。
+    """
+    start = start or FUT_HIST_START
+    tabs = _fut_tables(path)
+    fname = os.path.basename(path)
+    total = tabs[_FUT_TOTAL]
+
+    # ② 两腿相加。TOTAL ELECTRONIC 是 TOTAL 的子集，不参与。
+    legs = {}
+    for n in ('TOTAL FUTURES VOLUME', 'TOTAL OPTIONS VOLUME'):
+        for m, v in tabs[n].items():
+            legs[m] = legs.get(m, 0) + v
+    bad = sorted(m for m in total if legs.get(m, 0) != total[m])
+    if bad:
+        raise MiaxFetchError('%s 的「期货 + 期货期权 = 合计」在这些月份不成立：%s'
+                             % (fname, bad[:6]))
+
+    prod, fin = {}, {}
+    for n, rows in tabs.items():
+        if n == _FUT_TOTAL or n in _FUT_TOTALS_OTHER:
+            continue
+        for m, v in rows.items():
+            prod[m] = prod.get(m, 0) + v
+            if n in _FUT_FIN_TABLES:
+                fin[m] = fin.get(m, 0) + v
+
+    out = {}
+    for m in sorted(total):
+        if m < start:
+            continue
+        # ③ 产品闭合
+        res = total[m] - prod.get(m, 0)
+        if res < 0 or res > _FUT_RESIDUAL_TOL * total[m]:
+            raise MiaxFetchError(
+                '%s %s 的产品闭合失败：TOTAL %d − 各产品表求和 %d = %d'
+                '（占 %.3f%%，允许 0~%.1f%%）—— 多半是上了一个没单独挂表的新产品，'
+                '它会整块留在 TOTAL 里扣不掉，%s 会静默偏高'
+                % (fname, m, total[m], prod.get(m, 0), res,
+                   res / total[m] * 100.0, _FUT_RESIDUAL_TOL * 100.0, FUT_HIST_COL))
+        ag = total[m] - fin.get(m, 0)
+        if ag <= 0:
+            raise MiaxFetchError('%s %s 扣掉金融类之后农产品张数 ≤ 0（TOTAL %d，金融 %d）'
+                                 % (fname, m, total[m], fin.get(m, 0)))
+        out[m] = ag
+    if not out:
+        raise MiaxFetchError('%s 里 %s 之后一个月都没有' % (fname, start))
+    return out
+
+
+def fetch_futures_history(cache_dir):
+    """下载并解析源 C，返回 {'YYYY-MM': int}。"""
+    data, hdr = _http_get(FUT_HIST_URL)
+    if not data.startswith(b'%PDF'):
+        raise MiaxFetchError('%s 返回的不是 PDF（前 16 字节 %r）'
+                             % (FUT_HIST_URL, data[:16]))
+    path = os.path.join(cache_dir, os.path.basename(FUT_HIST_URL))
+    _write_bytes(path, data)
+    del hdr                                        # Last-Modified 这里用不上，见 docstring
+    return parse_futures_history(path)
+
+
+def _futures_seam_check(view, fname):
+    """跨源接缝：源 C 的月度张数 ÷ IR 月报的交易日 必须复现 IR 月报的农产品 ADV。
+
+    view = {'YYYY-MM': {'vol': int, 'days': float|None, 'adv': float|None}}。
+    这是三道内部闭合之外**唯一一条跨源**的检验，也是本列敢跟 adv_futures_ag_contracts
+    画在同一组里的全部依据：两者若不是同一个口径，接缝处会出现一个假台阶。
+    实测两源重叠的 19 个月（2025-01…2026-07）全部 |diff| ≤ 0.50 张/日、相对 ≤ 0.0084%。
+    注意 2026-05 起 TOTAL 里含 Bloomberg 股指期货，扣减之后仍然逐月对上
+    （2026-05 202,228/20 = 10,111.4 vs 官方 10,111）—— 这正是扣减名单有效的证据。
+    """
+    n = 0
+    for mon in sorted(view):
+        r = view[mon]
+        if r['vol'] is None or not r['days'] or r['adv'] is None:
+            continue
+        got = r['vol'] / r['days']
+        if abs(got - r['adv']) > _FUT_SEAM_TOL:
+            raise MiaxFetchError(
+                '%s %s 跨源接缝失败：历史 PDF 的农产品张数 %d ÷ 交易日 %g = %.2f，'
+                'IR 月报自报 ADV = %g（差 %.2f 张/日，容差 %.1f）—— 两个源的口径已经'
+                '对不上，多半是金融类扣减名单漏了新产品，拒绝写入'
+                % (fname, mon, r['vol'], r['days'], got, r['adv'],
+                   got - r['adv'], _FUT_SEAM_TOL))
+        n += 1
+    if n == 0:
+        sys.stderr.write('[miax] ⚠ 源 C 与 IR 月报没有一个可比月份，接缝检验没跑成\n')
+    return n
+
+
 # ── indsum API ──────────────────────────────────────────────────────────
 def _api_json(url, cache_path=None):
     raw, _hdr = _http_get(url, timeout=45)
@@ -1008,9 +1379,35 @@ def _read_csv(path):
     if not rows:
         raise MiaxFetchError('series/miax.csv 是空文件')
     header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+
+    # 本模块新增一列时（2026-08 加 vol_futures_ag_contracts 就是这么来的）：
+    # **往表头右端追加 + 给每行补一个空格子**，绝不重排、绝不删列。
+    # 为什么在这里做而不是要求人工先改表头：人工改表头 = 一次纯手工编辑，
+    # 下个月谁也复算不出来；而追加空列是可逆、可复算、且对既有数据零影响的操作
+    # （CSV 是按列名索引读写的，末尾多一列不影响任何既有列的位置）。
+    # 表头里有本模块不认识的列**照样保留**（原样搬运），所以两个方向都不会丢数据。
     missing = [c for c in COLUMNS if c not in header]
+    #: **加列要在这里报备一次。** 只有登记在册的列才允许自动追加；没登记的列缺席
+    #: 一律抛 —— 这两件事看起来一样，性质完全相反：
+    #:   · 登记在册 = 本模块新声明了一列，CSV 还没有它（可逆、零影响，追加即可）；
+    #:   · 没登记   = 一列**本来在** CSV 里、现在不见了（截断、坏写、误删），
+    #:     那是 README 护栏 2 要拦的事故，静默补一列空的等于把警报关掉。
+    #: 只看当前 CSV 分不出这两者，所以用登记制把「新增」这一侧显式化。
+    _ADDABLE = frozenset({FUT_HIST_COL})       # 2026-08 新增：MIAX Futures 农产品月合计
+    unexpected = [c for c in missing if c not in _ADDABLE]
+    if unexpected:
+        raise MiaxFetchError(
+            'series/miax.csv 里没有这些列：%s —— 它们不在 _ADDABLE 登记表里，'
+            '说明是**本来有、现在不见了**（截断/坏写/误删），不是新增列。'
+            '真要新增，先把列名加进 _ADDABLE 并说明来历。' % unexpected)
     if missing:
-        raise MiaxFetchError('series/miax.csv 里没有这些列：%s' % missing)
+        sys.stderr.write('[miax] series/miax.csv 新增列 %s（已登记在 _ADDABLE，'
+                         '追加到表头右端，既有行补空格子）\n' % missing)
+        header = header + missing
+    width = len(header)
+    for r in body:
+        if len(r) < width:
+            r.extend([''] * (width - len(r)))
     return header, body
 
 
@@ -1035,6 +1432,25 @@ def _restatement_audit(body, idx, pdf_data):
                 sys.stderr.write(
                     '[miax] ⚠ %s 的 %s 官方数值与库内不一致（库内 %s → 本期 PDF %s），'
                     '疑似重述；本模块不改历史，请人工确认\n' % (mon, col, old, new))
+
+
+def _futures_restatement_audit(body, idx, fut_data):
+    """源 C 的重述体检。与 PDF 段同一个逻辑：只告警、不改历史。
+
+    源 C 每月随月报一起重发，136 个月每次都会重新解析一遍，所以它比 API 段更需要
+    这条网 —— API 段「已入库的月份从不重抓」，源 C 是每月全量重算的。
+    """
+    have = {r[0]: r for r in body}
+    for mon in sorted(fut_data):
+        row = have.get(mon)
+        if row is None:
+            continue
+        old = row[idx[FUT_HIST_COL]].strip()
+        new = _fmt(fut_data[mon])
+        if old and new and old != new:
+            sys.stderr.write(
+                '[miax] ⚠ %s 的 %s 官方数值与库内不一致（库内 %s → 本期历史 PDF %s），'
+                '疑似重述；本模块不改历史，请人工确认\n' % (mon, FUT_HIST_COL, old, new))
 
 
 # ── 对外接口 ─────────────────────────────────────────────────────────────
@@ -1068,13 +1484,17 @@ def update(series_dir, cache_dir):
         那一格会永久为空，「ADV × RPC」图就没数据了；
       · 未被触碰的单元格是原样字符串搬运，所以「什么都没变」时文件字节级不变。
 
-    两个源分头走：
+    三个源分头走：
       PDF —— 每次都把列表页上的**两份都**下下来（口径坑 9：上一年那份会被重发，
              12 月的 RPC 只在重发版里才有）。19 个月，成本固定且很小。
       API —— 只抓库里**哨兵列为空**的月份。首次建库约 270 次请求（2015-04 起 136 个月
              的期权 + 2020-12 起 68 个月的股票 × volume/notional 两条），
              之后每月只有 1-3 次。已入库的月份从不重抓，所以 API 侧没有重述基线，
              重述体检只覆盖 PDF 那 14 列 —— 这是明知的取舍，不是遗漏。
+      源 C —— 一次 GET 一份 350 KB 的 PDF，整份重解析（136 个月），
+             所以它**有**重述基线（_futures_restatement_audit）。
+             它是本表唯一一列能自己往回长的历史：把 FUT_HIST_START 往前调，
+             下一次 update() 就把更早的月份补齐，不需要任何一次性脚本。
     """
     csv_path = os.path.join(series_dir, 'miax.csv')
     header, body = _read_csv(csv_path)
@@ -1134,11 +1554,52 @@ def update(series_dir, cache_dir):
             rec.update(_api_equities(mon, cache_dir))
         api_data[mon] = rec
 
-    # ── 3) 合并落盘：只填空，不覆盖 ─────────────────────────────────────
+    # ── 3) 源 C：MIAX Futures 农产品月度总张数 ──────────────────────────
+    # 整份重解析（不做增量），因为它是一份会被官方整体重发的历史档案；
+    # 增量只省 1 次 GET，却会让重述体检失去基线。
+    #
+    # ⚠ 源 C **不许拖垮源 A/B**（与口径坑 15「一份没数据不能拖垮另一份」同一条道理）：
+    #   它供的是一列**历史**，而源 A 供的是本页的主指标与发布门槛。
+    #   源 C 挂了（网断 / 版式变 / 上了没归类的新产品 / 接缝对不上）时正确的反应是
+    #   「这一列这个月不长」，不是「整页这个月不更新」。
+    #   这么放行是安全的，因为本模块**已有值永不覆盖** —— 源 C 失败只会少写，不会写错，
+    #   而失败原因会原样打到 stderr 上（monthly_run 逐家隔离时看得见）。
+    fut_data = {}
+    try:
+        fut_data = fetch_futures_history(cache_dir)
+
+        # 跨源接缝：源 C ÷ IR 月报交易日 必须复现 IR 月报的农产品 ADV。
+        # 交易日与 ADV 优先取本期 PDF 的值（那是最新口径），PDF 没覆盖到的月份退回库内。
+        seam = {}
+        for mon, vol in fut_data.items():
+            row = have.get(mon)
+            rec = pdf_data.get(mon) or {}
+
+            def _pick(col, _row=row, _rec=rec):
+                v = _rec.get(col)
+                if v is not None:
+                    return v
+                if _row is None or not _row[idx[col]].strip():
+                    return None
+                return float(_row[idx[col]])
+            seam[mon] = {'vol': vol,
+                         'days': _pick('trading_days_futures'),
+                         'adv': _pick('adv_futures_ag_contracts')}
+        _futures_seam_check(seam, os.path.basename(FUT_HIST_URL))
+        _futures_restatement_audit(body, idx, fut_data)
+    except MiaxFetchError as e:
+        fut_data = {}
+        sys.stderr.write('[miax] ⚠ 源 C（%s）本轮不可用，%s 这个月不更新，'
+                         '其余各列照常写入：%s\n'
+                         % (os.path.basename(FUT_HIST_URL), FUT_HIST_COL, e))
+
+    # ── 4) 合并落盘：只填空，不覆盖 ─────────────────────────────────────
     added = []
-    for mon in sorted(set(pdf_real) | set(api_data)):
+    for mon in sorted(set(pdf_real) | set(api_data) | set(fut_data)):
         rec = dict(pdf_real.get(mon) or {})
         rec.update(api_data.get(mon) or {})
+        if mon in fut_data:
+            rec[FUT_HIST_COL] = fut_data[mon]
         if all(v is None for v in rec.values()):
             continue
         row = have.get(mon)
@@ -1160,7 +1621,7 @@ def update(series_dir, cache_dir):
         w.writerow(header)
         w.writerows(body)
 
-    # ── 4) 发布日入台账（落盘之后：写盘失败就没有「这个月官方发过了」这条断言）──
+    # ── 5) 发布日入台账（落盘之后：写盘失败就没有「这个月官方发过了」这条断言）──
     #
     # 只为**整体最新的那一期**作证。上一年那份 PDF 是**重发版**（2025 那份的
     # Updated on 是 2026-05-06），拿它给 2025-12 盖章 = 断言「12 月数据是次年 5 月发的」，

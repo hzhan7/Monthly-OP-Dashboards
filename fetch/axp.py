@@ -15,6 +15,11 @@
    Master Trust，CIK 0001003509，数据在 EX-99.01（2.4 MB 的大 HTML）
      索引：https://data.sec.gov/submissions/CIK0001003509.json
    每期只覆盖 1 个月，但给到小数点后 4 位，远细于 8-K 里那张四舍五入到 0.1 的摘要表。
+   该 CIK **没有任何 ABS-EE 申报**（信用卡 ABS 不适用 Reg AB II 资产级披露），
+   所以 10-D 是唯一一条路，别去找资产级文件。
+
+   trust 两张表的月份**由 10-D 自己的申报清单决定**（见 START_MONTH 与 update()），
+   不再由「最新 8-K 给的那 3 个月」决定 —— 后者让序列结构上永远回不到 2020 年之前。
 
 为什么不用 8-K 里那张 trust 摘要表：它把 payment rate / portfolio yield / excess
 spread 全砍掉了，只留 4 行且四舍五入到 0.1 —— 画不出 build_axp.py 要的 excess
@@ -22,9 +27,14 @@ spread 曲线。所以 trust 必须回 10-D 原始件。
 
 ════════ 发布节奏 ════════
 每月 15 日；15 日撞周末或联邦假日则顺延到下一个工作日（实测 2026-02→17 日、
-2026-03→16 日）。8-K 与 10-D **同日**送出（近 31 期 31/31 同日，build_axp.py 的
-图注也是这么写的），所以一次跑把两边一起拉即可。
+2026-03→16 日）。8-K 与 10-D **同日**送出，所以一次跑把两边一起拉即可。
 报告的是**上一个自然月**：7 月 15 日的申报 = 6 月数据。
+
+「同日」这条以前写的是「近 31 期 31/31」——一个**随窗口滚动却写死在文案里**的数字。
+回补到 2016-01 之后重新全量核过一次（2026-08-18）：拿库内 127 个月的 10-D filing_date
+去比 AXP 的 8-K(Item 7.01) 申报日，EDGAR「recent」索引能覆盖到的 **83 个月 83/83 同日**；
+更早的 44 个月（10-D 申报日早于 2019-10-15）8-K 索引已经滚出，**没核过，也别声称核过**。
+下次要复核就重跑这段比对，别改这段话里的数。
 
 ════════ 口径坑（会咬人的地方）════════
 · 2026-05 起改口径。2026-05-15 之前叫 "Card Member loans"（只含循环余额），
@@ -52,6 +62,19 @@ spread 曲线。所以 trust 必须回 10-D 原始件。
 · trust 的 excess spread 是**按 series 逐个列出**的，Group 1 各 series 数值相同。
   取众数、并把「有多少个 series 报了这个数」一并存进 n_series_at_that_es，
   这样以后哪天 Group 1 分裂成两个数值，这一列会立刻露馅。
+  ⚠️ 回补到 2016 之后这一列**常年在动**（实测 2016 年 8 个 series、2019-04 到 12 个、
+  2022-04 降到 5 个、2025-07 又到 14 个）。它是「Group 1 分裂预警」的哨兵，
+  数值本身变动是正常的发债节奏，不是异常。
+· **10-D 的口径断点（回补时踩到的，都已在代码里处理）**：
+    2016-12 及更早  A 段叫 `Ending Total Accounts Receivable`（2017-01 起改名）
+    2019-11 及更早  EX-99 附件名不带 01（`dNNNNNNdex99.htm`）
+    2013-01 及更早  A 段整行没有「期末总应收」→ parser 干净下界 = 2014-01
+    2007 及更早     附件是 .txt 且无 D 段分节，解不了
+· **trust 本金应收是 level 序列，2018-10 有一个真实台阶**：22.915bn → 30.840bn，
+  因为那期 A 段写着 `Addition of Principal Receivables 7,829,153,847.24`（信托加池），
+  账户数同月 12,499,212 → 16,372,586。**画 level 一定要标注加池，否则会被读成业务放量。**
+  比率类（payment rate / portfolio yield / excess spread / dq30 / 违约率）是池内比率，
+  跨这个台阶可连比。
 
 ════════ 反爬 ════════
 EDGAR 不设 Cloudflare/Akamai，标准库 urllib + 带邮箱的 User-Agent 即可，
@@ -78,6 +101,23 @@ USER_AGENT = os.environ.get('SEC_EDGAR_UA', 'monthly-op-dashboards hzhan7@gmail.
 
 SUBMISSIONS = 'https://data.sec.gov/submissions/CIK{cik}.json'
 ARCHIVE_DIR = 'https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc}'
+
+# ── trust 两张表的回补下界 ────────────────────────────────────────────────────
+# 这是个**真能拧的旋钮**：`update()` 每轮拿它跟 10-D 申报清单求差集，缺哪个月补哪个月，
+# 往前长与往回长走同一条路。改小它、跑一次 `python3 fetch/axp.py`，序列就长回去。
+#
+# 为什么停在 2016-01 而不是源的边界：
+#   · 申报下界 2006-06（242 份 10-D，中间只缺 2006-10 / 2006-12），但 2007 年及更早是
+#     `.txt` 且没有 `D. Trust Performance … E. Repurchases` 分节，parse_10d 切不出来。
+#   · 2013-01 及更早，A 段整行没有 `Ending Total Accounts Receivable`
+#     （只剩 Ending Total Principal Balance）→ `ending_total_receivables_usd` 拿不到。
+#   · 所以 **parser 干净可达的下界是 2014-01**。停在 2016-01 是与全站窗口对齐
+#     （build/cboe.py / build/cme.py 的 WIN_FROM、build/msci.py 的 WIN0 都是这一个），
+#     不是被源卡住的。要往前到 2014-01 只需改这一行，2014/2015 那 24 个月实测同样解得动。
+# ⚠️ 本常量只管 trust 两张表。axp.csv 想早于 2016-01 会撞**真口径断点**：
+#    2016 年那批月度 8-K 只披露单一 U.S. Card Services 段、没有 Consumer / SBS 拆分，
+#    硬接会把两条线在 2016 年之前变成同一条。那不是解析问题，改这里也没用。
+START_MONTH = '2016-01'
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'])}
@@ -445,8 +485,14 @@ def parse_10d(html_bytes):
         A, r'Ending Transferor Amount\s*' + N, 'ending transferor amount')
     r['ending_total_principal_balance_usd'] = _grab(
         A, r'Ending Total Principal Balance\s*' + N, 'ending total principal balance')
+    # 2016-12 及更早，A 段这一行叫 **Ending Total Accounts Receivable**；2017-01 起
+    # 改成 Ending Total Receivables，其余 30 个标签逐字未变（切换点实测钉死在
+    # 2016-12 / 2017-01 之间）。两种写法都认，**不按日期分支** —— 日期硬编码在下一次
+    # 改名时会静默取到别的行，别名匹配顶多是找不到而报错，错法更安全。
+    # ⚠️ 2013-01 及更早这一行整行消失（A 段只剩 Ending Total Principal Balance），
+    #    所以 parser 干净可达的下界是 2014-01，不是申报下界 2006-06。
     r['ending_total_receivables_usd'] = _grab(
-        A, r'Ending Total Receivables\s*' + N, 'ending total receivables')
+        A, r'Ending Total (?:Accounts )?Receivables?\s*' + N, 'ending total receivables')
 
     # D 段：回收率只有这里有；净核销额同理
     r['net_default_amount_usd'] = _grab(D, r'Net Default Amount\s*' + N, 'net default amount')
@@ -472,6 +518,38 @@ def parse_10d(html_bytes):
     return r
 
 
+# EX-99.01 附件名在 20 年里换过三套，回补到 2016 必须三套都认（实测）：
+#   · 2019-12 期起（filed 2020-01-15）  d867872dex9901.htm   —— 带 01，同目录还有 ex9902
+#   · 2019-11 期及更早                  d841871dex99.htm     —— 不带 01（2016-01 也是这套）
+#   · 2011 年前后                       y85537exv99.htm      —— exv99，中间多个 v
+# 原来的 `ex99[-_.]?0?1` 只吃第一套，2019-11 及更早一律抛「找不到 EX-99.01」，
+# 也就是说抓取器结构上回不到 2020 年之前 —— 这是回补的第二处硬阻塞。
+# 结尾锚死 `.htm`：2007 年及更早是 `b414471_ex99.txt`，那批文件没有 D 段分节、
+# parse_10d 切不出来，宁可在这里就找不到而报错，也不要下载回来再解出半张表。
+# `(?:[-_.]?0?1)?` 后面必须紧跟 `.htm`，所以 ex9902 / ex9903 这些同族附件不会误命中。
+_EX99_RE = re.compile(r'ex[-_.]?v?99(?:[-_.]?0?1)?\.htm$', re.I)
+
+
+def _trust_summary(r):
+    """10-D 全字段 → axp_trust.csv 那 6 列。**摘要表唯一的产生方式。**
+
+    摘要表没有自己的数据来源：它按定义就是 full 表的投影，所以这条换算只能有一处
+    实现，两张表才不可能各说各话（回补交付后拿全部 127 个月 x 6 列逐格核过，0 处不一致；
+    回补之前两表只有 37 个月重叠，同样 0 处不一致 —— 所以这条投影不是本轮新定的口径）。
+    入参既可以是 `parse_10d()` 刚解出来的 dict，也可以是从 full CSV 读回来的一行
+    （数值列已 `_num` 过）—— 两者键名相同，正是为了让这条投影对新旧数据一视同仁。
+    """
+    return {
+        'payment_rate_pct': r['payment_rate_pct'],
+        'portfolio_yield_pct': r['portfolio_yield_pct'],
+        'excess_spread_pct': r['excess_spread_pct_group1'],
+        # 单位换算：原始件是美元，CSV 存十亿美元并保留 6 位（≈ 千美元精度）
+        'principal_receivables_usdbn': round(r['ending_principal_receivables_usd'] / 1e9, 6),
+        'dq30_pct': r['dq30p_pct'],
+        'nco_pct': r['ann_default_rate_net_pct'],
+    }
+
+
 def _find_10d(cache_dir, months_needed):
     """按报告月取 10-D。返回 {month: (filing_meta, parsed)}。"""
     out = {}
@@ -480,9 +558,13 @@ def _find_10d(cache_dir, months_needed):
         if month not in months_needed or month in out:
             continue
         names = _dir_listing(CIK_TRUST, f['accession'], cache_dir)
-        ex = [n for n in names if re.search(r'ex99[-_.]?0?1', n, re.I) and n.lower().endswith('.htm')]
+        ex = sorted(n for n in names if _EX99_RE.search(n))
         if not ex:
-            raise FetchError(f'10-D {f["accession"]} 里找不到 EX-99.01')
+            raise FetchError(f'10-D {f["accession"]}（{month}）里找不到 EX-99.01，'
+                             f'目录内容：{sorted(names)}')
+        if len(ex) > 1:
+            # 同一份申报里出现两个都像 EX-99.01 的附件 —— 挑哪个都是猜，宁可炸。
+            raise FetchError(f'10-D {f["accession"]}（{month}）里有多个 EX-99.01 候选：{ex}')
         b = _cached(cache_dir, f'10d-{f["accession"]}-{ex[0]}',
                     _doc_url(CIK_TRUST, f['accession'], ex[0]))
         out[month] = (f, parse_10d(b))
@@ -525,10 +607,22 @@ def _fmt_like(sample, v):
     return repr(v)
 
 
-def _append(path, rows_by_month, new_months, cols):
-    """只追加，绝不重写既有行 —— 保证已入库历史逐字节不变。
+def _upsert(path, rows_by_month, new_months, cols):
+    """写入新月份并保持月份升序 —— 既能往后追加，也能插到现有首行**之前**。
 
-    追加前逐列检查：缺任何一个已有列就抛异常。宁可整月不入库，
+    这个函数取代了原来的 `_append`（docstring 明写「只追加，绝不重写既有行」）。
+    换掉的原因是回补：2016-01…2022-12 这批月份要排在库内首行 2023-01 之前，
+    纯追加路径写出来的是一个月份乱序的 CSV —— 下游 `build/axp.py` 的
+    `PeriodIndex.sort_index()` 会替它排好，于是**乱序本身不会报错**，只会让
+    「CSV 顺序 = 时间顺序」这个所有人都在默认的前提静默失效。
+
+    「绝不重写既有行」这条保证一个字没变，只是改成了逐行照抄来实现：
+    既有数据行按**原始文本**原样搬运（连行尾符一起，见 `_read_csv`），
+    本函数只格式化自己新造的那几行。整表重写很容易顺手把 pandas 写的
+    `26.119674` 变成 `26.1196740`，这种 diff 混在真回补里没人分得出来。
+    已存在的月份**拒绝改写**（抛异常），重述要走人工决策，不在这条路上发生。
+
+    写盘前逐列检查：缺任何一个已有列就抛异常。宁可整月不入库，
     也不能写半行 —— 半行会被下游当成真值画进图里。
     """
     if not new_months:
@@ -537,8 +631,15 @@ def _append(path, rows_by_month, new_months, cols):
     if header and header != cols:
         raise FetchError(f'{os.path.basename(path)} 列名与预期不符: {header} != {cols}')
     last = rows[-1] if rows else None
-    lines = []
+    if os.path.exists(path):
+        with open(path, 'r', newline='', encoding='utf-8') as f:
+            body = [ln for ln in f.read().split(nl) if ln.strip()]
+        hdr_line, keep = body[0], {ln.split(',', 1)[0]: ln for ln in body[1:]}
+    else:
+        hdr_line, keep = ','.join(cols), {}
     for m in sorted(new_months):
+        if m in keep:
+            raise FetchError(f'{os.path.basename(path)} {m} 已有行，拒绝改写（重述要人工决策）')
         rec = rows_by_month[m]
         missing = [c for c in cols if c != 'month' and rec.get(c) is None]
         if missing:
@@ -549,13 +650,10 @@ def _append(path, rows_by_month, new_months, cols):
                 continue
             sample = last[i] if last and i < len(last) else None
             cells.append(_fmt_like(sample, rec[c]))
-        lines.append(','.join(cells))
-    with open(path, 'rb') as f:
-        tail = f.read()
-    with open(path, 'ab') as f:
-        if tail and not tail.endswith(b'\n'):
-            f.write(nl.encode())
-        f.write((nl.join(lines) + nl).encode('utf-8'))
+        keep[m] = ','.join(cells)
+    out = [hdr_line] + [keep[m] for m in sorted(keep)]
+    with open(path, 'wb') as f:
+        f.write((nl.join(out) + nl).encode('utf-8'))
 
 
 # ── 对外接口 ────────────────────────────────────────────────────────────
@@ -622,29 +720,48 @@ def update(series_dir, cache_dir):
     add_8k = sorted(set(k8_rows) - have[p_8k]) if basis == 'card_balances' else []
 
     # ── trust 两张表 ──
-    want_tr = sorted(set(data) - have[p_trf])
-    tr = _find_10d(cache_dir, set(want_tr)) if want_tr else {}
-    tr_rows, trf_rows = {}, {}
+    # 要哪些月：**10-D 自己的申报清单里 >= START_MONTH 且库内没有的**。
+    #
+    # 旧写法是 `set(data) - have[p_trf]`，其中 `data` 只有最新 8-K 里的最近 3 个月。
+    # 那条路让 trust 表结构上每次最多前进 3 个月、而且**永远回不去**：历史月份连被
+    # 问一次的机会都没有，于是 START_MONTH 这种常量改了也不会生效。改成直接问
+    # 10-D 的申报清单之后，「往前长（新月）」与「往回长（回补）」是同一条代码路径，
+    # 这个常量才真的是个能拧的旋钮。多出来的成本只有一次 submissions JSON 请求 ——
+    # 那份索引本来每轮就要下（`_filings` 从不缓存它）。
+    all_10d = sorted({f['report_date'][:7] for f in _filings(CIK_TRUST, form='10-D')
+                      if f['report_date'][:7] >= START_MONTH})
+    want_trf = [m for m in all_10d if m not in have[p_trf]]
+    tr = _find_10d(cache_dir, set(want_trf)) if want_trf else {}
+    missing = sorted(set(want_trf) - set(tr))
+    if missing:
+        # 清单里有、却没解出来 —— 静默跳过等于让序列悄悄缺月，宁可整轮 FAIL。
+        raise FetchError(f'10-D 申报清单里有 {len(missing)} 个月取不到：{missing[:6]}')
+    trf_rows = {}
     for m, (f, r) in tr.items():
         trf_rows[m] = dict(r, report_date=f['report_date'], filing_date=f['filing_date'],
                            accession=f['accession'])
-        tr_rows[m] = {
-            'payment_rate_pct': r['payment_rate_pct'],
-            'portfolio_yield_pct': r['portfolio_yield_pct'],
-            'excess_spread_pct': r['excess_spread_pct_group1'],
-            # 单位换算：原始件是美元，CSV 存十亿美元并保留 6 位（≈ 千美元精度）
-            'principal_receivables_usdbn': round(r['ending_principal_receivables_usd'] / 1e9, 6),
-            'dq30_pct': r['dq30p_pct'],
-            'nco_pct': r['ann_default_rate_net_pct'],
-        }
+
+    # axp_trust.csv 是 axp_trust_full.csv 的**精确投影**（换算规则见 _trust_summary；
+    # 回补交付后拿全部 127 个月 x 6 列逐格核过，0 处不一致）。所以摘要表缺的月份一律
+    # 从 full 表现算 —— 包括**库里 full 表已有、摘要表却没有的**那几个月
+    # （交付时是 2023-01…2023-06 六个月），它们零网络就能补出来。
+    # 两张表从此不可能各说各话：摘要表没有自己的数据来源。
+    _fh, _fr, _ = _read_csv(p_trf)
+    known_full = {r[0]: {c: _num(v) for c, v in zip(_fh, r)} for r in _fr}
+    tr_rows = {}
+    for m in sorted(set(trf_rows) | set(known_full)):
+        if m < START_MONTH or m in have[p_tr]:
+            continue
+        tr_rows[m] = _trust_summary(trf_rows.get(m) or known_full[m])
+
     add_tr = sorted(set(tr_rows) - have[p_tr])
     add_trf = sorted(set(trf_rows) - have[p_trf])
 
-    _append(p_main, main_rows, add_main, COLS_MAIN)
-    _append(p_new, new_rows, add_new, COLS_MAIN)
-    _append(p_8k, k8_rows, add_8k, COLS_8K)
-    _append(p_tr, tr_rows, add_tr, COLS_TRUST)
-    _append(p_trf, trf_rows, add_trf, COLS_TRUST_FULL)
+    _upsert(p_main, main_rows, add_main, COLS_MAIN)
+    _upsert(p_new, new_rows, add_new, COLS_MAIN)
+    _upsert(p_8k, k8_rows, add_8k, COLS_8K)
+    _upsert(p_tr, tr_rows, add_tr, COLS_TRUST)
+    _upsert(p_trf, trf_rows, add_trf, COLS_TRUST_FULL)
 
     return sorted(set(add_main) | set(add_new) | set(add_8k) | set(add_tr) | set(add_trf))
 

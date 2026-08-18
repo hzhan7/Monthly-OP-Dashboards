@@ -70,11 +70,14 @@
 4. series 里有三段**故意的留白**，别手贱回填：
        new_listings   2019-01~2024-05 空（当年逐月简报没这项）
        ipo_funds      2019-01~2023-12 空（同上）
-       southbound     2022-01~2025-06 空（官方停发了 40 个月，
+       southbound     2022-01~2025-06 空（官方停发了 42 个月，
                       build_hkex.py 的 multi_line 图注专门讲了这个 gap）
    今天这份 xlsx 其实把 2018-01 起的这些历史都补全了，但一次性回填 =
    把两代口径混进同一条序列、并改掉看板叙事，属于人工决策。
    ⇒ update() 只对「adt 为空的行」补空 + 追加新月，adt 已有的历史行一个字节都不碰。
+   ⇒ 2026-08-18 新增的历史回补（START_MONTH，见文末「历史深度」）**不破这条**：
+     回补行里 new_listings / ipo_funds_hkdbn 一律留空（BACKFILL_HOLD），
+     否则会在这两列上造出中间空洞、让 build/hkex.py 的完整性体检硬失败。
 
 5. mktcap 是月末时点数（$Bil.→ /1000 得 HK$tn）；ADT / 南向 ADT / 衍生品 ADV 是月内日均。
    南向 ADT 官方口径含买卖双边（表内注 "ADT for Stock Connect includes buy and sell trades"）。
@@ -118,6 +121,15 @@
           从档案本身看不出来。所以本模块规定：**档案的最后一个月必须被同月的
           Bulletin 逐位确认才收**，确认不了就整月不要（见 _trading_stats）。
 
+  B3【历史回补专用】Securities Statistics Archive —— Market capitalisation
+     索引 rpt_data_statistics_archive_market_cap.json      （主板，最老一册 1986-1994）
+          rpt_data_statistics_archive_market_cap_gem.json  （GEM，最老一册 1999-2003）
+     两列的**逐日**表：Year/Month/Day │ Total market capitalisation (HKD)。
+     2026-08-18 新接。它只有一个用途：链路 A 的 xlsx 最早只到 2018-01，
+     而 series 要铺到 2016-01，那 24 个月的 mktcap_hkdtn 只能从这里取
+     （取每月**最后一个交易日**主板 + GEM 之和 ÷ 1e12，见下面「历史深度」的闭合④）。
+     xlsx 覆盖得到的月份一律以 xlsx 为准，本端点不参与。
+
   为什么不用 hkexgroup.com 那份 xlsx 顺手带出来：它压根没有这两行，试过了。
 
 ── 三重闭合（2026-08-07 本机实测，逐位相同，不是四舍五入到差不多）──
@@ -154,13 +166,78 @@
   逐日档案：正常也是次月上旬同日跟上（2026-06 档 07-02 14:59 GMT），
             但 2026-07 这一轮明显掉队（到 08-07 未更新）。这正是要留 B2 兜底的原因。
 
-── 历史深度：为什么只补到 series 现有的最早月，不往前加行 ──
-  逐日档案能回到 1986（主板）/ 1999（GEM），足够把这两列铺到 1990 年代。
-  但 series/hkex.csv 现在是 2019-01 起，往前加行会改变 build/hkex.py 里
-  df.index[0] 与全部窗口函数的输入，而那些文件不归本模块管。
-  ⇒ 本模块**只给已存在的行补格，绝不新增早于序列首月的行**。
-    真要往前铺，改法是一行：把 _trading_stats 的 since_year 放宽 + 允许 append，
-    但那是人工决策（要连带确认 build 侧的图注与窗口），不该由无人值守任务顺手做掉。
+── 历史深度：START_MONTH = 2016-01（2026-08-18 打开，此前只补到序列现有首月）──
+  以前这里写的是「绝不新增早于序列首月的行」，理由是「往前加行会改变 build 侧的窗口，
+  而那些文件不归本模块管」。build/hkex.py 的窗口 2026-08-18 已经改成 WIN_FROM='2016-01'
+  的现算式（不再是写死的 `.iloc[-25:]`），那条理由就不成立了 —— 于是把闸门开到 START_MONTH。
+
+  实现：update() 里的 _backfill_rows() 只在**序列首月之前**造行，且只造到 START_MONTH；
+  序列**内部**的空档仍然一格不填（那是口径留白，见坑 4）。所以这条回补路径是幂等的：
+  序列一旦从 2016-01 起，下个月再跑 _backfill_rows() 直接空转、连档案都不多下一份。
+
+  ── 回补行的取数分工（谁给哪一列）──
+      2018-01 起：链路 A 的 xlsx 本来就有，adt / mktcap / deriv / southbound 一律取 xlsx 原值。
+      2016-01~2017-12：xlsx 够不到。
+          adt_hkdbn    ← B1 逐日档案（主板+GEM 当月成交额 ÷ 主板交易日数 ÷ 1e9）
+          mktcap_hkdtn ← B3 市值逐日档案（当月最后一个交易日主板+GEM 之和 ÷ 1e12）
+          derivatives_adv_contracts / southbound_adt_hkdbn ← **留空**（见下）
+      全部回补行：TRADING_COLUMNS 那 7 列照旧由 B1 逐日档案算，与 2019 年以后同一套代码。
+
+  ── 为什么 2016-01~2017-12 的衍生品与南向留空（不是漏了）──
+      衍生品：机器可读源全部很浅 —— MonthlyStatistics_FnO.json 13 个月、
+        DerivativesMarketHighlights 12 个月、Monthly Bulletin 13 期、日报存档 2 个月，
+        猜名探测的 archive 端点全 404（2026-08-18 实测）。逐月数字只存在于 HKEX Fact Book
+        PDF 的 ~50 张分品种月表里，没有月度合计表；试解析在 2018 年 12/12 个月都比官方
+        低 6.6%~8.7%，**未闭合**。未闭合就入库 = 在图上放一条系统性偏低、肉眼看不出的线。
+      南向：月度 js 只挂 13 个月、日度 js 只挂 7 个月。Fact Book 有逐月表且配方已在 2018 年
+        逐位验证过，但那是 PDF 手抄，且 2016-01~2016-11 只有沪股通（深港通 2016-12-05 才开市），
+        是**真实的口径断点**，不该混进同一条列里而不作声明。
+      ⇒ 两列都从 2018-01 起。**前导空格不是中间空洞**：build/hkex.py 的完整性体检
+        （GAPPY_OK 那一段）只拦「首末之间缺月」，前导空格照过；两张图各自从自己的首个
+        有值月开始画。
+
+  ── 为什么 new_listings / ipo_funds_hkdbn 在回补行里一律留空（BACKFILL_HOLD）──
+      今天这份 xlsx 对 2018-01 起的这两列**全部有值**，技术上填得进去。但 series 里
+      2019-01~2024-05（新股）与 2019-01~2023-12（IPO）是坑 4 说的**故意留白**。
+      只回填 2018 而不回填那两段，就会造出「2018 有值 → 2019-2024 空 → 2024 起又有值」的
+      中间空洞，build/hkex.py 的 GAPPY_OK 体检会直接 SystemExit，整页停更。
+      要么两段一起填（= 改看板叙事，人工决策），要么一格不填。本模块选后者：
+      回补行的这两列**永远留空**，于是空白段从 2016-01 一路连到 2024-05/2023-12，
+      仍然是一段前导空格，体检照过。
+
+  ── 闭合④：2016-2017 的 adt / mktcap 是不是同一个口径（逐位，不是差不多）──
+      2026-08-18 本机实测，拿 xlsx 有值的 103 个月（2018-01~2026-07）做对照组：
+        · ADT：档案重算 vs xlsx，**102/103 在 3 位小数上逐位相同**；唯一一处 2020-11
+          档案 161.287 / xlsx 161.286，差 1 个末位单位（四舍五入噪声，未超
+          _materially_differs 的容差）。
+        · 市值：档案月末（主板+GEM）vs xlsx，**103/103 在 4 位小数上逐位相同**。
+          只用主板会系统性低 0.19~0.26 HK$tn —— 两板必须相加，这是实测出来的。
+      光有对照组还不够：对照组证明的是「档案 = xlsx」，而 2016-2017 恰恰**没有 xlsx**。
+      所以再拿一份**独立于以上两条链路**的官方出版物逐月核 —— HKEX Fact Book PDF
+      （cache/hkex_factbook_{2016,2017,2018}.pdf，直链
+      https://www.hkex.com.hk/-/media/HKEX-Market/Market-Data/Statistics/
+      Consolidated-Reports/HKEX-Fact-Book/HKEX-Fact-Book-{年}/FB_{年}.pdf）：
+        · 「Trading value and volume」（主板，第 24 页）与「Trading value and volume for GEM」
+          给逐月的交易日数 / 成交额 / 成交股数 / 成交笔数（含官方自己印的日均）；
+        · 「Total market capitalisation by HSICS」与 GEM 对应表的 Total 行给逐月**月末**市值。
+      2026-08-18 逐位比对结果：
+        · 2016 + 2017 共 24 个月 × 10 项（两板的交易日/额/量/笔数 + 两板月末市值）
+          = **240 项全对**；再把它们换算成 series 真正入库的 9 个字段（含 adt_hkdbn 到
+          3 位小数、mktcap_hkdtn 到 4 位小数）+ 官方日均 + 4 个应留空的列，
+          共 **360 项全对**。
+        · 2018 那 12 行（adt/mktcap 来自 xlsx、7 个交易列来自逐日档案）对 FB2018
+          **108 项全对** ⇒ xlsx、逐日档案、Fact Book 三方一致。
+      顺带证实了两条口径：**半日市照算一整天**（FB 印的日均 = 合计 ÷ 交易日数，
+      2016-2017 含多个半日市月，逐位对得上，不折算），以及 mktcap 取**月末最后一个交易日**
+      （FB 表下注 "Month-end figures"，与档案取的日期逐月相同）。
+      ⇒ 2016-2017 的这两列与 2018 年以后是同一套底稿、同一个口径，不是"看着差不多"。
+
+  ── 还能往前到哪 ──
+      主板逐日档案回到 1986-04、GEM 回到 1999-11-25，所以「主板+GEM」同口径的最早完整月是
+      1999-12；市值档案主板回到 1986、GEM 回到 1999。START_MONTH 定在 2016-01 是与全站
+      其余页面（build/single.py 的 WIN_FROM、cboe / cme / msci 的 WIN0）对齐的产物，
+      不是源的上限。真要更早，改 START_MONTH 一个常数即可，但衍生品与南向的前导空格会
+      跟着变长 22 年，那时该重新讨论这一页还该不该保留那两张图。
 """
 
 import csv
@@ -213,6 +290,17 @@ TRADING_COLUMNS = ['trading_days_cash',        # 现货交易日数（主板日�
                    'adv_shares_mn',            # 日均成交股数 · 主板+GEM（百万股）
                    'adt_trades']               # 日均成交笔数 · 主板+GEM
 COLUMNS = HIGHLIGHT_COLUMNS + TRADING_COLUMNS
+
+#: 历史回补的目标起点。update() 只在**序列首月之前**造行、且不早于这个月；
+#: 序列内部的空档一格不填（那是口径留白，见坑 4）。改这一个常数就能往前铺得更早，
+#: 源的实际上限是 1999-12（主板+GEM 同口径的最早完整月），细节见模块 docstring「历史深度」。
+START_MONTH = '2016-01'
+
+#: 回补行里**永远留空**的列。技术上 xlsx 从 2018-01 起就有值，但 series 在这两列上有
+#: 2019-01~2024-05 / 2019-01~2023-12 两段故意留白（坑 4）；只填 2018 会造出中间空洞，
+#: build/hkex.py 的完整性体检会直接 SystemExit。要填就得连那两段一起填 = 改看板叙事，
+#: 属人工决策，不由无人值守任务顺手做掉。
+BACKFILL_HOLD = ('new_listings', 'ipo_funds_hkdbn')
 
 # 新 7 列全是整数位：股数已经以「百万股」为单位（末位 = 100 万股，占日均的 3e-6），
 # 笔数与交易日本来就是计数。整数位同时让「逐日档案算出来的值」与
@@ -526,6 +614,20 @@ def _fmt(col, val):
     return ('%d' % round(val)) if d == 0 else ('%.*f' % (d, val))
 
 
+# ── 月份算术（"YYYY-MM" ↔ 序号）─────────────────────────────────────────────
+# update() 里本来有一个同名的闭包 month_key；回补逻辑在函数外也要用，所以提到模块层，
+# 闭包改成引用它 —— 两份实现各自演化过一次就够写一天的对账。
+def _mkey(m):
+    """'2016-01' → 24193（自公元 0 年 1 月起的月序号，只用来比大小与加减）。"""
+    y, mm = m.split('-')
+    return int(y) * 12 + int(mm)
+
+
+def _mstr(k):
+    """_mkey 的逆。"""
+    return '%04d-%02d' % ((k - 1) // 12, (k - 1) % 12 + 1)
+
+
 # ══ 链路 B：成交股数 / 成交笔数 ═══════════════════════════════════════════
 # 端点、口径、闭合证据全部写在模块 docstring 的「═══ 成交股数与成交笔数 ═══」一节，
 # 这里只放代码。改动这一段前先把那节读完，尤其是「档案最后一个月必须被 Bulletin 确认」
@@ -540,6 +642,13 @@ _HIGHLIGHT_URL = {
     'mb':  _BULL_BASE + 'rpt_Stock_market_highlights_%s.json',
     'gem': _BULL_BASE + 'rpt_Stock_market_highlights_GEM_%s.json',
 }
+# B3：市值逐日档案。只在历史回补时用（xlsx 最早 2018-01，series 要到 2016-01），
+# 端点与闭合证据见模块 docstring 的 B3 与「闭合④」。
+_MKTCAP_INDEX = {
+    'mb':  _BULL_BASE + 'rpt_data_statistics_archive_market_cap.json',
+    'gem': _BULL_BASE + 'rpt_data_statistics_archive_market_cap_gem.json',
+}
+_MKTCAP_COL = 'Total market capitalisation'
 _BOARDS = ('mb', 'gem')
 _BOARD_ZH = {'mb': '主板', 'gem': 'GEM'}
 
@@ -608,16 +717,16 @@ def _int(txt):
     return int(s)
 
 
-def _archive_daily(board, since_year, cache_dir):
-    """某个板块的逐日档案 → {'YYYY-MM': [交易日数, 成交额HKD, 成交股数股, 成交笔数]}。
+def _pick_buckets(index_url, since_year, cache_dir, index_name, what):
+    """档案索引 → [(lo, hi, 分册 URL)]，只留年份区间覆盖到 since_year 及以后的分册。
 
-    只下载**年份区间覆盖到 since_year 及以后**的分册：每册 ~600KB，全下 9 册纯属浪费；
+    只下载用得上的分册：每册 ~600KB，全下 9 册纯属浪费；
     但也绝不按「当前年份」猜册名 —— 册名与区间一律从官方索引读。
+    成交档案（B1）与市值档案（B3）的索引是同一种结构，所以共用这一段。
     """
-    idx = _json_get(_ARCHIVE_INDEX[board], cache_dir, 'hkex_archive_index_%s.json' % board)
+    idx = _json_get(index_url, cache_dir, index_name)
     if not isinstance(idx, list) or not idx:
-        raise HkexFetchError('%s 逐日档案索引不是非空数组（版式可能改了）：%s'
-                             % (_BOARD_ZH[board], _ARCHIVE_INDEX[board]))
+        raise HkexFetchError('%s索引不是非空数组（版式可能改了）：%s' % (what, index_url))
     picked, skipped = [], []
     for it in idx:
         url = (it or {}).get('url') or ''
@@ -629,9 +738,16 @@ def _archive_daily(board, since_year, cache_dir):
         if hi >= since_year:
             picked.append((lo, hi, urllib.parse.urljoin(_BULL_BASE, url)))
     if not picked:
-        raise HkexFetchError('%s 逐日档案索引里没有覆盖 %d 年及以后的分册（索引 %d 条，'
-                             '认不出册名的 %d 条）' % (_BOARD_ZH[board], since_year,
-                                                      len(idx), len(skipped)))
+        raise HkexFetchError('%s索引里没有覆盖 %d 年及以后的分册（索引 %d 条，'
+                             '认不出册名的 %d 条）' % (what, since_year, len(idx), len(skipped)))
+    return sorted(picked)
+
+
+def _archive_daily(board, since_year, cache_dir):
+    """某个板块的逐日档案 → {'YYYY-MM': [交易日数, 成交额HKD, 成交股数股, 成交笔数]}。"""
+    picked = _pick_buckets(_ARCHIVE_INDEX[board], since_year, cache_dir,
+                           'hkex_archive_index_%s.json' % board,
+                           '%s逐日档案' % _BOARD_ZH[board])
 
     out = {}
     for lo, hi, url in sorted(picked):
@@ -671,6 +787,54 @@ def _archive_daily(board, since_year, cache_dir):
                 a[3] += _int(row[colof['deals']])
     if not out:
         raise HkexFetchError('%s 逐日档案一条日线都没解析出来' % _BOARD_ZH[board])
+    return out
+
+
+def _archive_mktcap(board, since_year, cache_dir):
+    """某个板块的**市值**逐日档案 → {'YYYY-MM': (最后一个交易日, 该日市值 HKD)}。
+
+    只取每月最后一个交易日：市值是**时点数**，月内求和／求平均都不是任何东西
+    （series 的 mktcap_hkdtn 一直是月末口径，坑 5 写明了）。
+    「最后一个交易日」按档案里出现过的日期字符串取最大值 —— 档案本身只列交易日，
+    不需要另外一份交易日历。
+
+    与成交档案不同，这张表只有两列（日期 + 市值），也不打半日市那颗 `*`
+    （2026-08-18 全量扫过 2015-2026 共 2,847 行主板 / 3,094 行 GEM，无一例外）。
+    """
+    picked = _pick_buckets(_MKTCAP_INDEX[board], since_year, cache_dir,
+                           'hkex_mktcap_index_%s.json' % board,
+                           '%s市值逐日档案' % _BOARD_ZH[board])
+    out = {}
+    for lo, hi, url in picked:
+        doc = _json_get(url, cache_dir, 'hkex_mktcap_%s_%d_%d.json' % (board, lo, hi))
+        tables = doc.get('tables') or []
+        if not tables:
+            raise HkexFetchError('%s 市值档案 %d-%d 没有 tables' % (_BOARD_ZH[board], lo, hi))
+        for tbl in tables:
+            head = [_tidy(x) for x in (_grid(tbl, 'header') or [[]])[0]]
+            hit = [i for i, h in enumerate(head) if h.startswith(_MKTCAP_COL)]
+            if len(hit) != 1:
+                raise HkexFetchError('%s 市值档案 %d-%d 的表头认不出「%s」（表头=%r）—— '
+                                     '版式变了，宁可停也不能猜列号'
+                                     % (_BOARD_ZH[board], lo, hi, _MKTCAP_COL, head))
+            col = hit[0]
+            for row in _grid(tbl, 'body'):
+                day = _tidy(row[0]) if row else ''
+                if not day:
+                    continue
+                if not _ARCH_DATE_RE.match(day):
+                    raise HkexFetchError('%s 市值档案 %d-%d 出现非日期行 %r —— 可能是新加的'
+                                         '小计/脚注行，必须人工确认后再改解析'
+                                         % (_BOARD_ZH[board], lo, hi, day))
+                if len(row) <= col:
+                    raise HkexFetchError('%s 市值档案 %d-%d 的 %s 行只有 %d 格，表头要到第 %d 格'
+                                         % (_BOARD_ZH[board], lo, hi, day, len(row), col + 1))
+                ym = day[:4] + '-' + day[5:7]
+                prev = out.get(ym)
+                if prev is None or day > prev[0]:
+                    out[ym] = (day, _int(row[col]))
+    if not out:
+        raise HkexFetchError('%s 市值档案一条日线都没解析出来' % _BOARD_ZH[board])
     return out
 
 
@@ -814,11 +978,110 @@ def _bulletin_row(month, cache_dir):
     }
 
 
-def _trading_stats(months, cache_dir):
+def _since_year(months):
+    """要下载的档案分册下限年份。
+
+    取「序列现有首月」与 START_MONTH 中更早的那个 —— 回补还没发生时序列首月更晚，
+    档案得先能覆盖到 START_MONTH，_backfill_rows 才有东西可用；
+    回补做完之后两者相等，这里自然不再多下分册。
+    """
+    return min(int(min(months, key=_mkey)[:4]), int(START_MONTH[:4]))
+
+
+def _cash_archives(since_year, cache_dir):
+    """两个板块的成交逐日档案，一次下载。
+
+    回补（_backfill_rows）与 7 个交易列（_trading_stats）用的是同一批分册，
+    各下一遍等于把 ~2MB 白拉两次，也会让两处对「档案里有哪些月」的看法可能不一致。
+    """
+    return {b: _archive_daily(b, since_year, cache_dir) for b in _BOARDS}
+
+
+def _backfill_rows(existing_months, xlsx, cache_dir, arch):
+    """序列首月之前的历史行 → {'YYYY-MM': {列名: 值}}；没什么可补就返回 {}。
+
+    规则（每一条都有代价，别顺手放宽）：
+      · 只在**序列首月之前**造行，且不早于 START_MONTH。序列**内部**的空档一格不填 ——
+        那是坑 4 说的口径留白，填了会把两代口径混进同一条序列。
+      · 回补段必须是**紧贴序列首月往前的连续段**：从首月往前一个月一个月走，
+        走到第一个「四套档案里缺任何一套」的月就停。只往右让、不往左借 ——
+        中间断一个月就会在 adt / 交易日这些逐月必发的列上造出中间空洞，
+        build/hkex.py 的完整性体检会 SystemExit，整页停更。
+      · adt / mktcap：xlsx 覆盖得到的月份一律取 xlsx 原值（那是官方公告值）；
+        xlsx 够不到的月份才由逐日档案重算（口径闭合证据见 docstring 闭合④）。
+      · deriv / southbound：只取 xlsx 有的；xlsx 够不到就留空（前导空格，不是中间空洞）。
+      · BACKFILL_HOLD 的两列：永远留空。
+      · TRADING_COLUMNS 那 7 列不在这里出数 —— 行造出来之后由 _trading_stats 统一填，
+        与 2019 年以后的月份走同一段代码，不另开一套。
+    """
+    if not existing_months:
+        return {}
+    first = min(existing_months, key=_mkey)
+    if _mkey(START_MONTH) >= _mkey(first):
+        return {}                                  # 序列已经够长，空转（不多下一份档案）
+
+    # xlsx 够不到的月份要用市值逐日档案；够得到就不必下（省 ~1MB）。
+    need_mktcap = _mkey(START_MONTH) < _mkey(min(xlsx) if xlsx else first)
+    mcap = ({b: _archive_mktcap(b, int(START_MONTH[:4]), cache_dir) for b in _BOARDS}
+            if need_mktcap else {b: {} for b in _BOARDS})
+
+    def derivable(month):
+        if month in xlsx and xlsx[month]['adt_hkdbn'] is not None \
+                and xlsx[month]['mktcap_hkdtn'] is not None:
+            # adt / mktcap 有 xlsx，但 7 个交易列仍要逐日档案 —— 缺了就是中间空洞
+            return month in arch['mb'] and month in arch['gem']
+        return all(month in d for d in (arch['mb'], arch['gem'], mcap['mb'], mcap['gem']))
+
+    months, k = [], _mkey(first) - 1
+    while k >= _mkey(START_MONTH) and derivable(_mstr(k)):
+        months.append(_mstr(k))
+        k -= 1
+    if not months:
+        print('[hkex] 回补：%s 之前一个月都补不出来（档案覆盖不到 %s），序列起点不变'
+              % (first, _mstr(_mkey(first) - 1)))
+        return {}
+    if k >= _mkey(START_MONTH):
+        print('[hkex] 回补：只补到 %s（再往前 %s 的档案不全），比 START_MONTH=%s 晚'
+              % (months[-1], _mstr(k), START_MONTH))
+
+    out = {}
+    for month in sorted(months, key=_mkey):
+        rec = xlsx.get(month) or {}
+        row = {}
+        for col in HIGHLIGHT_COLUMNS:
+            if col in BACKFILL_HOLD:
+                continue
+            v = rec.get(col)
+            if v is not None:
+                row[col] = v
+        if 'adt_hkdbn' not in row:
+            mb, gem = arch['mb'][month], arch['gem'][month]
+            if mb[0] <= 0:
+                raise HkexFetchError('%s 主板逐日档案 0 个交易日，回补不了 adt_hkdbn' % month)
+            row['adt_hkdbn'] = (mb[1] + gem[1]) / 1e9 / mb[0]
+        if 'mktcap_hkdtn' not in row:
+            d_mb, v_mb = mcap['mb'][month]
+            d_gem, v_gem = mcap['gem'][month]
+            if d_mb != d_gem:
+                # 同一套交易日历，月末必然同一天（2015-2026 实测 139 个月无一例外）。
+                # 真差了就是我读错了册或版式变了，宁可停 —— 两板取不同日的市值相加没有意义。
+                raise HkexFetchError('%s 主板月末 %s 与 GEM 月末 %s 不是同一天，'
+                                     '两板市值不能相加' % (month, d_mb, d_gem))
+            row['mktcap_hkdtn'] = (v_mb + v_gem) / 1e12
+        out[month] = row
+    print('[hkex] 回补 %d 行：%s → %s（%s 起的 adt/mktcap 由逐日档案重算；'
+          '%s 两列按 BACKFILL_HOLD 留空）'
+          % (len(out), min(out, key=_mkey), max(out, key=_mkey),
+             START_MONTH, '/'.join(BACKFILL_HOLD)))
+    return out
+
+
+def _trading_stats(months, cache_dir, arch=None):
     """series 已有的月份 → {'YYYY-MM': {新列名: 值}}。
 
-    months 是 series/hkex.csv 现有的全部月份；本函数**只给这些月出数**，
-    一个新行都不造（理由见模块 docstring「历史深度」一节）。
+    months 是 series/hkex.csv 现有的全部月份（**含本轮刚回补出来的历史行**）；
+    本函数只给这些月出数，一个新行都不造 —— 造行是 _backfill_rows 的职责，
+    两处各造各的会让「回补段必须连续」那条规则失效。
 
     优先级：逐日档案 > Monthly Bulletin。
       · 档案是逐日底稿，精度最高、口径与 adt_hkdbn 同源；
@@ -827,8 +1090,8 @@ def _trading_stats(months, cache_dir):
     """
     if not months:
         return {}
-    since_year = int(min(months)[:4])
-    arch = {b: _archive_daily(b, since_year, cache_dir) for b in _BOARDS}
+    if arch is None:
+        arch = _cash_archives(_since_year(months), cache_dir)
     common = sorted(set(arch['mb']) & set(arch['gem']))
     if not common:
         raise HkexFetchError('主板与 GEM 逐日档案没有共同月份（索引或版式可能变了）')
@@ -891,6 +1154,11 @@ def update(series_dir, cache_dir, allow_restate=False):
     补空格，不受「adt 已有的行不动」那条规矩约束 —— 那条规矩管的是历史留白，
     而这 7 列是 2026-08 才新增的，全序列的空格都不是留白，是还没抓。
 
+    历史回补（2026-08-18 新增）：序列**首月之前**的行由 _backfill_rows 造，最早到
+    START_MONTH，回补段必须连续。它跑在 xlsx 那一轮之前，于是回补行在那一轮里被当成
+    「已有行」，BACKFILL_HOLD 的两列不会被顺手填上。序列内部的空档仍然一格不填。
+    序列一旦从 START_MONTH 起，这条路径下次跑就空转，连市值档案都不多下一份。
+
     序列落盘之后，顺手把这一档带来的那个最新月的发布日记进 series/source_dates.csv
     （页面抬头「官方发布于」用它），细节见下面那段注释与模块 docstring 的「发布日」节。
     """
@@ -927,10 +1195,20 @@ def update(series_dir, cache_dir, allow_restate=False):
     last_csv_month = body[-1][0]
 
     added, filled_cells, restatements = [], [], []
+    month_key = _mkey
 
-    def month_key(m):
-        y, mm = m.split('-')
-        return int(y) * 12 + int(mm)
+    # ── 历史回补：只在序列首月之前造行，且不早于 START_MONTH ──
+    # 放在 xlsx 那一轮**之前**跑，是为了让回补出来的行在下面被当成「已有行」处理：
+    # 那一段对 had_adt=True 的行只做重述记账、不动任何空格，于是 BACKFILL_HOLD 的两列
+    # 不会被 xlsx 顺手填上（填了就是中间空洞 → build 硬失败）。
+    # 成交逐日档案在这里下载一次，下面的 TRADING_COLUMNS 直接复用同一份。
+    arch = _cash_archives(_since_year(list(idx) or [START_MONTH]), cache_dir)
+    for month, rec in sorted(_backfill_rows(list(idx), data, cache_dir, arch).items(),
+                             key=lambda kv: month_key(kv[0])):
+        body.append([month] + [_fmt(c, rec.get(c)) for c in HIGHLIGHT_COLUMNS]
+                    + [''] * len(TRADING_COLUMNS))
+        idx[month] = len(body) - 1
+        added.append(month)
 
     for month in sorted(data, key=month_key):
         rec = data[month]
@@ -939,7 +1217,7 @@ def update(series_dir, cache_dir, allow_restate=False):
             # 只给「adt 为空」的行补空格。这类行是前人用比 xlsx 更快的来源先写了半行
             # （如 2026-07），等官方文件到位就该补齐。
             # 反过来，adt 已有的历史行里的空格是**故意留白**：new_listings / ipo 早期
-            # 官方简报没发、southbound 有 2022-01~2025-06 的 40 个月停发窗口，
+            # 官方简报没发、southbound 有 2022-01~2025-06 的 42 个月停发窗口，
             # build_hkex.py 的图注专门讲了这个 gap。现在的 xlsx 虽然把这些历史都补全了，
             # 但一次性回填 = 把两代口径混进同一条序列、并改掉看板叙事，
             # 属于人工决策，不该由无人值守任务顺手做掉。
@@ -967,7 +1245,9 @@ def update(series_dir, cache_dir, allow_restate=False):
 
         # ── 新行：只接受"当月 6 列全齐"的月份 ──
         if month_key(month) <= month_key(last_csv_month):
-            # 早于序列尾部的历史空档：不回填（口径会混两代来源，见 docstring 坑 4）
+            # 走到这里说明该月落在序列**内部**却没有对应行 —— 那是口径留白，不回填
+            # （见 docstring 坑 4）。序列首月**之前**的历史行不走这条路径：
+            # 它们已经由上面的 _backfill_rows 造好并进了 idx，在上面那一支处理完了。
             continue
         if rec['adt_hkdbn'] is None:
             continue                    # 官方把列开出来了但还没填数，等下个月
@@ -985,10 +1265,11 @@ def update(series_dir, cache_dir, allow_restate=False):
     # ── 链路 B：成交股数 / 成交笔数（TRADING_COLUMNS）──
     # 与上面那一段的两点不同，都是有意的：
     #   · 不看 had_adt。这 7 列是新增列，全序列的空格都不是「故意留白」，是还没抓。
-    #   · 不造新行。只给 idx 里已经存在的月份补格，理由见模块 docstring「历史深度」一节。
+    #   · 不造新行。只给 idx 里已经存在的月份补格（含本轮 _backfill_rows 刚造出来的历史行）；
+    #     造行是 _backfill_rows 的独家职责，理由见模块 docstring「历史深度」一节。
     # 相同的是：非空格子一律不覆盖（allow_restate=True 才覆盖），所以第二遍跑一格不动。
     tcol_at = {c: j for j, c in enumerate(header) if c in set(TRADING_COLUMNS)}
-    stats = _trading_stats(sorted(idx, key=month_key), cache_dir)
+    stats = _trading_stats(sorted(idx, key=month_key), cache_dir, arch=arch)
     for month in sorted(stats, key=month_key):
         row = body[idx[month]]
         for col, j in tcol_at.items():

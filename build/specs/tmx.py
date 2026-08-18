@@ -5,23 +5,44 @@
 声明「series/tmx.csv 的哪些列上页面」。不算数、不画图、不碰公共代码。
 整份文件可以直接删掉，别的页一行都不受影响。
 
-━━ 本页最容易犯的错：把两段完全不同的历史当成一段 ━━
-series/tmx.csv 里躺着**两条互相独立的官方序列**，起点差 19 年、每月到货时间也差几天：
+━━ 本页最容易犯的错：把三段起点不同的历史当成一段 ━━
+series/tmx.csv 里躺着**三段互相独立的官方序列**，起点差 13~24 年、每月到货也差几天
+（下面每个起点本文件都用 `_first_present()` 从 CSV 现算，一个都不写死）：
 
-    Montréal Exchange 衍生品（mx_*）   2002-01 → 2026-07   实测 295 个月，零断档
-    加拿大现货（tmx_/tsx_/tsxv_/alpha_）2021-08 → 2026-06   实测  59 个月，零断档
+    Montréal Exchange 衍生品（mx_*）        2002-01 起   m-x.ca 月度 xlsx
+    月末指数点位（*_composite_close）       2001-12 起   TMX Money（历史）+ CTS 表格（增量）
+    加拿大现货成交（tmx_all_/tsx_/tsxv_/alpha_）
+                                            2015-01 起   CIRO（历史）+ CTS 新闻稿（增量）
+    Alpha-X & Alpha DRK（alphax_drk_*）      2023-11 起   两个独立源都从这个月才有
 
-写这份配置的当天（2026-08-06）就正是「MX 已有 2026-07、现货还停在 2026-06」的状态。
 两条结论直接来自这个事实：
 
-  1. `headline` **只能放 MX 那条**。把现货放进头条，本页的共同最新月会被拖回 6 月，
-     而且 2021-08 之前的 19 年历史会因为「共同历史」被整段砍掉。
+  1. `headline` **只能放 MX 那条**。把现货放进头条，本页的共同最新月会被现货那半边
+     拖慢一档（每月初都会出现「MX 已有上月、现货还没发」的正常状态），
+     而且 2015-01 之前那 13 年 MX 历史会因为「共同历史」被整段砍掉。
   2. 全部 17 条现货列进 `slow_cols`。它们比 MX 晚一档发布，最新月留空是**正常状态**，
      不是解析失败，绝不能参与发布门槛判定。
 
-现货那半边为什么只到 2021-08：更早的数据只存在于 tmx.com/en/resource/<id> 的 PDF 里，
-而整个 tmx.com 对本网络返回 CloudFront 403（实测 curl / urllib / nscurl / curl_cffi /
-本机真实 Chrome 全部 403），没有合规通道。这是数据可得性问题，不是本页的选择。
+━━ 现货那半边 2021-08 换过源，两条列要打断点 ━━
+2021-08 之前 TMX 自己的月度明细只存在于 tmx.com/en/resource/<id> 的 PDF 里，
+而整个 tmx.com 对本网络返回 CloudFront 403（curl / urllib / nscurl / curl_cffi /
+本机真实 Chrome 实测全部 403），至今没有合规通道 —— 这一条没变。
+变的是：那 79 个月改由**监管方** CIRO 的同口径月报补上了
+（`build/basefill/tmx_ciro_2015.py`，一次性脚本；口径实测见 fetch/tmx.py 口径坑 16）。
+
+两把尺子不完全一样。60 个重叠月（2021-08~2026-07）实测，接缝处的**纯口径台阶**：
+
+    tsx_volume_shares      −1.62%   ← 画断点线
+    tmx_all_volume_shares  −0.98%   ← 画断点线
+    tsx / tmx_all / alpha 的成交额  +0.15% ~ +0.17%   ┐ 不画：跨这个月是可比的，
+    笔数三列与 tsxv 三列          0.00% ~ −0.11%      ┘ 画了等于说假话
+
+所以 `_breaks()` 里的换源断点**只绑那两条量的列**。同一条教训 asx.py 记过：
+断点线的语义是「这张图上**这条**序列从这一期起与左侧不可比」，标错比不标更糟。
+
+⚠ **2021 是拼接年**（1–7 月 CIRO、8–12 月 TMX 自报），所以三张分解图里跨 2021→2022
+那一格带着一点口径失真：实测 tsx 成交股数增速被抬高 0.75pp、TMX 合计股数 0.35pp、
+成交额一侧 ≤0.07pp。图注里照实说，不做剔除。
 
 ━━ BOX 期权：本页做不出来 ━━
 TMX 官方**只按季度**披露 BOX（季度 MD&A 里的「最近八个季度」表），没有任何月度口径，
@@ -63,13 +84,16 @@ TMX 合计并没有因此消失：它是第三张图（三分法）的 **bench**
 一个都不写死。
 
 ━━ 有意不上页面的其他列 ━━
-· mx_adv_index_options_contracts —— 实测最后一个非零月是 2020-10，此后 68 个月全是 0。
-  一条归零五年多的死线不提供信息。
+· mx_adv_index_options_contracts —— 最后一个非零月是 2020-10，此后逐月为 0
+  （具体多少个月由 `_zero_tail()` 现算，写进页尾 notes）。一条归零五年多的死线不提供信息。
 
-━━ BAX 未平仓在窗口内恒为 0：这一列照常声明，不在本文件里做特殊处理 ━━
-mx_oi_bax_contracts 最后一个非零月是 2024-05（86,729 张），此后逐月为 0，
-2026-06 起整个图窗口恒为 0。恒为 0 的柱图会让引擎的纵轴量程（`0 .. 最大值×1.22`）
-上下界重合、坐标算成 0÷0，把图画出卡片外 —— 但**这件事已由底座统一处理**
+━━ BAX 未平仓：这一列照常声明，不在本文件里做特殊处理 ━━
+mx_oi_bax_contracts 最后一个非零月是 2024-05（86,729 张），此后逐月为 0。
+⚠ **「窗口内恒为 0」这句话跟着窗口走，别写死。** 本文件曾写着「2026-06 起整个图窗口
+恒为 0」—— 那是图窗口还是「近 25 个月」时候的事；窗口改成 `build/single.py` 的
+`WIN_FROM`（2016-01 起）之后，这条列在窗口里有八年多的非零段，图照常出。
+恒为 0 的柱图会让引擎的纵轴量程（`0 .. 最大值×1.22`）上下界重合、坐标算成 0÷0，
+把图画出卡片外 —— 但**这件事已由底座统一处理**
 （`build/single.py` 的 `flat_zero()` / `flat0_skip()`：窗口内全零的图不出，
 并在「口径与方法说明」里点名，而**该列仍留在末尾核对表里**）。
 所以本文件按常规声明这一列即可，不要在这里摘列：摘了核对表也会跟着少一列，
@@ -103,6 +127,84 @@ def _first_present(col):
     return None
 
 
+def _since(col, tail=''):
+    """组名里那半句「（YYYY-MM 起）」—— 从 CSV 现算，不写死。
+
+    写死过一次的教训就在本文件：四个现货组名写着「2021-08 起」，
+    2026-08-18 把现货回补到 2015-01 之后，那四句话原地变成假的，而没有任何护栏会响
+    （组名只是字符串）。凡是「从哪个月起」一律走这里。
+    读不到列就退回不带月份的版本 —— 缺文件不许在 import 期抛异常。
+    """
+    m = _first_present(col)
+    inner = (m + ' 起' + ('，' + tail if tail else '')) if m else tail
+    return f'（{inner}）' if inner else ''
+
+
+def _span_zh(col):
+    """「YYYY-MM → YYYY-MM 实测 N 个月」——图注里描述一条列覆盖多长，同样现算。"""
+    ms = [r['month'] for r in _rows() if col in r and r[col].strip()]
+    if not ms:
+        return '（本次未能从 CSV 读出覆盖区间）'
+    return f'{ms[0]} → {ms[-1]}，实测 {len(ms)} 个月'
+
+
+def _lm(col):
+    """`_last()` 的月份，缺失时给一句占位 —— 图注不许因为缺一列就在 import 期炸掉。"""
+    return _last(col)[0] or '（最新月未知）'
+
+
+def _lv(col):
+    """`_last()` 的数值（千分位整数），缺失时给一句占位。
+
+    ⚠ 别直接写 f'{_last(c)[1]:,.0f}'：缺列 / 缺文件时那是
+    `TypeError: unsupported format string passed to NoneType.__format__`，
+    而本文件顶上写着「缺文件 / 缺列不许在 import 期抛异常」——
+    炸在这里会让 monthly_run 因为一张页的图注文案挂掉整批。
+    """
+    v = _last(col)[1]
+    return f'{v:,.0f}' if v is not None else '（未能从 CSV 读出）'
+
+
+def _last(col):
+    """该列最后一个有值的 (月, float)；没有返回 (None, None)。
+
+    图注里凡是「实测 2026-06 tsx_value_cad = …」这种举例数字都走这里 ——
+    写死一次就要过期一次，而过期的图注没有任何护栏会喊。
+    """
+    hit = None
+    for r in _rows():
+        v = (r.get(col) or '').strip()
+        if v:
+            try:
+                hit = (r['month'], float(v))
+            except ValueError:
+                pass
+    return hit if hit else (None, None)
+
+
+def _zero_tail(col):
+    """该列末尾连续为 0 的月数 -> (最后一个非零月, 此后连续 0 的月数)。
+
+    ⚠ 别拿 `_first_zero_after_nonzero()` 顶替这里：那个返回的是**第一次**转 0 的月份，
+    序列中间有过零星 0 的时候（mx_adv_index_options_contracts 早年就有）
+    它给的是 2020-01 而不是 2020-10，跟「此后一直是 0」不是一回事。
+    """
+    last_nz, n = None, 0
+    for r in _rows():
+        v = (r.get(col) or '').strip()
+        if not v:
+            continue
+        try:
+            f = float(v)
+        except ValueError:
+            continue
+        if f == 0:
+            n += 1
+        else:
+            last_nz, n = r['month'], 0
+    return last_nz, n
+
+
 def _first_zero_after_nonzero(col):
     """该列**由正数转为 0** 的第一个月（产品停发/迁移用这条）。"""
     seen = False
@@ -127,6 +229,12 @@ def _first_zero_after_nonzero(col):
 # 缺文件 / 缺列不许在 import 期抛异常，否则 monthly_run 会因为一张页的配置炸掉整批。
 # ══════════════════════════════════════════════════════════════════════════════
 import math
+
+#: 三张分解图各画几根完整年度柱。底座取 `run[-(years+1):]` 个完整年 ⇒ 至多 years 根柱
+#: （外加最新年不完整时的 YTD 柱）。下面两个 note 函数**必须切到同样的年数**：
+#: 现货回补到 2015-01 之后完整日历年从 4 个变成 11 个，不切的话图注会逐年报 10 组读数
+#: 而图上只有 4 根柱，「可以直接对上」当场变成假话。
+_DECOMP_YEARS = 4
 
 
 def _num(r, col):
@@ -218,7 +326,7 @@ def _index_split():
             out.append((y1, w * lP * 100, w * lI * 100, w * (lP - lI) * 100))
         except (KeyError, ValueError, ZeroDivisionError):
             continue
-    return out
+    return out[-_DECOMP_YEARS:]          # 只报图上画得出的那几根柱，见 _DECOMP_YEARS
 
 
 def _three_factor():
@@ -249,7 +357,7 @@ def _three_factor():
                         w * lT * 100, w * lS * 100, w * lP * 100))
         except (KeyError, ValueError, ZeroDivisionError):
             continue
-    return out
+    return out[-_DECOMP_YEARS:]          # 只报图上画得出的那几根柱，见 _DECOMP_YEARS
 
 
 def _bench_wedge():
@@ -310,6 +418,48 @@ def _pp(x):
     return f'{x:+.1f}pp'
 
 
+# ── 现货换源（2021-08）：常量放这里，因为下面的图注与断点两处都要用 ──────────
+# 这个月**及其之后**的现货 12 列是 TMX 自报（CTS 新闻稿），之前是监管方 CIRO。
+# 与 fetch/tmx.py 的 `SPOT_START` / build/basefill/tmx_ciro_2015.py 的 `CTS_FROM`
+# 是同一个月。**它不是能从 CSV 现算出来的量**（CSV 里不记每格的出处），所以只能写死；
+# 但 `_breaks()` 会先确认 CSV 真有换源之前的数据才画线 —— 回补哪天被撤掉，
+# 这条断点自己消失，不会留一条指着空气的红线。
+_SRC_SWITCH = '2021-08'
+# 只绑**纯口径台阶 ≥0.5%** 的两条列（实测 tsx −1.62% / TMX 合计 −0.98%）。
+# 另外 10 条列的台阶在 0.00%~0.17% 之间，跨这个月是可比的，画线等于说假话。
+# 台阶怎么量的、为什么不整段改用 CIRO：见 fetch/tmx.py 口径坑 16。
+_SRC_COLS = ('tsx_volume_shares', 'tmx_all_volume_shares')
+# 断点标签，长度与另外两条对齐（理由见下面「断点标签必须短」那段）。
+_SRC_ZH = 'CIRO→TMX 换源'
+
+
+def _splice_note():
+    """三张分解图共用的一句：那根跨拼接年的柱带着多少口径失真。
+
+    **只在拼接年真的落在图上时才出这句话。**换源发生在年中，所以只有那一个日历年
+    （_SRC_SWITCH 所在的年）是「半年 CIRO + 半年 TMX 自报」；它今年还是首格柱的基期，
+    明年就滑出 `_DECOMP_YEARS+1` 的窗口，那时这句话必须自己消失，不能留在图注里
+    指着一根已经不存在的柱。图上画哪几年由 `_cal_years()` 的末尾连续段决定，
+    与底座 `run[-(years+1):]` 同一套。
+
+    失真的量（0.75pp / 0.35pp / ≤0.07pp）是 2026-08-18 拿 CIRO 那份工作簿把 2021 年
+    8–12 月换成同源值重算出来的**一次性实测**：它描述的是 2021 这个固定的历史年份，
+    不随新数据变化，所以写死在这里是对的（CSV 里没有 CIRO 的 2021-08~12，现算不出来）。
+    """
+    ys = [y for y, _a in _cal_years(['tsx_value_cad', 'tsx_volume_shares'])]
+    if _SRC_SWITCH[:4] not in ys[-(_DECOMP_YEARS + 1):]:
+        return ''
+    return (f'<b>⚠️ {_SRC_SWITCH[:4]} 是拼接年。</b>现货 12 列在 {_SRC_SWITCH} 换过源'
+            f'（此前 CIRO、此后 TMX 自报，见页尾「口径与方法说明」），'
+            f'所以 {_SRC_SWITCH[:4]} 那一整年是半年一把尺子。实测把 8–12 月也换成 CIRO '
+            f'重算，跨 {_SRC_SWITCH[:4]}→{int(_SRC_SWITCH[:4]) + 1} 那一格的'
+            f'成交股数增速会低 0.75pp（TMX 合计口径 0.35pp），成交额一侧 ≤0.07pp。'
+            f'本页照实说明、不做剔除 —— 剔除等于自造一条谁也没发过的序列。')
+
+
+_NOTE_SPLICE = _splice_note()
+
+
 # ── 图 A（量 × 价）的图注：把「价」再拆成市场涨跌与品种结构 ────────────────
 _NOTE_PRICE = (
     '<b>本页是全仓唯一能把「市场涨跌」与「品种结构」拆开的一家。</b>'
@@ -332,6 +482,7 @@ _NOTE_PRICE = (
     + '<b>⚠️ 这一层只对 TSX 成立。</b>S&P/TSX Composite 不含 TSX Venture，'
       '拿它去除 TMX 合计的均价，分母里混着仙股，算出来的「结构」有一大截只是 venue 混合比例。'
       '本页三张分解图因此一律画 TSX 主板，TMX 合计只作为第三张图的 bench 出现。'
+    + _NOTE_SPLICE
 )
 
 # ── 图 B（笔数 × 每笔金额）的图注：三因子在这里报全 ────────────────────────
@@ -352,6 +503,7 @@ _NOTE_TRADE = (
     + '<b>⚠️「每笔平均成交额」不是价。</b>它衡量的是订单碎片化程度 —— '
       '同一笔母单被切成更多子单，笔数上升、每笔金额下降，而成交额与股价一点没变。'
       '要读价请看上一张图。'
+    + _NOTE_SPLICE
 )
 
 # ── 图 C（三分法）的图注：子集关系与 2023-11 的口径楔子 ────────────────────
@@ -373,6 +525,7 @@ _NOTE_SHARE = (
        + '。TSX 与 TSX Venture 差着一两个数量级（仙股主导），'
          '所以「TSX 均价相对集团」这一块量的就是成交在这两类票之间的迁移。'
        if _VP else '')
+    + _NOTE_SPLICE
 )
 
 # ── ttm_yoy 两张图的图注 ──────────────────────────────────────────────────
@@ -389,10 +542,13 @@ _NOTE_TTM_MX = (
 _NOTE_TTM_SPOT = (
     '<b>柱与线取自同一列</b>（<code>tmx_all_volume_shares</code>，当月合计），'
     '所以这里没有任何「日均还原成合计」的步骤。'
-    '<b>为什么现货这条要看滚动。</b>加拿大现货只有 2021-08 起的历史，'
-    '而这段里既有 2023-11 的合计口径扩容、又有月度交易日数与到期周期的形状；'
-    '任意连续 12 个月覆盖同一套日历，把这两层里的日历部分整个消掉。'
-    '⚠️ 口径扩容那一层消不掉 —— 它是真实的覆盖范围变化，红色竖虚线标的就是它。'
+    '<b>为什么现货这条要看滚动。</b>加拿大现货这条线（' + _span_zh('tmx_all_volume_shares')
+    + '）里既有 2023-11 的合计口径扩容、又有月度交易日数与到期周期的形状；'
+      '任意连续 12 个月覆盖同一套日历，把这两层里的日历部分整个消掉。'
+      '⚠️ 两条口径线消不掉，它们是真实的覆盖范围 / 计数口径变化，'
+      '红色竖虚线标的就是它们：2023-11 合计纳入 Alpha-X & Alpha DRK，'
+    + _SRC_SWITCH + ' 数据源由 CIRO 换回 TMX 自报（纯口径台阶 −0.98%：TMX 自报的口径'
+      '比 CIRO 低约 1%，与业务无关，见页尾「口径与方法说明」）。'
 )
 
 
@@ -403,7 +559,6 @@ _NOTE_TTM_SPOT = (
 # ⇒ 标签的职责是**标记位置**，不是讲故事：缩到 10 个汉字以内，来龙去脉留给页尾 notes。
 _BAX_ZH = 'BAX→CORRA 迁移'
 _ALPHAX_ZH = 'TMX 合计口径扩容'
-
 # 断点**逐列绑定**，不画成贯穿全页的红线。
 # 不绑列的断点底座会画到本页每一张图上（`Page.breaks_for()` 里 b['col'] 为空就放行），
 # 实测后果：「CDOR 停用…」这条利率合约迁移的红线出现在 S&P/TSX Composite 月末点位、
@@ -434,6 +589,12 @@ def _breaks():
     m = _first_present('alphax_drk_volume_shares')
     if m:
         out += [{'month': m, 'col': c, 'zh': _ALPHAX_ZH} for c in _ALPHAX_COLS]
+    # 现货换源。**先确认 CSV 里真有换源之前的月份**：`build/basefill/tmx_ciro_2015.py`
+    # 没跑过（或被撤掉）时序列就是从 _SRC_SWITCH 起的，那时候画这条线是指着序列左端
+    # 说「左边不可比」—— 左边根本没有东西。
+    first_spot = _first_present('tsx_volume_shares')
+    if first_spot and first_spot < _SRC_SWITCH:
+        out += [{'month': _SRC_SWITCH, 'col': c, 'zh': _SRC_ZH} for c in _SRC_COLS]
     # 两条断点的推导顺序与时间顺序不同（BAX 那条在前推出、月份却在后），
     # 底座画红虚线时按索引取月份，乱序会让标签配错断点 —— 这里统一按月份排。
     return sorted(out, key=lambda b: (b['month'], b['col']))
@@ -445,9 +606,10 @@ SPEC = {
     'title': '多伦多交易所集团（TMX）月度经营指标',
     'csv': 'tmx.csv',
     'ccy': 'CAD',
-    'source': ('Source: Montréal Exchange monthly statistics (m-x.ca) and '
-               'TMX Group Consolidated Trading Statistics press releases; '
-               'format after Goldman Sachs GIR'),
+    'source': ('Source: Montréal Exchange monthly statistics (m-x.ca), TMX Group '
+               'Consolidated Trading Statistics press releases, CIRO Report of '
+               'Marketshare by Marketplace (historical, pre-Aug-2021 cash equities) '
+               'and TMX Money (index history); format after Goldman Sachs GIR'),
 
     # 头条只有 MX 一条 —— 见文件抬头第 1 条。
     # 2002-01 起逐月无洞（实测 295/295），次月第 1–4 个工作日发布，是本页最快、最长的序列。
@@ -464,7 +626,7 @@ SPEC = {
         # （单月 −1.2% 而滚动 +17.0%）—— 读者从图上看不出该信哪一个。
         # 三条同轴之后这张变成 lines，不再有次轴同比；MX 的滚动同比改由末尾
         # 'ttm_yoy' 那张专图给（口径写在标题里）。
-        {'zh': 'MX 衍生品 ADV（2002-01 起）', 'cols': [
+        {'zh': 'MX 衍生品 ADV' + _since('mx_adv_contracts'), 'cols': [
             {'col': 'mx_adv_contracts', 'zh': '日均成交',
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_adv_futures_contracts', 'zh': '期货 ADV',
@@ -553,7 +715,7 @@ SPEC = {
         ]},
 
         # ── 以下全是慢腿（2021-08 起，比 MX 晚一档发布）────────────────
-        {'zh': '加拿大现货成交额（2021-08 起，慢腿）', 'cols': [
+        {'zh': '加拿大现货成交额' + _since('tsx_value_cad', '慢腿'), 'cols': [
             {'col': 'tmx_all_value_cad', 'zh': 'TMX 合计',
              'unit': 'C$bn/month', 'fmt': 'f1', 'scale': 1e-9},
             {'col': 'tsx_value_cad', 'zh': 'TSX',
@@ -564,7 +726,7 @@ SPEC = {
              'unit': 'C$bn/month', 'fmt': 'f1', 'scale': 1e-9},
         ]},
 
-        {'zh': '加拿大现货成交股数（2021-08 起，慢腿）', 'cols': [
+        {'zh': '加拿大现货成交股数' + _since('tsx_volume_shares', '慢腿'), 'cols': [
             {'col': 'tmx_all_volume_shares', 'zh': 'TMX 合计',
              'unit': 'bn shares/month', 'fmt': 'f2', 'scale': 1e-9},
             {'col': 'tsx_volume_shares', 'zh': 'TSX',
@@ -575,7 +737,7 @@ SPEC = {
              'unit': 'bn shares/month', 'fmt': 'f2', 'scale': 1e-9},
         ]},
 
-        {'zh': '加拿大现货成交笔数（2021-08 起，慢腿）', 'cols': [
+        {'zh': '加拿大现货成交笔数' + _since('tsx_transactions', '慢腿'), 'cols': [
             {'col': 'tmx_all_transactions', 'zh': 'TMX 合计',
              'unit': 'mn trades/month', 'fmt': 'f1', 'scale': 1e-6},
             {'col': 'tsx_transactions', 'zh': 'TSX',
@@ -586,7 +748,7 @@ SPEC = {
              'unit': 'mn trades/month', 'fmt': 'f1', 'scale': 1e-6},
         ]},
 
-        {'zh': '月末指数点位（2021-08 起，慢腿）', 'cols': [
+        {'zh': '月末指数点位' + _since('tsx_composite_close', '慢腿'), 'cols': [
             {'col': 'tsx_composite_close', 'zh': 'S&P/TSX Composite',
              'unit': 'index level', 'fmt': 'f0c', 'stock': True},
             {'col': 'tsxv_composite_close', 'zh': 'S&P/TSX Venture Composite',
@@ -598,7 +760,8 @@ SPEC = {
         # 所以口径写进组名 —— 这一组的三张图全都适用，不会误标到别处。
         # 实测（tools/check_yoy_caliber.py）：成交额那条有 1 个月与滚动口径符号相反
         # （2025-12 单月 −2.8% 而滚动 +83.2%）。
-        {'zh': 'Alpha-X & Alpha DRK（2023-11 起，慢腿；次轴：单月同比）', 'cols': [
+        {'zh': 'Alpha-X & Alpha DRK'
+         + _since('alphax_drk_volume_shares', '慢腿；次轴：单月同比'), 'cols': [
             {'col': 'alphax_drk_value_cad', 'zh': '成交额',
              'unit': 'C$bn/month', 'fmt': 'f2', 'scale': 1e-9},
             {'col': 'alphax_drk_volume_shares', 'zh': '成交股数',
@@ -623,8 +786,7 @@ SPEC = {
     # ══ 量价分解：三张图，同一个业务（TSX 主板）三个视角 ══════════════════════
     # 为什么是 TSX 而不是 TMX 合计、为什么三因子拆成两张图，见模块 docstring。
     # 三张都 granularity='monthly_total'：series/tmx.csv 的现货三类列都是**原始月度合计**
-    # （2026-06 tsx_value_cad = 456,631,843,665 加元 / tsx_volume_shares = 10,796,096,148 股 /
-    #  tsx_transactions = 29,942,529 笔），不是日均。
+    # （量级见页尾 notes 里那条现算的举例，11–12 位数），不是日均。
     # ⇒ 一律**不给** weight_col：声明 monthly_total 又给 weight_col 是硬失败，
     #   而真乘上去会把年度合计放大二十几倍，图形却照常画得出来。
     # scale 只做显示换算（金额 ×1e-9 → C$bn、股数 ×1e-9 → bn shares、笔数 ×1e-6 → mn trades），
@@ -647,10 +809,12 @@ SPEC = {
          # 而且日历年的柱标签直接印年份、不带 FY 前缀，不存在偏一年的风险。
          'year_start_month': 1, 'year_label': 'start',
          # 用户指令（2026-08-07）：四家分解图统一「4 根完整日历年柱 + 1 根当年 YTD」。
-         # 现货只有 2021-08 起的历史 ⇒ 完整日历年 2022…2025 共 4 个 ⇒ 目前画得出
-         # 3 根完整年柱（底座取 run[-(years+1):]，够几根画几根，明年自动多一根）；
-         # 最新年不完整时底座自动补 YTD 柱（两侧月份对齐去年同期，见 single._ytd）。
-         'years': 4,
+         # 底座取 run[-(years+1):] 个完整年 ⇒ 至多 years 根柱；最新年不完整时自动补
+         # YTD 柱（两侧月份对齐去年同期，见 single._ytd）。
+         # ⚠ 现货回补到 2015-01 之后完整日历年有 11 个，**画的仍然只有 4 根** ——
+         #   图注里 _index_split() / _three_factor() 也切到同样的 _DECOMP_YEARS，
+         #   否则会出现「图注报 10 年、图上 4 根柱」的对不上。
+         'years': _DECOMP_YEARS,
          'note': _NOTE_PRICE},
 
         # ── 图 B：笔数 × 每笔金额。派生量是每笔平均成交额 ⇒ kind='per_trade'。
@@ -668,8 +832,8 @@ SPEC = {
          'price_zh': '每笔平均成交额',
          'price_unit': 'C$/trade',
          'price_fmt': 'f0c', 'price_scale': 1e3,
-         # years=4：同图 A（4 根完整日历年柱 + YTD，数据够时）。
-         'year_start_month': 1, 'year_label': 'start', 'years': 4,
+         # 同图 A：_DECOMP_YEARS 根完整日历年柱 + YTD（数据够时）。
+         'year_start_month': 1, 'year_label': 'start', 'years': _DECOMP_YEARS,
          'note': _NOTE_TRADE},
 
         # ── 图 C：三分法。bench = TMX 集团合计，子集关系逐月精确成立（见 _NOTE_SHARE）。
@@ -693,8 +857,8 @@ SPEC = {
          'price_zh': '加权平均成交价',
          'price_unit': 'C$/share',
          'price_fmt': 'f2',
-         # years=4：同图 A（4 根完整日历年柱 + YTD，数据够时）。
-         'year_start_month': 1, 'year_label': 'start', 'years': 4,
+         # 同图 A：_DECOMP_YEARS 根完整日历年柱 + YTD（数据够时）。
+         'year_start_month': 1, 'year_label': 'start', 'years': _DECOMP_YEARS,
          'note': _NOTE_SHARE},
     ],
 
@@ -721,19 +885,46 @@ SPEC = {
     ],
 
     'notes': [
-        '本页有**两段起点差 19 年的历史**：MX 衍生品自 2002-01（实测 295 个月零断档），'
-        '加拿大现货自 2021-08（实测 59 个月零断档）。两者不是同一段历史，'
-        '任何「TMX 从 2002 年以来如何」的说法只对 MX 成立。'
-        '现货更早的数据只存在于 tmx.com/en/resource 的 PDF 里，'
-        '而该域对本网络返回 CloudFront 403（curl / urllib / nscurl / curl_cffi / '
-        '本机真实 Chrome 实测全部 403），没有合规通道，属数据不可得而非本页取舍。',
+        '本页有**三段起点不同的历史**，别把它们当成一段：'
+        f'MX 衍生品 {_span_zh("mx_adv_contracts")}（零断档）；'
+        f'月末指数点位 {_span_zh("tsx_composite_close")}；'
+        f'加拿大现货成交 {_span_zh("tsx_value_cad")}；'
+        f'Alpha-X & Alpha DRK {_span_zh("alphax_drk_volume_shares")}。'
+        '任何「TMX 从 20xx 年以来如何」的说法都要按列限定 —— 只有 MX 那条回得到 2002 年。'
+        '⚠️ 三段各有各的地板，而且都是**源的地板**不是本页的取舍：'
+        'MX 的 m-x.ca 月度 xlsx 到 2002-01 为止（2001-12 及更早干净 404）；'
+        '现货到 2015-01 为止（CIRO 官方页面写明 2007–2014 的报表需人工索取）；'
+        'Alpha-X & Alpha DRK 到 2023-11 为止（TMX 与 CIRO 两个互相独立的源'
+        '**同一个起点**，说明这两个盘口此前不单独披露，不是我们漏解析）。',
 
-        '现货比 MX 晚一档发布：写这份配置的 2026-08-06，MX 已有 2026-07、现货仍停在 2026-06。'
+        '现货比 MX 晚一档发布：每月初都会出现「MX 已有上月、现货还没发」的正常状态。'
         '所以 17 条现货列全部标为 slow_cols，最新月留空是正常状态，不参与发布门槛。',
+
+        f'**{_SRC_SWITCH} 现货 12 列换过数据源**：之前是监管方 CIRO 的'
+        '『Report of Marketshare by Marketplace (Historical 2015–Present)』，'
+        '之后是 TMX 自己的 Consolidated Trading Statistics 新闻稿。'
+        'TMX 自家 2021-08 之前的月度明细只挂在 tmx.com/en/resource 的 PDF 上，'
+        '该域对本网络整段返回 CloudFront 403（curl / urllib / nscurl / curl_cffi / '
+        '本机真实 Chrome 实测全部 403），至今没有合规通道 —— 所以历史只能由监管方补。'
+        '两把尺子不完全一样：60 个重叠月（2021-08~2026-07）逐月比过，'
+        '笔数三列与 TSXV 三列的比值中位数是 1.00000（多数月逐位相同），'
+        '而 tsx_volume_shares 是 0.98683、tsx_value_cad 1.00162、alpha_value_cad 1.00249 ——'
+        '**量偏低、额偏高，方向相反**，所以不是「含不含大宗对敲」那种可加减的一块，'
+        '是两家各自的统计口径。接缝处的纯口径台阶：tsx_volume_shares −1.62%、'
+        'TMX 合计股数 −0.98%，三条成交额 +0.15%~+0.17%，其余 7 列 |台阶| ≤0.11%。'
+        f'⇒ 图上只给前两条列画 {_SRC_SWITCH} 的红色竖虚线（标签「{_SRC_ZH}」），'
+        '其余列跨这个月是可比的，画了等于说假话。'
+        '**回补只往左填空、不覆盖已有值**：2021-08 起印在图上的仍是 TMX 官方新闻稿的原值。'
+        '⚠️ 2021 是拼接年（1–7 月 CIRO、8–12 月 TMX 自报），'
+        '所以三张分解图里跨 2021→2022 那一格的股数增速被抬高约 0.75pp（TMX 合计 0.35pp），'
+        '成交额一侧 ≤0.07pp。照实说明，不做剔除 —— 剔除等于自造一条谁也没发过的序列。',
 
         '短端利率合约在 2024-07 完成基准换代：CDOR 停用，BAX 的 ADV 自该月起为 0'
         '（最后一个非零月是 2024-06），CORRA 合约 CRA 接棒。'
-        '实测 2026-07：CRA ADV 191,902 张/日、BAX 0、短端利率合计 192,122 张/日。'
+        f'实测 {_lm("mx_adv_cra_contracts")}：'
+        f'CRA ADV {_lv("mx_adv_cra_contracts")} 张/日、'
+        f'BAX {_lv("mx_adv_bax_contracts")}、'
+        f'短端利率合计 {_lv("mx_adv_stir_futures_contracts")} 张/日。'
         '本页把 BAX 与 CRA 画在一起而不是各画各的 —— 只看其中一条会得到「短端利率业务'
         '归零」或「凭空长出一个新产品」两个都不对的结论。断点月份由 series/tmx.csv '
         '里 BAX 转 0 的那一月读出，没有写死。'
@@ -745,20 +936,26 @@ SPEC = {
 
         'TMX 合计口径在 2023-11 变大：Alpha-X & Alpha DRK 自该月起单独披露并计入合计。'
         '实测恒等式核过 —— 2023-10 及之前 tmx_all_volume_shares 恰等于 TSX + TSXV + Alpha 三家之和'
-        '（差为 0）；2023-11 起恰等于三家 + Alpha-X&DRK（2026-06 该项 33,865,231 股）。'
+        '（差为 0）；2023-11 起恰等于三家 + Alpha-X&DRK'
+        f'（{_lm("alphax_drk_volume_shares")} 该项 '
+        f'{_lv("alphax_drk_volume_shares")} 股）。'
         '所以合计序列跨 2023-11 不可直连。'
         '图上那条红线的标签只写「TMX 合计口径扩容」（理由同上：标签要短），'
         '且**只画在受影响的六列上** —— TMX 合计三列（覆盖范围变大）与 Alpha-X&DRK 三列'
         '（序列自此开始）。TSX / TSXV / Alpha 三档一列都没变，它们的图上不该有这条线。',
 
-        '**现货三类列在 series/tmx.csv 里是原始单位**：实测 2026-06 '
-        'tsx_value_cad = 456,631,843,665（加元）、tsx_volume_shares = 10,796,096,148（股）、'
-        'tsx_transactions = 29,942,529（笔）。直接上图轴刻度会是 11–12 位数，'
+        '**现货三类列在 series/tmx.csv 里是原始单位**：实测 '
+        f'{_lm("tsx_value_cad")} '
+        f'tsx_value_cad = {_lv("tsx_value_cad")}（加元）、'
+        f'tsx_volume_shares = {_lv("tsx_volume_shares")}（股）、'
+        f'tsx_transactions = {_lv("tsx_transactions")}（笔）。'
+        '直接上图轴刻度会是 11–12 位数，'
         '所以本页用 spec 的 scale 字段做**纯显示换算**：金额 ×1e-9 → C$bn、'
         '股数 ×1e-9 → bn shares、笔数 ×1e-6 → mn trades。'
         'scale 只影响本页的显示，series/tmx.csv 与 build/notional.py 读到的仍是原值，'
         '删掉本文件这些除数即随之消失，不碰任何公共代码。'
-        'MX 那半边的张数（2026-07 ADV 918,716 张/日）量级本来就可读，不做换算。',
+        f'MX 那半边的张数（{_lm("mx_adv_contracts")} ADV '
+        f'{_lv("mx_adv_contracts")} 张/日）量级本来就可读，不做换算。',
 
         'BOX 期权做不出月度序列：TMX 官方只在季度 MD&A 里按季披露（series/tmx_box_q.csv，'
         '实测 8 行 2024-Q3 → 2026-Q2），BOX 自身站点也不发月度统计。'
@@ -767,8 +964,10 @@ SPEC = {
         '本页全部金额为加元。跨币种比较由 build/notional.py 统一换算：'
         '流量（成交额、成交股数/笔数）配月均汇率，存量（月末未平仓、月末指数点位）配月末汇率。',
 
-        '未上页面的月频列：mx_adv_index_options_contracts（最后一个非零月 2020-10，'
-        '此后 68 个月全为 0 的死列）、trading_days_rates 与 trading_days_equity'
+        '未上页面的月频列：mx_adv_index_options_contracts（最后一个非零月 '
+        f'{_zero_tail("mx_adv_index_options_contracts")[0] or "（未知）"}，此后连续 '
+        f'{_zero_tail("mx_adv_index_options_contracts")[1]} 个月全为 0 的死列）、'
+        'trading_days_rates 与 trading_days_equity'
         '（两套分母，每年 9 月与 11 月两者不等；ADV 官方直接给，本页不做除法）。',
     ],
 }

@@ -43,11 +43,22 @@ C. FWB 现货月度统计（快腿，Xetra / Frankfurt 分场所与分资产类�
           （href 是**相对路径**，Eurex 那边是绝对路径，两家写法不同）
    格式   BIFF .xls（xlrd），24 张 sheet，本模块只读「Cover」+「Total View」。
    ⚠ 官方**只挂 20 期**（2024-12 → 2026-07），这是全模块唯一的浅坑。见口径坑 9。
+   历史 2016-01 → 2023-12 那一段**不是本模块抓的**，是
+          `build/basefill/db1_spot_2016.py` 一次性回填进去的（archive.org 上那批
+          官方工作簿存档副本 + 同站月度现货新闻稿）。那两个源都够不着「官方 live
+          源 + 当前版式」这条线，理由写在该脚本的 docstring 里。见口径坑 9。
 
-不进管道的两个源（只作人工核对）：现货月度新闻稿（URL 里的 id 不可预测）、
-Clearstream 自己的月报页（newsroom 列表页是 Next.js 客户端渲染，无 sitemap.xml、
-`?page=` 无效，**发现不了新链接**，因此不可能无人值守）。Clearstream 那份的价值是
-给出 ICSD / CSD / IFS 三分拆，而 IR 台账只给合并数 —— 见口径坑 2。
+不进管道的一个源（只作人工核对）：Clearstream 自己的月报页（newsroom 列表页是
+Next.js 客户端渲染，无 sitemap.xml、`?page=` 无效，**发现不了新链接**，因此不可能
+无人值守）。它的价值是给出 ICSD / CSD / IFS 三分拆，而 IR 台账只给合并数 —— 见口径坑 2。
+
+⚠ 本 docstring 原先还写着「现货月度新闻稿的 URL 里 id 不可预测，所以不进管道」。
+  **那句话是错的，2026-08-18 实测推翻**：新闻稿列表页用的正是本模块已经在用的同一套
+  翻页接口（.../press-releases/4091716!search?pageNum={0..94}&hitsPerPage=50，
+  95 页 4,745 条回到 2008-12），与 3848!search / 4090756!search 完全同构。
+  新闻稿之所以仍然不进本模块，理由换成了一条更硬的：它给的是四舍五入过的 €bn，
+  而本模块每月都能从官方工作簿拿到满精度原值 —— 它只在回填那 55 个够不着的老月份
+  时有用，一次用完就再也用不上，所以放在 build/basefill/ 而不是这里。
 
 ════════════════════════════════════════════════════════════════════════════
 发布节奏
@@ -176,14 +187,19 @@ max(Eurex Cover Created on, FWB Cover Created on) —— 两条快腿都到齐�
    （同一张表还有一个反向的表头笔误：`Total order book volume (in €m)` 实际单位是 EUR ——
    2026-06 那格 188,944,170,073.75 对应新闻稿的 €188.94 bn。别照表头换算。）
 
-9. **FWB 分资产类别只有 20 期（2024-12 起），但场所级月度值能白捡到 2024-01。**
+9. **FWB 官方只挂 20 期（2024-12 起）；本模块自己能到 2024-01，再往回是回填的。**
    每期「Total View」除了当月的 5×2 分类块，底部还有两块：本年度**逐月**的
    Xetra / Frankfurt order book turnover（EUR），以及 2001–2025 的**年度**值（Mio. EUR）。
    把 20 期全下一遍，`turnover_xetra_eurbn` / `turnover_fwb_eurbn` 因此覆盖
-   **2024-01 → 2026-07 共 31 个月**（本模块已实现，跨文件重叠月逐位一致，零冲突）；
+   **2024-01 → 最新月**（本模块已实现，跨文件重叠月逐位一致，零冲突）；
    而分资产类别列仍只有各期自己的报告月。年度块不入库（本仓只做月度）。
-   再深的现货历史只能用 `turnover_cash_total_eurbn`（台账口径，Xetra+Frankfurt 合计，
-   2010-01 起）—— 但那是慢腿。
+   ⚠ 这是本模块的**物理天花板，不是抓取器的窗口没开**：实测
+   4090756!search 翻到 pageNum=1 就 blocks=0，官方 CMS 现在就只挂 20 条。
+   2016-01 → 2023-12 那一段是 `build/basefill/db1_spot_2016.py` 一次性回填的
+   （腿 A = archive.org 上 32 期官方工作簿存档副本，满精度；
+     腿 B = 同站月度现货新闻稿，四舍五入值）。**回填值与本模块的值口径完全相同**
+   （单边计的 order book turnover，同样两个场所），差别只在有效数字，
+   逐月都过了「Xetra + 法兰克福 ≡ turnover_cash_total_eurbn」的台账闭合检验。
    附带一个后果：「Total View」的行数每月加一行，**任何按行号写死的解析都会漂**，
    所以本模块一律按 A 列文本匹配行。
 
@@ -275,8 +291,34 @@ kind  : flow_month  当月累计（配月均汇率）
 自 2002-01；gsf_collateral 自 2007-01；Eurex 全部列自 2008-01（dividend 组自 2008-06、
 FVS 自 2009-05、FBTP 自 2009-09、FOAT 自 2012-04）；vol_fd_total / turnover_cash_total /
 settle_* 自 2010-01；auc_* 与 aum_stoxx_dax_etf 自 2012-01；360T 与商品与 cash_balances
-自 2015-01；otc_* 与 vol_licensed 自 2016-01；turnover_xetra/fwb 自 2024-01；
-分资产类别列自 2024-12。早于首月的行天然为空，不是解析失败。
+自 2015-01；otc_* 与 vol_licensed 自 2016-01。早于首月的行天然为空，不是解析失败。
+
+FWB 现货那 10 列 2026-08-18 回填过（build/basefill/db1_spot_2016.py），
+**首月与空洞逐列如下**，空洞是官方那几个月压根没有可用披露，不是解析失败：
+
+| 列                              | 首月    | 有数 | 无洞连续自 | 空洞（逐段） |
+|---------------------------------|---------|------|------------|--------------|
+| turnover_xetra_eurbn            | 2016-01 | 127  | 2016-01    | 无 |
+| turnover_fwb_eurbn              | 2016-01 | 127  | 2016-01    | 无 |
+| turnover_xetra_equities_eurbn   | 2016-06 | 107  | 2020-01    | 2016-07；2017-06~2018-04；2018-06~07；2019-12 |
+| turnover_xetra_etp_eurbn        | 2016-06 | 107  | 2020-01    | 同上 |
+| turnover_xetra_structured_eurbn | 2016-06 |  21  | —          | 官方多数月本来就不发这一格（写 '-' 或空） |
+| turnover_fwb_equities_eurbn     | 2016-06 |  62  | 2022-05    | 2016-07；2017-06~2022-04 |
+| turnover_fwb_bonds_eurbn        | 2016-06 |  62  | 2022-05    | 同上 |
+| turnover_fwb_structured_eurbn   | 2016-06 |  62  | 2022-05    | 同上 |
+| turnover_fwb_etp_eurbn          | 2016-06 |  52  | 2024-12    | 上面那些 + 2023-05~07；2023-11；2024-06~11 |
+| turnover_fwb_funds_eurbn        | 2016-06 |  52  | 2024-12    | 同上 |
+
+空洞的两个成因，回填脚本各有机器判据：
+  (a) 那个月既没有存档工作簿、官方也没发月度新闻稿（2016-07、2017-06~2018-04 的
+      散文稿只给两个场所总额，给不出分场所的分类拆分）；
+  (b) 新闻稿印的位数太粗，过不了脚本的精度闸门 —— 法兰克福 etp/funds 在 0.03~0.2 €bn
+      量级，1 位小数就是 ±25%~50%，2 位小数的 funds 也还有 ±17%，入库等于造噪声。
+
+**精度分层**（画图与跨月比较必须知道）：满精度（官方工作簿原值）= 2016-06、
+2016-08~2017-05、2022-01~2024-05 与 2024-12 起；其余月份是新闻稿的四舍五入值，
+其中 2016-01~2022-07 是 1 位小数 €bn、2022-08 起是 2 位小数。
+两条场所总额列的最大相对误差：Xetra ≤0.06%、法兰克福 ≤2.2%。
 
 ━━ 依赖 ━━ openpyxl（读 IR 台账 xlsx）、xlrd（读两个 .xls；xlrd≥2.0 不再读 xlsx，
 所以两个库都要）。不依赖 pandas。
@@ -364,17 +406,25 @@ _META = [
     # 唯一一个产品级空格）。所以 OI 的起点比 ADV 晚一个月，这不是解析失败。
     ('oi_vstoxx_fut_contracts',        'eurex', 'stock_eop',  '2009-06'),
     # ── 快腿 B：FWB 现货工作簿 ──
-    ('turnover_xetra_eurbn',           'fwb',   'flow_month', '2024-01'),
-    ('turnover_fwb_eurbn',             'fwb',   'flow_month', '2024-01'),
-    ('turnover_xetra_equities_eurbn',  'fwb',   'flow_month', '2024-12'),
-    ('turnover_xetra_etp_eurbn',       'fwb',   'flow_month', '2024-12'),
-    # Xetra 的结构化产品格常空（20 期里 5 期有数，最大 0.0029 €bn），故不设 first_month
+    # ⚠ 这 10 列的 first_month 是「**工作簿里必有这一格**」的判据，2026-08-18 随
+    #   build/basefill/db1_spot_2016.py 的回填一起往前挪到了 2016 —— 依据是那批
+    #   archive.org 存档的官方工作簿（2016-06 起，版式与今天同构），不是估计。
+    #   它**不等于**「series 从这个月起没有空洞」：官方没发工作簿也没发新闻稿的月份
+    #   照样是空的，各列的空洞逐段列在下面「各列首个非空月」那节。
+    #   抓取器每月只解析 live 挂着的那 20 期（2024-12 起），所以这几个值对无人值守
+    #   那条路没有行为影响；改它是为了让「哪个月起官方该有这一格」这句话与实测一致。
+    ('turnover_xetra_eurbn',           'fwb',   'flow_month', '2016-01'),
+    ('turnover_fwb_eurbn',             'fwb',   'flow_month', '2016-01'),
+    ('turnover_xetra_equities_eurbn',  'fwb',   'flow_month', '2016-06'),
+    ('turnover_xetra_etp_eurbn',       'fwb',   'flow_month', '2016-06'),
+    # Xetra 的结构化产品格常空（live 20 期里 5 期有数，最大 0.0029 €bn；
+    # 2016~2023 的存档期里也是零零星星），故不设 first_month
     ('turnover_xetra_structured_eurbn', 'fwb',  'flow_month', None),
-    ('turnover_fwb_equities_eurbn',    'fwb',   'flow_month', '2024-12'),
-    ('turnover_fwb_etp_eurbn',         'fwb',   'flow_month', '2024-12'),
-    ('turnover_fwb_bonds_eurbn',       'fwb',   'flow_month', '2024-12'),
-    ('turnover_fwb_funds_eurbn',       'fwb',   'flow_month', '2024-12'),
-    ('turnover_fwb_structured_eurbn',  'fwb',   'flow_month', '2024-12'),
+    ('turnover_fwb_equities_eurbn',    'fwb',   'flow_month', '2016-06'),
+    ('turnover_fwb_etp_eurbn',         'fwb',   'flow_month', '2016-06'),
+    ('turnover_fwb_bonds_eurbn',       'fwb',   'flow_month', '2016-06'),
+    ('turnover_fwb_funds_eurbn',       'fwb',   'flow_month', '2016-06'),
+    ('turnover_fwb_structured_eurbn',  'fwb',   'flow_month', '2016-06'),
     # ── 慢腿：IR 台账 ──
     ('trading_days_cash',              'dbg',   'count',      '2002-01'),
     ('vol_fd_total_contracts',         'dbg',   'flow_month', '2009-01'),
@@ -854,12 +904,20 @@ def _fwb_row_index(sh):
     return idx
 
 
-def _parse_fwb(path, month):
+def _parse_fwb(path, month, self_tol=1e-6):
     """解析一期 FWB 现货工作簿。
 
     返回 ({'YYYY-MM': {列: 值}}, Cover 自述生成日)。
     除报告月自己的 5×2 分资产类别块之外，还顺手把「本年度逐月」块里的场所级总额
     一并带出来 —— 那是白捡的一年历史（口径坑 9），跨文件重叠月实测逐位一致。
+
+    self_tol: 报告月那一格「顶部分类块 Total」与「本年度逐月块」两处数的自洽容差
+        （€bn）。**默认 1e-6（= €1）就是原来的行为，抓取器每月跑的那条路不受影响。**
+        放宽只给 build/basefill/db1_spot_2016.py 用：2016/2017 那批 archive.org 存档
+        工作簿里，这两块表的法兰克福尾数不同步（32 期里 5 期，最大 2017-02 的
+        6.7e-5 €bn = €66,825，最小 2016-08 的 1.0e-6 €bn = €1,005）。量级、场所、
+        月份全都对得上，是官方两块表自己没对齐，不是解析错行 —— 但也不能默默放过，
+        所以做成显式形参：谁放宽谁在调用点写清楚为什么。
     """
     xlrd = _xlrd()
     wb = xlrd.open_workbook(path)
@@ -915,7 +973,7 @@ def _parse_fwb(path, month):
         if mon == month:
             # 同一份文件里的两处数必须自洽，不自洽说明行定位错了
             for k, v in vals.items():
-                if v is not None and abs(v - rec[k]) > 1e-6:
+                if v is not None and abs(v - rec[k]) > self_tol:
                     raise Db1FetchError('%s 的 %s 月度块 %r 与顶部 Total %r 不一致'
                                         % (os.path.basename(path), k, v, rec[k]))
         else:
@@ -1182,7 +1240,10 @@ def update(series_dir, cache_dir):
     if not fwb_idx:
         raise Db1FetchError('FWB 列表页一期都没解析出来')
     fwb_latest = max(fwb_idx)
-    # 分资产类别列只有各期自己的报告月才有，所以用它判断「这一期下过没有」
+    # 分资产类别列只有各期自己的报告月才有，所以用它判断「这一期下过没有」。
+    # ⚠ 2016-01~2023-12 那段历史是 build/basefill/db1_spot_2016.py 回填的，
+    #   不在 fwb_idx 里（官方只挂 20 期），所以这里永远只会看到 live 那 20 个月 ——
+    #   看到 CSV 里有 2016 年的现货数却只下 1 期文件，不是漏抓。
     need_fwb = [m for m in sorted(fwb_idx)
                 if not (have.get(m) or [''] * len(header))[idx['turnover_xetra_equities_eurbn']].strip()]
     if fwb_latest not in need_fwb:                    # 理由同 Eurex 那边的 recheck

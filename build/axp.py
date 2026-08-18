@@ -33,6 +33,7 @@ import pandas as pd
 
 import axisfmt
 import brief as B
+import mrwin                            # 窗口左端 / 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
 import yoy as Y        # 同比口径的唯一实现（build/yoy.py）；kind 必填，传错会抛而不是静默给错数
@@ -43,6 +44,21 @@ SERIES = os.path.join(ROOT, 'series')
 
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+#: 时序图窗口的左端。全站统一（build/cboe.py / build/cme.py 的同名 `WIN_FROM`、
+#: build/msci.py 的 `WIN0` 都是这一个日期），理由也是同一个：**数据回补到 2016
+#: 而窗口停在近两年，等于回补给谁看**。
+#: 本页三条序列长度不同，一律「只往右让、不往左借」——
+#:   trust    2016-01 起（本轮回补，127 期）→ 真的从 2016-01 画
+#:   axp.csv  2016-01 → 2026-03（123 期）  → 真的从 2016-01 画
+#:   新口径   2024-05 起（27 期）          → 从它自己的起点画，不补 0、不外推
+#: 窗口长度一律走 `wn()` 现算，**页内不再出现任何字面量窗口长度** —— 以前 Exhibit 8-11
+#: 各写一个 25、图注里的「窗口内 min–max」再写一个 25，两处迟早分叉。
+WIN_FROM = pd.Period('2016-01', 'M')
+#: 例外：Exhibit 13 / 15 的季节性图固定 13 个月，这是 CONTRACT.md §5.4 的「近期图」规矩
+#: （13 期够算首末 y/y 与 prior-12mo 均值），不是遗漏的窗口。把它拉到 127 期会把
+#: 「近一年 vs 同月常态」这张图的题眼画没：灰柱与蓝柱各 127 根、谁也看不出差在哪。
+WIN_SEASON = 13
 
 # ── 原 deck 逐字照搬的口径文案 ──
 SRC_N = 'AXP 8-K Item 7.01, combined Card balances basis; format after J.P. Morgan'
@@ -60,6 +76,32 @@ JUN_NOTE = (f'{ONEOFF_M.strftime("%b-%y")} write-off rate cut ~{ONEOFF_C:.1f}pp 
 TRUST_SRC = ('American Express Credit Account Master Trust monthly Form 10-D '
              '(SEC CIK 0001003509)')
 TRUST_NOTE = 'Trust pool = revolve-eligible balances only, so its rates sit below the 8-K rates'
+# 「8-K 与 10-D 同日报送」这条以前写的是「近 31 期 31/31 同日」—— 一个**随窗口滚动却
+# 写死在文案里**的数字：下个月它就该是 32/32，而没有任何东西会去改它。
+# trust 回补到 2016-01 之后重新全量核过一次（2026-08-18，比对脚本见 fetch/axp.py 文件头）：
+# 拿库内 127 个月的 10-D filing_date 去比 AXP 8-K(Item 7.01) 的申报日，
+# EDGAR「recent」索引能覆盖的 83 个月 83/83 同日；更早的 44 个月 8-K 索引已滚出，没核过。
+# 换成一句**带日期与范围的历史陈述**，它不会随窗口滚动而变假；要更新就重跑那段比对。
+SAME_DAY_NOTE = ('Form 10-D 与 8-K 同日报送：2026-08-18 全量核对，'
+                 'EDGAR 8-K 索引可覆盖的 83 个月 83/83 同日，'
+                 '更早的 44 个月（10-D 申报日早于 2019-10-15）索引已滚出、未核')
+
+# ── Trust 的结构性断点：2018-10 信托加池 ──────────────────────────────────────
+# 窗口从 25 期放到 127 期之后，这个断点第一次进到图里，所以本轮必须登记
+# （CONTRACT.md §5.2：口径断点要画出来，不能只在图注里提一句）。
+# 出处：该期 10-D 的 A 段 —— `Addition of Principal Receivables 7,829,153,847.24`，
+# 期末本金应收 22.915bn → 30.840bn（+34.6%），账户数 12,499,212 → 16,372,586。
+# 为什么比率图也要画这条线：加池发生在**月中**，分母（期末余额）当月就整个变大，
+# 分子（当月收款）只反映了一部分，于是 2018-10 那一点被机械性地压下去 ——
+# 超额利差 17.38% → 15.57% → 次月 18.72%，组合收益率 21.84% → 19.42% → 23.26%。
+# **那个 15.57% 恰好是本页 Exhibit 8 窗口内的最低点**，不标出来就会被读成一次信用事件。
+# 加池之后池子换了成分（多了 390 万个账户），所以语义正是 break_at 的
+# 「从这一期起与左侧不可比」，不是「这一个月是异常值」。
+POOL_ADD = pd.Period('2018-10', 'M')
+# 标签要短：Exhibit 8 是 127 根柱的 gs_bar，柱顶逐格数值标签本来就密，引擎那套
+# 竖排标签避让在这个密度下找不到空档 —— 实测 20 字的版本与柱值标签压 86px²，
+# visual_qa 判 🔴。完整解释放在图注与口径说明第 4 条，竖线旁边只要够认出是哪回事。
+POOL_ADD_LABEL = '加池 +$7.8bn'
 
 SEC_A = '【新口径 · Card balances】'
 SEC_T = '【Lending Trust · Form 10-D】'
@@ -127,7 +169,7 @@ for df, who in ((new, 'axp_newbasis.csv'), (trust, 'axp_trust.csv'), (old, 'axp.
     if len(d) and (d != 1).any():
         raise SystemExit(f'{who} 月份不连续')
 
-# 发布日：10-D 的 filing_date（8-K 与 10-D 近 31 期 31/31 同日报送）
+# 发布日：10-D 的 filing_date（8-K 与 10-D 同日报送，核对范围见 SAME_DAY_NOTE）
 _tf = pd.read_csv(os.path.join(SERIES, 'axp_trust_full.csv'))
 _tf['month'] = pd.PeriodIndex(_tf['month'], freq='M')
 _fd = _tf.set_index('month')['filing_date']
@@ -205,6 +247,41 @@ def tail_contiguous(s):
             start = i
             break
     return s.iloc[start:]
+
+
+def wn(s, contiguous=True):
+    """这张图该画多少期 —— 从 `WIN_FROM`（或序列自己的起点，取更晚者）数到末月。
+
+    返回的是**期数**，因为下游各个 `*_ex()` helper 统一用 `.iloc[-win:]` 取窗口；
+    `.iloc[-n:]` 在 n 超过序列长度时自动夹到序列长度，所以「只往右让、不往左借」
+    这条规矩由算式本身保证，不靠调用点自觉。
+
+    `contiguous=True` 时先过 `tail_contiguous()`，与 `gs_bar_ex` / `bar_yoy_ex`
+    内部对序列做的处理**逐字相同** —— 两处不一致就会出现「图注说窗口 25 期、
+    图上画了 27 根柱」。DataFrame（`multi_line_ex`）不做 dropna，传 index 进来即可。
+    """
+    if isinstance(s, pd.PeriodIndex):
+        idx = s
+    else:
+        idx = (tail_contiguous(s) if contiguous else s.dropna()).index
+    return max(1, int(sum(1 for p in idx if p >= WIN_FROM)))
+
+
+def mark_pool_add(ex, idx):
+    """窗口里跨到 2018-10 就画红色竖虚线 + 竖排标签；跨不到就什么都不做。
+
+    位置由**这张图自己的窗口索引**现算，不写死下标 —— 每张 trust 图的左端各不相同
+    （Exhibit 8/9 从 2016-01，Exhibit 10/11 被 mrwin 裁到 2024-05），
+    写死下标的话线会画到别的月份上，而那是最难发现的一类错：图上有一条线，位置是错的。
+    `break_at` 的语义是「从这一期起与左侧不可比」，引擎画在该期柱的**左缘**，
+    所以传的就是该月在窗口里的下标。
+    """
+    pos = [i for i, p in enumerate(idx) if p == POOL_ADD]
+    if not pos:
+        return ex
+    ex['break_at'] = pos[0]
+    ex['break_label'] = POOL_ADD_LABEL
+    return ex
 
 
 ALIGN_WASTE_MAX = 0.38      # 与 assets/charts.js 的 ALIGN_WASTE_MAX 同值
@@ -335,11 +412,34 @@ def gs_bar_ex(n, ttl, s_full, *, win, yfmt, fmt, ylab, pct_series=False,
         ex['yoy'] = {'name': ('y/y (pp, RHS)' if pct_series else 'y/y (RHS)'), 'color': 'GOLD',
                      'yfmt': yoy_yfmt or ('pp1' if pct_series else 'pct0'),
                      'values': L(y.values)}
-    if note:
-        ex['note'] = note
+    ex['note'] = ((note or '') + _lag_why(ex, d.index, '同比',
+                                          '单月同比要 12 个月历史才有第一个点')) or None
+    if not ex['note']:
+        del ex['note']
     if src_extra:
         ex['src_extra'] = src_extra
     return ex
+
+
+def _lag_why(ex, idx, zh, lag_zh):
+    """柱有值而次轴那条派生线还没有 —— 把「短了几期、从哪一期起」写成一句图注。
+
+    `gs_bar` 的 `yoy` / `bar_line_dual` 的 `line` 走的是引擎 `polyline` 的
+    `doSmooth=false` 那一支，null 是断笔，**画得对**，所以这里不裁窗口、只解释。
+    （要裁的是 `mrwin.DENSE` 那类平滑图型，见 `multi_line_ex`。）
+
+    窗口 25 期时这段缺口占四成、读者一眼当成「图就长这样」；放到 127 期之后它变成
+    左端一小截没有线的柱，更像「数据缺了」。判据与措辞都借 `mrwin.resolve()`，
+    不另写一份 —— 同一件事两处各写各的正是本仓反复吃亏的地方。**只调用，不改它。**
+    """
+    line = ex.get('yoy') or (ex.get('line') if ex.get('kind') == 'bar_line_dual' else None)
+    if not line:
+        return ''
+    main = ex.get('values') or (ex.get('bar') or {}).get('values') or []
+    labels = [mlab(p) for p in idx]
+    legs = [mrwin.Leg('main', '柱', main, 'primary'),
+            mrwin.Leg('yoy', zh, line['values'], 'derived', lag_zh)]
+    return mrwin.resolve(ex['kind'], legs, labels, 0).why
 
 
 def yoy_step_note(s_full, *, win, min_pp=4.0):
@@ -392,27 +492,51 @@ def bar_yoy_ex(n, ttl, s_full, *, win, yfmt, ylab, pct_series=False,
     }
     if xstep:
         ex['xstep'] = xstep
-    if note:
-        ex['note'] = note
+    ex['note'] = ((note or '') + _lag_why(ex, d.index, '右轴同比线',
+                                          '单月同比要 12 个月历史才有第一个点')) or None
+    if not ex['note']:
+        del ex['note']
     if src_extra:
         ex['src_extra'] = src_extra
     return ex
 
 
-def multi_line_ex(n, ttl, df, cols, colors, names, *, win, src_extra=None, note=None):
-    """gsx.multi_line → 网页 lines_endlabels（多条平滑线，仅两端标数值）。"""
+def multi_line_ex(n, ttl, df, cols, colors, names, *, win, src_extra=None, note=None,
+                  lag_zh=None):
+    """gsx.multi_line → 网页 lines_endlabels（多条平滑线，仅两端标数值）。
+
+    ⚠️ `lines_endlabels` 属 `mrwin.DENSE`：引擎把整条 values 交给 Catmull-Rom 平滑，
+    null 参与插值就是 NaN，而且它要逐点 `fv(vv)` 标数值 —— 数组里出现一个 null
+    就会抛 TypeError，**该卡片以下的 exhibit 全不渲染**。
+
+    窗口从 25 期放到 127 期之后这件事第一次变得可见：本页 Exhibit 10 / 11 把
+    trust 的比率（2016-01 起）和 8-K Consumer 的同名比率（新口径，2024-05 起）画在
+    一张图上，长窗口里 8-K 那条线的前 100 期全是 null。所以左端不由调用点拍板，
+    交给 `mrwin.resolve()` 按「所有线都已经有值」裁 —— **只调用它，不改它**。
+    补零或补上一期的值都能让图画满，但那是画一个数据里不存在的点，本页不做。
+
+    `lag_zh` 是 {列名: '为什么这条线短'}，只用来把裁决理由写进图注（`Win.why`）：
+    「派生线为何比另一条短」是关于这张图的事实，不写出来读者只会以为数据缺了。
+    """
     d = df.iloc[-win:]
+    labels = xl(d.index)
+    vals = {c: L(d[c].values) for c in cols}
+    legs = [mrwin.Leg(c, nm, vals[c], 'primary' if i == 0 else 'derived',
+                      (lag_zh or {}).get(c, ''))
+            for i, (c, nm) in enumerate(zip(cols, names))]
+    w = mrwin.resolve('lines_endlabels', legs, labels, 0)
     ex = {
         'n': n, 'kind': 'lines_endlabels', 'title': ttl, 'fmt': 'pct1', 'yfmt': 'pct1',
-        'xlabels': xl(d.index), 'xrot': 90, 'ylab': '%',
-        'series': [{'name': nm, 'color': c, 'values': L(d[col].values)}
-                   for col, c, nm in zip(cols, colors, names)],
+        'xlabels': labels[w.start:], 'xrot': 90, 'ylab': '%',
+        'series': [{'name': nm, 'color': c, 'values': w.cut(vals[col])}
+                   for col, c, nm, leg in zip(cols, colors, names, legs) if not leg.drop],
     }
+    note = ((note or '') + w.why) or None
     if note:
         ex['note'] = note
     if src_extra:
         ex['src_extra'] = src_extra
-    return ex
+    return ex, d.index[w.start:]
 
 
 def seasonality_ex(n, ttl, s_full, *, win, years, src_extra=None):
@@ -583,7 +707,7 @@ summary = {
     'sep': 3,
     'rows': srows,
     'note': (BASIS_N + '.  ' + JUN_NOTE + '.  Green = improving (lower delinquency / write-off).  '
-             'Trust 各行来自与 8-K 同日报送的 Form 10-D（近 31 期 31/31 同日）；'
+             f'Trust 各行来自 Form 10-D（{SAME_DAY_NOTE}）；'
              + TRUST_NOTE + '.  比率类指标的差异一律用 pp / bp（|差| &lt; 1pp 时写 bp）；'
              '四舍五入到零的变化写「0bp」不带正负号，零变化不着色。'
              '逾期率／核销率等反向指标按「越低越好」着色（分位低=绿）。' + PCT_NOTE +
@@ -636,33 +760,46 @@ if _LAG >= 2:
 ex = []
 
 # ══ 板块 A：新合并口径（PDF 第 1 页，Exhibit 2-7）══
+# 本板块的序列自 2024-05 起才有（官方只重述了那 24 个月，见 NOTES 第 1 条），
+# 所以 wn() 算出来就是序列自己的长度 —— 「窗口左端 2016-01」在这里等价于「画满」。
+_W_NEW = wn(new['consumer_balance_usdbn'])
 ex.append(gs_bar_ex(
     2, SEC_A + 'U.S. Consumer Card balances', new['consumer_balance_usdbn'],
-    win=25, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
-    note=yoy_step_note(new['consumer_balance_usdbn'], win=25),
+    win=_W_NEW, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
+    note=yoy_step_note(new['consumer_balance_usdbn'], win=_W_NEW),
     src_extra=SRC_N + '.  ' + BASIS_N))
 
-ex.append(multi_line_ex(
+_e3, _ = multi_line_ex(
     3, SEC_A + 'U.S. Consumer delinquency and write-off', new,
     ['consumer_dq30_pct', 'consumer_nco_pct'], ['MBLUE', 'RED'],
     ['30+ days past due', 'Net write-off (principal)'],
-    win=26, src_extra=SRC_N + '.  ' + JUN_NOTE))
+    win=wn(new.index), src_extra=SRC_N + '.  ' + JUN_NOTE)
+ex.append(_e3)
 
 ex.append(gs_bar_ex(
     4, SEC_A + 'U.S. Small Business Card balances', new['sbs_balance_usdbn'],
-    win=25, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
-    note=yoy_step_note(new['sbs_balance_usdbn'], win=25),
+    win=_W_NEW, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
+    note=yoy_step_note(new['sbs_balance_usdbn'], win=_W_NEW),
     src_extra=SRC_N + '.  ' + BASIS_N))
 
-ex.append(multi_line_ex(
+_e5, _ = multi_line_ex(
     5, SEC_A + 'U.S. Small Business delinquency and write-off', new,
     ['sbs_dq30_pct', 'sbs_nco_pct'], ['MBLUE', 'RED'],
     ['30+ days past due', 'Net write-off (principal)'],
-    win=26, src_extra=SRC_N + '.  ' + JUN_NOTE))
+    win=wn(new.index), src_extra=SRC_N + '.  ' + JUN_NOTE)
+ex.append(_e5)
 
+_W_NII = wn(avgbal['implied_nii_usdmn'])
+# 标题里的「次轴：单月同比」不是装饰：CONTRACT.md §6 要求**流量**序列用单月同比时必须
+# 在标题写明（滚动才是流量的默认口径），Exhibit 6 的隐含 NII 正是流量。同页 Exhibit
+# 2/4/8/12 不写是因为它们是存量与比率 —— 点对点／百分点差本来就是那两类唯一合法的口径。
+# 这一条以前漏了，本轮把「同比为什么比柱短 12 期」写进图注时被 tools/check_yoy_caliber.py
+# 的 R4 当场抓到（口径一旦说清楚，判据就看得见它了）。Exhibit 7 同理。
+# 措辞照抄全站既有页（sgx / ndaq / jpx / tmx 等 40 余张标题都是「（次轴：单月同比）」）。
+_MOM_T = '（次轴：单月同比 / single-month y/y）'
 ex.append(gs_bar_ex(
-    6, SEC_A + 'Implied U.S. card net interest income', avgbal['implied_nii_usdmn'],
-    win=25, yfmt='f0c', fmt='f0c', ylab='$mn / month', yoy_yfmt='pct1',
+    6, SEC_A + 'Implied U.S. card net interest income' + _MOM_T, avgbal['implied_nii_usdmn'],
+    win=_W_NII, yfmt='f0c', fmt='f0c', ylab='$mn / month', yoy_yfmt='pct1',
     note=NII_NOTE + '　' + FEE_PERIOD_NOTE, src_extra=SRC_N))
 
 # Exhibit 7：本页唯一一张**不画次轴同比**的 lvl_bar 图。费率是季度阶梯，窗口内同比
@@ -670,9 +807,10 @@ ex.append(gs_bar_ex(
 # 读数，而末点读数又必然等于轴的最大刻度 → 右上角两个一模一样的数字。零信息 + 必然
 # 退化，所以这一张退回 12 个月均线（费率的「当前 vs 过去一年均值」是真参考），
 # 那个常数写进图注。理由见 gs_bar_ex 的 no_yoy 说明。
-_niy_y = lvl_yoy(tail_contiguous(avgbal['niy']), True).iloc[-25:].dropna()
+_W_NIY = wn(avgbal['niy'])
+_niy_y = lvl_yoy(tail_contiguous(avgbal['niy']), True).iloc[-_W_NIY:].dropna()
 _niy_yy_set = sorted({round(float(v), 2) for v in _niy_y.values})
-_niy_w = avgbal['niy'].dropna().iloc[-25:]
+_niy_w = avgbal['niy'].dropna().iloc[-_W_NIY:]
 _niy_avg = float(np.nanmean(np.asarray(_niy_w.values, float)[-13:-1]))
 # 常数假设不成立时**自动改回次轴同比**，不要硬失败退出。
 # 这里曾经是 `raise SystemExit`，而触发条件恰恰是常态：月度数字本来就走在季度费率前面，
@@ -695,8 +833,8 @@ else:
         f'故本图按原 deck 画次轴同比线（同比恒定时这张图会改画 12 个月均线，'
         f'因为常数同比会让次轴量程塌成一个点）。')
 ex.append(gs_bar_ex(
-    7, SEC_A + 'Net interest yield on card balances', avgbal['niy'],
-    win=25, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True,
+    7, SEC_A + 'Net interest yield on card balances' + _MOM_T, avgbal['niy'],
+    win=_W_NIY, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True,
     no_yoy=_niy_const,
     note=_niy_note +
          f'柱从 0 起是费率的正确基线，但 {_niy_w.min():.1f}%–{_niy_w.max():.1f}% 的差异'
@@ -706,8 +844,10 @@ ex.append(gs_bar_ex(
 
 # ══ 板块 B：Lending Trust 月度 10-D（PDF Exhibit 9-12；Exhibit 8 的汇总表已并入上表）══
 # 本板块四张图共用一个窗口长度。图注里的「窗口内 min-max」必须跟图上真正画出来的
-# 是同一批点，窗口长度与统计切片各写一个 25 迟早会分叉。
-_TW = 25
+# 是同一批点，窗口长度与统计切片各写一个字面量迟早会分叉 —— 所以只有 _TW 一个来源。
+# 2026-08-18：trust 两张表回补到 2016-01（fetch/axp.py 的 START_MONTH），
+# _TW 随之从写死的 25 变成 wn() 现算的 127。
+_TW = wn(trust.index)
 _es_w = trust['excess_spread_pct'].dropna().iloc[-_TW:]
 _es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-_TW:].dropna()
 # 图注里的同比读数必须跟次轴用同一个单位，所以走的是同一个 pp_unit()（同一份判据、
@@ -722,7 +862,11 @@ ex.append(gs_bar_ex(
          f'最被盯的一个数：跌到 0 附近会触发提前摊还（early amortization）—— 投资人本金被'
          f'提前还回，AXP 失去这条融资渠道。所以这张图是用来<b>确认没事</b>的，不是用来找信号的。　'
          f'窗口内超额利差始终在 {_es_w.min():.2f}%–{_es_w.max():.2f}% 之间（极差只有 '
-         f'{_es_w.max() - _es_w.min():.2f}pp）。柱从 0 起是利差的正确基线，'
+         f'{_es_w.max() - _es_w.min():.2f}pp'
+         + (f'；<b>最低那一格 {mlab(_es_w.idxmin())} 是信托加池当月</b> —— 红色竖虚线画的'
+            f'就是它，分母当月整个变大而分子只到账一部分，那一点是机械性的、不是信用事件，'
+            f'详见口径说明第 4 条' if _es_w.idxmin() == POOL_ADD else '')
+         + f'）。柱从 0 起是利差的正确基线，'
          f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 '
          f'{(_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22) * 100:.0f}%，看上去一样高 ——'
          f'<b>水平请读柱顶数值，变化请读次轴那条金色同比线</b>'
@@ -739,6 +883,7 @@ ex.append(gs_bar_ex(
 # （实测 −25.5%、浪费 44%），但这两个数随每月新数据变，而且更要命的是
 # 「对齐 / 不对齐」这个结论本身由浪费比例与引擎 38% 阈值的大小关系决定：
 # 数变了而话不变，就会出现「图注说零点不同高、图上其实对齐了」。
+mark_pool_add(ex[-1], trust.index[-_TW:])
 _a8 = align_sim(ex[-1])
 if _a8 is None or _a8['waste'] <= 1e-9:
     _ALIGN_TXT = '本图左右轴零点同高（柱与同比线都不跨零，本来就对得上）。'
@@ -757,12 +902,40 @@ ex[-1]['note'] = ex[-1]['note'].replace('{ALIGN}', _ALIGN_TXT)
 # 相关系数现算、结论跟着它走：写死一句「是日历假象」而哪个月相关性真的消失了，
 # 图注就会把一个真信号当成假象、劝读者别看。判据阈值也写成常量，图注里同时印出来。
 CAL_R_MIN = -0.4
+CAL_DETREND = 13         # 去趋势用的居中滚动窗口（个月）；13 = 一整年 + 中心那一格
 _py_w = trust['portfolio_yield_pct'].iloc[-_TW:]
 _pr_w = trust['payment_rate_pct'].iloc[-_TW:]
-_dim = np.asarray(_py_w.index.days_in_month, float)
-_r_py = float(np.corrcoef(_dim, _py_w.values.astype(float))[0, 1])
-_r_pr = float(np.corrcoef(_dim, _pr_w.values.astype(float))[0, 1])
-_r_txt = f'{_r_py:+.2f}（组合收益率）/ {_r_pr:+.2f}（还款率）'
+
+
+def _cal_r(w):
+    """这条线的锯齿与「当月有几天」有多相关 —— **对水平趋势去过势之后**再算。
+
+    ⚠️ 这里以前是拿**原始水平值**直接跟 days_in_month 求相关，那在 25 期的短窗口上
+    没问题，窗口一放到 127 期就会给出相反的结论：日历效应是**高频**的（月与月之间
+    差 1-3 天），而 10 年的水平趋势是低频的（组合收益率从 2016 年的 18% 走到今天的
+    32%）。低频那一块进了方差之后把相关系数整个稀释掉 —— 本页实测
+      组合收益率  近 25 期 raw −0.87 ／ 全 127 期 raw −0.15
+      还款率      近 25 期 raw −0.46 ／ 全 127 期 raw −0.07
+    照 raw 判，窗口一改这段图注就会翻脸说「日历效应已不显著」，而**日历效应一点没变**：
+    去掉 13 个月居中滚动均值之后，同样 127 期是 −0.79 / −0.40，跟短窗口一个量级。
+    也就是说 raw 的那个数量的是「趋势有多强」，不是「日历效应有多强」。
+    结论既然是关于锯齿的，判据就得量锯齿本身。
+    """
+    res = (w - w.rolling(CAL_DETREND, center=True, min_periods=CAL_DETREND // 2 + 1).mean()).dropna()
+    if len(res) < 8 or float(np.std(res.values)) == 0.0:
+        return float('nan')
+    return float(np.corrcoef(np.asarray(res.index.days_in_month, float),
+                             res.values.astype(float))[0, 1])
+
+
+_r_py, _r_pr = _cal_r(_py_w), _cal_r(_pr_w)
+_r_txt = (f'{_r_py:+.2f}（组合收益率）/ {_r_pr:+.2f}（还款率）'
+          f'（对 {CAL_DETREND} 个月居中滚动均值去过势后算，'
+          f'不去势的话 10 年的水平趋势会把这个数整个稀释掉 —— 实测原始值只有 '
+          f'{float(np.corrcoef(np.asarray(_py_w.index.days_in_month, float), _py_w.values.astype(float))[0, 1]):+.2f}'
+          f' / '
+          f'{float(np.corrcoef(np.asarray(_pr_w.index.days_in_month, float), _pr_w.values.astype(float))[0, 1]):+.2f}，'
+          f'量的是趋势不是锯齿）')
 if min(_r_py, _r_pr) < CAL_R_MIN:
     _cal_note = (f'<b>⚠️ 两条线的逐月锯齿主要是日历假象，不是经营波动。</b>窗口内它们与'
                  f'当月天数的相关系数是 {_r_txt} —— 负相关意味着 2 月这种短月是尖峰、31 天的'
@@ -771,7 +944,7 @@ else:
     _cal_note = (f'两条线与当月天数的相关系数是 {_r_txt}，本窗口内日历效应已不显著'
                  f'（弱于 {CAL_R_MIN:+.1f} 的判据），逐月锯齿另有来源，仍建议读趋势而非单月。')
 
-ex.append(multi_line_ex(
+_e9, _W9 = multi_line_ex(
     9, SEC_T + 'Trust portfolio yield and payment rate', trust,
     ['portfolio_yield_pct', 'payment_rate_pct'], ['NAVY', 'MBLUE'],
     ['Portfolio yield', 'Payment rate'], win=_TW,
@@ -786,43 +959,63 @@ ex.append(multi_line_ex(
          f'<b>还款率是本板块唯一的领先指标</b>：它掉头意味着持卡人开始还不满、转向循环，'
          f'通常比逾期率（Exhibit 11）早几个月出现，更早于核销（Exhibit 10）。　' + _cal_note,
     src_extra=TRUST_SRC + '.  Payment rate is how fast cardholders repay; a falling payment '
-              'rate is an early warning that shows up months before delinquency does'))
+              'rate is an early warning that shows up months before delinquency does')
+ex.append(mark_pool_add(_e9, _W9))
 
-ex.append(multi_line_ex(
+# Exhibit 10 / 11 是本页仅有的两张**跨数据源对照图**：trust 那条自 2016-01 起有值，
+# 8-K Consumer 那条是新合并口径、只到 2024-05（官方只重述了 24 个月）。窗口一放长，
+# 8-K 那条在图上前 100 期全是 null —— 而 lines_endlabels 是平滑图型，吃不了 null。
+# 左端交给 mrwin.resolve() 裁（见 multi_line_ex 的 docstring），这两张图因此实际
+# 从 8-K 线的首点起画，比 Exhibit 8/9 短，图注里由 Win.why 自己说明为什么。
+_LAG_8K = {'consumer_nco_pct': '8-K 新合并口径只重述到 2024-05，更早没有可比的 Card balances 数',
+           'consumer_dq30_pct': '8-K 新合并口径只重述到 2024-05，更早没有可比的 Card balances 数'}
+_e10, _W10 = multi_line_ex(
     10, SEC_T + 'Loss rate: trust pool vs. 8-K Card balances', trust,
     ['nco_pct', 'consumer_nco_pct'], ['NAVY', 'RED'],
     ['Trust: annualised default rate, net of recoveries',
-     '8-K: U.S. Consumer net write-off rate'], win=_TW,
+     '8-K: U.S. Consumer net write-off rate'], win=_TW, lag_zh=_LAG_8K,
     src_extra=TRUST_SRC + '.  The two are close analogues but not the same definition, and '
-              + TRUST_NOTE.lower()))
+              + TRUST_NOTE.lower())
+# 这两张被 mrwin 裁到 2024-05，窗口里没有 2018-10 —— mark_pool_add 因此是 no-op。
+# 仍然照调：哪天 8-K 新口径往前重述、窗口回到 2018 年之前，这条线会自己出现。
+ex.append(mark_pool_add(_e10, _W10))
 
-ex.append(multi_line_ex(
+_e11, _W11 = multi_line_ex(
     11, SEC_T + 'Delinquency: trust pool vs. 8-K Card balances', trust,
     ['dq30_pct', 'consumer_dq30_pct'], ['NAVY', 'RED'],
-    ['Trust: total 30+ days delinquent', '8-K: U.S. Consumer 30+ days past due'], win=_TW,
+    ['Trust: total 30+ days delinquent', '8-K: U.S. Consumer 30+ days past due'],
+    win=_TW, lag_zh=_LAG_8K,
     src_extra=TRUST_SRC + '.  Both are 30+ day measures on the same concept, so the persistent '
-              'gap is purely the pool difference: ' + TRUST_NOTE.lower()))
+              'gap is purely the pool difference: ' + TRUST_NOTE.lower())
+ex.append(mark_pool_add(_e11, _W11))
 
 # ══ 板块 C：旧 loans-only 口径（PDF 第 2 页，Exhibit 13-19）══
-# JPM Fig 1：柱=水平值 + 线=同比，长窗口含疫情前
+# JPM Fig 1：柱=水平值 + 线=同比，长窗口含疫情前。
+# 原来写死 win=42（三年半），本轮改成 wn() 现算 = 2016-01 起的全部 123 期：
+# 42 期的窗口连 2020 年那个 V 型都只剩一半，而这张图的全部意义就是「长历史含疫情前」。
+# `xstep` 不再手写 2 —— mrwin.layout_all() 会按 charts.js 的量边距算式实测决定。
+_W12 = wn(old['consumer_balance_usdbn'])
 ex.append(bar_yoy_ex(
     12, SEC_O + 'U.S. Consumer loans and y/y growth', old['consumer_balance_usdbn'],
-    win=42, yfmt='usd0', ylab='$bn', bar_color='NAVY', bar_name='Reported',
-    xstep=2, src_extra=SRC_O + '.  ' + BASIS_O))
+    win=_W12, yfmt='usd0', ylab='$bn', bar_color='NAVY', bar_name='Reported',
+    src_extra=SRC_O + '.  ' + BASIS_O))
 
-# JPM Fig 2：季节性剥离
+# JPM Fig 2：季节性剥离。窗口固定 WIN_SEASON（13）——「近一年 vs 同月常态」是这张图的
+# 题眼，不随 WIN_FROM 放长（理由见 WIN_SEASON 的注释与 CONTRACT.md §5.4）。
 e13, y13 = seasonality_ex(13, SEC_O + 'Write-off rate vs. same-month norm',
-                          old['consumer_nco_pct'], win=13, years=9,
+                          old['consumer_nco_pct'], win=WIN_SEASON, years=9,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e13)
 
-# JPM Fig 3：逐日历月分布
+# JPM Fig 3：逐日历月分布。
+# n_years=6 是**可读性**上限，不是窗口：一条线一个日历年，11 条叠在 12 格上分不出谁是谁
+# （颜色也不够用）。长历史由 Exhibit 17/18 的热力矩阵承担，那两张才跟 WIN_FROM 走。
 ex.append(year_lines_ex(
     14, SEC_O + 'Consumer write-off rate by year', old['consumer_nco_pct'], n_years=6,
     src_extra=SRC_O + '.  Each line is one calendar year; red = current year.  ' + BASIS_O))
 
 e15, y15 = seasonality_ex(15, SEC_O + 'Delinquency vs. same-month norm',
-                          old['consumer_dq30_pct'], win=13, years=9,
+                          old['consumer_dq30_pct'], win=WIN_SEASON, years=9,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e15)
 
@@ -831,12 +1024,16 @@ ex.append(year_lines_ex(
     src_extra=SRC_O + '.  Each line is one calendar year; red = current year.  ' + BASIS_O))
 
 # JPM Fig 4：月 x 年热力矩阵（信用指标：低=好，故反转配色）
+# 热力矩阵的「几年」同样跟 WIN_FROM 走，不写字面量：原来写死 11，今天恰好等于
+# 2016–2026 这 11 个日历年，明年 1 月它就会静默把 2016 那一行挤掉 —— 而没有任何东西
+# 会报错。年数一律现算 = 序列里 >= WIN_FROM 的日历年个数。
+_HEAT_Y = len({p.year for p in old.index if p >= WIN_FROM})
 ex.append(heat_ex(
-    17, SEC_O + 'Consumer net write-off rate (%)', old['consumer_nco_pct'], n_years=11,
+    17, SEC_O + 'Consumer net write-off rate (%)', old['consumer_nco_pct'], n_years=_HEAT_Y,
     src_extra=SRC_O + '.  Green = lower write-off rate (better).  ' + BASIS_O))
 
 ex.append(heat_ex(
-    18, SEC_O + 'Small Business net write-off rate (%)', old['sbs_nco_pct'], n_years=11,
+    18, SEC_O + 'Small Business net write-off rate (%)', old['sbs_nco_pct'], n_years=_HEAT_Y,
     src_extra=SRC_O + '.  Green = lower write-off rate (better).  ' + BASIS_O))
 
 
@@ -1262,6 +1459,13 @@ def compose_brief(new, avgbal, trust, tfull, cur, oneoff_m, oneoff_c):
 # 否则又会出现「图注声称的与图上画的对不上」——本轮修的正是这一类。
 axisfmt.fix_all(ex)
 
+# 127 点的图放不进半栏卡片（band 3.5px、柱宽 2.2px）—— 逐张按 charts.js 的量边距算式
+# 判通栏与 x 标签抽稀，判据在 build/mrwin.py（**只调用，不改**）。
+# **位置很要紧，和上面那行同理**：下面 NOTES 里「哪几张走了通栏」是现读 payload 的
+# `full` 字段生成的，排在 layout_all 之前的话它会一张都读不到、印出「本轮没有一张走通栏」，
+# 而页面上明明有三张通栏图 —— 又是一条「图注声称的与图上画的对不上」。
+mrwin.layout_all(ex)
+
 # ── 「哪几张画了什么」一律从 payload 现读，不手写编号 ──────────────────────────
 # 全站复查抓到过一整类缺陷：图注声称的口径与图上实际画的对不上，根因都是注释是手写常量、
 # 而图上画什么由数据当场决定（本页 Exhibit 7 就是：费率同比是不是常数决定它画次轴同比
@@ -1303,7 +1507,9 @@ def _cal_stock(s, win):
 # 拿**旧口径**那条余额序列做这次实测，不是新口径：新口径自 2024-05 起只有 26 个月，
 # 而 12 个月均值同比要 24 个月才有第一个点 —— 样本只剩 3 个月，算出来的标准差比
 # 它要回答的问题还不确定。旧口径同一个量有 123 个月，正是 Exhibit 12 画的那条。
-_W12 = 42                # Exhibit 12 实际画出来的窗口长度（下面 bar_yoy_ex 的 win）
+# _W12 就是 Exhibit 12 真正画出来的窗口长度，在上面 bar_yoy_ex 那里已由 wn() 算过一次；
+# 这里**直接复用**，不再写第二个字面量 —— 原来这里写死 42、而图上 win 也写死 42，
+# 两处各写一遍正是「窗口改了、图注还在报旧窗口的统计量」那类缺陷的标准长法。
 _CAL_BAL = _cal_stock(tail_contiguous(old['consumer_balance_usdbn']), _W12)
 _CAL_ALL = _cal_stock(tail_contiguous(old['consumer_balance_usdbn']), None)
 _CAL_MIN_N = 24          # 少于两年的重叠就不下「哪个口径更好」的结论，只报数
@@ -1329,12 +1535,24 @@ NOTES = [
     + (f'headline 已同时给出剔除该影响后的 Consumer 净核销约 {c_nco + ONEOFF_C:.1f}%。'
        if CUR == ONEOFF_M else ''),
 
-    f'<b>本页没有一条红色竖虚线，这是刻意的，不是漏画。</b>2026-05 的口径切换发生在'
-    f'<b>两组 exhibit 之间</b>，而不是某一张图的横轴内部：新口径各图只画 {new.index[0]} 起的'
-    f'重述序列，旧口径各图刻意截到 {old.index[-1]}，没有任何一张图的 x 轴跨过 2026-05，'
-    f'所以 <code>break_at</code> 没有落点可画 —— 口径变化由标题里的板块小标题与本节第一条承担。'
-    f'（首页「怎么读这个看板」把「AXP 2026-05 合并 Card balances」列成了红色竖虚线的例子，'
-    f'那句话与本页实际渲染不符，以本页为准。）',
+    f'<b>红色竖虚线只有一条，画在 Exhibit '
+    f'{"/".join(str(e["n"]) for e in ex if e.get("break_at") is not None) or "—"} 的 '
+    f'{mlab(POOL_ADD)}：那是<b>信托加池</b>，不是 8-K 的口径切换。</b>'
+    f'该期 10-D 的 A 段写着 Addition of Principal Receivables $7.83bn，'
+    f'期末本金应收 $22.92bn → $30.84bn、账户数 12,499,212 → 16,372,586 —— '
+    f'从这一期起池子换了成分，与左侧不可比。加池发生在<b>月中</b>，分母（期末余额）当月'
+    f'就整个变大而分子（当月收款）只反映了一部分，所以 {mlab(POOL_ADD)} 这一点的比率被'
+    f'机械性地压下去（超额利差 17.38% → 15.57% → 次月 18.72%，组合收益率 21.84% → '
+    f'19.42% → 23.26%）；<b>Exhibit 8 窗口内的最低点正是这一格，那不是一次信用事件。</b>'
+    f'这条线是本轮把 trust 序列回补到 {trust.index[0]} 之后才进到图里的 —— '
+    f'原来 25 个月的窗口根本够不着 2018 年。'
+    f'　<b>2026-05 那次 8-K 口径切换反而没有线</b>，这也是刻意的：它发生在'
+    f'<b>两组 exhibit 之间</b>，而不是某一张图的横轴内部 —— 新口径各图只画 {new.index[0]} 起的'
+    f'重述序列，旧口径各图刻意截到 {old.index[-1]}，没有任何一张图的 x 轴在<b>同一条序列上</b>'
+    f'跨过 2026-05，所以 <code>break_at</code> 没有落点可画，'
+    f'口径变化由标题里的板块小标题与本节第一条承担。'
+    f'（首页「怎么读这个看板」把「AXP 2026-05 合并 Card balances」列成红色竖虚线的例子，'
+    f'与本页实际渲染不符，以本页为准。）',
 
     f'<b>Exhibit 6 是推导值，标了 Implied。</b>{NII_NOTE} 净利息收益率是公司整体口径（含非美卡与其他贷款），'
     f'而余额只取美国 Consumer + Small Business 卡，两者总体不一致；季度费率按「当季各月同值、'
@@ -1346,8 +1564,8 @@ NOTES = [
 
     f'<b>Lending Trust（Exhibit 8-11）是另一个池子，不是 8-K 的子集。</b>{TRUST_NOTE}；'
     f'信托池只含 revolve-eligible 余额，所以组合收益率、违约率、逾期率都系统性低于/异于 8-K 口径，'
-    f'Exhibit 10 / 11 里那条持续存在的缺口是池子差异，不是数据错。Form 10-D 与 8-K 同日报送'
-    f'（近 31 期 31/31 同日），所以两份材料一次到手。',
+    f'Exhibit 10 / 11 里那条持续存在的缺口是池子差异，不是数据错。{SAME_DAY_NOTE}，'
+    f'所以两份材料一次到手。',
 
     f'<b>汇总表把原 deck 的两张表合并成了一张。</b>原 PDF 的 Exhibit 1（8-K 指标）与 Exhibit 8'
     f'（Trust 月报）是两张独立的汇总表，网页版只有一个汇总表位，两者最新月同为 {mlab(LATEST)}、'
@@ -1431,15 +1649,21 @@ NOTES = [
     f'③ <b>Exhibit 6（隐含净利息收入）是流量</b>，按契约默认本该用 {Y.TTM_WIN} 个月滚动合计，'
     f'但新口径序列自 {new.index[0]} 起只有 {len(new)} 个月，'
     f'而滚动同比要 {Y.TTM_WIN} 个月填窗 + {Y.TTM_WIN} 个月比较才有第一个点 —— '
-    f'本图 24 个月的窗口里滚动口径只画得出 '
-    f'{int(Y.ttm_yoy(tail_contiguous(avgbal["implied_nii_usdmn"]), Y.FLOW).iloc[-24:].notna().sum())} '
+    f'本图 {_W_NII} 个月的窗口里滚动口径只画得出 '
+    f'{int(Y.ttm_yoy(tail_contiguous(avgbal["implied_nii_usdmn"]), Y.FLOW).iloc[-_W_NII:].notna().sum())} '
     f'个月，画出来是一条几乎空白的线；'
     f'④ <b>Exhibit 13/15/17/18</b> 是季节性与热力矩阵，按 CONTRACT.md §6 本就豁免'
     f'（逐格逐月的波动正是这两类图的题眼）；'
     f'⑤ <b>两张表的 y/y 列</b>必须恒等于「本月 ÷ 去年同月」的表内算术，'
     f'读者拿第一列除第三列要能得到同一个数 —— 表内自相矛盾比口径混用更糟。'
-    f'(3) 两张热力矩阵没有走通栏：通栏卡片会被渲染器排到汇总表正下方、跑到 Exhibit 2 前面，'
-    f'为保住原 deck 的图序改用半栏（引擎会按格宽自动收字号）。'
+    f'(3) <b>通栏由 <code>build/mrwin.py</code> 按格宽实测判，不是人挑的</b>：'
+    f'{("Exhibit " + "/".join(str(e["n"]) for e in ex if e.get("full")) + " 走了通栏") if any(e.get("full") for e in ex) else "本轮没有一张走通栏"}'
+    f'——127 期塞进半栏卡片每期只剩 3.5px，柱宽 2.2px，那不是柱图是一排竖线；'
+    f'各图的图注里印着实测的 px 数。两张热力矩阵不进这道判据（横轴是 12 个月份、'
+    f'不是 127 期，半栏放得下），所以仍是半栏。'
+    f'此处原先写的理由是「通栏卡片会被渲染器排到汇总表正下方、跑到 Exhibit 2 前面」——'
+    f'那条渲染器行为早已修掉（<code>assets/page.js</code> 现在让通栏图就地横跨两列），'
+    f'本页这几张通栏图就在自己的编号位置上，那句话已经不成立。'
     f'(4) 汇总表里「零变化」不着色（原 deck 把 0 着成红色，等于说「没变 = 变坏」）。'
     f'除此之外顺序、窗口、标题与图注均照搬。',
 ]

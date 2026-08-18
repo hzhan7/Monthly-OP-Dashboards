@@ -164,6 +164,25 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
     **表头没跟着数据一起更新**（数据已是 11/12/1 月，表头还写着 Oct/Nov/Dec 2020）。
     ⇒ 见 _crosscheck_prev_month：照 fetch/spgi.py 的既有做法**只告警、不拒绝、不覆盖**
       （官方重述是合法行为，改写历史必须人工决定），但任何不等都点名到具体格子。
+18. **换手率有两处官方来源，早年只有其中一处 —— 只认 p2 会白丢 38 个月历史。**
+    p2 的 At-A-Glance 从 **2018-03** 那期起才多出 `Overall Turnover Velocity` 这一行；
+    在此之前这份文档**照样印换手率**，只是印在 p8 的 `Turnover Velocity (5)` 表里
+    （首行 `SGX Overall`，与 Mainboard / Catalist 两行同表，带 M-2 / M-1 / M0 三个月度列）。
+    本模块 2026-08 之前只读 p2，于是 2015-01~2018-02 那 38 个月的这一列一直是空的，
+    而**空得毫无痕迹** —— FIRST_MONTH 里写着「2018-03 才开始有」，缺列护栏因此放行。
+    ⇒ 两处**逐格等价**，已闭合验证：2018-03 期 p2 印 Feb 55% / Mar 43%，同期 p8 的
+      `SGX Overall` 印 Jan 41% / Feb 55% / Mar 43%，两页同月逐格相同；跨 vintage 也相同
+      （2018-01 期 p8 给的 Jan 2018 = 41%、2018-02 期给的 Feb 2018 = 55%，与 2018-03 期
+      p2 的同月值一致）。所以往回读 38 个月**不产生接缝**，不必画断点。
+    ⇒ 处置：p2 取不到时回落到 p8（见 parse_report 的 velocity 那一格）。
+      **顺序不能反** —— 2018-03 起两处等价，继续优先 p2 就保证既有入库值一格不动。
+    ⚠ 脚注措辞在 2018-03 换过一次（旧：`(5) Includes Ordinary Shares, Investment Funds,
+      SDR, Stapled Securities and Unit Trusts.`；新：`(5) Turnover velocity calculated
+      based on primary listed securities for both market capitalisation and turnover
+      value.`），但两个 vintage 在接缝上给同一个数，是措辞细化不是口径换代。
+    ⚠ p8 那张表最右边那列是**去年同月**，官方偶尔会在那一列上印一个与当年 M0 列差 1pp
+      的数（38 个月里 3 处：Feb-2015 39 vs 40、Aug-2015 57 vs 58、Sep-2015 44 vs 45）。
+      本模块一律只取 M0 列（_row_value 的既有约定），那三处与入库值无关。
 
 ━━ series/sgx.csv 每一列的确切口径 ━━
 月份 `month` = **数据月**（YYYY-MM），不是发布月。所有「本月」值取该期报告里表头等于数据月
@@ -182,7 +201,7 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
 | `sdav_sgdmn`                        | Securities Daily Average：当月证券成交金额的**日均**，S$ 百万/日。SGX 财报与新闻稿引用最多的单一数字（= sec_turnover_sgdmn / sec_trading_days） |
 | `listed_securities`                 | **月末**上市证券只数（**存量**）。官方脚注：不含 GDR、对冲基金、债券 |
 | `mktcap_sgdmn`                      | **月末**总市值，S$ 百万（**存量**，原表就是 $Million，未做任何缩放） |
-| `turnover_velocity_pct`             | Overall Turnover Velocity（年化换手率），百分数去掉 % 号后的数值（49% → 49）。**2018-03 才开始有**，之前 38 个月官方根本没印这一行 |
+| `turnover_velocity_pct`             | Overall Turnover Velocity（年化换手率），百分数去掉 % 号后的数值（49% → 49）。**两处等价来源**，见口径坑 18 |
 | `deriv_vol_contracts`               | 当月衍生品成交**总张数**（期货+期权+掉期），月总量，张 |
 | `ddav_contracts`                    | Derivatives Daily Average Volume：衍生品**日均**成交，张/日。**这是与 CME/Cboe/HKEX 跨家可比的那个字段**（HKEX 的 derivatives_adv_contracts 同为张/日，可直接同轴） |
 | `deriv_futures_vol_contracts`       | 当月期货成交，张，月总量 |
@@ -737,6 +756,9 @@ T_EQIDX_FUT = {'equity index futures volume'}
 T_FX_FUT = {'foreign exchange futures volume'}
 T_RATES_FUT = {'interest rates futures volume'}
 T_CRYPTO = {'cryptocurrency derivatives volume'}
+# 换手率的**第二处**来源（口径坑 18）。2017-06 那期官方印成 `Turnover Velocity(5)`
+# （少一个空格），_lab() 的脚注正则不要求前置空白，所以两种写法都归到同一个键。
+T_VELOCITY = {'turnover velocity'}
 T_LISTINGS = {'number of listings (month-end)'}
 T_BONDS = {'number of new bond listings'}
 # IPO 募资那一节的标题在 2017-06 ~ 2020-10 共 41 期里排版异常拿不到，
@@ -781,6 +803,9 @@ G_SDAV = {'securities daily average ($million)',
 G_LISTED = {'total number of listed securities'}
 G_MKTCAP = {'total market capitalisation ($million)'}
 G_VELOCITY = {'overall turnover velocity'}
+# p8 `Turnover Velocity` 表的首行。同表另有 `SGX Mainboard` / `SGX Catalist` 两行，
+# 全等匹配天然把它们排除 —— 要的是**全所**口径，与 p2 的 At-A-Glance 那一行同义。
+P_SGX_OVERALL = {'sgx overall'}
 G_DERIV_VOL = {'derivatives volume'}
 G_DDAV = {'derivatives daily average volume'}
 
@@ -812,6 +837,25 @@ P_USDCNH = {'usd_cnh fx futures'}
 P_INRUSD = {'inr_usd fx futures', 'inr_usd fx ffutures'}   # 2016 那代官方拼错，两个 F
 
 
+def _velocity(blocks, mon, g):
+    """Overall Turnover Velocity —— p2 优先、p8 兜底（口径坑 18）。
+
+    **顺序不能反。** 2018-03 起两处逐格等价（同期 p2 的 Feb 55% / Mar 43% 与 p8 的
+    `SGX Overall` 逐格相同），继续优先 p2 就保证 2018-03 及之后**已入库的值一格不动**；
+    2018-02 及更早 p2 根本没有这一行，兜底那一支把 38 个月的历史接了回来 ——
+    p8 的 `Turnover Velocity` 表 2015-01 起每期都在，且每期给 M-2 / M-1 / M0 三个月度列，
+    所以同一个数据月天然有三期报告互证（实测 38/38 三重逐格相同）。
+
+    p8 那张表最右列是**去年同月**，官方偶尔在那一列印一个差 1pp 的数；
+    这里走的是 _row_value 的既有约定「只认表头等于 mon 的那一列」，取的永远是 M0。
+    """
+    v = g(G_VELOCITY, 'turnover velocity')
+    if v is not None:
+        return v
+    return _pick_row(blocks, T_VELOCITY, P_SGX_OVERALL, mon,
+                     'turnover velocity (p8 SGX Overall)')
+
+
 def parse_report(path, mon):
     """解析一期报告，返回 {csv 列名: float|None}。mon 是这期的**数据月**。"""
     blocks = _load_blocks(path)
@@ -834,7 +878,7 @@ def parse_report(path, mon):
         'sdav_sgdmn':             g(G_SDAV, 'SDAV'),
         'listed_securities':      g(G_LISTED, 'listed securities'),
         'mktcap_sgdmn':           g(G_MKTCAP, 'market cap'),
-        'turnover_velocity_pct':  g(G_VELOCITY, 'turnover velocity'),
+        'turnover_velocity_pct':  _velocity(blocks, mon, g),
         'deriv_vol_contracts':    g(G_DERIV_VOL, 'derivatives volume'),
         'ddav_contracts':         g(G_DDAV, 'DDAV'),
 
@@ -1027,8 +1071,15 @@ def _read_issuer(blocks, mon):
 # 不算解析失败；晚于此还为空就是解析出问题了，一律抛异常拒绝写入。
 # 这张表是拿 2015-01 ~ 2026-06 全部 138 期实测出来的，不是估的。
 FIRST_MONTH = {
-    'turnover_velocity_pct':                '2018-03',   # 2018-02 那期还没有这一行
-    'vol_ftse_taiwan_futures_contracts':    '2020-08',
+    # 换手率**全期都有**（口径坑 18）。这里原来写的是 '2018-03'（= p2 的 At-A-Glance
+    # 多出这一行的那期），于是 2015-01~2018-02 那 38 个月的空值被缺列护栏放行、
+    # 一直没人发现官方其实在 p8 印着。加上 p8 兜底之后这一列与主体同起点。
+    'turnover_velocity_pct':                START_MONTH,
+    # 实际首月是 **2020-07**（2020-06 期 PDF 全文无 'FTSE Taiwan'，2020-07 期才出现，
+    # 首月 82,048 张与 2020-07-20 挂牌吻合）。原来写 '2020-08' 差了一个月 ——
+    # 数据是对的，但那一个月的护栏是瞎的：万一哪天 2020-07 解析失败，
+    # _missing_columns 会认为「那个年代还没这个产品」而放行。
+    'vol_ftse_taiwan_futures_contracts':    '2020-07',
     'vol_crypto_contracts':                 '2025-11',
     'vol_equity_index_futures_contracts':   START_MONTH,
     'vol_rates_futures_contracts':          START_MONTH,
@@ -1226,6 +1277,69 @@ def _row_floats(row, idx):
         except ValueError:
             continue
     return out
+
+
+def _backfill_gaps(body, idx, index, cache_dir):
+    """把**已经在库**的行里「该有值却是空格」的列补上。只填空，绝不覆盖。
+
+    为什么必须有这一段（而不是把 FIRST_MONTH 一改就完事）：`update()` 的既定契约是
+    「已在 CSV 里的月份不重新下载、不重新解析」，所以 FIRST_MONTH 往前挪、
+    或者新加一条兜底解析路（口径坑 18 的 p8）之后，**老月份永远不会被再看一眼** ——
+    改了跟没改一样，而且看上去像是生效了。这里是唯一能让那些空格长回来的地方。
+    照 fetch/mtk.py 的「历史回补分支」办：让抓取器自己能长回去，
+    而不是靠一次性脚本手工贴数（手工贴的数下个月没人能复算）。
+
+    判据完全复用 `_missing_columns`：一格该不该有值由 FIRST_MONTH / LAST_MONTH 说了算，
+    这里不另立一套。于是**下一次有人把某列的 FIRST_MONTH 往前挪，这条路自动生效**。
+
+    三条硬约束：
+      · **只填空**。CSV 里已经有字符的格一律不动 —— 官方顺延调整（口径坑 9）
+        与重述由人决定，不由这段代码代劳。
+      · **整月过 _validate 才落一格**。补进来的值来自一次完整的重新解析，
+        所以顺手让它过一遍全套自检（分项和、跨页核对、整数兜底…）；不过就整月放弃、
+        只告警。**这道自检失败绝不能把整次 update 拖垮** —— 它是补历史的，
+        而当月增量才是主线。
+      · **顺手做一次解析回归**：重新解析出来的值与库里已有值不等时点名。
+        同一份 PDF、同一个解析器，理应逐格相同；不同就只有两种可能 ——
+        官方重发了这一期，或者解析器变形了。两种都该有人看一眼，都不该静默。
+
+    幂等：补完之后这些格不再为空，下次跑连 PDF 都不会下（`_fetch_report` 还有 cache）。
+    """
+    filled = []
+    for row in body:
+        mon = row[0]
+        if mon < START_MONTH or mon not in index:
+            continue
+        known = _row_floats(row, idx)
+        miss = _missing_columns(mon, {c: known.get(c) for c in DATA_COLUMNS})
+        if not miss:
+            continue
+        path, _lm = _fetch_report(cache_dir, mon, index[mon])
+        try:
+            rec = _apply_errata(mon, parse_report(path, mon))
+            rec = _fill_from_next(rec, mon, index, cache_dir)
+            _validate(mon, rec)
+        except SgxFetchError as e:
+            sys.stderr.write('[sgx] ⚠ %s 的历史回补没跑通（%s）—— 这一行保持原样，'
+                             '当月增量不受影响\n' % (mon, e))
+            continue
+        for c in DATA_COLUMNS:
+            v, old = rec.get(c), known.get(c)
+            if old is not None:
+                if v is not None and abs(v - old) > max(0.5, 1e-9 * abs(old)):
+                    sys.stderr.write(
+                        '[sgx] ⚠ %s %s：重新解析得到 %s，库里是 %s —— 官方重发了这一期，'
+                        '还是解析器变形了？本模块不覆盖已有值，请人工确认\n'
+                        % (mon, c, _fmt(v), _fmt(old)))
+                continue
+            if c not in miss or v is None:
+                continue
+            row[idx[c]] = _fmt(v)
+            filled.append('%s %s=%s' % (mon, c, _fmt(v)))
+    if filled:
+        sys.stderr.write('[sgx] 历史回补：填空 %d 格（只填空、不覆盖）——\n  %s\n'
+                         % (len(filled), '\n  '.join(filled)))
+    return filled
 
 
 def _crosscheck_prev_month(path, mon, prev_mon, prev_vals):
@@ -1463,14 +1577,19 @@ def update(series_dir, cache_dir):
     幂等保证：
       · 已在 CSV 里的月份**不重新下载、不重新解析、不重写**（官方明说证券成交额会跨月
         顺延调整，见口径坑 9；重述不由本模块自动吞进来）；
-      · 既有行原样字符串搬运，所以「没有新月份」时重跑，文件**字节级不变**；
-      · 已有值永不覆盖 —— 本模块只会新建行，不会改老行。
+      · 既有行原样字符串搬运，所以「没有新月份、也没有空格可补」时重跑，
+        文件**字节级不变**；
+      · 已有值永不覆盖 —— 本模块只写空格与新行，不改任何已经有字符的格。
     真要重刷历史，删掉对应行手工重跑。
 
     「已有值永不覆盖」的**唯一例外**是 _ERRATA 那张更正表：它装的是已经用官方 PDF
     逐条证死了的错印（每条都带证据），且只在单元格逐字节等于登记的错值时才改写。
     第一次跑改掉那几格、之后每次跑都是空操作，所以幂等仍然成立。
     这不是「自动吞重述」的口子 —— 重述走 _crosscheck_prev_month，只告警不改。
+
+    「不改老行」的**唯一例外**是 _backfill_gaps：老行里那些「按 FIRST_MONTH 该有值、
+    实际却是空格」的格会被补上（口径坑 18 的 38 个月换手率就是这么回来的）。
+    它同样只写空格、不覆盖任何已有值，补完即为空操作，幂等成立。
 
     首次运行会把 2015-01 起的 138 期一次性补齐（约 80 MB / 数分钟），
     之后每月只下一期。cache/ 里的 PDF 与 .lastmod 边车文件会被复用。
@@ -1491,6 +1610,11 @@ def update(series_dir, cache_dir):
     _repair_errata(body, idx)
 
     index = _report_index(cache_dir)
+
+    # 历史回补：已在库的行里「该有值却是空格」的列。放在增量之前，
+    # 这样当月那一行进来时 _crosscheck_prev_month 拿到的上月参照是补全后的。
+    _backfill_gaps(body, idx, index, cache_dir)
+
     need = [m for m in sorted(index) if m >= START_MONTH and m not in have]
 
     added, pub = [], {}

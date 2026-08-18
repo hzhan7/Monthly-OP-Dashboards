@@ -8,16 +8,20 @@
 ━━ 本页有两处「同一指标换了口径」，必须画成两段而不是一条 ━━
 ASX 的月度经营报告（MAR）在两个地方换过定义，series/asx.csv 如实分成了两组列：
 
-    上市融资   capital_initial_raised_audmn          2017-10 → 2023-09（旧口径：IPO 实际募资额）
-              capital_total_raised_incl_other_audmn 2017-10 → 2023-09
+    上市融资   capital_initial_raised_audmn          2016-01 → 2023-09（旧口径：IPO 实际募资额）
+              capital_total_raised_incl_other_audmn 2016-01 → 2023-09
               mktcap_new_listings_audmn             2023-10 → 至今（新口径：新上市实体的挂牌市值）
               capital_new_quoted_audmn              2023-10 → 至今
     保证金     margin_cash_onbs_audbn                2019-10 → 2024-07（旧口径：表内现金保证金）
               margin_total_audbn                    2024-08 → 至今（新口径：保证金总额）
 
-（起止月份是本次从 series/asx.csv 逐列实测出来的：上市融资旧口径 72 个月、新口径 34 个月、
-保证金旧口径 58 个月、新口径 24 个月，四段各自零空洞。保证金旧口径比现货晚两年才有，
-是因为 MAR 到 2019 年才开始披露这一行，不是解析漏了。）
+（这里写的月份只是给人读的路标；**页面上的组标题与断点月一律由 `_span()` / `_first_present()`
+在 import 期从 CSV 现算**，改不改这段注释都不影响图。2026-08 回补到 2016-01 之后逐列实测：
+上市融资旧口径 93 个月、新口径 34 个月、保证金旧口径 58 个月、新口径 24 个月，四段各自零空洞。
+保证金比现货晚三年半才有，是因为 MAR 到 2019-10 才开始印这一行，不是解析漏了。
+⚠ 上市融资的口径断点**只有 2023-10 一处**。曾有一份笔记说「Listings 段在 2016/2017 之间
+也换过定义」，那是误记：回补的 2016-01…2017-09 这 21 期里，旧口径两列 21/21 期期都有、
+新口径列一期都没有，所以 2016/2017 之间没有任何断点。）
 
 「IPO 募资额」和「新上市挂牌市值」差着一个数量级（官方 FY26 新闻稿同时给出
 IPO capital raised A$5.6bn 与 new listings added A$32.6bn in quoted market cap），
@@ -55,11 +59,21 @@ series/asx.csv 里**没有成交股数列**（官方 MAR 不发），能配成�
 · contracts_spi200_futures / oi_spi200_futures / contracts_3y_bond_futures /
   oi_3y_bond_futures / contracts_10y_bond_futures / oi_10y_bond_futures /
   contracts_90d_bankbill_futures / oi_90d_bankbill_futures
-  —— **只有 2026-06 与 2026-07 两个月**，且不可回补：这些数来自 ASX 24 Monthly SFE
-  Trading Report（monthly-futures-markets-report-{DDMMYYYY}.pdf），官方只保留最近 2 期，
-  更早的直链一律 404（docs/verify/asx.md 口径坑 8 实测）。两个点画不出任何时序图，
+  —— **series 里目前只有 2026-06 与 2026-07 两个月**，两个点画不出任何时序图，
   放上页面只会让人以为「ASX 的国债期货是 2026 年才有的」。
-  ⇒ 本页的期货口径只到 ASX 24 合计（adv_futures_contracts）。分品种要等自然攒够月份。
+  ⚠️ **理由到此为止 —— 「不可回补」那句已被实测推翻，别再拿它当结论。**
+  旧注释（与 docs/verify/asx.md 口径坑 8）说「官方只保留最近 2 期，更早的直链一律 404」。
+  2026-08 实测：MAR 正文里印的那条链接，2020-06…2026-07 共 74 期**全部 200 +
+  application/pdf**，且用未改动的 `asx.parse_sfe` 全部解析成功。真正卡住的是抓取器 ——
+  `fetch/asx.py:_SFE_LINK` 的文件名日期写死了 8 位数字，而官方 2020-06…2026-05
+  一直用 6 位（YYMMDD 与 DDMMYY 交替），只有 2026-06 起才是 8 位。
+  ⇒ 这 8 列是 **fetcher_window，不是 source_hard**；官方源的天花板是 2020-06
+  （2016-10…2020-05 只在 Wayback 有，属第三方存档，是否破例要用户拍板；
+  2016-01…2016-09 官方与 Wayback 都没有，那几期 MAR 正文本就没印分品种链接）。
+  回补这 8 列的工作**本轮没做**（本轮的目标是主体回到 2016-01，而这 8 列无论如何
+  到不了 2016-01，起点会与全页差 53 个月）。谁来做都要连带重写 build/pools.py:1292
+  把 asx 排除出利率衍生品池的那条理由。
+  ⇒ 在此之前，本页的期货口径只到 ASX 24 合计（adv_futures_contracts）。
 · trading_days_cash / trading_days_futures / trading_days_eto —— 三套分母（2026-04 实测
   分别是 19 / 20 / 19），ADV 已经除过了；上页面只会诱导别人拿错的那套去反推月总量。
 · contracts_futures_total / contracts_options_on_futures_total /
@@ -86,6 +100,38 @@ def _first_present(col):
     except OSError:
         pass
     return None
+
+
+def _last_present(col):
+    """最后一个有值的月份；读不到返回 None。与 `_first_present` 成对。"""
+    out = None
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            for r in csv.DictReader(fh):
+                if col in r and r[col].strip():
+                    out = r['month']
+    except OSError:
+        pass
+    return out
+
+
+def _span_zh(col, tail='起', dead=False):
+    """组标题里那半句「自 YYYY-MM 起」/「YYYY-MM → YYYY-MM，已停发」，现算不写死。
+
+    这些月份 2026-08 之前是**手打在组标题字符串里**的（「2017-10 → 2023-09」
+    「新上市自 2017-10」…），于是回补一次历史就集体过期，而过期的表现是
+    「图上第一根柱在 2016-01、标题却说 2017-10」—— 没有任何检查会报错。
+    现算之后，series 每长一个月标题自己跟着走。
+
+    读不到 CSV 就返回空串（缺文件不许在 import 期抛异常），标题退化成不含月份的版本。
+    """
+    a = _first_present(col)
+    if not a:
+        return ''
+    if dead:
+        b = _last_present(col)
+        return f'{a} → {b}，已停发' if b else f'{a} 起'
+    return f'{a} {tail}'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,9 +235,76 @@ def _tradingday_spread():
     return min(v), max(v), (max(v) / min(v) - 1.0) * 100.0
 
 
+def _page_cols():
+    """本页真正上图的列（headline + groups + decomp + ttm_yoy 里出现过的 col）。
+
+    SPEC 还没构造出来，所以不能从 SPEC 里读；但也不该手抄一份清单 —— 手抄的清单
+    与 groups 分家的那天，图注就开始说另一张图的事。折中：**在 SPEC 组装完之后**
+    由 `_scan_spec_cols()` 回填，本函数只在那之前给个空清单用。
+    """
+    return _PAGE_COLS
+
+
+_PAGE_COLS = []
+
+
+def _late_starts():
+    """上页面的列里，起点晚于全页首月的那些 —— (列名, 首月, 晚了几个月)。
+
+    回补一次历史，这张清单就会变长：2026-08 之前只有 3 列晚于首月，回补到 2016-01
+    之后变成 9 列。写死一句「VIX 起点比主体晚 24 个月」那样的话必然过期，所以现算。
+    """
+    rows = _rows()
+    if not rows:
+        return None, []
+    first = rows[0]['month']
+
+    def mi(m):
+        return int(m[:4]) * 12 + int(m[5:])
+
+    out = []
+    for c in _page_cols():
+        a = _first_present(c)
+        if a and a > first:
+            out.append((c, a, mi(a) - mi(first)))
+    return first, sorted(out, key=lambda x: x[1])
+
+
+def _interior_holes():
+    """列的首末月之间的空格 —— (列名, 月份)。**页面上的列才算**。
+
+    「界内空格」在本仓是异常状态，只有 fetch/asx.py:_KNOWN_SOURCE_GAPS 里登记过的
+    才允许存在。这里把它们现算出来印进图注，是为了让图上那一处断笔有出处 ——
+    否则读者只会看到一根线莫名其妙断了一个月。
+    """
+    rows = _rows()
+    out = []
+    for c in _page_cols():
+        ms = [r['month'] for r in rows if (r.get(c) or '').strip()]
+        if not ms:
+            continue
+        out += [(c, r['month']) for r in rows
+                if ms[0] < r['month'] < ms[-1] and not (r.get(c) or '').strip()]
+    return sorted(out, key=lambda x: x[1])
+
+
+def _msg_precision_step():
+    """`settlement_msgs_mn` 由 1 位小数改成 3 位小数的那一月；找不到返回 None。
+
+    判据是**印刷位数**而不是数值：小数点后 >1 位的第一个月就是换代月。
+    （官方定义没变，所以这不进 `_breaks()`，只进图注。）
+    """
+    for r in _rows():
+        v = (r.get('settlement_msgs_mn') or '').strip()
+        if '.' in v and len(v.split('.')[1]) > 1:
+            return r['month']
+    return None
+
+
 _PTN, _PTMED, _PTMAX, _PTONM = _per_trade_check()
 _FY0, _FY1, _FYL, _FYA, _FYB = _fy_probe()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
+_MSG_STEP = _msg_precision_step()
 
 
 _NOTE_DECOMP = (
@@ -284,7 +397,9 @@ SPEC = {
                'ASX Market Announcements Office); format after Goldman Sachs GIR'),
 
     # 头条：现货与期货各一条。两者同出一份 MAR、同一天发布，
-    # 2017-10 起逐月无洞（实测 106/106），且 ASX 是本仓最快的一家之一
+    # 自 series 首月起逐月无洞（2026-08 回补到 2016-01 后实测 127/127，
+    # 「无洞」这个断言由 build/verify_pages.py 每次构建复核，这里不再抄写月数），
+    # 且 ASX 是本仓最快的一家之一
     # （次月第 3–8 个日历日，众数第 5–6 日；2026-07 数据于 2026-08-06 发布）。
     'headline': [
         {'col': 'adt_cash_total_audbn', 'zh': '现货 ADT（含场外报告）',
@@ -330,8 +445,8 @@ SPEC = {
              'unit': 'A$/trade', 'fmt': 'f0c'},
         ]},
 
-        # 2019-10 才有此行，单独一组（起点与主体差 24 个月）。
-        {'zh': 'S&P/ASX 200 VIX（2019-10 起）', 'cols': [
+        # 官方到 2019-10 才开始印这一行，起点比页面主体晚 45 个月（现算，见 _span_zh）。
+        {'zh': f'S&P/ASX 200 VIX（{_span_zh("vix_asx200_avg")}）', 'cols': [
             {'col': 'vix_asx200_avg', 'zh': '月内日均值',
              'unit': 'index level', 'fmt': 'f1'},
         ]},
@@ -371,16 +486,17 @@ SPEC = {
              'unit': 'A$mn', 'fmt': 'f0c'},
         ]},
 
-        # 旧口径：2017-10 → 2023-09，最新月天生留空 ⇒ 已进 slow_cols。
-        {'zh': '上市融资·旧口径（2017-10 → 2023-09，已停发）', 'cols': [
+        # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
+        {'zh': f'上市融资·旧口径（{_span_zh("capital_initial_raised_audmn", dead=True)}）',
+         'cols': [
             {'col': 'capital_initial_raised_audmn', 'zh': 'IPO 实际募资额',
              'unit': 'A$mn', 'fmt': 'f0c'},
             {'col': 'capital_total_raised_incl_other_audmn', 'zh': '募资总额（含其他）',
              'unit': 'A$mn', 'fmt': 'f0c'},
         ]},
 
-        # 新口径：2023-10 起。
-        {'zh': '上市融资·新口径（2023-10 起）', 'cols': [
+        # 新口径：起点现算（= 上市融资那条断点的月份）。
+        {'zh': f'上市融资·新口径（{_span_zh("capital_new_quoted_audmn")}）', 'cols': [
             {'col': 'mktcap_new_listings_audmn', 'zh': '新上市实体挂牌市值',
              'unit': 'A$mn', 'fmt': 'f0c'},
             {'col': 'capital_new_quoted_audmn', 'zh': '新增挂牌资本合计',
@@ -391,15 +507,17 @@ SPEC = {
         # 退市 −40…−4 家），画在一起才读得出「净进出」，也让两列都摆脱单桶 gs_bar
         # 的单月同比。起点不同（新上市 2017-10、退市 2024-05）由底座的 lines 断笔处理，
         # **不会**把缺口连成直线。
-        {'zh': '上市与退市实体数（新上市自 2017-10、退市自 2024-05）', 'cols': [
+        {'zh': f'上市与退市实体数（新上市自 {_first_present("new_listed_entities")}、'
+               f'退市自 {_first_present("delisted_entities")}）', 'cols': [
             {'col': 'new_listed_entities', 'zh': '当月新上市实体数',
              'unit': 'entities', 'fmt': 'f0'},
             {'col': 'delisted_entities', 'zh': '当月退市实体数（负值）',
              'unit': 'entities', 'fmt': 'f0'},
         ]},
 
-        # 2024-05 起才有的两列金额（含负值，见 notes）。
-        {'zh': '挂牌资本净增与退市市值（2024-05 起）', 'cols': [
+        # 官方 2024-05 才开始印的两列金额（含负值，见 notes）。起点现算。
+        {'zh': f'挂牌资本净增与退市市值（{_span_zh("capital_net_new_quoted_audmn")}）',
+         'cols': [
             {'col': 'capital_net_new_quoted_audmn', 'zh': '扣除退市后的净增挂牌资本',
              'unit': 'A$mn', 'fmt': 'f0c'},
             {'col': 'mktcap_delisted_audmn', 'zh': '退市实体市值（负值）',
@@ -424,18 +542,21 @@ SPEC = {
              'unit': 'mn messages/month', 'fmt': 'f2'},
         ]},
 
-        # 旧口径：2019-10 → 2024-07，最新月天生留空 ⇒ 已进 slow_cols。
-        {'zh': '参与者保证金·旧口径（2019-10 → 2024-07，已停发）', 'cols': [
+        # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
+        {'zh': f'参与者保证金·旧口径（{_span_zh("margin_cash_onbs_audbn", dead=True)}）',
+         'cols': [
             {'col': 'margin_cash_onbs_audbn', 'zh': '表内现金保证金',
              'unit': 'A$bn', 'fmt': 'f1', 'stock': True},
         ]},
 
-        {'zh': '参与者保证金·新口径（2024-08 起）', 'cols': [
+        {'zh': f'参与者保证金·新口径（{_span_zh("margin_total_audbn")}）', 'cols': [
             {'col': 'margin_total_audbn', 'zh': '保证金总额',
              'unit': 'A$bn', 'fmt': 'f1', 'stock': True},
         ]},
 
-        {'zh': '参与者数', 'cols': [
+        # 参与者两列自 2016-07 起（2016-01…2016-06 的 MAR 里根本没有这一行，
+        # 见 fetch/asx.py 口径坑 15），起点比页面主体晚半年 —— 标题现算说明。
+        {'zh': f'参与者数（{_span_zh("participants_asx_total")}）', 'cols': [
             {'col': 'participants_asx_total', 'zh': 'ASX（现货）参与者',
              'unit': 'entities', 'fmt': 'f0', 'stock': True},
             {'col': 'participants_asx24_total', 'zh': 'ASX 24（衍生品）参与者',
@@ -537,10 +658,12 @@ SPEC = {
         '与 HKEX 的 new_listings（主板 + GEM 股票）口径不同，横截面页放一起要标注。',
 
         '本页**没有** ASX 24 分品种（SPI 200 / 3 年期与 10 年期国债期货 / 90 日银行票据）'
-        '的月度序列。分品种数据出自 ASX 24 Monthly SFE Trading Report，'
-        '官方只保留最近 2 期、更早的直链一律 404 且不可回补，'
-        'series/asx.csv 里目前只有 2026-06 与 2026-07 两个月。'
-        '两个点画不出时序，只能从 2026-06 起逐月往后攒；攒够之后再加一组即可。',
+        '的月度序列 —— series/asx.csv 里目前只有 2026-06 与 2026-07 两个月，画不出时序。'
+        '过去这里写的理由是「官方只保留最近 2 期、更早的一律 404 且不可回补」，'
+        '**那句话 2026-08 已被逐期实发 HTTP 证伪**：分品种报告 2020-06 至今共 74 期'
+        '全部可下载并解析，卡住的是抓取器里写死 8 位日期的文件名正则'
+        '（官方 2020-06…2026-05 用的是 6 位）。回补这 8 列是待办事项，不是不可能；'
+        '官方源的天花板是 2020-06，仍比本页主体晚 53 个月，所以补上之后也要单独标起点。',
 
         '本页全部金额为澳元。跨币种比较由 build/notional.py 统一换算：'
         '流量（ADT、成交额、融资额、当月清算额）配月均汇率，'
@@ -549,5 +672,85 @@ SPEC = {
         '未上页面的月频列：trading_days_cash / trading_days_futures / trading_days_eto'
         '（三套分母，2026-04 实测分别是 19 / 20 / 19）、'
         '以及五条 contracts_*_total 月总量列（= ADV × 对应交易日，与 adv_* 重复）。',
+
+        # ⚠️ 另有两条随 CSV 现算的图注（「起点不齐的列」与「界内空格」）在 SPEC
+        #    组装完之后追加，见文件末尾 —— 它们要先知道本页到底上了哪些列。
+
+        '<b>结算报文量在 ' + (_MSG_STEP or '2017-10') + ' 之前只印到 1 位小数。</b>'
+        'ASX 的 MAR 从那一期起把 <code>Dominant settlement messages (million)</code> '
+        '由 1 位小数改成 3 位（实测前一期印 1.5、该期印 1.433）。'
+        '<b>定义没变、只是印得细了，所以这不是口径断点、页面上不打红线</b>；'
+        '但左边那一段被量化到 0.1（约 ±3% 的格），单月环比与同比在那一段有一层'
+        '纯粹的取整噪声，读的时候别把它当成业务波动。'
+        '入库一律用<b>当期公告原值</b>：后期报告回看同一个月时会给 3 位数'
+        '（2018-09 期把 2017-09 印成 1.453，而 2017-09 当期印的是 1.5），'
+        '那是重述值，不拿来盖历史。',
     ],
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SPEC 组装完之后：把「本页上了哪些列」扫出来，再拼两条只有现算才不会过期的图注。
+#
+# 为什么放在最后而不是写进上面的 notes 列表：这两条讲的是**本页这些列**的起点与空格，
+# 得先知道 groups / decomp / ttm_yoy 里到底出现了哪些 col。手抄一份列清单是可以，
+# 但清单与 groups 分家的那天图注就开始说另一张图的事 —— 那种错不报警。
+# ══════════════════════════════════════════════════════════════════════════════
+def _scan_spec_cols(spec):
+    """SPEC → 本页真正上图的列名（去重，保持出现顺序）。"""
+    out = []
+
+    def add(c):
+        if c and c not in out:
+            out.append(c)
+
+    for h in spec.get('headline', []):
+        add(h.get('col'))
+    for g in spec.get('groups', []):
+        for c in g.get('cols', []):
+            add(c.get('col'))
+    for d in spec.get('decomp', []):
+        for k in ('value', 'qty'):
+            add((d.get(k) or {}).get('col'))
+    for t in spec.get('ttm_yoy', []):
+        add((t.get('level') or {}).get('col'))
+        add(t.get('total_col'))
+    return out
+
+
+_PAGE_COLS[:] = _scan_spec_cols(SPEC)
+_FIRST, _LATE = _late_starts()
+_HOLES = _interior_holes()
+
+if _LATE:
+    _NOTE_STARTS = (
+        f'<b>本页各图的窗口都自 {_FIRST} 起，但线不都从左边缘开始。</b>'
+        f'ASX 是逐年往月报里加行的，所以有 {len(_LATE)} 列的官方披露起点晚于本页首月，'
+        f'在图上表现为「同一张图里两条线起点不同」或「左边一段没有柱」——'
+        f'那是<b>官方当时没印这一行</b>，不是我们漏抓，更不能拿别的列相加去补：'
+        + '；'.join(f'<code>{c}</code> 自 {a} 起（晚 {n} 个月）' for c, a, n in _LATE)
+        + '。其中 <code>value_cash_onmarket_audbn</code>（仅场内成交额）最容易被误会：'
+          '它可由「连续竞价 + 集合竞价 + Centre Point」三项相加倒推'
+          '（2017-09 算出来 80.829，与官方 2017-10 首次印出的 80.296 量级一致），'
+          '但那是派生量，写进 series 就再也分不清哪个数是 ASX 印的、哪个是我们算的，'
+          '所以留空。<b>要看不受起点影响的现货口径，用「含场外报告」那条线。</b>')
+else:
+    _NOTE_STARTS = ('本页各图的窗口自序列首月起，且每一列都从窗口左边缘就有值。')
+
+if _HOLES:
+    _NOTE_HOLES = (
+        f'<b>有 {len(_HOLES)} 处「界内空格」：线在中间断一格，是官方那一期 PDF 自己坏了。</b>'
+        + '；'.join(f'<code>{c}</code> 缺 {m}' for c, m in _HOLES)
+        + '。两处的病因都在 <code>fetch/asx.py</code> 的 <code>_KNOWN_SOURCE_GAPS</code> '
+          '里逐格记着：2017-04 那一期的期货期权小块<b>值列整体上移了一行</b>（值落空）；'
+          '2016-09 那一期把每笔均值的千分位逗号<b>印成了小数点</b>（4.852 应为 4,852）。'
+          '两格的真值都能算出来（前者由官方同表的合计相减、后者由成交额 ÷ 笔数或'
+          '看下一年同期报告的 pcp 列），但那都不是<b>当期官方公告原值</b>，'
+          '所以一律留空。<b>断一格远好过一个看不出来的错数</b> —— '
+          '尤其 2016-09 那个错值只有真值的千分之一，画上去是一根扎到零的刺。')
+else:
+    _NOTE_HOLES = None
+
+SPEC['notes'].append(_NOTE_STARTS)
+if _NOTE_HOLES:
+    SPEC['notes'].append(_NOTE_HOLES)
