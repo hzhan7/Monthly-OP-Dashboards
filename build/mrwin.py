@@ -365,6 +365,14 @@ def layout_all(exs, min_n=21):
             e['note'] = (e.get('note') or '') + why
 
 
+def layout_all_ret(exs):
+    """`layout_all()` 的返回值版本，给「exhibits 是在 payload 字面量里现算」的生成器用
+    （build/hood.py 就是这种：`'exhibits': axisfmt.fix_all(EX)`）。
+    就地改完把同一个列表还回去，方便直接套在表达式外面。"""
+    layout_all(exs)
+    return exs
+
+
 def label_clash(ex, full=None):
     """首点/末点数值标签压进轴刻度栏 —— 量出来，不改图。**尺子是 chartscale 的，不是新造的。**
 

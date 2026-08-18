@@ -51,6 +51,7 @@ import pandas as pd
 
 import brief as B
 import axisfmt
+import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
 import yoy            # 同比口径的唯一实现（build/yoy.py）：本页不再自己写一份滚动同比
@@ -359,7 +360,7 @@ def breaks_for(n, index, items):
 
     返回 (payload 片段, 人话短句)。窗口盖不到的断点自动省略，一个都盖不到就返回
     ({}, '') —— 图上不画、图注也不会声称画了。**绝不因为断点滚出窗口而报错退出**：
-    13/25 个月的窗口每月往前滚，断点滚出去是必然事件，硬失败等于让这一页永久停更
+    13 个月与长窗口每月往前滚，断点滚出去是必然事件，硬失败等于让这一页永久停更
     （build/lpla.py 现在就是这个毛病）。写法照 build/schw.py 与 build/wealth.py。
     """
     lst = list(index)
@@ -388,7 +389,15 @@ def spans(period, lo, hi):
 MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-W25 = df.index[-25:]
+#: 时序图窗口的左端。2026-08-18 从「近 25 个月」改成「2016-01 起」，全站统一
+#: （build/single.py 的 WIN_FROM、cboe / cme / hkex / cost 的同名常量、msci 的 WIN0）。
+#: 本页月度披露 2023-04 才开始（Robinhood 2021-07 才上市，官方最早的月度数字是 2021-01，
+#: 见 fetch/hood.py），所以 WIN_FROM 在这一页实际拿到的就是序列自己的全长 ——
+#: 只往右让、不往左借。变量名保留 W25 是因为它散落在几十处，改名的 diff 会淹没实质改动。
+WIN_FROM = '2016-01'
+_I0 = next((i for i, p in enumerate(df.index)
+            if f'{p.year}-{p.month:02d}' >= WIN_FROM), 0)
+W25 = df.index[_I0:]
 W15 = df.index[-15:]
 W13 = df.index[-13:]
 XL25 = [mlab(p) for p in W25]
@@ -409,7 +418,7 @@ N_QTR_ND, N_QTR_DATS = 23, 26          # 季度净流入 / 季度 DATs
 N_TABLE = 29                           # 末尾核对表
 
 # y/y 线要画出来，至少得有这么高比例的点是可比的。
-# 事件合约（Exhibit 10）25 个月里只有 6 个月有可比基数，画出来是「两段近乎垂直的竖线
+# 事件合约（Exhibit 10）窗口内只有 6 个月有可比基数，画出来是「两段近乎垂直的竖线
 # 加一段贴地的直线」，还顺带把右轴撑到 0–3000% —— 除了「涨了很多」读不出别的，
 # 却挡住了柱子。这不是排版偏好：一条 76% 是断口的折线本来就不是一条序列。
 # 用覆盖率而不是「量程多宽」当判据，是因为它会自己恢复：等事件合约有满 12 个月的
@@ -417,7 +426,7 @@ N_TABLE = 29                           # 末尾核对表
 YOY_MIN_COVER = 0.60
 
 
-def lvl(n, s, title, *, win=25, fmt='f1', yfmt=None, ylab='', note='', pct_series=False,
+def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_series=False,
         breaks=(), show_mom=False, bar_name='Monthly', yoy_drop_note='', roll=True,
         roll_src=None, what='', ratio_extra=''):
     """gsx.lvl_bar → bar_line_dual：浅蓝柱（左轴水平值）+ 右轴 y/y 线。
@@ -440,6 +449,10 @@ def lvl(n, s, title, *, win=25, fmt='f1', yfmt=None, ylab='', note='', pct_serie
     把整页打挂（这条路踩过一次：Exhibit 10 去掉 y/y 后页面只渲染到第 9 张卡）。
     退化写在这里而不是在调用点各写各的，是为了让以后任何一条新序列都自动走这条安全路径。
     """
+    # win=None（默认）= 跟着 W25（现在是 WIN_FROM 起的全窗口）走。
+    # 原默认写死 25，窗口一变就会出现「values 长 25、x 轴 40 格」——
+    # build/verify_pages.py 会拦（「尾部会静默变成缺失」），但默认值本身就该跟着窗口。
+    win = win or len(W25)
     d = s.iloc[-win:]
     mono = (s - s.shift(12)) if pct_series else yoy_of(s)
     if pct_series:
@@ -519,19 +532,19 @@ def lvl(n, s, title, *, win=25, fmt='f1', yfmt=None, ylab='', note='', pct_serie
 
 # ══════════════════════ 客户与资产 ══════════════════════
 # 存量：期末资产，右轴保留单月同比（roll=False）。
-lvl(2, tpa, 'Total platform assets', win=25, fmt='usd0', ylab='$bn', breaks=BK_TPA,
+lvl(2, tpa, 'Total platform assets', win=len(W25), fmt='usd0', ylab='$bn', breaks=BK_TPA,
     roll=False, what='总平台资产',
     note='Previously reported as Assets Under Custody; renamed and widened to include '
          'TradePMR-advised assets not custodied by Robinhood.')
 
 # 流量：净流入，右轴换 12 个月滚动合计同比。
-lvl(3, nd, 'Net deposits', win=25, fmt='usd1', ylab='$bn', show_mom=True, breaks=BK_ND,
+lvl(3, nd, 'Net deposits', win=len(W25), fmt='usd1', ylab='$bn', show_mom=True, breaks=BK_ND,
     note='m/m shown because net deposits swing far more than any y/y can express.')
 
 # 有机增速的分子就是净流入，断点原样传导过来（同 build/schw.py 对 core NNA 的处理）：
 # 分子跨了口径变化，比率也跨了，只在净流入那张画线等于让读者以为这张没受影响。
 # 柱仍是**当月**年化率（GS 的流量口径规矩），右轴换成滚动口径那条比率的百分点差。
-lvl(4, df['organic_growth_ann'], 'Annualised organic growth rate', win=25, fmt='pct1',
+lvl(4, df['organic_growth_ann'], 'Annualised organic growth rate', win=len(W25), fmt='pct1',
     ylab='% annualised', pct_series=True, breaks=BK_ND,
     roll_src=df['organic_growth_roll'],
     note='Monthly net deposits x 12 / prior month-end total platform assets — the same '
@@ -554,7 +567,7 @@ _ex5_note = (
 # Bitstamp 也是客户数的断点（页面口径说明第 3 条自己就是这么写的），原版只画了 WonderFi。
 # 存量：账户/客户**存量**，右轴保留单月同比。全站审计里 /wealth/ 的 IBKR 账户数
 # 实测证明这类序列换成滚动反而更吵，本页 funded customers 同理。
-lvl(5, FC, 'Funded customers', win=25, fmt='f1', ylab='mn customers',
+lvl(5, FC, 'Funded customers', win=len(W25), fmt='f1', ylab='mn customers',
     breaks=BK_CUST, roll=False, what='入金客户数', note=_ex5_note)
 
 _b = df.iloc[-13:]
@@ -574,12 +587,12 @@ EX.append({
 # ══════════════════════ 交易量 ══════════════════════
 # ADV 是「每天平均多少量」的流量率：12 个月滚动合计同比与「滚动 12 个月日均量的同比」
 # 是同一个数（分子分母都乘了同样的月数），所以照流量处理，roll=True。
-lvl(7, df['adv_equity_usdbn'], 'Equity notional ADV', win=25, fmt='usd1', ylab='$bn / day',
+lvl(7, df['adv_equity_usdbn'], 'Equity notional ADV', win=len(W25), fmt='usd1', ylab='$bn / day',
     show_mom=True,
     note='m/m shown: equity volume is running at more than twice last year, so y/y '
          'alone no longer separates months.')
 
-lvl(8, df['adv_options_mn'], 'Options contracts ADV', win=25, fmt='f1',
+lvl(8, df['adv_options_mn'], 'Options contracts ADV', win=len(W25), fmt='f1',
     ylab='mn contracts / day', show_mom=True)
 
 _c = df.iloc[-15:]
@@ -610,11 +623,11 @@ EX.append(_ex9)
 # 原来它是 bar_line_dual + 右轴 y/y：那 6 个读数在 +488% 到 +2600% 之间，右轴被撑到
 # 0–3000%，绿线退化成两段近乎垂直的竖线加一段贴地的直线，除了「涨了很多」读不出任何
 # 东西，还横穿柱子。现在每根柱直接标出数值，「这个月到底多少」一眼可得。
-lvl(10, df['adv_event_mn'], 'Event contracts ADV', win=25, fmt='f0',
+lvl(10, df['adv_event_mn'], 'Event contracts ADV', win=len(W25), fmt='f0',
     ylab='mn contracts / day', show_mom=True,
     note='Prediction Markets Hub, launched at scale in 2025.')
 
-_d = df.iloc[-25:]
+_d = df.iloc[_I0:]          # 与 W25/XL25 同窗口（原先写死 -25）
 EX.append({
     'n': 11, 'kind': 'lines_endlabels', 'title': 'Daily average trades by asset class',
     'xlabels': XL25, 'xstep': 2, 'fmt': 'f1', 'ylab': 'mn trades / day',
@@ -722,7 +735,7 @@ EX.append({
             '误差线的零点请看右轴刻度上那条同色虚线。',
 })
 
-lvl(N_IMPLIED, df['implied_txn_rev_usdmn'], 'Implied transaction revenue', win=25, fmt='usd0',
+lvl(N_IMPLIED, df['implied_txn_rev_usdmn'], 'Implied transaction revenue', win=len(W25), fmt='usd0',
     ylab='$mn / month',
     note='Assumption: constant take rate within a quarter, back-solved as reported revenue / volume '
          f'({LAST_Q}: options {rate_options_c[LAST_Q]:.0f}c/contract, '
@@ -756,7 +769,7 @@ EX.append({
 
 # ══════════════════════ 生息资产 ══════════════════════
 # 存量：期末融资余额（Period-end），右轴保留单月同比。
-lvl(18, df['margin_book_usdbn'], 'Margin book', win=25, fmt='usd1', ylab='$bn',
+lvl(18, df['margin_book_usdbn'], 'Margin book', win=len(W25), fmt='usd1', ylab='$bn',
     roll=False, what='期末融资余额',
     note='Period-end margin loans receivable, including balances from RIAs on the '
          'TradePMR platform.')
@@ -804,7 +817,7 @@ EX.append({
 # 它不走 ratio_note：分子分母同为存量、量纲同源，12 个月滚动均值同比在这里其实是
 # 合法的（等价于「去年一年的平均资产 ÷ 去年一年的平均客户数」的近似），
 # 所以理由必须由实测给出，而不是「比率不能平滑」。
-lvl(21, df['assets_per_customer_usdk'], 'Assets per funded customer', win=25, fmt='usd1',
+lvl(21, df['assets_per_customer_usdk'], 'Assets per funded customer', win=len(W25), fmt='usd1',
     ylab='$k per customer', breaks=BK_CUST, roll=False, what='户均资产（两个期末数之比）',
     note='Total platform assets / funded customers. Rises when existing customers '
          'deposit or markets rally, falls when acquisitions bring in customers with '
@@ -1142,7 +1155,7 @@ table = {
 
 # ────────────────────────── 口径与方法说明 ──────────────────────────
 # 断点那一条不许写死「三个断点图上均以红色虚线标出」：窗口每月往前滚，某个断点滚出
-# 25 个月窗口的那天，这句话就变成页面上的第二处「注释说有、图上没有」。
+# 窗口再变的那天，这句话就变成页面上的第二处「注释说有、图上没有」。
 # 由 BRK_DRAWN 现生成 —— 只说真正画上的那几张图。
 
 
@@ -1241,7 +1254,7 @@ notes = [
     f'资产（这部分并不由 Robinhood 托管）。Exhibit {N_HIST} 的全历史只到 2023-04 —— 月度文件发布的是'
     '滚动窗口，更早的月份只存在于历史新闻稿里，本站不做拼接。',
 
-    f'<b>Exhibit 10（事件合约）没有画 y/y 线</b>，不是漏了：25 个月里只有少数几个月有大于零的'
+    f'<b>Exhibit 10（事件合约）没有画 y/y 线</b>，不是漏了：窗口内只有少数几个月有大于零的'
     '上年同月基数，画出来是两段近乎垂直的竖线加一段贴地的直线，还会把右轴撑到 3,000% 以上，'
     '除了「涨了很多」读不出任何东西。判据是<b>可比点的覆盖率</b>（低于 60% 就不画），'
     '所以等基数长满 12 个月，这条线会自己回来。确切的 y/y 在 Exhibit 1 汇总表里。',
@@ -1591,7 +1604,9 @@ payload = {
     'xlabels_long': XL_LONG,
     'summary': summary,
     # 轴刻度小数位与截轴护栏：判据见 build/axisfmt.py（全站唯一实现）。
-    'exhibits': axisfmt.fix_all(EX),
+    # 长窗口的图放不进半栏卡片 —— 逐张按 charts.js 的量边距算式判通栏与抽稀。
+    # 排在 axisfmt.fix_all 之后：轴刻度定稿了才量得准边距（与 single.py 同序）。
+    'exhibits': mrwin.layout_all_ret(axisfmt.fix_all(EX)),
     'table': table,
     'notes': notes,
     'footer': '仅供个人研究，不构成投资建议 · 数值全部来自 Robinhood 官方月度指标与季度报告，'
