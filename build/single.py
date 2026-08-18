@@ -59,6 +59,7 @@ import pandas as pd
 
 import axisfmt
 import chartscale
+import mrwin              # 窗口排版的裁决层（通栏 / x 标签抽稀），与台湾半导体 7 家共用
 import payload_guard
 import pctile
 
@@ -70,8 +71,28 @@ SPECS = os.path.join(HERE, 'specs')
 
 # ────────────────────────────── 全站口径常数 ──────────────────────────────
 WIN_SHORT = 13          # 近期窗口（CONTRACT §5.4：核对表 13 个月）
-WIN_LONG = 25           # 中期窗口（既有 12 家的 lvl_bar / multi_line 都是 25）
 WIN_HEAT = 24           # 热力矩阵列数
+
+#: 时序图的窗口左端。**全站统一 2016-01**（2026-08-18 从「最近 25 个月」改过来）。
+#:
+#: 改这一条的理由：原来 `WIN_LONG = 25` 意味着无论 series 里躺着多少历史，页面上
+#: 除了每页那 1-2 张「全历史」图之外，其余全部只画最近两年 —— db1 有 295 个月、
+#: tmx 295、ndaq 251、ice 187，读者一个字节都看不到。把数据回补到 2016 而窗口不动，
+#: 等于回补给谁看。
+#:
+#: 为什么是 2016-01 而不是「各页自己的全历史」：几页的历史长度差了一个数量级
+#: （db1/tmx 2002 起 vs asx 2017-10 起），各画各的全历史会让横截面页与单公司页
+#: 对同一个指标给出不同的起点，跨页读数没有共同基准。2016-01 是全站都够得着的
+#: 最早共同起点（见各 fetch 模块 docstring 的回补记录）。
+#:
+#: ⚠️ 序列比 2016-01 短的家（例如 asx 2017-10、miax 主力列 2025-01）不会被强行拉长：
+#: `Page.win_long()` 取 `max(序列首月, WIN_FROM)`，只往右让、不往左借。
+WIN_FROM = '2016-01'
+
+#: 抬头那行 headline 只需要「末月 + 上月 + 去年同月」三格就能算出 y/y 与 m/m，
+#: 取 37 个月是原先 `WIN_LONG + 12` 的值，原样保留 —— 它与图窗无关，
+#: 改动它会改变 headline 的数值口径（`chg_txt` 拿的是窗口内的相对位置）。
+WIN_HEAD = 37
 MIN_MONTHS = 24         # 共同历史短于它就不出页（同比 + 一年缓冲）
 BACKTRACK = 12          # 头条列末月对不齐时，最多往回找几个月
 SEASON_YEARS = 5        # 季节性的「过去 N 年同月均值」上限
@@ -878,6 +899,62 @@ class Page:
         j = idx.index(end)
         return idx[max(0, j - k + 1): j + 1]
 
+    def win_long(self, end):
+        """时序图的长窗口：`WIN_FROM` 起到 end 为止（序列更短就从序列首月起）。
+
+        只往右让、不往左借 —— 序列没有的月份造不出来。取代原先写死的 25 个月，
+        理由见 `WIN_FROM` 那段注释。
+        """
+        idx = list(self.df.index)
+        j = idx.index(end)
+        # 索引是 pandas Period，不能直接与字符串比 —— 先转成同 freq 的 Period。
+        lo = pd.Period(WIN_FROM, freq='M')
+        i = 0
+        while i < j and idx[i] < lo:
+            i += 1
+        return idx[i:j + 1]
+
+    def _layout_long(self, exs):
+        """窗口拉到 2016-01 之后逐张判「通栏」与「x 标签抽稀」。
+
+        规则层不在这里，在 `build/mrwin.py` —— 它按 `assets/charts.js` 的量边距算式
+        在构建期复算每格像素宽（band），band 低于可读下限就升通栏，标签装不下就按步长
+        抽稀（只影响标签，不影响数据点）。台湾半导体那 7 家的 127 点图已经用它跑了一年，
+        这里只做两件适配，**不复制它的算式**（全站已经有过三份互相抄来的量边距算式，
+        再抄第四份的下场是改一处漏三处）：
+
+        ① **把引擎的默认旋转显式写进 payload。** `assets/charts.js:738` 是
+           `xrot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45))`，
+           而 single.py 从不写 `xrot`；`mrwin.layout()` 只对 `xrot == 90` 的轴抽稀，
+           不写就永远抽不了。这里写进去的值与引擎自己算出来的**逐字相同**，
+           所以渲染结果不变，变的只是「mrwin 看得见它」。
+        ② **年度类别轴（xrot 已显式为 0）跳过抽稀**：那种轴一格一年，本来就稀疏，
+           抽了反而定位不到（与 mrwin 对季度轴的处理同理）。
+
+        判定结果会追加进该图的图注 —— 「这张图为什么是通栏」「标签为什么隔几个才标」
+        是关于这张图的事实，不写出来读者只会以为是随手排的。
+        """
+        for e in exs:
+            if e.get('kind') == 'heat_matrix':
+                continue
+            labs = e.get('xlabels') or []
+            if len(labs) <= 20:
+                continue                       # 引擎在这一档用 45°，且半栏放得下
+            if e.get('xrot') == 0:
+                continue                       # 年度类别轴，见 ②
+            e.setdefault('xrot', 90)           # 见 ①：写的就是引擎的默认值
+            why = mrwin.layout(e)
+            if why:
+                e['note'] = (e.get('note') or '') + why
+
+    def win_zh(self, win):
+        """图注里描述窗口的那半句。
+
+        窗口现在动辄 100+ 期，再写「近 N 个月」会让人以为是滚动近端窗口；
+        实际上左端是钉死的 `WIN_FROM`（或序列首月，哪个晚用哪个）。
+        """
+        return f'{mlab(win[0])} 至 {mlab(win[-1])}（{len(win)} 个月）'
+
     def ser(self, c):
         """一列的全序列（已乘 scale）。"""
         return self.df[c['col']].astype(float) * c['scale']
@@ -959,12 +1036,45 @@ class Page:
             hit.append(b)
         return at, lab, hit
 
+    #: 超过这么多期就不再给断点线挂竖排文字标签（线照画、图注照点名）。
+    #:
+    #: 竖排标签是 `rotate(-90)` 从图顶往下挂的，长度 = 文案长度，动辄 150-200px，
+    #: 要竖着穿过大半个绘图区。`assets/charts.js` 有一套避让（沿同一条竖直带找空档，
+    #: 找不到就靠 z 序让数字压在红字上面保命）—— **窗口 25 期时它够用，127 期时不够**：
+    #: 那条竖直带上现在挤着上百个柱值标签，一个空档都没有，于是标签只能原地压着。
+    #: 实测（tools/visual_qa.py --all）：窗口从 25 拉到 127 之后 🔴 从 4 条涨到 94 条，
+    #: 新增的 90 条**全是同一个根因**，enx 45 条 / jpx 36 条 / sgx 9 条，
+    #: 重叠面积 86.3px²（占小者 47%），远超 🔴 的 60px² 门槛。
+    #:
+    #: 去掉文案不丢信息：**图注本来就把每条断点按从左到右的顺序逐个点名**
+    #: （`hit` → 各 ex_* 里那句「红色竖虚线 = 口径断点（…）」），
+    #: 而 127 期窗口下竖排小字本来也读不出来。红色虚线本身保留 ——
+    #: 「从这一期起与左侧不可比」这个语义是线给的，不是文字给的。
+    BREAK_LABEL_MAX = 60
+
+    def brk_zh(self, hit, window):
+        """图注里描述断点的那半句。窗口长到不挂竖排标签时，补一句「按从左到右的顺序」。
+
+        没有这半句，读者在 127 期的图上会看到几条没有文字的红虚线，
+        而图注里并列着几个断点名 —— 谁对谁完全靠猜。
+        """
+        if not hit:
+            return ''
+        names = '、'.join(b['zh'] for b in hit)
+        if len(window) <= self.BREAK_LABEL_MAX:
+            return f'红色竖虚线 = 口径断点（{names}）'
+        order = '这一条' if len(hit) == 1 else f'{len(hit)} 条自左向右依次是'
+        return (f'红色竖虚线 = 口径断点，{order}：{names}'
+                f'（窗口 {len(window)} 期，竖排标签在这个密度下既读不出来又会压住柱值，'
+                f'所以线上不挂字、改在这里点名）')
+
     def mark_breaks(self, ex, window, cols=()):
         """给一张**横轴是月份**的图挂上断点。heat_matrix 不支持 break_at，别调它。"""
         at, lab, hit = self.breaks_for(window, cols)
         if at:
             ex['break_at'] = at
-            ex['break_label'] = lab
+            if len(window) <= self.BREAK_LABEL_MAX:
+                ex['break_label'] = lab
         return hit
 
     # ────────────────────── exhibit：头条长历史 + 3Y 分位带 ──────────────────────
@@ -1018,15 +1128,14 @@ class Page:
             f'{xl[-1]} 读数 {unit_txt(cur, c)}，'
             f'{pos}。同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
             + ('纵轴从 0 起（不截轴）。' if zero_ok else '序列含负值，纵轴不强制从 0 起。')
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}），'
-               f'线左边那段与右边不可比。' if hit else ''))
+            + (self.brk_zh(hit, win) + '，线左边那段与右边不可比。' if hit else ''))
         return ex
 
     # ────────────────────── exhibit：头条同比 ──────────────────────
     def ex_yoy(self, n, c):
         ratio = self.is_ratio(c)
         end = self.last_month(c)
-        win = self.win(end, WIN_LONG)
+        win = self.win_long(end)
         xl = [mlab(p) for p in win]
         s = self.ser(c)
         yv = yoy_line(s, win, pct_series=ratio)
@@ -1047,14 +1156,13 @@ class Page:
         rng = (f'窗口内在 {nz_txt(f"{min(fin):+.1f}{u}")} ~ '
                f'{nz_txt(f"{max(fin):+.1f}{u}")} 之间。' if fin else '')
         ex['note'] = (
-            f'近 {len(win)} 个月的同比，正负同色、零线由引擎画出（数据色只有 6 个，'
+            f'{self.win_zh(win)}的同比，正负同色、零线由引擎画出（数据色只有 6 个，'
             f'RED 是断点专用色，所以不按正负分色）。'
             + ('比率序列的同比用<b>百分点差</b>，不是「百分比的百分比变化」。' if ratio else
                '基数不足序列中位绝对值 15% 或两期异号的月份留空 —— 那种同比不是信息，'
                '是把一个接近零的分母放大成三位数。')
             + rng
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）：'
-               f'跨断点的同比本身就不可比。' if hit else ''))
+            + (self.brk_zh(hit, win) + '：跨断点的同比本身就不可比。' if hit else ''))
         # 整张图画的都是单月口径（比率列 = 百分点差）→ 记进口径账本，页尾点名
         self.log_yoy(n, 'mom_pp' if ratio else 'mom')
         return ex
@@ -1076,7 +1184,7 @@ class Page:
 
     def ex_single(self, n, gz, c):
         end = self.last_month(c)
-        win = self.win(end, WIN_LONG)
+        win = self.win_long(end)
         xl = [mlab(p) for p in win]
         v = self.vals(c, win)
         if self.flat0_skip(gz, [c], win, [v]):
@@ -1089,18 +1197,18 @@ class Page:
             self.log_yoy(n, 'mom_pp' if ratio else 'mom')
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
-            f'近 {len(win)} 个月。'
+            f'{self.win_zh(win)}。'
             + (f'金色折线 = 次轴同比'
                f'（{"百分点差" if ratio else "%"}，同 GS deck 的 lvl_bar —— 那个位置画的是同比，'
                f'不是滚动均线：均线只是把柱子再平滑一遍、不带新信息）。' if rhs else NO_YOY_NOTE)
             + f'{xl[-1]} {unit_txt(v[-1], c)}，'
             f'同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
             + self.slow_tail([c])
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）。' if hit else ''))
+            + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
 
     def ex_lines(self, n, gz, cols, end):
-        win = self.win(end, WIN_LONG)
+        win = self.win_long(end)
         xl = [mlab(p) for p in win]
         vs = [self.vals(c, win) for c in cols]
         # 整组都恒为 0 才跳：其中一条为 0 是有信息的对比，量程由别的列定，图正常。
@@ -1137,12 +1245,12 @@ class Page:
         hit = self.mark_breaks(ex, win, cols)
         last = '、'.join(f'{c["zh"]} {fmt_val(v[-1], c["fmt"]) or "—"}' for c, v in zip(cols, vs))
         ex['note'] = (
-            f'近 {len(win)} 个月，同一单位（{cols[0]["unit"]}）才画在同一根轴上 —— '
+            f'{self.win_zh(win)}，同一单位（{cols[0]["unit"]}）才画在同一根轴上 —— '
             f'量纲不同的列由底座自动拆成各自成图。{xl[-1]}：{last}。'
             + ('' if dense else '窗口内有缺月，改用不平滑的 lines 图型：缺口处断笔，'
                                 '不用直线连（平滑图型会把 null 当 0 画出一条塌到零的假线）。')
             + self.slow_tail(cols)
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）。' if hit else ''))
+            + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
 
     def ex_heat(self, n, gz, cols, end):
@@ -1187,7 +1295,7 @@ class Page:
     # ────────────────────── exhibit：存量列 ──────────────────────
     def ex_stock(self, n, gz, c):
         end = self.last_month(c)
-        win = self.win(end, WIN_LONG)
+        win = self.win_long(end)
         xl = [mlab(p) for p in win]
         v = self.vals(c, win)
         if self.flat0_skip(gz, [c], win, [v]):
@@ -1197,8 +1305,29 @@ class Page:
         if rhs:      # 存量的次轴同比是点对点口径（月末快照 vs 去年同月月末）
             self.log_yoy(n, 'stock')
         ex['src_extra'] = 'Period-end stock, not a flow'
+        # ── 已停产品的零尾巴：柱顶标签关掉，理由写进图注 ──────────────────────────
+        # 窗口从 25 期拉到 2016-01 起之后，这类图**第一次出现**：BAX（CDOR，已停）
+        # 最后一个非零月是 2024-05，之后 26 个月恒为 0，而旧窗口（近 25 期）整段全零、
+        # 被 `flat0_skip` 整张跳过了 —— 也就是说这张图不是新问题，是**以前根本没画出来**。
+        # 现在它带着 101 个月的真实历史回来了，该画；只是零尾巴上每格都印一个「0.0」，
+        # 与次轴那一年的「-100%」钉在同一条零线上叠字（实测重叠 106px²，超 🔴 门槛 60px²，
+        # 且两组标签分属柱与次轴、引擎的 thinLabels 只在组内抽稀，跨组不管）。
+        # 关掉柱顶标签而不是关掉这张图：零高度的柱上那个「0.0」本来就没有信息，
+        # 而 101 个月的历史有。读数仍可走右上角「表格」视图。
+        tail0 = 0
+        for x in reversed(v):
+            if x is not None and np.isfinite(x) and x == 0:
+                tail0 += 1
+            else:
+                break
+        if tail0 >= 12:
+            ex['bar_labels'] = False
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
+            (f'<b>本序列已停更：最后一个非零月是 {xl[len(v) - tail0 - 1]}，'
+             f'其后 {tail0} 个月恒为 0。</b>零尾巴上的柱顶数值标签已关掉'
+             f'（零高度的柱上印「0」不带信息，却会与次轴同比的「-100%」钉在同一条零线上叠字）；'
+             f'逐格读数走右上角「表格」。' if tail0 >= 12 else '') +
             f'<b>存量（期末值）</b>，与本页其余「日均 / 当月合计」的流量列不是一回事：'
             f'流量按月累计发生，存量是某一天的截面，两者不能相加，跨币种换算时前者配月均'
             f'汇率、后者配月末汇率（本页只标注本币 {self.spec["ccy"]}，换算不在本页做）。'
@@ -1206,7 +1335,7 @@ class Page:
             + (f'同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。金色折线 = 次轴同比。'
                if rhs else f'环比 {chg_txt(c, v, lag=1)}。' + NO_YOY_NOTE)
             + self.slow_tail([c])
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）。' if hit else ''))
+            + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
 
     # ────────────────────── exhibit：季节性 ──────────────────────
@@ -1785,7 +1914,7 @@ class Page:
         end = self.last_month(c)
         if end is None:
             return None, f'{t["zh"]}：{c["col"]} 整列为空'
-        win = self.win(end, WIN_LONG)
+        win = self.win_long(end)
         xl = [mlab(p) for p in win]
         v = self.vals(c, win)
         if self.flat0_skip(t['zh'], [c], win, [v]):
@@ -1893,7 +2022,7 @@ class Page:
             + spike
             + bar_line_caliber
             + self.slow_tail([c])
-            + (f'红色竖虚线 = 口径断点（{"、".join(b["zh"] for b in hit)}）。' if hit else '')
+            + (self.brk_zh(hit, win) + '。' if hit else '')
             + (' ' + md_bold(t['note']) if t['note'] else ''))
         return ex, None
 
@@ -2094,6 +2223,7 @@ class Page:
         # 而不是散在每个 ex_* 里 —— 判据只跟最终 payload 有关（量程 + ycap/yfloor），
         # 各处各写一遍必然漏掉后加的图型。
         axisfmt.fix_all(ex)
+        self._layout_long(ex)
         # 缩放之后再量一遍标签宽：还压字就是本页遇到了 chartscale 兜不住的形状，
         # 让它在构建日志里响一声，不要等到有人去截图才发现（缺陷 F 的机器判据）。
         self.tight = chartscale.audit(ex)
@@ -2117,12 +2247,12 @@ class Page:
         # 于是同一页对同一指标给出两个互斥读数（hkex 就栽过这一处）。
         parts = []
         for c in self.head:
-            v = self.ser(c).reindex(self.win(latest, WIN_LONG + 12)).values.astype(float)
+            v = self.ser(c).reindex(self.win(latest, WIN_HEAD)).values.astype(float)
             parts.append(f'{c["zh"]} {unit_txt(v[-1], c)}'
                          f'（{chg_txt(c, v)} y/y、{chg_txt(c, v, lag=1)} m/m）')
         headline = ' · '.join(parts)
         c0 = self.head[0]
-        v0 = self.ser(c0).reindex(self.win(latest, WIN_LONG + 12)).values.astype(float)
+        v0 = self.ser(c0).reindex(self.win(latest, WIN_HEAD)).values.astype(float)
         hub = f'{c0["zh"]} {unit_txt(v0[-1], c0)}（{chg_txt(c0, v0)} y/y）'
         if len(hub) > 60:                                     # CONTRACT：hub_line ≤ 60 字
             hub = f'{c0["zh"]} {fmt_val(v0[-1], c0["fmt"])}（{chg_txt(c0, v0)} y/y）'

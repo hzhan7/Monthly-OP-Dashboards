@@ -1346,7 +1346,15 @@
           cutg2 = capBar(Xc(i) - wg / 2, wg, ex.values[i],
             (markSet && markSet[i]) ? 'url(#' + hatchId + ')' : C.BLUE);
         }
-        if (!cutg2) labg.push({ i: i,
+        /* `bar_labels: false` = 关掉柱顶逐格数值标签。qtr_bar / seasonality /
+           grouped_bars / range_band 四个图型早就认这个开关，只有 gs_bar 不认 ——
+           这里补齐，语义与那四处逐字相同（`!== false`，即不给就照旧画，纯 opt-in，
+           不设这个键的图一个像素都不变）。
+           用例：已停产品的零尾巴（tmx Ex19 BAX CDOR，2024-05 之后 26 个月恒为 0）。
+           零高度的柱上印一个「0.0」不带任何信息，却会与次轴同比那一年的「-100%」
+           钉在同一条零线上叠字 —— 而柱值与次轴两组标签分属不同的 thinLabels 批次，
+           引擎只在组内抽稀、跨组不管，所以只能由数据侧关掉其中一组。 */
+        if (!cutg2 && ex.bar_labels !== false) labg.push({ i: i,
           el: txt(g, Xc(i), Y(ex.values[i]) - 4.5, fb(ex.values[i]), { size: 8 }) });
       }
       thinLabels(labg);
