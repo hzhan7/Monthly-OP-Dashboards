@@ -33,15 +33,36 @@
 8. 2016-02 / 2017-02 的合并稿排了**四张**表（季度报告/季度调整/月报告/月调整），
    四张都是 2 期间列、全落进 month_tabs，直接取 [0][1] 会取成 12 周季度值 ——
    与坑 3 是同一个坑的另一条路径，所以 month_tabs 也要过 `_mo` 判据。
+9. **零售月不一定是表里的第一列。**（2026-08-18 修）坑 3 与坑 8 管的是「挑哪张表」，
+   这一条管的是「挑表里的哪一列」。2017-09 的稿子（FY2017 Q4 与 9 月合并发布）表头是
+   `17 Weeks │ 53 Weeks │ Sept. 5 Weeks` —— 零售月排在**最后**，而老代码写死 `toks[0]`
+   （注释还写着「月值恒在 toks[0]」），于是把 17 周季度 comp 整行写进了 2017-09。
+   现在由 `_month_col()` 按表头定位，判据与退回规则见它的 docstring。
+   ⚠ 8 月 / 11 月与季报合并的稿子也是 3 期间列，但顺序是「零售月 | 季度 | 财年」、
+   月列在第 0 位 —— 别看到 3 列就以为月列在最后。
 
 ═══ 改这个文件之后怎么验 ═══
-坑 6 的表现是**不抛异常但值全错**，所以「跑通了」不是验收标准，逐格比对才是。
-2026-08 修完是这样验的：把 GNW 搜索页上能找到的每一篇销售稿重跑一遍 parse_release，
-逐字段比对 series/cost.csv 已入库的值 ——
-    series/cost.csv 覆盖的 124 个月**全部逐格一致，0 项不符**；
-    新的 2026-07 解析出 tc_r=8.9 / tc_a=6.6，与新闻稿原文两张表逐格相符。
+坑 6 与坑 9 的表现都是**不抛异常但值全错**，所以「跑通了」不是验收标准，逐格比对才是。
+
+⚠️ **别再用「重跑 parse_release 逐字段比对 series/cost.csv」当唯一验收** —— 这条 2026-08
+写下的验收方法是**循环论证**：CSV 本来就是同一个 parser 写出来的，parser 选错列时
+重跑一遍会一字不差地复现同一个错值，报出「124 个月全部一致，0 项不符」。坑 9 就是
+这样躲过那次全量核对的。**逐格比对必须对着官方原件，不是对着自己的产物。**
+
+2026-08-18 修坑 9 时的验收（三条，缺一不可）：
+  · 对着 **SEC 原件**（8-K EX-99.1 `d466022dex991.htm`，与 GNW 那篇是同一份稿）
+    逐格核 2017-09：修完 12 个字段全部与原件相符（含 net_sales / weeks / ns_yoy）。
+  · 用历史 dump 反查**列序**：126 篇稿里 tc 行有 3 个 token 的共 17 篇，
+    逐篇比对 CSV 值落在第几列 —— 16 篇（8 月 / 11 月合并稿）都在第 0 列且是对的，
+    只有 2017-09 在第 2 列而 CSV 取了第 0 列。也就是**受影响的月份就这一个**。
+  · `python3 fetch/cost_release.py` 自测 `_month_col`，fixture 含两条原件表头。
+
 （2015-12 之前的稿子解析不了：那时的 comp 表没有 Canada 行，parser 从来没为它写过，
  而 CSV 也从 2015-12 起，所以不影响向前运行。别把它当回归失败。）
+（本机取不到 GNW 与 investor.costco.com：curl 分别是 000 与 403。所以这一轮**没有**
+ 重跑全量 128 个月；上面第二条用的是 `~/.claude` git 历史里那份 `dump_all.json`
+ —— 它记的是每篇稿的 comp token 串，够判列序，不够重解全部字段。
+ 哪天源站又通了，值得对着原件把全量再核一遍。）
 
 依赖：pandas（`pd.read_html`）+ lxml（read_html 的 HTML parser 后端，本机没装 html5lib，
       lxml 掉了没有后备，报错信息是「Import html5lib failed」，跟 Costco 毫无关系）。
@@ -99,6 +120,63 @@ def _drop_dup_cols(s):
         keep.append(i)
         prev = col
     return s.iloc[:, keep]
+
+#: 「零售月」那一列的表头长相：4 或 5 周。`(?<!\d)` 是关键 —— 没有它，
+#: `17 Weeks` / `53 Weeks` / `24 Weeks` 里的 4/5 会被当成月列（坑 3 是同一个前瞻）。
+_MONTH_HDR = re.compile(r'(?<!\d)[45]\s*Weeks', re.I)
+_PERIOD_HDR = re.compile(r'\d+\s*Weeks', re.I)
+
+
+def _periods(s):
+    """按从左到右的顺序取出这张 comp 表的**期间列表头**，相邻重复只算一列。
+
+    `pd.read_html` 会把 GNW 的表头单元格按 colspan 摊平成好几格
+    （`['17 Weeks', '17 Weeks', nan, nan, '53 Weeks', ...]`），而 `_drop_dup_cols`
+    只丢**整列逐格相同**的列，摊平出来的这几格因为数值行不同而留了下来。
+    所以这里按相邻去重：连续出现的同一个标签算同一个期间列。
+    """
+    out = []
+    for cell in s.values.flatten().tolist():
+        if not isinstance(cell, str) or not _PERIOD_HDR.search(cell):
+            continue
+        lab = cell.strip()
+        if not out or out[-1] != lab:
+            out.append(lab)
+    return out
+
+
+def _month_col(t):
+    """这张表里「零售月」是第几个期间列。认不准就回 0（= 改动前的行为）。
+
+    ━━ 为什么需要它 ━━
+    原来这里写死 `toks[0]`，注释里的理由是「月值恒在 toks[0]」。**那句话不成立**：
+    2017-09 的稿子（FY2017 Q4 与 9 月零售月合并发布，53 周财年）表头是
+        17 Weeks │ 53 Weeks │ Sept. 5 Weeks
+    零售月排在**最后一列**，`toks[0]` 取到的是 17 周季度值。后果是 series/cost.csv
+    的 2017-09 整行 comp 全部写成了季度数（tc_a 5.7 而真值 6.2），而且
+    **不抛任何异常、列一个不缺**，fetch/cost.py 的缺列检查抓不到。
+    这与坑 3 / 坑 8 是同一族（「别把季度值当月值」），但它们走的是「挑哪张表」，
+    这条走的是「挑表里的哪一列」，前两条的判据挡不住。
+
+    ━━ 为什么判据要这么保守 ━━
+    只有当**期间列表头的个数恰好等于每行的 token 数**时才敢按表头定位 ——
+    这时表头与数值列一一对应，位置是可信的。对不上就退回 0：
+    常见的月报表头是 `4 Weeks │ 2026 YTD`（YTD 那格不带 "Weeks"），表头只认出 1 个
+    而 token 有 2 个，此时位置信息不完整，而这类稿子月值本来就在第 0 列。
+    这条「对不上就退回旧行为」保证了本次改动对既有已核过的月份**逐字节无变化**。
+    """
+    toks = t['rows'].get('tc') or next(iter(t['rows'].values()))
+    periods = t['periods']
+    if len(periods) != len(toks) or len(periods) < 2:
+        return 0
+    hits = [i for i, p in enumerate(periods) if _MONTH_HDR.search(p)]
+    if len(hits) != 1:
+        if hits:
+            print(f'WARN: comp 表 {periods} 里有 {len(hits)} 个像零售月的列，'
+                  f'退回第 0 列——请人工核对', file=sys.stderr)
+        return 0
+    return hits[0]
+
 
 def parse_release(html):
     """返回 rec dict（不含 ym）+ (year, month)。失败抛异常。"""
@@ -163,7 +241,9 @@ def parse_release(html):
             for key, pat in [('us', r'^U\.?S'), ('ca', r'^Canada'), ('oi', r'^Other International'),
                              ('tc', r'^Total Company'), ('ec', r'^(E-?commerce|Digitally)')]:
                 if re.match(pat, lab): rows[key] = toks
-        if rows: comp_tabs.append({'rows': rows, 'header': joined[:200]})
+        if rows:
+            comp_tabs.append({'rows': rows, 'header': joined[:200],
+                              'periods': _periods(s)})
     # 去重之后 token 数 == 该表真实的**期间列数**，分支判断才第一次有确定含义：
     #   1 列  = 只有零售月（2020-09 这类单期间稿）
     #   2 列  = 零售月 + YTD（最常见）
@@ -194,8 +274,12 @@ def parse_release(html):
             print('WARN: 未找到严格匹配的月表(4/5 Weeks 且不含 12/24 Weeks)，'
                   '回退旧口径——请核对 comp 是否误取了季度值', file=sys.stderr)
     if len(month_tabs) >= 2:      # 普通月: 表1=报告值, 表2=调整值
+        # 列的位置由表头定，不再假设「月值恒在第 0 列」——理由见 _month_col 的 docstring
+        # （2017-09 的季末合并稿把零售月排在最后一列，写死 0 会取到 17 周季度值）。
         for suf, t in [('r', month_tabs[0]), ('a', month_tabs[1])]:
-            for k, toks in t['rows'].items(): rec[f'{k}_{suf}'] = pct(toks[0])
+            j = _month_col(t)
+            for k, toks in t['rows'].items():
+                rec[f'{k}_{suf}'] = pct(toks[j] if j < len(toks) else toks[0])
     elif four_col:                # 2月合并稿: 月表4列 [4wk报告, 4wk调整, YTD报告, YTD调整]
         t = four_col[0]
         for k, toks in t['rows'].items():
@@ -209,3 +293,50 @@ def parse_release(html):
     if w:
         rec['wh_total'] = int(w.group(1).replace(',','')); rec['wh_us'] = int(w.group(2).replace(',',''))
     return rec, ym
+
+
+# ─────────────────────────── 自测：python3 fetch/cost_release.py ───────────────────────────
+# 只测 `_month_col`（「零售月是第几列」）。这一条值得单独测，是因为它错了**不抛异常、
+# 列一个不缺**，错值会一路写到公开看板上 —— 2017-09 就是这么错了九年的。
+#
+# 表头 fixture 的来源分两类，标签里写清楚了，别把它们混为一谈：
+#   [原件]  当场从官方原件里 `_periods()` 出来的，逐字符照抄
+#   [形状]  原件本机取不到（GNW 与 investor.costco.com 对本机都不可达），
+#           但该月的列序已由 cache 外的历史 dump 反证（CSV 值 == 第 0 列），
+#           表头按官方口径复原（零售月 | 季度 | 财年）
+_SELFTEST = [
+    # (periods, ntok, 期望列, 说明)
+    (['17 Weeks', '53 Weeks', 'Sept. 5 Weeks'], 3, 2,
+     '[原件] 2017-09 FY2017Q4+9月合并稿：零售月排在最后一列。本函数存在的理由'),
+    (['16 Weeks', '52 Weeks'], 2, 0,
+     '[原件] 2016-09-29 FY2016Q4 稿：只有季度与财年、没有零售月列 → 一个都不匹配，退回 0'),
+    (['4 Weeks', '12 Weeks', '52 Weeks'], 3, 0,
+     '[形状] 11 月与 Q1 合并稿：零售月 | 季度 | 财年，月列在第 0 列'),
+    (['5 Weeks', '16 Weeks', '52 Weeks'], 3, 0,
+     '[形状] 8 月与 Q4 合并稿（16 周季度）'),
+    (['5 Weeks', '17 Weeks', '53 Weeks'], 3, 0,
+     '[形状] 8 月与 Q4 合并稿（53 周财年）—— 17/53 里的 7/3 不该被当成月列'),
+    (['4 Weeks', '24 Weeks'], 2, 0,
+     '[形状] 坑 3 那个 24 Weeks：子串匹配会命中，`(?<!\\d)` 前瞻挡住'),
+    (['4 Weeks'], 2, 0,
+     '[形状] 最常见的月报：表头只认出 1 个期间列而 token 有 2 个（YTD 那格不带 Weeks）'
+     ' → 位置信息不完整，退回 0'),
+    (['4 Weeks', '5 Weeks'], 2, 0,
+     '[构造] 两个都像零售月 → 判不准，退回 0 并告警'),
+]
+
+
+def _selftest():
+    bad = 0
+    for periods, ntok, want, why in _SELFTEST:
+        t = {'rows': {'tc': ['0 %'] * ntok}, 'header': ' '.join(periods), 'periods': periods}
+        got = _month_col(t)
+        ok = got == want
+        bad += not ok
+        print(f'  {"ok " if ok else "FAIL"} {str(periods):46s} ntok={ntok} → {got} (期望 {want})  {why}')
+    print(f'\n{len(_SELFTEST) - bad}/{len(_SELFTEST)} 通过')
+    return bad
+
+
+if __name__ == '__main__':
+    sys.exit(1 if _selftest() else 0)
