@@ -30,6 +30,7 @@ import pandas as pd
 
 import axisfmt
 import brief as B                  # 顶部 brief 的共享规则库（R1-R6），只算事实不出文字
+import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile                      # 3Y %ile 的唯一实现，本文件不再自己写分位判据
 import yoy as Y                    # 同比口径的唯一实现；本页画的增速全是公司披露值，
@@ -53,10 +54,14 @@ def _source_dates():
     return mod
 
 
-# 与 PDF 一致的窗口起点
-WIN_START = '2021-01'
-# 头条图（Ex2）单独用全历史窗口：2021 起的窗口里，基数本身被 COVID 扭曲，
-# 「当前 7-8% 相对 Costco 常态算什么水平」这个问题在短窗口下根本回答不了。
+# 时序图的窗口起点。2026-08-18 从原 PDF 的 2021-01 改成 2016-01，全站统一
+# （build/single.py 的 WIN_FROM、cboe / cme / hkex 的同名常量、msci 的 WIN0 都是这一个）。
+# 原来只有头条图（Ex2）用 2016 起的长窗口，理由写在下面那条 HIST_START 上 ——
+# 那条理由（「2021 起的窗口里基数本身被 COVID 扭曲，『当前 7-8% 相对 Costco 常态算什么
+# 水平』在短窗口下根本回答不了」）对**其余每一张 comp 图**同样成立，所以现在两者相等。
+# 两个名字都保留：HIST_START 是「头条图刻意用长窗口」这个决定的锚点，
+# 哪天想让头条图再长一些（本页 series 自 2015-12 起），改它一个就够。
+WIN_START = '2016-01'
 HIST_START = '2016-01'
 ECOMM_START = '2022-01'
 OVERLAY_MONTHS = 25
@@ -462,7 +467,9 @@ def main():
                           'Core Comp (ex. gas & FX)', 'Reported Comp',
                           start=HIST_START, xstep=6, full=True, cap=True,
                           src_extra='Core Comp = global SSS, ex. gas & FX；本图窗口自 '
-                                    f'{HIST_START} 起（其余 comp 图自 {WIN_START} 起）。'))
+                                    f'{HIST_START} 起'
+                                    + ('（全页 comp 图同一起点）。' if HIST_START == WIN_START
+                                       else f'（其余 comp 图自 {WIN_START} 起）。')))
 
     # Ex 3 —— 全公司 stacks
     ex.append(stack_ex(3, 'tc_a', 'COST Core Comp Growth Trends'))
@@ -940,6 +947,8 @@ def main():
                 f'报告口径 comp {dsp(Lr["tc_r"], 1, "%")[0]} · '
                 f'净销售额 ${Lr["net_sales_bn"]:.2f}bn（{dsp(Lr["ns_yoy"], 1, "%")[0]} y/y，'
                 f'{mm_ns} m/m）· 仓库数 {iv(Lr["wh_total"])}（US & PR {iv(Lr["wh_us"])}）')
+
+    mrwin.layout_all(ex)
 
     payload = {
         # 构建日期不进 JSON：进了以后每天跑都会 diff，monthly_run 的幂等检查永久失效。
