@@ -122,11 +122,25 @@ web.archive.org 在本机是黑名单。别再往这三条路上走。
    · 份额行：`UK Lit Orderbook trading`（→2020-12）→ `LSE Lit Orderbook trading in UK`。
    标签里的 `™` 和结尾空格都要 strip（"Turquoise Dark " 在 Average Daily 区块里带尾空格）。
 
-**3. 起点定在 2021-01，不是没有更早的数据，是更早的 PDF 少列。**
-   2013-01 起就有月报，但 2020-12 及以前那批还额外印 Italian / Derivatives / MTS /
-   EuroTLX 等行，且 2021-01 才出现 `LSE Lit Orderbook trading in UK` 这个标签。
-   本仓禁止写 NaN，所以**宁可少月份不许缺列**：只收全部 17 列都齐的月份。
-   要往前接 2013-2020，得先决定份额列怎么对齐旧标签，那是另一件事。
+**3. 起点 2016-01。**（2026-08-18 从 2021-01 前推 60 个月）
+   上一版这里写的是「2021-01 起，因为更早的 PDF 少列、且 2021-01 才出现
+   `LSE Lit Orderbook trading in UK` 这个标签」。**后半句站不住**：份额行的旧标签
+   `UK Lit Orderbook trading` 早就在 `UK_SHARE_LABELS` 里了，2016-2020 那 60 期
+   17 列一列不缺。实测 2016-01..2020-12 逐期解析 **60/60 通过**，
+   其中 2017-01..2020-12 共 48 期是**零代码改动**直接过的。
+   前半句（「更早的 PDF 还额外印 Italian / Derivatives / MTS / EuroTLX 等行」）
+   属实，但那些是**多出来的行**，本模块按标签取行、从不按行号，多几行不影响。
+
+   为了收下 2016 全年，只加了两处兼容，都写在各自函数的 docstring 里：
+     · `_take_days()`：交易日那一行 2016-12 及以前只有 2 列（无 YTD），2017-01 起 4 列。
+     · `_OFFICIAL_INCONSISTENT`：2016-03 官方自己的日均与交易日对不上（放行恒等式，
+       不放松通用容差；入库仍是官方原值）。
+   另外双源比对改成「绝对容差与相对容差取宽者」，理由见 `_XCHECK_REL`，
+   并把 2016-07 登记进 `_RESTATED`（官方对那一个月做过实质下修）。
+
+   **再往前（2013-01..2015-12）没做。** 那 36 期还要处理官方错字 `Turquouse`、
+   空格千分位、以及 2013 年的旧抬头字符串 —— 收益（3 年）与风险（三处只在旧档
+   出现一次的特判）不成比例，而 2016-01 已经是全站统一的起点。
 
 **4. 成交额单位是「官方印的 £m」，不做换算。**
    PDF 只印到百万英镑整数（146,827 = £146.827bn）。xlsx 有精确到便士的同一个数
@@ -168,7 +182,7 @@ UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 REFERER = 'https://www.londonstockexchange.com/search'
 
 # 起点见 docstring 口径坑 3。终点由官方发到哪算哪。
-START_MONTH = '2021-01'
+START_MONTH = '2016-01'
 
 MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
                'August', 'September', 'October', 'November', 'December']
@@ -350,6 +364,33 @@ def _take(lines, i, n, month, where):
     return out
 
 
+def _take_days(lines, i, month, where):
+    """交易日那一行：取到第一个非数字为止，返回 MTD（第一个数）。
+
+    为什么不能沿用 `_take(..., 4, ...)`：**这一行的列数按年份变**。
+      · 2017-01 起：`Trading days … MTD | YTD | Prev. Yr MTD | Prev. Yr YTD`
+        ⇒ `UK   22   125   22   125`，**4 个数**
+      · 2016-12 及以前：表头只有 `Trading days`，没有 YTD 那两列
+        ⇒ `UK   22   22`，**2 个数**，第 3 行位置上是下一个标签 `Italy`
+    写死 4 会在 2016 全年 12 期上抛「第 3 个数位置上是 'Italy'」—— 那不是排版坏了，
+    是那一代版式本来就只印两列。两代都只用第一个数（MTD），所以这里放宽的是**列数**，
+    不是**取哪一列**：仍然严格要求首格是数字、且至少两格（MTD + 去年同期 MTD）。
+    """
+    out = []
+    j = i + 1
+    while j < len(lines) and len(out) < 4:
+        v = _num(lines[j])
+        if v is None:
+            break
+        out.append(v)
+        j += 1
+    if len(out) not in (2, 4):
+        raise LsegOrderbookFetchError(
+            f'{month} {where}: 取到 {len(out)} 个数（{out}），既不是老版式的 2 列、'
+            f'也不是新版式的 4 列 —— 排版变了，拒绝猜')
+    return out[0]
+
+
 def _find_line(lines, labels, lo, hi, month, where):
     for i in range(lo, min(hi, len(lines))):
         if _norm_label(lines[i]) in labels:
@@ -430,10 +471,10 @@ def parse_report(path, month):
     # Turquoise 会被挤到第 14 行往后。窗口再宽也不会误命中 YTD 表 ——
     # 那张表里的标签是 "Turquoise Integrated"，归一化后不等于 "turquoise"。
     i = _find_line(lines, LSE_DAY_LABELS, i_days, i_days + 30, month, '交易日 LSE')
-    rec['lse_trading_days_count'] = int(round(_take(lines, i, 4, month, '交易日 LSE')[0]))
+    rec['lse_trading_days_count'] = int(round(_take_days(lines, i, month, '交易日 LSE')))
     i = _find_line(lines, TQ_DAY_LABELS, i_days, i_days + 30, month, '交易日 Turquoise')
     rec['turquoise_trading_days_count'] = int(
-        round(_take(lines, i, 4, month, '交易日 Turquoise')[0]))
+        round(_take_days(lines, i, month, '交易日 Turquoise')))
 
     missing = [c for c in COLUMNS if rec.get(c) is None]
     if missing:
@@ -443,9 +484,35 @@ def parse_report(path, month):
     return rec
 
 
+#: 「官方自己不自洽」的白名单：(月份, 列前缀) → 一句为什么。
+#:
+#: ⚠️ 这里放行的是**恒等式**，不是数据 —— 入库的仍然是官方原值，一个字节不改
+#: （本仓的规矩是「入库值必须是当期官方公告原值」）。放行只是承认「这一期官方印的
+#: 日均、月合计、交易日三个数彼此对不上」，而那是官方的事实，不是我们解析错了。
+#:
+#: **不要改成放松 `_sanity` 的通用容差。** 那条 1.5% 的容差是用来抓「把某一行的数
+#: 接到了别的行」的 —— 接错行造成的偏差动辄几十个百分点，而 2016-03 这一期偏差 9.5%，
+#: 把容差抬到能放行它，就等于把这条护栏关掉。逐期白名单 + 写下实测数字，
+#: 才能让下一个人一眼看出「这是已知的、被核过的一期」而不是「护栏松了」。
+_OFFICIAL_INCONSISTENT = {
+    ('2016-03', 'turquoise_integrated'):
+        '官方 2016-03 那期第 1 页：Turquoise Integrated 月合计 £92,288m、日均 £4,013m，'
+        '两者相除 = 23.0 天，而同一页「Trading days / Turquoise」印的是 21 天。'
+        'Turquoise MidPoint 同期 11,013 ÷ 479 = 23.0，也是 23 —— 即**两条 Turquoise 腿的'
+        '日均分母都用了 23**，只有印出来的天数是 21。同页 UK 自洽（102,097 ÷ 4,862 = 21.0），'
+        '所以不是整页错位，是 Turquoise 那两行的分母与打印的天数不是同一个数。',
+    ('2016-03', 'turquoise_dark'):
+        '同上（Turquoise MidPoint，即今天的 turquoise_dark）：11,013 ÷ 479 = 23.0 天 vs 印的 21 天。',
+}
+
+
 def _sanity(month, rec):
     """结构性自检：解析没报错但把数字接错行时，只有恒等式能发现。"""
     for pfx in ('lse_orderbook', 'turquoise_integrated', 'turquoise_dark'):
+        if (month, pfx) in _OFFICIAL_INCONSISTENT:
+            print(f'[lseg_orderbook] {month} {pfx}: 跳过日均×交易日恒等式 —— '
+                  f'{_OFFICIAL_INCONSISTENT[(month, pfx)][:60]}…')
+            continue
         days = rec['lse_trading_days_count' if pfx == 'lse_orderbook'
                    else 'turquoise_trading_days_count']
         tot, adv = rec[f'{pfx}_value_gbp_m'], rec[f'{pfx}_adv_gbp_m']
@@ -518,6 +585,33 @@ def _xlsx_monthly():
     return out
 
 
+#: 双源比对的**相对**容差。绝对容差（下面 pairs 里那几个数）是 2021-01 起 66 个月
+#: 实测定的，窗口前推到 2016-01 之后它们不够用了 —— 但不是因为解析变差，而是因为
+#: **副源 xlsx 是持续重述的、月报 PDF 是发布当时的快照**，年头越久累积的重述越多：
+#:     2021-2026 段：笔数最大差 8 笔
+#:     2016-2020 段：笔数最大差 313 笔（2019-01），成交额最大差 4.8 £m（2018-06）
+#: 换成相对口径看，两段其实是同一个量级：**排除 2016-07 那一个真重述月之后**，
+#: 126 个月的四项最大相对偏差是 1.37e-4（2016-01 的 adv_gbp_m —— 它是 PDF 四舍五入到
+#: 整数 £m 的小数，相对误差天然偏大，本来就由绝对容差 1.0 £m 兜着）。
+#: 取 5e-4 = 那个最坏值的 3.6 倍余量，同时比 2016-07 的 5.6e-3 紧 11 倍 ——
+#: 也就是说这个阈值**刚好把「重述漂移」与「真重述」分开**，而接错行是百分级偏差，
+#: 照样一撞就响。
+_XCHECK_REL = 5e-4
+
+#: 官方**真重述**过的月份：月报 PDF（当期快照）与今天的 xlsx 差得远超重述漂移。
+#: 入库的仍是 PDF 原值 —— 本仓的规矩是「入库值必须是当期官方公告原值」，
+#: 而且 PDF 自己是自洽的（113,143 ÷ 21 = 5,387.8，与它印的日均 5,388 相符）。
+_RESTATED = {
+    '2016-07':
+        'LSEG 事后把 2016-07 下修了：月报 PDF（当期）笔数 21,870,812 / 成交额 £113,143m，'
+        '今天的 Order book trading 工作簿是 21,846,419 / £112,522.4m —— '
+        '差 24,393 笔（1.1e-3）与 £620.6m（5.5e-3），比相邻月份（2016-06 差 £3.6m、'
+        '2016-08 差 £4.3m）大两个数量级，而且方向相反（这里 PDF 高于 xlsx，'
+        '其余月份一律 PDF 低于 xlsx）。两边各自都自洽，交易日同为 21 天，'
+        '所以不是解析错位，是官方对这一个月做过一次实质修订。',
+}
+
+
 def _crosscheck(rows, xlsx):
     """逐月拿 xlsx 精确值核对 PDF 的 LSE 三个数。xlsx 没有的月份跳过并说明。"""
     skipped = []
@@ -525,6 +619,9 @@ def _crosscheck(rows, xlsx):
         ref = xlsx.get(r['month'])
         if ref is None:
             skipped.append(r['month'])
+            continue
+        if r['month'] in _RESTATED:
+            print(f'[lseg_orderbook] {r["month"]} 跳过双源比对 —— {_RESTATED[r["month"]][:70]}…')
             continue
         trades, value_gbp, days, adv_trades, adv_gbp = ref
         # 容差是实测定的，不是拍的：2021-01..2026-06 共 66 个月逐月比对，
@@ -540,10 +637,15 @@ def _crosscheck(rows, xlsx):
             ('adv_gbp_m', r['lse_orderbook_adv_gbp_m'], adv_gbp / 1e6, 1.0),
         ]
         for name, got, want, tol in pairs:
-            if abs(got - want) > tol:
+            # 绝对容差与相对容差取宽者：绝对那个管小数（adv 只印到整数 £m、交易日是整数），
+            # 相对那个管大数（笔数上千万，重述漂移按绝对值看会越走越大）。见 _XCHECK_REL。
+            lim = max(tol, _XCHECK_REL * abs(want))
+            if abs(got - want) > lim:
                 raise LsegOrderbookFetchError(
                     f'{r["month"]} 双源对不上 {name}: 月报 PDF={got} vs '
-                    f'Order book trading.xlsx={want:.4f}（容差 {tol}）')
+                    f'Order book trading.xlsx={want:.4f}'
+                    f'（差 {abs(got - want):.4f} = {abs(got - want) / abs(want):.2e}，'
+                    f'容差 {lim:.4f}）')
     if skipped:
         print(f'[lseg_orderbook] 副源 xlsx 尚无这些月份，未做双源核对: {skipped}')
     return len(rows) - len(skipped)
@@ -551,15 +653,28 @@ def _crosscheck(rows, xlsx):
 
 # ──────────────────────────────────────────────────────────────── 对外接口
 
-def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True):
+def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=()):
     """返回 [{'month': 'YYYY-MM', <17 列>}, ...]，按月份升序。
 
     end 默认取「上个月」—— 当月的月报当然还没出。逐月按标题去检索接口要链接，
     检索不到就当作「这一期还没发」跳过（并打印），不抛异常。
+
+    `skip` = 已经入库、不必再抓的月份集合。**窗口从 2021-01 前推到 2016-01 之后
+    这个参数是必需的，不是优化**：本函数对窗口里的每个月都发一次检索请求 + 下一份
+    PDF + 解析一遍（还各 sleep 0.25s），66 个月时每轮约 1 分钟，127 个月时要三倍多，
+    而 `write_csv()` 转头就把已有月份全部丢弃（「只填空不覆盖」）—— 那些请求从头到尾
+    没有任何产出。
+    ⚠️ 跳过**不会**漏掉官方重述：本模块本来就不做重述比对（`write_csv` 只填空、
+    从不与已有值比较），所以重抓旧月份在今天这套代码里一个字节的作用都没有。
+    哪天要加重述体检，那是另一件事，得显式地做（照 fetch/mtk.py 的 drift 那套写），
+    不能靠「碰巧每轮都重抓一遍」来实现 —— 那种依赖没人看得出来，删掉也不会报错。
     """
     end = end or _prev_month(_today_month())
+    skip = set(skip)
     rows, missing = [], []
     for month in _months(start, end):
+        if month in skip:
+            continue
         title = f'LSEG market report {_month_label(month)}'
         hit = _find_doc(title)
         if hit is None:
@@ -581,8 +696,13 @@ def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True):
                   f'/ {rec["lse_orderbook_trades_count"]:,} trades')
         time.sleep(0.25)                            # 对官方站客气一点
 
-    if not rows:
+    if not rows and not skip:
         raise LsegOrderbookFetchError(f'{start}..{end} 一期月报都没抓到')
+    if not rows:
+        # 全窗口都已入库 = 稳态下最常见的一轮，不是故障。
+        # （加 skip 之前这里是无条件抛 —— 直接搬过来会让「本月还没发」变成整家 FAIL。）
+        print(f'[lseg_orderbook] {start}..{end} 全部已入库，无新月份')
+        return []
     if missing:
         print(f'[lseg_orderbook] 检索接口没有这些月份的月报: {missing}')
     if crosscheck:

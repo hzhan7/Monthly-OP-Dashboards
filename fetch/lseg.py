@@ -249,8 +249,11 @@ def _refresh_orderbook(mod, series_dir, cache_dir):
     # cache_dir 重指一次，好让 monthly_run 的 CACHE 与手工调用都落到同一处；
     # 值与它自己的默认相同时是空操作。
     mod.CACHE = os.path.join(cache_dir, 'lseg_orderbook')
-    rows = mod.fetch_rows()
-    mod.write_csv(rows, series_dir)
+    # 把「已入库的月份」告诉它，别再逐月重下一遍（每月一次检索 + 一份 PDF + 0.25s）。
+    # 窗口 2016-01 起共 127 个月，不传这个参数每轮要跑三分钟且产出为零 ——
+    # write_csv 是「只填空不覆盖」，重抓回来的旧月份会被原样丢掉。
+    mod.write_csv(mod.fetch_rows(skip=_read_part(series_dir, 'orderbook').keys()),
+                  series_dir)
 
 
 def _refresh_primary(mod, series_dir, cache_dir):
