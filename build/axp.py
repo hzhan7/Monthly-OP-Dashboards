@@ -705,16 +705,23 @@ ex.append(gs_bar_ex(
               'rate the bridge above multiplies by, so it is where the bridge can go wrong.'))
 
 # ══ 板块 B：Lending Trust 月度 10-D（PDF Exhibit 9-12；Exhibit 8 的汇总表已并入上表）══
-_es_w = trust['excess_spread_pct'].dropna().iloc[-25:]
-_es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-25:].dropna()
+# 本板块四张图共用一个窗口长度。图注里的「窗口内 min-max」必须跟图上真正画出来的
+# 是同一批点，窗口长度与统计切片各写一个 25 迟早会分叉。
+_TW = 25
+_es_w = trust['excess_spread_pct'].dropna().iloc[-_TW:]
+_es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-_TW:].dropna()
 # 图注里的同比读数必须跟次轴用同一个单位，所以走的是同一个 pp_unit()（同一份判据、
 # 同一批输入 → 同一个答案）。写死「pp」的话，哪个月轴切到 bp 图注就开始自相矛盾。
 _ES_MULT, _ES_UNIT, _ = pp_unit(_es_y.values)
 _es_d = 0 if _ES_UNIT == 'bp' else 2
 ex.append(gs_bar_ex(
     8, SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
-    win=25, yfmt='pct1', fmt='pct1', ylab='%', pct_series=True,
-    note=f'窗口内超额利差始终在 {_es_w.min():.2f}%–{_es_w.max():.2f}% 之间（极差只有 '
+    win=_TW, yfmt='pct1', fmt='pct1', ylab='%', pct_series=True,
+    note=f'<b>超额利差 ＝ 组合收益率 − 净核销 − 服务费 − 票息</b>，也就是信托收上来的钱付完'
+         f'所有成本之后剩下的那一层，债券持有人被打到之前先由它吸收损失。这是 ABS 交易里'
+         f'最被盯的一个数：跌到 0 附近会触发提前摊还（early amortization）—— 投资人本金被'
+         f'提前还回，AXP 失去这条融资渠道。所以这张图是用来<b>确认没事</b>的，不是用来找信号的。　'
+         f'窗口内超额利差始终在 {_es_w.min():.2f}%–{_es_w.max():.2f}% 之间（极差只有 '
          f'{_es_w.max() - _es_w.min():.2f}pp）。柱从 0 起是利差的正确基线，'
          f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 '
          f'{(_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22) * 100:.0f}%，看上去一样高 ——'
@@ -746,10 +753,38 @@ else:
                   f'超过引擎 {ALIGN_WASTE_MAX:.0%} 的兜底阈值。')
 ex[-1]['note'] = ex[-1]['note'].replace('{ALIGN}', _ALIGN_TXT)
 
+# 两条线肉眼最显眼的特征是逐月锯齿，而它主要是「当月有几天」造成的，不是经营波动。
+# 相关系数现算、结论跟着它走：写死一句「是日历假象」而哪个月相关性真的消失了，
+# 图注就会把一个真信号当成假象、劝读者别看。判据阈值也写成常量，图注里同时印出来。
+CAL_R_MIN = -0.4
+_py_w = trust['portfolio_yield_pct'].iloc[-_TW:]
+_pr_w = trust['payment_rate_pct'].iloc[-_TW:]
+_dim = np.asarray(_py_w.index.days_in_month, float)
+_r_py = float(np.corrcoef(_dim, _py_w.values.astype(float))[0, 1])
+_r_pr = float(np.corrcoef(_dim, _pr_w.values.astype(float))[0, 1])
+_r_txt = f'{_r_py:+.2f}（组合收益率）/ {_r_pr:+.2f}（还款率）'
+if min(_r_py, _r_pr) < CAL_R_MIN:
+    _cal_note = (f'<b>⚠️ 两条线的逐月锯齿主要是日历假象，不是经营波动。</b>窗口内它们与'
+                 f'当月天数的相关系数是 {_r_txt} —— 负相关意味着 2 月这种短月是尖峰、31 天的'
+                 f'月份是谷底。<b>要比就比天数相同的月份，单月的上下不要读。</b>')
+else:
+    _cal_note = (f'两条线与当月天数的相关系数是 {_r_txt}，本窗口内日历效应已不显著'
+                 f'（弱于 {CAL_R_MIN:+.1f} 的判据），逐月锯齿另有来源，仍建议读趋势而非单月。')
+
 ex.append(multi_line_ex(
     9, SEC_T + 'Trust portfolio yield and payment rate', trust,
     ['portfolio_yield_pct', 'payment_rate_pct'], ['NAVY', 'MBLUE'],
-    ['Portfolio yield', 'Payment rate'], win=25,
+    ['Portfolio yield', 'Payment rate'], win=_TW,
+    note=f'<b>两条线口径不同，不是一组可比对照，各读各的。</b>'
+         f'<b>Portfolio yield（组合收益率）</b>＝池子当月收到的利息与各项费用，年化后占本金'
+         f'应收的比例，即这个池子的毛收入率；Exhibit 8 的超额利差就是从它身上逐层扣出来的'
+         f'（窗口内 {_py_w.min():.1f}%–{_py_w.max():.1f}%，当期 {_py_w.iloc[-1]:.1f}%）。'
+         f'<b>Payment rate（还款率）</b>＝持卡人当月还掉了多少存量余额'
+         f'（窗口内 {_pr_w.min():.1f}%–{_pr_w.max():.1f}%，当期 {_pr_w.iloc[-1]:.1f}%）。'
+         f'AXP 的还款率结构性地高 —— 客群以每月全额还清的 transactor 为主 —— '
+         f'所以<b>绝对水平不能拿去跟别家发卡行比，只看它自己的走向</b>。'
+         f'<b>还款率是本板块唯一的领先指标</b>：它掉头意味着持卡人开始还不满、转向循环，'
+         f'通常比逾期率（Exhibit 11）早几个月出现，更早于核销（Exhibit 10）。　' + _cal_note,
     src_extra=TRUST_SRC + '.  Payment rate is how fast cardholders repay; a falling payment '
               'rate is an early warning that shows up months before delinquency does'))
 
@@ -757,14 +792,14 @@ ex.append(multi_line_ex(
     10, SEC_T + 'Loss rate: trust pool vs. 8-K Card balances', trust,
     ['nco_pct', 'consumer_nco_pct'], ['NAVY', 'RED'],
     ['Trust: annualised default rate, net of recoveries',
-     '8-K: U.S. Consumer net write-off rate'], win=25,
+     '8-K: U.S. Consumer net write-off rate'], win=_TW,
     src_extra=TRUST_SRC + '.  The two are close analogues but not the same definition, and '
               + TRUST_NOTE.lower()))
 
 ex.append(multi_line_ex(
     11, SEC_T + 'Delinquency: trust pool vs. 8-K Card balances', trust,
     ['dq30_pct', 'consumer_dq30_pct'], ['NAVY', 'RED'],
-    ['Trust: total 30+ days delinquent', '8-K: U.S. Consumer 30+ days past due'], win=25,
+    ['Trust: total 30+ days delinquent', '8-K: U.S. Consumer 30+ days past due'], win=_TW,
     src_extra=TRUST_SRC + '.  Both are 30+ day measures on the same concept, so the persistent '
               'gap is purely the pool difference: ' + TRUST_NOTE.lower()))
 
