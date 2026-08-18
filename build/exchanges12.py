@@ -398,9 +398,18 @@ UNCOVERED = {
              'ICE 自己的历史结算价在 Report Center 的 reCAPTCHA 后面。'
              '加上它能把覆盖率抬到 46.3%，但代价是一个来路不明的常数 ⇒ 不做'),
             ('cds_total_notional_usdbn', 'CDS 清算名义额是清算业务，不是成交量，口径不同不并入')],
-    'ndaq': [('vol_us_options_mmcontracts / vol_nordic_derivs_mmcontracts / '
-              'vol_nordic_cash_value_usdbn',
-              '这三列自 2025-01 才有，早于基期 2019-01 没有历史，无法定基')],
+    # 2026-08-18 更正：原文写「这三列自 2025-01 才有…无法定基」，其中**两列已经不成立**
+    # （ndaq 那一轮把北欧衍生品回补到 2013-01、美股撮合量回补到 2010-10）。
+    # 这句话是**印在页面上的**，不是代码注释，留着就是在页面上讲一件已经不成立的事。
+    'ndaq': [('vol_us_options_mmcontracts / vol_nordic_cash_value_usdbn',
+              '这两列自 2025-01 才有，早于基期 2019-01 没有历史，无法定基'
+              '（美股期权：IR 落地页无年份归档、nasdaqtrader 的月表只有四行三列且口径只有'
+              'IR 六所的一半，实测 source_hard；北欧现货美元列：官方月度原件是欧元，'
+              '折美元后与 IR 系统性低 0.77%–2.50%，scope 复原不了）'),
+             ('vol_nordic_derivs_mmcontracts / vol_us_cash_matched_mnsh',
+              '这两列已分别回补到 2013-01 与 2010-10，历史足够定基；'
+              '本页暂未纳入 —— 纳入要先给它们配 contract_specs 的合约乘数与基期价格，'
+              '那是另一次改动（本页的张数→名义额换算链只认登记过的 product_id）')],
     'miax': [('adv_equities_api_mnshares', '列自 2020-12 起，且该月与 MIAX Pearl Equities 的'
               '上线月不重合，无法按「上线前记 0」处理，故整条腿不计入'),
              ('adv_index_options_api_kcontracts',

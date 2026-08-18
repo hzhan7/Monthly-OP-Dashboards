@@ -7,6 +7,18 @@
   series/tsm_fx.csv     month, ntd_per_usd                  ← 本模块自动维护
   series/tsm_guidance.csv                                   ← 本模块**不碰**，见下文「口径坑 5」
 
+另外还挂着一段**不在无人值守路径上**的公司債工具（文件末尾「公司債」那一节）：
+
+  series/tsm_bonds_tranches.csv   逐檔登记簿                ← 人工录，本模块只读
+  series/tsm_bonds_monthly.csv    月度在外余额/票面          ← 由登记簿重建，可重放
+
+  python3 fetch/tsm.py bonds            对着 Form 20-F 的年末余额逐年打表（只读）
+  python3 fetch/tsm.py bonds --write    对账通过后重写 tsm_bonds_monthly.csv
+
+  update() 不碰它们，monthly_run.py 也不会跑到它 —— 公司債没有月度自动源
+  （MOPS ajax_t47sb17 只留滚动 3 个月窗口）。它存在的理由是月度表 77 行里
+  只有 3 行是抄来的、其余全是推导值，推导值必须能被一条命令重放并对账。
+
 ────────────────────────────────────────────────────────────────────────
 数据源
 ────────────────────────────────────────────────────────────────────────
@@ -478,6 +490,217 @@ def _append_rows(path, fieldnames, rows):
             w.writerow(r)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 公司債：逐檔登记簿 → 月度序列，以及 Form 20-F 年末余额对账
+# ══════════════════════════════════════════════════════════════════════════
+# 这一段**不进 update()**，不属于无人值守路径：公司債的两张表没有月度自动源
+# （MOPS ajax_t47sb17 只留滚动 3 个月窗口），新券要人工录进 tranches.csv。
+# 它存在的理由是：`tsm_bonds_monthly.csv` 的 77 行里只有最近 3 行是抄来的，
+# 其余全是**推导值** —— 推导值必须能被一条命令重放并对着官方年末余额验一遍，
+# 否则下一次「谁改了一行、哪年开始不对」就只能靠肉眼。
+#
+#     python3 fetch/tsm.py bonds            # 只对账，不写文件
+#     python3 fetch/tsm.py bonds --write    # 对账通过后重写 tsm_bonds_monthly.csv
+#
+# ── 2026-08 修正：曾经漏掉 100-/101-/102- 三个系列的旧券 ────────────────────
+# 旧版 tranches.csv 只有 109- 起（2020-03 首檔）的新券，于是 2020-03…2023-09
+# 这 43 个月的 outstanding 少了 100-/101-/102- 系列尚未到期的部分：
+# 2020-03 库内 24,000 vs 实际 59,300（NT$mn），2020-12 145,100 vs 库 120,000。
+# 受影响最重的是 wavg_coupon_pct —— 旧券票面 1.23%~2.10%，
+# 2020-03 真实加权平均 1.25%，旧版印 0.62%，把「先降后升」的形状抹成了单调上行。
+# 旧券全部到期于 2023-09（102-4F），所以 2023-10 起的行未受影响，本次未改。
+
+BONDS_TRANCHES_CSV = 'tsm_bonds_tranches.csv'
+BONDS_MONTHLY_CSV = 'tsm_bonds_monthly.csv'
+
+# 各年 20-F「BONDS PAYABLE」附注里 **Domestic unsecured bonds** 那一行的原值，NT$mn。
+# 每个年末都出现在两份 20-F 里（当年那份的右栏、次年那份的左栏），两处一致才录。
+# ⚠️ 这一行**含**宝岛债（在台湾发行的美元券，会计上归 domestic），
+#    而本仓的月度序列**只算新台币券**，所以 2020 起两者必然差一个宝岛债，见 _bond_reconcile()。
+#    2013–2018 那笔 US$1,150mn 是 TSMC Global 发的 **Overseas** unsecured bonds，
+#    在附注里是**另一行**，从来不在这一行里，不需要扣。
+BOND_YEAR_END_NTMN = {
+    2011: 22500.0, 2012: 80000.0, 2013: 166200.0, 2014: 166200.0, 2015: 166200.0,
+    2016: 154200.0, 2017: 116100.0, 2018: 91800.0, 2019: 56900.0,
+    2020: 173197.0, 2021: 312448.0, 2022: 379526.0, 2023: 447194.0,
+    2024: 478536.0, 2025: 538388.0,
+}
+# 出处（accession，CIK 0001046179）。年份 = 该份 20-F 的 fiscal year。
+BOND_20F_ACCESSION = {
+    2012: '0001193125-13-137651', 2013: '0001193125-14-141496',
+    2014: '0001193125-15-126836', 2015: '0001193125-16-536225',
+    2016: '0001193125-17-122097', 2017: '0001193125-18-121866',
+    2018: '0001193125-19-108390', 2019: '0001193125-20-107579',
+    2020: '0001193125-21-118512', 2021: '0001193125-22-104891',
+    2022: '0001193125-23-107214', 2023: '0001193125-24-099840',
+    2024: '0001193125-25-083423', 2025: '0001628280-26-025362',
+}
+# 同一附注的「Less: Current portion」，NT$mn —— 只收**能单独归到新台币券**的年份。
+# 这是一条与年末余额彼此独立的判据：它验的是**到期时程**（哪一檔哪一年到期），
+# 年末余额只验存量总额。2020/2021/2022 三年的 current portion 全部由旧券构成，
+# 新券在那三年一檔都不到期 —— 换句话说，只要这三行对得上，旧券就必须在账上。
+BOND_CURRENT_PORTION_NTMN = {
+    2016: 38100.0, 2018: 34900.0, 2019: 31800.0,
+    2020: 2600.0, 2021: 4400.0, 2022: 18100.0,
+}
+# 有意剔除的宝岛债（在台湾发行、以美元计价，附注里混在 domestic 那一行里），
+# 名目 US$mn，按年末在外计。剔除的理由见 build/mrspecs/_tsm_extra.py 的 Exhibit ⑤ 图注：
+# 2.70%/3.10%、30–40 年期，混进新台币券会同时打歪 outstanding 与 wavg_coupon。
+BOND_FORMOSA_USD_MN = {2020: 1000.0, 2021: 2000.0, 2022: 2000.0,
+                       2023: 2000.0, 2024: 2000.0, 2025: 2000.0}
+# 宝岛债折算用的是**年末即期**，本仓没有这个序列（tsm_fx.csv 是月均），
+# 所以 2020 起只能做**带宽核对**而不是零误差核对：
+# 用残差反推汇率，跟同月 H.10 月均比，超过这个相对偏差就当解析出错。
+# 3% 不是拍的：实测六年最大偏差 1.61%（2023-12，当月新台币月内走强，月末即期低于月均），
+# 收到 2% 会在 2023 那行误报。
+BOND_FX_BAND = 0.03
+
+
+def _bond_month(s):
+    """'2020-03-23' / '2011-09' → Period('YYYY-MM')。
+
+    旧券（100-/101-/102-）的日期只有月精度：20-F 印的就是 "September 2011 to
+    September 2016"，没有日。**不要为了让列看齐而补一个 -01** —— 那是凭空造出来的
+    精度，而月度序列只按月分桶，补了也不多一分信息，只会让下一个人以为查得到那一天。
+    """
+    return _dt.date(int(s[:4]), int(s[5:7]), 1)
+
+
+def _bond_key(d):
+    return d.year * 12 + d.month - 1
+
+
+def _bond_tranches(series_dir):
+    _, rows = _read_csv(os.path.join(series_dir, BONDS_TRANCHES_CSV))
+    out = []
+    for r in rows:
+        amt = float(r['issue_amount_k'])
+        mat = _bond_key(_bond_month(r['maturity_date']))
+        if r['repayment_type'] == 'amort_50_50':
+            # 到期日**前一年**先还一半（109-4/5/6/7 那 12 檔）。
+            legs = [(mat - 12, amt / 2.0), (mat, amt / 2.0)]
+        elif r['repayment_type'] == 'bullet':
+            legs = [(mat, amt)]
+        else:
+            raise RuntimeError('未知还本方式 %r（%s）' % (r['repayment_type'], r['tranche_id']))
+        out.append({'id': r['tranche_id'], 'ccy': r['currency'],
+                    'issue': _bond_key(_bond_month(r['issue_date'])),
+                    'amount': amt, 'coupon': float(r['coupon_pct']), 'legs': legs})
+    return out
+
+
+def _bond_state(tranches, k, ccy='TWD'):
+    """k 月末的 (在外总额_k, 在外檔数, 加权平均票面%)。"""
+    tot = num = 0.0
+    n = 0
+    for t in tranches:
+        if t['ccy'] != ccy or t['issue'] > k:
+            continue
+        o = t['amount'] - sum(a for km, a in t['legs'] if km <= k)
+        if o > 1e-6:
+            tot += o
+            num += o * t['coupon']
+            n += 1
+    return tot, n, (num / tot if tot else None)
+
+
+def rebuild_bonds_monthly(series_dir):
+    """按逐檔登记簿 + 同一套还本时程重算 tsm_bonds_monthly.csv 的每一行。
+
+    窗口沿用现有文件的 month 列，不自行扩张 —— 首行 2020-03 的 outstanding
+    因此**包含一笔 NT$35,300mn 的期初存量**（2020-03 时点上尚未到期的
+    100-/101-/102- 旧券），它不等于 issued 的累计和。这是有意的：
+    序列讲的是「在外余额」，不是「本窗口内发行了多少」。
+    """
+    path = os.path.join(series_dir, BONDS_MONTHLY_CSV)
+    fields, rows = _read_csv(path)
+    tr = _bond_tranches(series_dir)
+    out = []
+    for r in rows:
+        k = _bond_key(_bond_month(r['month']))
+        tot, n, wac = _bond_state(tr, k)
+        iss = sum(t['amount'] for t in tr if t['ccy'] == 'TWD' and t['issue'] == k)
+        rep = sum(a for t in tr if t['ccy'] == 'TWD'
+                  for km, a in t['legs'] if km == k and t['issue'] <= k)
+        out.append({'month': r['month'],
+                    'issued_twd_k': '%d' % round(iss),
+                    'repaid_twd_k': '%d' % round(rep),
+                    'outstanding_twd_k': '%d' % round(tot),
+                    'n_tranches_outstanding': '%d' % n,
+                    'wavg_coupon_pct': ('%.4f' % wac).rstrip('0').rstrip('.')})
+    # 递推自洽：除首行外，每个月都必须满足 out[t] = out[t-1] + issued - repaid。
+    for i in range(1, len(out)):
+        exp = (int(out[i - 1]['outstanding_twd_k']) + int(out[i]['issued_twd_k'])
+               - int(out[i]['repaid_twd_k']))
+        if exp != int(out[i]['outstanding_twd_k']):
+            raise RuntimeError('%s 递推不自洽：%d ≠ %d' % (out[i]['month'], exp,
+                                                          int(out[i]['outstanding_twd_k'])))
+    return fields, out
+
+
+def _bond_dec_fx(series_dir, year):
+    _, rows = _read_csv(os.path.join(series_dir, FX_CSV))
+    for r in rows:
+        if r['month'] == '%d-12' % year:
+            return float(r['ntd_per_usd'])
+    return None
+
+
+def reconcile_bonds(series_dir, verbose=True):
+    """逐檔登记簿 → 各年末在外余额，对着 20-F 的 Domestic unsecured bonds 核。
+
+    返回 (通过?, 报表行列表)。两段判据不同，**不许混为一谈**：
+      · 2011–2019：附注里那一行是**纯新台币**，必须零误差；
+      · 2020–2025：那一行含宝岛债（我们有意剔除），只能核到「残差 ÷ 宝岛债名目
+        = 一个合理的年末即期汇率」这一步 —— 本仓没有年末即期序列，做不到零误差。
+    """
+    tr = _bond_tranches(series_dir)
+    lines, ok = [], True
+    for y in sorted(BOND_YEAR_END_NTMN):
+        k = _bond_key(_dt.date(y, 12, 1))
+        tot_mn = _bond_state(tr, k)[0] / 1000.0
+        off = BOND_YEAR_END_NTMN[y]
+        resid = off - tot_mn
+        usd = BOND_FORMOSA_USD_MN.get(y)
+        if usd is None:
+            good = abs(resid) < 0.05
+            det = '零误差' if good else '❌ 差 %+.1f' % resid
+        else:
+            imp = resid / usd
+            avg = _bond_dec_fx(series_dir, y)
+            dev = abs(imp / avg - 1.0) if avg else None
+            good = dev is not None and dev <= BOND_FX_BAND
+            det = ('残差 = 宝岛债 US${:,.0f}mn × {:.3f}，{}-12 月均 {:.3f}，偏离 {:.2f}%'
+                   .format(usd, imp, y, avg or 0.0, (dev or 0) * 100)
+                   + ('' if good else '  ❌ 超出 ±%.0f%% 带宽' % (BOND_FX_BAND * 100)))
+        ok &= good
+        lines.append('  {}  官方 {:>11,.1f}  重建(TWD) {:>11,.1f}   {}'
+                     .format(y, off, tot_mn, det))
+    # 独立第二判据：到期时程。
+    for y in sorted(BOND_CURRENT_PORTION_NTMN):
+        k0, k1 = _bond_key(_dt.date(y, 12, 1)), _bond_key(_dt.date(y + 1, 12, 1))
+        due = sum(a for t in tr if t['ccy'] == 'TWD' and t['issue'] <= k0
+                  for km, a in t['legs'] if k0 < km <= k1) / 1000.0
+        off = BOND_CURRENT_PORTION_NTMN[y]
+        good = abs(off - due) < 0.05
+        ok &= good
+        lines.append('  {}  current portion 官方 {:>9,.1f}  重建 {:>9,.1f}  {}'
+                     .format(y, off, due,
+                             '零误差' if good else '❌ 差 %+.1f' % (off - due)))
+    if verbose:
+        print('[tsm][bonds] Domestic unsecured bonds 年末对账（NT$mn，源：Form 20-F '
+              'BONDS PAYABLE 附注，CIK 0001046179）')
+        print('\n'.join(lines))
+        print('[tsm][bonds] 脚注：2011–2019 为纯新台币，判据是**零误差**；'
+              '2020 起附注那一行含在台发行的美元宝岛债'
+              '（109-1-USD 2.70%/40y、110-5-USD 3.10%/30y，各 US$10 亿），'
+              '本仓序列有意只算新台币券，故只能核到「残差 = 宝岛债名目 × 年末即期」。'
+              '2013–2018 那笔 US$1,150mn 是 TSMC Global 的 Overseas unsecured bonds，'
+              '在附注里另起一行，本来就不在核对口径内。')
+        print('[tsm][bonds] %s' % ('全部通过' if ok else '❌ 有未通过项'))
+    return ok, lines
+
+
 # ── 公开接口 ────────────────────────────────────────────────────────────
 def latest_month(cache_dir):
     """官方源当前最新已公告月，'YYYY-MM'。抓不到抛异常。
@@ -612,7 +835,21 @@ if __name__ == '__main__':
     import sys
     sd = os.path.join(ROOT, 'series')
     cd = os.path.join(ROOT, 'cache')
-    if len(sys.argv) > 1 and sys.argv[1] == 'latest':
+    if len(sys.argv) > 1 and sys.argv[1] == 'bonds':
+        # 公司債：对账（只读）。带 --write 才在对账通过后重写 tsm_bonds_monthly.csv。
+        # 不联网 —— 年末余额是从 20-F 逐份人工核对后写死在 BOND_YEAR_END_NTMN 里的。
+        _ok, _ = reconcile_bonds(sd)
+        if not _ok:
+            raise SystemExit('[tsm][bonds] 对账未通过，拒绝写文件')
+        if '--write' in sys.argv[2:]:
+            _f, _rows = rebuild_bonds_monthly(sd)
+            _p = os.path.join(sd, BONDS_MONTHLY_CSV)
+            with open(_p, 'w', newline='', encoding='utf-8') as _fh:
+                _w = csv.DictWriter(_fh, fieldnames=_f, lineterminator=_line_terminator(_p))
+                _w.writeheader()
+                _w.writerows(_rows)
+            print('[tsm][bonds] 已重写 %s（%d 行）' % (BONDS_MONTHLY_CSV, len(_rows)))
+    elif len(sys.argv) > 1 and sys.argv[1] == 'latest':
         print(latest_month(cd))
     elif len(sys.argv) > 2 and sys.argv[1] == 'pubdate':
         # 单独查某个月的公告日（只读，不写台账），用于核对 evidence。

@@ -746,22 +746,60 @@ if HAS_NARROW:
 else:
     DB1_NARROW_ADV = pd.Series(np.nan, index=IDX)
 
-W_NAR = [p for p in IDX if ok(DB1_NARROW_ADV[p]) and ok(ADV['db1'][p])]
-HAS_NAR_WIN = len(W_NAR) >= 6
+# 窄口径那两列**有值的月份**（用来算倍数与占比缺口的统计量）。
+_NAR_OK = [p for p in IDX if ok(DB1_NARROW_ADV[p]) and ok(ADV['db1'][p])]
+# ⚠ **画图的横轴不能用 _NAR_OK**，必须是从首个有值月到末个有值月的**逐月连续**区间。
+# 2026-08-18 db1 回补之后这两列从「2024-12 起连续 20 个月」变成「2016-06 起、
+# 中间有 2016-07 与 2017-06…2022-04 两大段空洞」。拿有值月直接当横轴，
+# `May-17` 与 `May-22` 会被画成**相邻两格**，中间 5 年凭空消失 ——
+# 那是 build/CONTRACT.md 规矩 3 明令禁止的「假时间轴」：
+# 「dropna 会把中间缺的月直接从横轴上抹掉，于是相隔两个月的两点被并排画成相邻期」。
+# 逐月铺开、缺月留 null，`lines` 图型（doSmooth=false）会断笔而不是压缩。
+_IDXL = list(IDX)
+W_NAR = (_IDXL[_IDXL.index(_NAR_OK[0]):_IDXL.index(_NAR_OK[-1]) + 1] if _NAR_OK else [])
+HAS_NAR_WIN = len(_NAR_OK) >= 6
+
+
+def _gap_txt(full, have):
+    """把「哪几段没有数据」说成人话，供图注用。现算，不写死。"""
+    hv = set(have)
+    runs, cur = [], None
+    for p in full:
+        if p in hv:
+            if cur:
+                runs.append(cur)
+                cur = None
+        else:
+            cur = [p, p] if cur is None else [cur[0], p]
+    if cur:
+        runs.append(cur)
+    if not runs:
+        return '中间无空洞'
+    parts = [(f'{mlab(a)} 无数据' if a == b else f'{mlab(a)}–{mlab(b)} 整段无数据')
+             for a, b in runs]
+    return '；'.join(parts)
+
+
+_NAR_GAP_TXT = _gap_txt(W_NAR, _NAR_OK) if W_NAR else ''
 if HAS_NAR_WIN:
-    _ratio = pd.Series([float(ADV['db1'][p] / DB1_NARROW_ADV[p]) for p in W_NAR], index=W_NAR)
+    # ⚠ 统计量一律走 `_NAR_OK`（**真有值**的月），不能走 `W_NAR`（画图用的逐月连续横轴）。
+    # 两者 2026-08-18 之后不再相等：W_NAR 里含 2016-07 与 2017-06…2022-04 两段空洞，
+    # 拿它算 min/median/max 会全变成 nan（payload_guard 当场拦下来过一次）。
+    _ratio = pd.Series([float(ADV['db1'][p] / DB1_NARROW_ADV[p]) for p in _NAR_OK],
+                       index=_NAR_OK)
     SCOPE_MIN, SCOPE_MED, SCOPE_MAX = (float(_ratio.min()), float(_ratio.median()),
                                        float(_ratio.max()))
     # 折成池内占比：窄口径下重算整池（分子分母同时变）
     _gap = []
-    for p in W_NAR:
+    for p in _NAR_OK:
         wide = {k: float(ADV[k][p]) for k in KEYS}
         nar = dict(wide, db1=float(DB1_NARROW_ADV[p]))
         _gap.append(wide['db1'] / sum(wide.values()) * 100
                     - nar['db1'] / sum(nar.values()) * 100)
     SH_GAP_MIN, SH_GAP_MED, SH_GAP_MAX = (float(np.min(_gap)), float(np.median(_gap)),
                                           float(np.max(_gap)))
-    NAR_SHARE_NOW = {k: (float(DB1_NARROW_ADV[W_NAR[-1]]) if k == 'db1' else float(ADV[k][W_NAR[-1]]))
+    NAR_SHARE_NOW = {k: (float(DB1_NARROW_ADV[_NAR_OK[-1]]) if k == 'db1'
+                         else float(ADV[k][_NAR_OK[-1]]))
                      for k in KEYS}
     _ns = sum(NAR_SHARE_NOW.values())
     NAR_SHARE_NOW = {k: v / _ns * 100 for k, v in NAR_SHARE_NOW.items()}
@@ -1562,18 +1600,19 @@ if HAS_NAR_WIN:
                       'the wide one; this exhibit measures the price of that choice'),
         'note': ('这张图不讲业务，只讲<b>本页最大的一处妥协值多少钱</b>。'
                  'Euronext 与 Cboe Europe 报的是股票 ADNV；Deutsche Börse 与之逐字同口径的'
-                 f'两列（<code>turnover_xetra_equities_eurbn</code> + '
-                 f'<code>turnover_fwb_equities_eurbn</code>）<b>只有 {len(W_NAR)} 个月</b>'
-                 f'（{mlab(W_NAR[0])} 起），用它本页的长历史份额图就只剩一年半。'
+                 f'两列<b>有数的月份只有 {len(_NAR_OK)} 个</b>，而且不连续 —— '
+                 f'它们散落在 {mlab(W_NAR[0])} 至 {mlab(W_NAR[-1])} 这 {len(W_NAR)} 个月里'
+                 f'（{_NAR_GAP_TXT}）。横轴按月逐格铺开、缺月断笔，'
+                 f'<b>不是</b>把有数的月并排画在一起（那会让相隔数年的两点看着像相邻月）。'
                  '所以本页用的是有 198 个月历史的宽口径（含 ETP / 结构化产品 / 债券 / 基金）。'
-                 f'代价实测：这 {len(W_NAR)} 个重叠月里宽 ÷ 窄 = '
+                 f'代价实测：这 {len(_NAR_OK)} 个重叠月里宽 ÷ 窄 = '
                  f'<b>{SCOPE_MIN:.2f}–{SCOPE_MAX:.2f} 倍</b>（中位 {SCOPE_MED:.2f}）；'
                  f'折成池内占比，Deutsche Börse 被<b>高估 {SH_GAP_MIN:.1f}–{SH_GAP_MAX:.1f}pp</b>'
                  f'（中位 {SH_GAP_MED:.1f}pp）。'
-                 + (f'{mlab(W_NAR[-1])} 窄口径下三家占比会是 '
+                 + (f'{mlab(_NAR_OK[-1])} 窄口径下三家占比会是 '
                     + '、'.join(f'{SHORT[k]} {NAR_SHARE_NOW[k]:.1f}%' for k in KEYS)
                     + '，而本页各图印的是 '
-                    + '、'.join(f'{float(SHARE[k][W_NAR[-1]]):.1f}%' for k in KEYS) + '。'
+                    + '、'.join(f'{float(SHARE[k][_NAR_OK[-1]]):.1f}%' for k in KEYS) + '。'
                     if NAR_SHARE_NOW else '')
                  + '⇒ <b>本页 Deutsche Börse 的占比是上界，Euronext 与 Cboe Europe 的是下界</b>。'
                  '增长率不受影响（宽口径只是整条线乘一个近似常数），'

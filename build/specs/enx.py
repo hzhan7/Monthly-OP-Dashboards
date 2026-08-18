@@ -4,10 +4,13 @@
 本文件只声明「画哪些列、叫什么、什么单位、什么格式」，**不含任何算术、不含任何取数**。
 
 ━━ 为什么这家的 slow_cols 是空的 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Euronext 全部 72 列出自**同一份官方 xlsx**（euronext_monthly_historical_volumes.xlsx，
+Euronext 全部 71 个数据列（series/enx.csv 含 month 共 72 个字段）出自**同一份官方 xlsx**
+（euronext_monthly_historical_volumes.xlsx，
 文件名固定不带月份，每月原地覆盖），所以所有列同时发布、同一个最新月。
-本机实测 series/enx.csv：174 行 2012-01 → 2026-06，**每一列都在 2026-06 有值，
-每一列的首末月之间 gaps=0**。没有慢腿，`slow_cols` 留空。
+「多少行 / 到哪个月 / 几列在最新月有值 / 几列首末月之间有空洞」这四个数**不写在文档里** ——
+它们每月都变，写死一次就过期一次。`_shape_zh()` 在 import 期从 series/enx.csv 现算，
+结果原样印进页尾 notes 的最后一条（连「空洞是 0」都不预设，数出来几个就印几个）。
+没有慢腿，`slow_cols` 留空。
 
 （发布节奏另说：实测 50 期，月末后第 4–13 天，中位数第 8 天；历史最小值第 3 天
  —— 2020-06 数据月发布于 2020-07-03。闸门那一层是 monthly_run.py 的事，不在本文件。）
@@ -35,7 +38,7 @@ Euronext 是靠连续并购长起来的：都柏林、奥斯陆、米兰、雅�
 
 ━━ 📌 本页**不画** `decomp`（量价分解），理由不是缺数据，是图注会说假话 ━━━━━━
 数据条件其实够：`adv_cash_adnv_eurbn`（成交额 ADV，单边计）与 `adv_cash_trades_k`
-（成交笔数 ADV）都是 2012-01 起 174 个月零断档，是全仓最长的一对。
+（成交笔数 ADV）都自工作簿起点 2012-01 起零断档，是全仓最长的一对（月数由 `_span()` 现算）。
 `build/exchanges_eu.py` 的 Exhibit 15 就用这一对画了「成交额 = 笔数 × 每笔均值」的
 对数分解，并用三重检验判定「**增长率分解成立、绝对水平不可读**」：
 
@@ -146,12 +149,19 @@ def _read_breaks(charted):
 #   理由见模块 docstring 里的 📌 那一节。
 # 任何一步算不出来就退回不含数字的定性版本；缺文件不许在 import 期抛异常。
 # ══════════════════════════════════════════════════════════════════════════════
+_ROWS = None
+
+
 def _rows():
-    try:
-        with open(_CSV, encoding='utf-8') as fh:
-            return list(csv.DictReader(fh))
-    except OSError:
-        return []
+    """series/enx.csv 全部行。缓存一份 —— 下面按列现算要遍历 72 次，没必要读 72 遍文件。"""
+    global _ROWS
+    if _ROWS is None:
+        try:
+            with open(_CSV, encoding='utf-8') as fh:
+                _ROWS = list(csv.DictReader(fh))
+        except OSError:
+            _ROWS = []
+    return _ROWS
 
 
 def _num(r, col):
@@ -165,6 +175,46 @@ def _num(r, col):
         return float(v)
     except ValueError:
         return None
+
+
+def _span(col):
+    """某一列的 (有值月数, 首月, 末月, 首末月之间的空洞数)。列不存在/全空返回四个 None。
+
+    ⚠ 这是本文件里**唯一**能说「这条序列从哪个月开始」的地方 —— 起点一律现算，
+    不写死。Euronext 的起点会因为官方回填而向左移动（雅典备注列就是先有 2025-11
+    的事件、官方再把备注列回填到 2021-01 的），写死的起点扛不住这种事。
+    """
+    rs = _rows()
+    idx = [k for k, r in enumerate(rs) if (r.get(col) or '').strip()]
+    if not idx:
+        return (None,) * 4
+    return (len(idx), rs[idx[0]].get('month'), rs[idx[-1]].get('month'),
+            (idx[-1] - idx[0] + 1) - len(idx))
+
+
+def _shape_zh():
+    """「多少行、到哪个月、多少列在最新月有值、多少列有空洞」——  一句现算的中文。
+
+    这四个数每月都变。**故意连「gaps 全部为 0」都不写死**：印出来的是数出来的数，
+    数不是 0 时这句话会自己说实话，而不是变成一句陈年断言。
+    """
+    rs = _rows()
+    if not rs:
+        return '（本次未能从 series/enx.csv 复算形状。）'
+    cols = [c for c in rs[0] if c != 'month']
+    full = holes = 0
+    for c in cols:
+        n, m0, m1, gap = _span(c)
+        if n is None:
+            continue
+        if m1 == rs[-1].get('month'):
+            full += 1
+        if gap:
+            holes += 1
+    return ('本文件 import 期现算 series/enx.csv：%d 行 %s → %s；%d 个数据列（不含 month）里'
+            '有 %d 列在 %s 有值、%d 列的首末月之间有空洞。'
+            % (len(rs), rs[0].get('month'), rs[-1].get('month'),
+               len(cols), full, rs[-1].get('month'), holes))
 
 
 def _break_months():
@@ -213,10 +263,18 @@ def _tradingday_spread():
 
 _CVN, _CVMAX, _CVM, _LN2 = _conv_stability()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
+_SHAPE_ZH = _shape_zh()
+_VN, _VM0, _VM1, _VGAP = _span('adv_cash_adnv_eurbn')      # 成交额 ADV
+_TN, _TM0, _TM1, _TGAP = _span('adv_cash_trades_k')        # 成交笔数 ADV
+_PN, _PM0, _PM1, _PGAP = _span('adv_power_systemprice_futures_gwh')   # 电力衍生品
 
 _NO_DECOMP_NOTE = (
-    '📌 <b>本页刻意不画量价分解图。</b>数据条件是够的（成交额 ADV 与成交笔数 ADV 都是 '
-    '2012-01 起 174 个月零断档，是全仓最长的一对），欧洲横截面页 '
+    '📌 <b>本页刻意不画量价分解图。</b>数据条件是够的（'
+    + ((f'成交额 ADV 与成交笔数 ADV 都是 {_VM0} 起 {_VN} 个月、首末月之间 {_VGAP} 个空洞，'
+        f'是全仓最长的一对'
+        if (_VN and (_VN, _VM0, _VGAP) == (_TN, _TM0, _TGAP)) else
+        '成交额 ADV 与成交笔数 ADV 是全仓最长的一对'))
+    + '），欧洲横截面页 '
     '<code>build/exchanges_eu.py</code> 的 Exhibit 15 就用这一对画了'
     '「成交额 = 笔数 × 每笔均值」的对数分解。但那张图的结论是'
     '<b>「增长率分解成立、绝对水平不可读」</b>：官方同一张表里金额列<b>单边计</b>、'
@@ -266,7 +324,8 @@ _NOTE_TTM_TRD = (
 
 
 # ── 头条 ───────────────────────────────────────────────────────────────────
-# 两条都是 2012-01 起 174 个月、gaps=0。
+# 两条都自工作簿起点 2012-01 起、首末月之间没有空洞（月数与空洞数由 `_span()` 现算，
+# 印在 _NO_DECOMP_NOTE 里；这里不复述一个会过期的数字）。
 # 用两条而不是一条，且刻意取自**两张不同的官方 sheet**（Equity Markets / FICC Markets）：
 # 门槛判定因此不会被单张 sheet 的静默解析失败绕过去。
 # adv_cash_adnv_eurbn 同时是 fetch/enx.py 自己的 ANCHOR（判断「这个月真的有数据」的锚）。
@@ -300,8 +359,11 @@ GROUPS = [
 
     # ⚠ 笔数与清算笔数原先挂在上面那一组里，但它们各自是**单位桶里的独苗**
     #   （k trades/day 与 k contracts/day 各一列），底座对单桶画 gs_bar，
-    #   而 gs_bar 的次轴是**单月同比**。tools/check_yoy_caliber.py 实测：
-    #   成交笔数有 7 个月、股票清算有 4 个月与 12 个月滚动口径**符号相反**。
+    #   而 gs_bar 的次轴是**单月同比**。tools/check_yoy_caliber.py 的口径矩阵实测
+    #   （全历史、死区 ±0.5pp，2026-08-18 复算）：成交笔数有 40 个月、股票清算有 4 个月
+    #   与 12 个月滚动口径**符号相反**。
+    #   ⚠ 这类计数随窗口与新月份变，别当常量引用 —— 复算方法：
+    #     tools/check_yoy_caliber.py 的 build_index() + sign_flips()。
     #   本表里没有同单位同量级的第二条列可以同轴（athex 那两条只有主列的 3–6%，
     #   同轴等于画一条贴地线），所以改成**各自单列一组、口径写进组名** ——
     #   契约允许用单月同比，条件是标题里声明（CONTRACT.md §6）。
@@ -364,7 +426,8 @@ GROUPS = [
 
     # 下面两条与 MTS 那两条**单位不同**（EUR mn/day、USD bn/day），底座本来就会把它们
     # 拆成两张单桶 gs_bar；原先它们与 MTS 同组，只是让组名读起来像一张图而已。
-    # 实测两条各有 9 个月与 12 个月滚动口径**符号相反**，所以口径写进各自的组名。
+    # 实测（同上，2026-08-18 复算）债券 ADV 有 40 个月、FX 即期有 43 个月与 12 个月滚动口径
+    # **符号相反**，所以口径写进各自的组名。
     # 拿 MTS 那两条硬凑同轴不是办法：MTS 现券是 EUR bn 量级、这一条是 EUR mn 量级，
     # 差两三个数量级，小的那条振幅只占画布百分之一，等于白画。
     {'zh': 'MTS 以外的债券成交 ADV（次轴：单月同比）', 'cols': [
@@ -380,7 +443,8 @@ GROUPS = [
     ]},
 
     # 电力现货是 Nord Pool，**买卖双边计**，且分母是自然日不是交易日。
-    # 电力衍生品 2026-03-16 才全面上线，本机实测只有 4 个月（2026-03 → 2026-06）。
+    # 电力衍生品 2026-03-16 才全面上线（官方 FICC Markets 脚注 (5) 原文），序列因此很短 ——
+    # 到底几个月由 `_span()` 现算，印在页尾 notes 里，这里不写死。
     {'zh': 'Nord Pool 电力（现货双边计；衍生品 2026-03 起）', 'cols': [
         {'col': 'adv_power_dayahead_twh', 'zh': '日前市场 ADV（双边，除自然日）',
          'unit': 'TWh/day', 'fmt': 'f2'},
@@ -414,7 +478,8 @@ GROUPS = [
     ]},
 
     # 家数是这一组里唯一的 listings/month 列 ⇒ 单桶 gs_bar ⇒ 次轴单月同比。
-    # 实测有 8 个月与 12 个月滚动口径符号相反（2024-10 单月 +33.3% vs 滚动 −43.3%）。
+    # 实测（同上，2026-08-18 复算）有 20 个月与 12 个月滚动口径符号相反
+    # （最刺眼的一格是 2024-10：单月 +33.3% vs 滚动 −43.3%）。
     # 家数是小整数序列（个位到十几），单月同比天生毛刺极大 —— 口径写进组名。
     # 不给它配 ttm_yoy：新增挂牌家数在多个月为个位数，滚动同比也救不了小整数噪声，
     # 而多画一张图会让读者以为那条线更可信。
@@ -423,7 +488,13 @@ GROUPS = [
          'unit': 'listings/month', 'fmt': 'f0'},
     ]},
 
-    {'zh': '结算与托管（五家 CSD，2022-01 起）', 'cols': [
+    # ⚠ 组名里不能写「五家 CSD」：官方 Securities Services 脚注 (1) 原文
+    #   "Includes figures from Euronext Athens since November 2025" —— Total 列在
+    #   2025-11 之前只含哥本哈根 / 米兰 / 奥斯陆 / 波尔图四家，雅典是与它并列的备注列。
+    #   本机对着官方分地明细复核过：2022-01 四地相加 = Total，2025-11 起要五地相加才 = Total。
+    # 两条列单位不同（EUR bn 与 mn instructions/month）⇒ 各自单桶 gs_bar ⇒ 次轴是**单月同比**，
+    #   按 CONTRACT.md §6 写进组名（托管资产那条是存量，底座会自己补「存量，期末口径」）。
+    {'zh': '结算与托管（四家 CSD，2025-11 起含雅典成五家；2022-01 起；次轴：单月同比）', 'cols': [
         {'col': 'csd_auc_eurbn', 'zh': 'CSD 托管资产（月末时点）',
          'unit': 'EUR bn', 'fmt': 'f0c', 'stock': True},
         {'col': 'csd_settlement_instructions_m', 'zh': '当月结算指令笔数',
@@ -462,6 +533,35 @@ _CHARTED = frozenset([c['col'] for c in HEADLINE]
 _BREAKS, _BREAK_NOTES = _read_breaks(_CHARTED)
 
 
+def _starts_zh():
+    """把本页画了的列按**现算出来的起点月**分组，列成一句中文。
+
+    原先这一条是手写的枚举，手写的枚举有两个必坏的地方：官方回填会让起点向左移
+    （雅典备注列就是这么来的），新并购会长出新的起点月。所以起点一律现算。
+    最早那个月（= 工作簿自己的起点）只报条数不报列名，否则半页都是它。
+    """
+    zh = {}
+    for c in HEADLINE:
+        zh.setdefault(c['col'], c['zh'])
+    for g in GROUPS:
+        for c in g['cols']:
+            zh.setdefault(c['col'], c['zh'])
+    by = collections.defaultdict(list)
+    for col, name in zh.items():
+        m0 = _span(col)[1]
+        if m0:
+            by[m0].append(name)
+    if not by:
+        return ''
+    ms = sorted(by)
+    parts = ['<b>%s</b>：%s' % (m, '、'.join(sorted(by[m]))) for m in ms[1:]]
+    parts.append('其余 %d 条自 <b>%s</b>（工作簿自己的起点）' % (len(by[ms[0]]), ms[0]))
+    return '；'.join(parts)
+
+
+_STARTS_ZH = _starts_zh()
+
+
 SPEC = {
     'ticker': 'enx',
     'name':   'Euronext',
@@ -474,7 +574,8 @@ SPEC = {
     'headline': HEADLINE,
     'groups':   GROUPS,
 
-    # 全部 72 列出自同一份 xlsx、同时发布，本机实测每一列在最新月都有值 ⇒ 没有慢腿。
+    # 全部数据列出自同一份 xlsx、同时发布 ⇒ 没有慢腿。
+    # 「有几列在最新月真有值」由 `_shape_zh()` 现算并印在页尾 notes，这里不复述数字。
     'slow_cols': [],
 
     # 月份与受影响的列都从 series/enx_breaks.csv 读，不写死；逐列限定，见模块 docstring。
@@ -540,21 +641,64 @@ SPEC = {
         'listed_funds 的起点是 **2019-01** 不是 2018-01：官方 2018 全年那 12 格写的是'
         '字面量字符串 "NA"，不是 0，也不是缺失。这是整个工作簿里唯一的非数值污染。',
 
-        '电力衍生品（系统价格期货 / EPAD / 名义未平仓）2026-03-16 才全面上线，'
-        '本机实测只有 4 个月（2026-03 → 2026-06）。这不是数据缺失，2026-03 之前官方没有这个市场。'
-        '同比要等到 2027-03 之后才有意义。',
+        '电力衍生品（系统价格期货 / EPAD / 名义未平仓）2026-03-16 才全面上线 —— 官方 '
+        'FICC Markets 脚注 (5) 原文 "Power derivatives market became fully operational on '
+        '16 March 2026"。'
+        + ((f'本页 import 期实测这三列只有 {_PN} 个月（{_PM0} → {_PM1}）。')
+           if _PN else '')
+        + '这不是数据缺失，2026-03 之前官方没有这个市场。同比要等到 2027-03 之后才有意义。',
 
-        '几条短序列的起点（实测）：adv_shares_cleared / 债券清算 / mktcap / csd_* 自 2022-01；'
-        'MTS 与 Nord Pool 现货电力自 2020-01；Euronext FX 自 2013-01；上市统计自 2018-01；'
-        '其余主列自 2012-01。athex_* 备注列自 2021-01（新增挂牌与募资的备注列自 2023-01、'
-        '清算与市值与 CSD 的备注列自 2022-01）。早于起点为空是官方就没有。',
+        # ═══ 本页最容易被误读成「数据缺失」的一条 ═══════════════════════════════
+        # 抓取器没有窗口：fetch/enx.py 只下一份滚动全历史 xlsx、遍历全部 Period 行。
+        # 所以「某列早于某月为空」在这一家**只可能**是官方那一格本来没内容。
+        # 下面每个日期都回 Euronext 官方新闻稿 / 工作簿脚注原文复核过；核不实的不写。
+        '📌 <b>左半边空白是业务史，不是数据缺失。</b>抓取器没有任何时间窗口 —— '
+        '<code>fetch/enx.py</code> 每月只下一份滚动全历史 xlsx 并遍历它的全部 Period 行，'
+        '所以「某列早于某月为空」只能是官方那一格本来就没有内容。逐条对上业务事件：'
+        '<b>2020-01 Nord Pool 现货电力</b> —— Euronext 于 <b>2020-01-15</b> 完成收购 Nord Pool '
+        '66% 股权与表决权（余下 34% 由原股东输电系统运营商持有），官方自 2020-01-16 起并表，'
+        '序列起点与事件同月，是本页唯一一处「起点 = 交割月」；'
+        '<b>2020-01 MTS（现券 / 回购 / TAADV）</b> —— MTS 是随 Borsa Italiana Group 进来的，'
+        '而那笔交易 <b>2021-04-29</b> 才交割：序列回填到 2020-01，比 Euronext 拥有 MTS 早 15 个月，'
+        '<b>是官方的历史回填，不是并表日</b>；'
+        '<b>2013-01 Euronext FX</b> —— 前身 FastMatch，Euronext 于 <b>2017-08-14</b> 完成收购约 90% '
+        '股权，序列同样回填到被收购方自己的历史，比收购早四年七个月；'
+        '<b>2021-01 athex_* 备注列</b> —— 雅典的换股要约 <b>2025-11-19</b> 宣告成功'
+        '（接纳期 2025-11-17 截止，约 74% 表决权接受；对价股 2025-11-21 发行、2025-11-24 交割），'
+        '官方把雅典做成回填到 2021-01 的备注列，比事件早近五年；'
+        '<b>2026-03 电力衍生品</b> —— 官方脚注写死的上线日 2026-03-16，见上一条。',
+
+        '📌 <b>2022-01 那一批是「披露起点」，不是任何一个事件的日期。</b>股票清算 / 债券清算 / '
+        '总市值 / CSD 托管与结算全部自 2022-01 起。让这一块成为可能的业务前提是 <b>2021-04-29</b> '
+        'Borsa Italiana Group 交割 —— 它同时带来了 Euronext Clearing（原 CC&amp;G）与米兰 CSD '
+        'Monte Titoli（今 Euronext Securities Milan）。在那之前 Euronext 的 CSD 只有波尔图 '
+        'Interbolsa、奥斯陆 VPS（随 Oslo Børs VPS <b>2019-06-18</b> 完成交割）与哥本哈根 '
+        'VP Securities（<b>2020-08-04</b> 完成交割），米兰缺位，一条口径一致的合计根本不存在。'
+        '⇒ 四家齐备最早只能到 <b>2021-05</b>，而官方实际从 <b>2022-01</b> 才按月披露 —— '
+        '中间那 8 个月是官方选择不发，不是我们没抓到。'
+        '（同理：CSD 的 Total 列 2025-11 才含雅典，官方 Securities Services 脚注 (1) 原文 '
+        '"Includes figures from Euronext Athens since November 2025"；'
+        '本机对着官方分地明细复核：2022-01 四地相加 = Total，2025-11 起要五地相加才 = Total。）',
+
+        '⚠ <b>并购完成日 ≠ 进入主列的月份</b>，本页两者常常差很远，读断点时别把两者混为一谈：'
+        '都柏林 <b>2018-03-27</b> 完成收购爱尔兰交易所、自 2018-04-01 并入财报，'
+        '而现货成交量的官方脚注写的是 "Euronext Dublin since January 2017"（往前回填 14 个月）、'
+        '上市统计写的是 "since January 2019"（往后推 10 个月）；'
+        '奥斯陆 <b>2019-06-18</b> 完成收购 Oslo Børs VPS，衍生品脚注写 "since July 2019"'
+        '（交割后第一个整月），现货却回填到 "January 2018"（往前 17 个月）。'
+        '⇒ 主列的断点月一律以官方脚注为准（本页红线全部读自 series/enx_breaks.csv 的脚注原文），'
+        '交割日只用来解释「为什么是这个月」。',
+
+        '各列起点由 import 期现算（<code>_span()</code>，不写死 —— 官方回填会让起点向左移动）：'
+        + (_STARTS_ZH or '（本次未能从 CSV 复算起点。）')
+        + '。早于起点为空是官方就没有，不是抓漏。',
 
         '商品衍生品是**巴黎 MATIF 的农产品**（小麦 / 玉米 / 菜籽），不是能源。'
         '跨家配对只能配 cme.adv_ag_kcontracts，配 adv_energy_kcontracts 是错的。',
 
         'slow_cols 为空：全部列出自同一份官方 xlsx（文件名固定、每月原地覆盖），'
-        '同时发布、同一个最新月。本机实测 174 行 2012-01 → 2026-06，'
-        '每一列在 2026-06 都有值、首末月之间 gaps 全部为 0。',
+        '同时发布、同一个最新月。' + _SHAPE_ZH
+        + '（这四个数每月都变，所以是现算的 —— 不是写死的快照。）',
 
         '⚠ 不要拿 euronext_latest_month_volumes.xlsx 核对本页的历史值：'
         '它的同比/上年列是**含雅典的 pro-forma**（脚注写 "since January 2025"），'

@@ -22,8 +22,21 @@
 3. `tsm_guarantees.csv` 背書保證 —— approved 来自 MOPS ajax_t05st11，
    outstanding 只有 SEC 月度 6-K 有。**两者差约 26%，永远不可拼接成一条序列**。
 4. `tsm_bonds_monthly.csv` / `tsm_bonds_tranches.csv` 公司債 —— MOPS ajax_t47sb17 +
-   逐檔發行辦法登记簿。月报表只留滚动 3 个月窗口，77 个月里只有最近 3 个来自月报表
-   本身，其余由券别登记簿与还本时程重建，已用六个 20-F 年末余额对账。
+   逐檔發行辦法登记簿 + FY2012~FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表。
+   月报表只留滚动 3 个月窗口，77 个月里只有最近 3 个来自月报表本身，
+   其余由券别登记簿与还本时程重建。
+   **对账口径要说清是哪一段、对的是哪个子集**（这一句以前写成「已用六个 20-F 年末
+   余额对账」，那是一句自我表扬式的假话，实测只有三年能对上）：
+     · 现在：`python3 fetch/tsm.py bonds` 逐年打表。2011–2019 九个年末对
+       `Domestic unsecured bonds` **零误差**（那几年这一行是纯新台币）；
+       2020–2025 六个年末只能做**带宽核对** —— 那一行含在台发行的美元宝岛债，
+       本序列有意剔除，残差 ÷ 宝岛债名目必须落在同月 H.10 月均的 ±3% 内。
+       另有 6 个年份的 `Less: Current portion` 作为**独立的第二判据**验到期时程。
+     · 曾经：登记簿里只有 109- 起（2020-03 首檔）的新券，漏了 100-/101-/102- 三个
+       系列 2020 年后仍未到期的旧券，所以 2020-03…2023-09 这 43 个月的 outstanding
+       系统性偏低（2020-03 24,000 vs 实际 59,300 NT$mn），wavg_coupon 更是被拉低
+       近 63bp。那次「六个 20-F 零误差」实际只有 FY2023–FY2025 三年成立 ——
+       恰好是旧券已全部到期（末檔 102-4F，2023-09）之后的三年。
 
 ━━ 刷新 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ **这五张表目前没有接进 `monthly_run.py`，不会自动更新。** 月营收往前走、它们
@@ -46,8 +59,9 @@ _S_CAPEX = ('Exhibit source: TSMC 董事会当日 Form 6-K（SEC EDGAR，CIK 000
             '与月末 6-K 分项及 MOPS ajax_t05st01 三方对账')
 _S_DERIV = ('Exhibit source: MOPS ajax_t15sf 衍生性商品交易情形'
             '（取得或處分資產處理準則 §31 第 4 項）')
-_S_BOND = ('Exhibit source: MOPS ajax_t47sb17 公司債月報表 + 逐檔發行辦法登记簿，'
-           '已与 FY2020–FY2025 Form 20-F 的年末余额对账')
+_S_BOND = ('Exhibit source: MOPS ajax_t47sb17 公司債月報表 + 逐檔發行辦法登记簿 + '
+           'FY2012–FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表（CIK 0001046179）；'
+           '年末对账见 build/mrspecs/_tsm_extra.py 文件头第 4 条')
 _S_GUAR = ('Exhibit source: 核准数 MOPS ajax_t05st11、在外数 TSMC 月度 Form 6-K；'
            '美元化用本页汇率图同一条 H.10 月均汇率')
 
@@ -116,10 +130,24 @@ def _ladder(btr):
     营收往前走而债券表没更新时，同一份 outstanding 会被重新切一次 ——
     2026-10 那次 build 会把 NT$119 亿从 2026 柱静默挪到 2027 柱，
     债券数据一个字节没动，图却变了。列名里的日期也从这里读，不写死。
+
+    ⚠️ 登记簿里**有两种日期精度**：109- 起的新券来自逐檔發行辦法，精确到日；
+    2002 年那檔与 100-/101-/102- 三个系列共 26 檔旧券来自 20-F，官方只印到月
+    （"September 2011 to September 2016"），所以那些行的日期就是 'YYYY-MM'，没有补日。
+    本函数按**日**算提前腿（`mat - 1 年` 要跟 as-of 月末比大小），月精度的行
+    会被 pandas 当成当月 1 号，误差最多半个月、足以把一条腿挪错年份 —— 现在
+    所有月精度的行都已到期（在外为 0）因而被上面那个过滤器排除，但这是**当前
+    事实、不是不变量**，所以下面显式断言，将来真有月精度的活券要先想清楚再放行。
     """
     col = next(c for c in btr.columns if c.startswith('outstanding_k_'))
     asof = pd.Period(col[len('outstanding_k_'):].replace('_', '-'), freq='M')
     live = btr[(btr[col] > 0) & (btr['currency'] == 'TWD')].copy()
+    coarse = live.loc[live['maturity_date'].astype(str).str.len() < 10, 'tranche_id']
+    if len(coarse):
+        raise ValueError(
+            f'到期墙拿到只精确到月的在外券：{list(coarse)} —— 提前还本腿按日切分，'
+            f'月精度会被当成当月 1 号，可能把半年的量记到错误的年份上。'
+            f'请先把这些檔的發行辦法日期补全，或为它们单独定义切分规则')
     live['mat'] = pd.to_datetime(live['maturity_date'])
     end = pd.Timestamp(asof.to_timestamp(how='end').date())
     act, naive = {}, {}
@@ -356,11 +384,52 @@ def exhibits(ds, spec, n0, R):
 
     # ── ⑤ 新台币债：价 ──────────────────────────────────────────────────
     bmo = d['bmo']
-    t5 = d['btr'][(d['btr']['currency'] == 'TWD') & (d['btr']['tenor_years'] == 5.0)].copy()
-    t5['p'] = pd.PeriodIndex(pd.to_datetime(t5['issue_date']).dt.to_period('M').astype(str),
-                             freq='M')
-    new5 = t5.groupby('p')['coupon_pct'].last().reindex(bmo.index).ffill()
+    tw = d['btr'][d['btr']['currency'] == 'TWD'].copy()
+    # 登记簿里日期有两种精度：109- 起的新券到日，100-/101-/102- 旧券来自 20-F、
+    # 官方只印到月。这里一律 `str[:7]` 按月比 —— 对两种精度都对，
+    # 而 pd.to_datetime 遇到混合格式会给月精度的行补一个当月 1 号，
+    # 补出来的那个「日」在按月分桶的场景里不多一分信息，只会让人以为它是真的。
+    tw['ip'] = pd.PeriodIndex(tw['issue_date'].astype(str).str[:7], freq='M')
+    tw['mp'] = pd.PeriodIndex(tw['maturity_date'].astype(str).str[:7], freq='M')
+    t5 = tw[tw['tenor_years'] == 5.0]
+    new5 = t5.groupby('ip')['coupon_pct'].last().reindex(bmo.index).ffill()
     stock = bmo['wavg_coupon_pct'].astype(float)
+
+    # 首月的在外余额里有一块是**窗口之前发的**：序列讲的是在外存量，不是「窗口内
+    # 发了多少」，所以首行 outstanding ≠ issued。这个差额必须在图注里交代 ——
+    # 不交代的话读者拿首行的 issued 去对 outstanding，只会得出「数据错了」。
+    # 期初存量从**月度表自己**倒推（outstanding − issued + repaid），
+    # 再拿登记簿独立算一遍对上；两份文件互为对方的校验，谁被单独改动都会在这里炸。
+    p0 = bmo.index[0]
+    r0 = bmo.iloc[0]
+    pre_k = (float(r0['outstanding_twd_k']) - float(r0['issued_twd_k'])
+             + float(r0['repaid_twd_k']))
+    pre = tw[(tw['ip'] < p0) & (tw['mp'] > p0)]
+    n_pre = int(r0['n_tranches_outstanding']) - int((tw['ip'] == p0).sum())
+    if abs(float(pre['issue_amount_k'].sum()) - pre_k) > 1.0 or len(pre) != n_pre:
+        raise ValueError(
+            f'{mlab(p0)} 期初存量对不上：月度表倒推 {pre_k:,.0f}k / {n_pre} 檔，'
+            f'登记簿算出 {pre["issue_amount_k"].sum():,.0f}k / {len(pre)} 檔。'
+            f'两份 CSV 已经不同步 —— 跑 `python3 fetch/tsm.py bonds --write` 重建，'
+            f'不要在这里改判据把它凑过去（若期初有分次还本的券，本处的简单求和本身也不再成立）')
+    # 图注里点名的「最后一檔旧券」「最便宜的一檔新券」都从数据里取，不手打券号 ——
+    # 手打的那一刻它就跟数据脱钩了，下次谁补一檔进来它照样理直气壮地印着旧答案。
+    last_pre = pre.loc[pre['mp'].idxmax()]
+    # 「哪几个系列」也现算：100- 系列到 2019-01 就还完了，窗口起点上其实只剩 101-/102-。
+    pre_ser = '-/'.join(sorted({str(q).split('-')[0] for q in pre['qibie']})) + '-'
+    # 被剔除的宝岛债也现算：檔数、名目、票面、年期全从登记簿取。
+    # 「两檔各 US$10 亿、2.70%/3.10%、30–40 年期」以前是手打的，
+    # 再发一檔宝岛债它就变成一句错话，而且是**图注自己说自己剔干净了**那种错话。
+    usd = d['btr'][d['btr']['currency'] == 'USD']
+    usd_txt = ('%d 檔%s宝岛债（%s，%.0f–%.0f 年期）'
+               % (len(usd),
+                  ('各 US$%.0f 亿的' % (usd['issue_amount_k'].iloc[0] / 1e5))
+                  if usd['issue_amount_k'].nunique() == 1 else
+                  ('合计 US$%.0f 亿的' % (usd['issue_amount_k'].sum() / 1e5)),
+                  ' / '.join('%.2f%%' % c for c in sorted(usd['coupon_pct'])),
+                  usd['tenor_years'].min(), usd['tenor_years'].max()))
+    win = tw[tw['ip'] >= p0]
+    cheap = win.loc[win['coupon_pct'].idxmin()]
     ex.append(base(
         n=nxt(), kind='lines_endlabels', height=320,
         title='Cost of NT$ debt: new issues vs. the stock（新台币债务资金成本）',
@@ -374,14 +443,30 @@ def exhibits(ds, spec, n0, R):
         note=('深色是<b>边际成本</b>（今天再借要多少钱），浅色是<b>平均成本</b>'
               '（历史存量的实际负担）；两线之间的缺口是还没重定价完的部分。'
               f'新发 5 年券自 {new5.min():.2f}%（{mlab(new5.idxmin())}）升到 '
-              f'{new5.iloc[-1]:.2f}%，存量加权平均自 {stock.iloc[0]:.2f}% 升到 '
-              f'{stock.iloc[-1]:.2f}%。深色线是<b>阶梯</b>：保持上一档 5 年券的票面'
+              f'{new5.iloc[-1]:.2f}%。深色线是<b>阶梯</b>：保持上一档 5 年券的票面'
               '直到下一档发行，不是月度报价。'
+              f'<b>浅色那条不是单调上行，是先降后升</b>：自 {stock.iloc[0]:.2f}%'
+              f'（{mlab(p0)}）降到 {stock.min():.2f}%（{mlab(stock.idxmin())}）'
+              f'再回到 {stock.iloc[-1]:.2f}%。起点之所以高，是因为窗口开始时账上已经'
+              f'压着 NT${pre_k / 1e6:,.1f}bn、{n_pre} 檔 {pre_ser} 系列的旧券'
+              f'（{pre["coupon_pct"].min():.2f}%–{pre["coupon_pct"].max():.2f}%，'
+              f'{mlab(pre["ip"].min())}–{mlab(pre["ip"].max())} 发）；'
+              f'其后那批超低息新券（最低 {cheap["coupon_pct"]:.2f}%，'
+              f'{cheap["tranche_id"]}，{mlab(cheap["ip"])}）把平均一路摊薄，'
+              f'末檔旧券 {last_pre["tranche_id"]} 于 {mlab(last_pre["mp"])} 到期之后，'
+              '平均成本才跟着新发利率往上走。'
+              f'⚠️ <b>首行 outstanding ≠ 首行 issued</b>：{mlab(p0)} 发了 '
+              f'NT${float(r0["issued_twd_k"]) / 1e6:,.1f}bn，在外却是 '
+              f'NT${float(r0["outstanding_twd_k"]) / 1e6:,.1f}bn，差的就是上面那笔期初存量。'
+              '这条序列画的是<b>在外余额</b>，不是窗口内的发行累计。'
               f'⚠️ {len(bmo)} 个月里<b>只有最近 3 个月来自月报表本身</b>'
-              '（MOPS 只留滚动 3 个月窗口），其余由券别登记簿与还本时程重建，'
-              '已用六个 20-F 年末余额零误差对账，但仍是推导值。'
-              '两条线都只含新台币，已剔除两檔各 US$10 亿的宝岛债'
-              '（2.70% / 3.10%，30–40 年期），并进来会把两个指标都打歪。')))
+              '（MOPS 只留滚动 3 个月窗口），其余由券别登记簿与还本时程重建，仍是推导值。'
+              '对账口径分两段，别混着说：2011–2019 九个年末对 20-F 的 '
+              '<b>Domestic unsecured bonds</b> 零误差；2020 起那一行含宝岛债，'
+              '只能核到「残差 = 宝岛债名目 × 年末即期」。逐年结果跑 '
+              '<code>python3 fetch/tsm.py bonds</code>。'
+              f'两条线都只含新台币，<b>已剔除 {usd_txt}</b>'
+              ' —— 它们在 20-F 里混在 domestic 那一行，并进来会把两个指标都打歪。')))
 
     # ── ⑥ 新台币债：时程 ────────────────────────────────────────────────
     b_asof, yrs, act, naive, tail = _ladder(d['btr'])

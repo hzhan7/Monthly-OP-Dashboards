@@ -3194,5 +3194,18 @@ def main():
     return rc
 
 
+#: 不许直接用本底座生成的家 —— 它们有薄壳做**底座之后**的收尾，绕过去会静默产出坏页。
+#: guc：`build/guc.py:_trim_stacked_bar()` 负责把 2016-01…2016-12 那 12 根「合并列有值、
+#: 分部两列没有」的柱退回单色。直接 `python3 build/mrbase.py guc` 会写出 12 根
+#: **有数值标签、没有柱**的空柱，页面自己不喊，唯一的网是 build/verify_pages.py
+#: （实测：`gs_bar 的 stacks 在 12 个位置有分段缺值`）。
+_SHELL_ONLY = {'guc': 'build/guc.py'}
+
+
 if __name__ == '__main__':
+    _bad = [t for t in sys.argv[1:] if t in _SHELL_ONLY]
+    if _bad:
+        sys.exit('本底座不能直接生成 %s —— 请走 %s（它有底座之后的收尾步骤，'
+                 '绕过去会静默产出坏页，详见 _SHELL_ONLY 上方注释）'
+                 % ('、'.join(_bad), '、'.join(_SHELL_ONLY[t] for t in _bad)))
     sys.exit(main())
