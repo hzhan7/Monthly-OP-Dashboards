@@ -917,35 +917,11 @@ class Page:
     def _layout_long(self, exs):
         """窗口拉到 2016-01 之后逐张判「通栏」与「x 标签抽稀」。
 
-        规则层不在这里，在 `build/mrwin.py` —— 它按 `assets/charts.js` 的量边距算式
-        在构建期复算每格像素宽（band），band 低于可读下限就升通栏，标签装不下就按步长
-        抽稀（只影响标签，不影响数据点）。台湾半导体那 7 家的 127 点图已经用它跑了一年，
-        这里只做两件适配，**不复制它的算式**（全站已经有过三份互相抄来的量边距算式，
-        再抄第四份的下场是改一处漏三处）：
-
-        ① **把引擎的默认旋转显式写进 payload。** `assets/charts.js:738` 是
-           `xrot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45))`，
-           而 single.py 从不写 `xrot`；`mrwin.layout()` 只对 `xrot == 90` 的轴抽稀，
-           不写就永远抽不了。这里写进去的值与引擎自己算出来的**逐字相同**，
-           所以渲染结果不变，变的只是「mrwin 看得见它」。
-        ② **年度类别轴（xrot 已显式为 0）跳过抽稀**：那种轴一格一年，本来就稀疏，
-           抽了反而定位不到（与 mrwin 对季度轴的处理同理）。
-
-        判定结果会追加进该图的图注 —— 「这张图为什么是通栏」「标签为什么隔几个才标」
-        是关于这张图的事实，不写出来读者只会以为是随手排的。
+        规则层与适配层都在 `build/mrwin.py`（`layout()` / `layout_all()`）——
+        本文件不复制它的算式，也不复制适配逻辑：全站已经有过三份互相抄来的量边距算式，
+        11 个自建生成器（cboe / hkex / schw / …）现在共用 `mrwin.layout_all()` 这一份。
         """
-        for e in exs:
-            if e.get('kind') == 'heat_matrix':
-                continue
-            labs = e.get('xlabels') or []
-            if len(labs) <= 20:
-                continue                       # 引擎在这一档用 45°，且半栏放得下
-            if e.get('xrot') == 0:
-                continue                       # 年度类别轴，见 ②
-            e.setdefault('xrot', 90)           # 见 ①：写的就是引擎的默认值
-            why = mrwin.layout(e)
-            if why:
-                e['note'] = (e.get('note') or '') + why
+        mrwin.layout_all(exs)
 
     def win_zh(self, win):
         """图注里描述窗口的那半句。

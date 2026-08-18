@@ -333,6 +333,38 @@ def layout(ex, min_band=MIN_BAND):
     return txt
 
 
+def layout_all(exs, min_n=21):
+    """对一批 exhibit 逐张判「通栏 / x 标签抽稀」，并把说明追加进各自的图注。
+
+    `layout()` 是单张的规则层；这一层是**批量适配器**，从 build/single.py 提上来，
+    好让 11 个自建生成器（cboe / hkex / schw / …）与 single.py 共用同一份判据 ——
+    本仓已经因为「量边距算式抄了三份」吃过亏（见本文件头），适配器再抄一遍是同一个坑。
+
+    两处适配（都在这里，不在 layout() 里 —— layout() 不该知道引擎的默认值）：
+
+    ① **把引擎的默认旋转显式写进 payload。** `assets/charts.js:738` 是
+       `xrot = ex.xrot != null ? ex.xrot : (kind === 'year_lines' ? 0 : (n > 20 ? 90 : 45))`，
+       而这些生成器从不写 `xrot`；`layout()` 只对 `xrot == 90` 的轴抽稀，不写就永远抽不了。
+       这里写进去的值与引擎自己算出来的**逐字相同**，渲染结果不变，
+       变的只是「layout() 看得见它」。
+    ② `xrot` 已显式为 0 的（年度类别轴）跳过：一格一年本来就稀疏，抽了反而定位不到。
+
+    `min_n` 默认 21 = 引擎那条 `n > 20` 的分界：20 格及以下引擎用 45°，半栏也放得下，
+    不需要过这一层。
+    """
+    for e in exs:
+        if e.get('kind') == 'heat_matrix':
+            continue
+        if len(e.get('xlabels') or []) < min_n:
+            continue
+        if e.get('xrot') == 0:
+            continue
+        e.setdefault('xrot', 90)
+        why = layout(e)
+        if why:
+            e['note'] = (e.get('note') or '') + why
+
+
 def label_clash(ex, full=None):
     """首点/末点数值标签压进轴刻度栏 —— 量出来，不改图。**尺子是 chartscale 的，不是新造的。**
 
