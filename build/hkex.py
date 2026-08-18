@@ -28,6 +28,7 @@ import pandas as pd
 
 import brief as B
 import axisfmt
+import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
 import yoy as YOY                       # 同比口径的唯一实现，见 build/yoy.py 的模块头
@@ -239,6 +240,23 @@ def ppf(x, dec=0):
 # 「ADT × 交易日」求和，等于在同一页里引入第二套聚合口径，和 Exhibit 7 直接打架；
 # 何况 series/fee_rates.csv 里的交易日数只有 2023-Q4 起十个季度，乘上去会把整条滚动
 # 同比从 2019 年砍到 2025 年。既有做法优先，不引入第二套。
+#: 时序图窗口的左端。2026-08-18 从写死的 `.iloc[-25:]` 改成「2016-01 起」，
+#: 与 build/single.py 的 WIN_FROM、build/cboe.py、build/cme.py、build/msci.py 的 WIN0 同一个口径。
+#: 本页序列自 2019-01 起（更早的回补是另一件事，见 fetch/hkex.py 口径坑），
+#: 所以今天实际拿到的是序列自己的全长；哪天序列往前长，图自动跟着长。
+WIN_FROM = '2016-01'
+
+
+def _w(obj):
+    """把一条 Series / DataFrame 按 WIN_FROM 截左端（取代原先写死的 `.iloc[-25:]`）。
+
+    只往右让、不往左借：序列比 WIN_FROM 晚就原样返回。
+    """
+    idx = obj.index
+    keep = [i for i, p in enumerate(idx) if f'{p.year}-{p.month:02d}' >= WIN_FROM]
+    return obj.iloc[keep[0]:] if keep else obj
+
+
 ROLL = 12
 
 
@@ -272,7 +290,7 @@ def caliber_stats(s, kind=YOY.FLOW):
             'n_opp': d['opposite_n'], 'opp': opp}
 
 
-def yoy_line(s_full, win=25, kind=YOY.FLOW):
+def yoy_line(s_full, win=None, kind=YOY.FLOW):
     """次轴折线的数值。**流量**走 12 个月滚动合计同比，**存量 / 比率**走点对点同比。
 
       · 流量（ADT、成交股数、衍生品张数、隐含费收入）：滚动口径，理由见上方 ROLL 那一段；
@@ -283,14 +301,21 @@ def yoy_line(s_full, win=25, kind=YOY.FLOW):
 
     三条判据与实现都在 build/yoy.py（全站唯一），本文件只负责说清「这一列是哪一类」——
     kind 猜错的代价不对称，所以它是每个调用点显式写出来的，没有按列名自动判定。
-    同比一律在**切窗口之前**算：窗口只有 25 个月，切完再算前面的柱全没有线。
+    同比一律在**切窗口之前**算：切完再算的话窗口最前面那些柱全没有线。
+
+    `win=None`（默认）= **跟着 WIN_FROM 走**，即与柱同长。原先默认写死 25，
+    窗口从「近 25 个月」改成「2016-01 起」之后，不显式传 win 的那几个调用点
+    （Exhibit 9 / 10 / 13）会返回长 25 的数组配 91/34 格的横轴 ——
+    `build/verify_pages.py` 会拦下来（「尾部会静默变成缺失」），但别指望每次都靠它兜：
+    默认值本身就该跟着窗口，而不是留一个与窗口无关的常数。
     """
     s = pd.Series(s_full)
     out = YOY.ttm_yoy(s, YOY.FLOW) if kind == YOY.FLOW else YOY.mom_yoy(s, kind)
-    return np.asarray(out.values, float)[-win:]
+    arr = np.asarray(out.values, float)
+    return arr[-win:] if win else np.asarray(_w(out).values, float)
 
 
-def yoy_rhs(s_full, win=25, kind=YOY.FLOW):
+def yoy_rhs(s_full, win=None, kind=YOY.FLOW):
     """gs_bar 的次轴 y/y 字段（给了它引擎就画同比折线、不画均线）。
 
     2026-08 改口径：**流量**序列的折线由单月同比改为 12 个月滚动合计同比；存量与比率
@@ -772,7 +797,7 @@ def main():
 
     # ══════════ Exhibit 2：ADT 水平柱（gsx.lvl_bar, win=25, show_mom=True）══════════
     adt_c = tail_contiguous(df['adt_hkdbn'])
-    adt = adt_c.iloc[-25:]
+    adt = _w(adt_c)
     XL_ADT = [mlab(p) for p in adt.index]
     adt_v = adt.values
     ex.append({
@@ -804,8 +829,12 @@ def main():
 
     # ══════════ Exhibit 3：ADT m/m 变化率（gsx.chg_line, win=25, kind='mom'）══════════
     full_adt = tail_contiguous(df['adt_hkdbn'])
-    mm = full_adt.pct_change() * 100
-    mm = mm.iloc[-25:]
+    # `.iloc[1:]`：序列第一个月的环比在定义上不存在（没有上一月），pct_change 给的是 NaN。
+    # 原先窗口写死 `.iloc[-25:]` 时它被切在窗口外，看不见；窗口改成「2016-01 起」= 序列全长
+    # 之后，这个 NaN 落到了第 0 格上，而 gs_line 属平滑图型（mrwin.DENSE），
+    # 首格为 null 会让引擎在逐点标数值那步抛 TypeError。
+    # 这里丢的是**定义上不存在**的那一格，不是有值的数据。
+    mm = _w((full_adt.pct_change() * 100).iloc[1:])
     ex.append({
         'n': 3, 'kind': 'gs_line', 'fmt': 'pct1', 'xlabels': [mlab(p) for p in mm.index],
         'title': 'ADT, m/m change',
@@ -839,14 +868,14 @@ def main():
     })
 
     # ══════════ Exhibit 5：整体 vs 南向（gsx.multi_line, win=25）══════════
-    # 窗口就是 deck 的 df.iloc[-25:]，两条线各画各的可用月份，缺口留 null 由引擎断笔
+    # 窗口就是 deck 的 _w(df)，两条线各画各的可用月份，缺口留 null 由引擎断笔
     # （CONTRACT 规矩 3：不可比的相邻期不能连成一条线）。
     # 原先这里取「两条同时有值的连续末段」，代价是把整体 ADT 这条**没有缺口**的线
     # 从 25 个月砍到 12 个月，还丢掉了南向最新的一个月（南向比现货多披露一个月）——
     # 为了迁就另一条序列的空洞去删自己有的数据，那是把缺口的成本转嫁给了完整序列。
     # 之所以从 lines_endlabels 换成 lines：前者无条件取 values[0] / values[-1] 做端点标签，
     # 序列里有 null 就会标出一个 NaN；后者的 end_label 走「最后一个有限点」。
-    sb_win = df.iloc[-25:]
+    sb_win = _w(df)
     sb_av = sb_win['southbound_adt_hkdbn'].dropna()
     # 图注里凡是引用南向具体读数的句子，都要在「窗口里一个南向观测都没有」时整段消失，
     # 而不是抛 IndexError —— 南向停发过 40 个月，再停一次这一页不能就此停更
@@ -889,7 +918,7 @@ def main():
 
     # ══════════ Exhibit 6：衍生品 ADV（gsx.lvl_bar, win=25）══════════
     dv_c = tail_contiguous(df['deriv_adv_k'])
-    dv = dv_c.iloc[-25:]
+    dv = _w(dv_c)
     dv_v = dv.values
     ex.append({
         # fmt 由 f0 改回 f0c，与 Ex14 / Ex18 / 核对表统一（同一个数原先在三张图里两种写法）。
@@ -944,7 +973,7 @@ def main():
 
     # ══════════ Exhibit 8：市值（gsx.lvl_bar, win=25, show_mom=True）══════════
     mc_c = tail_contiguous(df['mktcap_hkdtn'])
-    mc = mc_c.iloc[-25:]
+    mc = _w(mc_c)
     mc_v = mc.values
     ex.append({
         'n': 8, 'kind': 'gs_bar', 'fmt': 'f1', 'xlabels': [mlab(p) for p in mc.index],
@@ -960,7 +989,7 @@ def main():
 
     # ══════════ Exhibit 9：隐含换手率（gsx.lvl_bar, pct_series=True）══════════
     vel_c = tail_contiguous(df['velocity'])
-    vel = vel_c.iloc[-25:]
+    vel = _w(vel_c)
     vel_v = vel.values
     vel_pp = vel_v[-1] - vel_v[-13] if len(vel_v) >= 13 else np.nan
     ex.append({
@@ -986,7 +1015,7 @@ def main():
     # 小数」多一位有效数字，是等价换算不是精度取舍。（引擎的 FMT 现已补上 f2/f3，
     # 原先「格式器最多一位小数」的理由已经过时，但换算本身仍照 mn 走 —— 那是披露单位。）
     tfee_c = tail_contiguous(df['implied_tradefee_hkdbn']) * 1000.0
-    tfee = tfee_c.iloc[-25:]
+    tfee = _w(tfee_c)
     tfee_v = tfee.values
     y10 = yoy_rhs(tfee_c)
 
@@ -1070,7 +1099,7 @@ def main():
 
     # ══════════ Exhibit 13：隐含现货清算费收入（gsx.lvl_bar, dec=2）══════════
     cfee_c = tail_contiguous(df['implied_clearfee_hkdbn']) * 1000.0            # → HK$mn
-    cfee = cfee_c.iloc[-25:]
+    cfee = _w(cfee_c)
     cfee_v = cfee.values
     y13 = yoy_rhs(cfee_c)
     ex.append({
@@ -1444,7 +1473,7 @@ def main():
         # （金额口径）在承担「看单月水平」这个角色。这里画近 12 个月的**平均**成交股数，
         # 好处是柱与次轴的金色线同源 —— 线上任一点的增速就是这根柱相对 12 根柱之前的涨幅。
         _tv = df['ttm_shares'].dropna()
-        _TW = _tv.index[-25:]
+        _TW = _w(_tv).index
         _tv_yoy = (df['ttm_shares'] / df['ttm_shares'].shift(ROLL) - 1) * 100
         CALIB_SH = caliber_stats(df['adv_shares_mn'])
         ex.append({
@@ -1845,7 +1874,7 @@ def main():
     # 显示「—」，各图仍画到自己序列的最新月。
     def hv(col, name, required=False):
         """headline 用的序列：截到 LATEST 的末尾连续段，末月不是 LATEST 就返回 None。"""
-        s = tail_contiguous(df[col].loc[:LATEST]).iloc[-25:]
+        s = _w(tail_contiguous(df[col].loc[:LATEST]))
         if not len(s) or s.index[-1] != LATEST:
             if required:
                 raise SystemExit(f'headline 口径月错位：{name}({col}) 末月 = '
@@ -1895,6 +1924,8 @@ def main():
     if h_tfee is not None:
         parts.append(f'隐含现货交易费 HK${h_tfee[-1]:,.0f}mn/月')
     headline = ' · '.join(parts)
+
+    mrwin.layout_all(ex)
 
     payload = {
         'ticker': TICKER,

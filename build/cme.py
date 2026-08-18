@@ -30,6 +30,7 @@ import pandas as pd
 
 import brief as B
 import axisfmt
+import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
 import yoy as YOY                       # 同比口径的唯一实现，见 build/yoy.py 的模块头
@@ -87,7 +88,11 @@ EX_DECOMP, EX_TTMVOL = 20, 21
 EX_TABLE = 22
 
 WIN_BAR = 13     # gs_bar 类近期图：契约 §5.4「近期图固定 13 个月」
-WIN_LINE = 25    # 曲线类图：照搬原 deck 的 win=25
+#: 曲线类图的窗口。2026-08-18 从「近 25 个月」改成「2016-01 起」，全站统一
+#: （build/single.py 的 WIN_FROM、build/cboe.py 同名常量、build/msci.py 的 WIN0 都是这一个）。
+#: 本页序列自 2008-01 起，所以这里实际拿到 127 期；序列比它短的家用序列自己的起点。
+#: 变量名保留 WIN_LINE 是因为它还被 `win(col, n)` 当「取末 n 期」的参数用（见下）。
+WIN_FROM = '2016-01'
 WIN_QTR = 14     # 季度柱：照搬原 deck 的 win=14
 HEAT_YEARS = 10  # 热力矩阵：照搬原 deck 的 n_years=10
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -341,7 +346,10 @@ BR_NOTE = ('Assumption: monthly transaction revenue = contracts traded x average
            + RATE_PERIOD + RATE_STALE)
 
 W13 = df.index[-WIN_BAR:]
-W25 = df.index[-WIN_LINE:]
+_I0 = next((i for i, p in enumerate(df.index)
+            if f'{p.year}-{p.month:02d}' >= WIN_FROM), 0)
+W25 = df.index[_I0:]
+WIN_LINE = len(W25)          # 下面 win(col, WIN_LINE) 与图注里的「N 个月」都跟着它走
 XL13 = [mlab(p) for p in W13]
 XL25 = [mlab(p) for p in W25]
 XL_LONG = [mlab(p) for p in df.index]
@@ -1292,6 +1300,9 @@ _share = float(df['rates_share'][CUR])
 # 而抬头是全页曝光最高的一行，把一个 33% 概率与趋势符号相反的数放在这里、
 # 不给任何对照，是本页最容易被读反的地方。补上 TTM 口径，两个都写、哪个难看都照写。
 _adv_ttm = float(roll_yoy(adv).get(CUR, np.nan))
+
+# 127 点的图放不进半栏卡片 —— 逐张按 charts.js 的量边距算式判通栏与抽稀。
+mrwin.layout_all(ex)
 
 payload = {
     'ticker': 'cme',
