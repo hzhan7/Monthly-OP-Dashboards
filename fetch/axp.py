@@ -60,8 +60,23 @@ spread 曲线。所以 trust 必须回 10-D 原始件。
   已入库的历史取 A 段（1.7827），而 "Annualized Recovery Rate" 只有 D 段有（1.06）。
   混着取才对得上，别图省事全取一段。
 · trust 的 excess spread 是**按 series 逐个列出**的，Group 1 各 series 数值相同。
-  取众数、并把「有多少个 series 报了这个数」一并存进 n_series_at_that_es，
-  这样以后哪天 Group 1 分裂成两个数值，这一列会立刻露馅。
+  ⚠️ **2026-08-19 更正：原先「取众数」的写法是错的，已改成读 B 段花名册只认 Group 1。**
+  组别**只写在 `B. Series Allocations` 段**，不在各 series 分节的 ES 那一行旁边 ——
+  所以「这个数属于哪一组」没法就地判断，众数只看「哪个数字出现得多」、看不见组别。
+  2023+ 那几年 Group 1 恰好是人多的一组，众数碰巧撞对；序列往前补到 2016 之后
+  两组人数换边，众数就**静默倒向 Group 2**：
+      2016-01 实测 Group 1 = {2013-3, 2014-2, 2014-3, 2014-4} 四家全报 16.5179；
+              Group 2 = 10 家，其中 9 家报 16.7992、2012-A 报 0.0000。
+      众数取到 16.7992 —— Group 2 的数，装进了名叫 `_group1` 的列。
+  代价不是「差一点」：众数在 127 个月里换过 11 次组（换组点全是两组人数打平或差一家的
+  月份），凭空造出 ±2pp 的假台阶 —— 2020-09→12 真实 Group 1 是
+  19.5789 → 19.5100 → 19.6928 → 20.1814（平走），众数印成
+  19.5789 → 21.6284 → 21.8721 → 20.1814。而这条线正是 /axp/ 页 Ex8 整张图。
+  改正后 |m/m Δ| > 1.5pp 从 9 处降到 3 处（2016-06 +1.70 / 2018-10 -1.81 / 2018-11 +3.15），
+  那 3 处回查过 Group 1 成员名单前后月未变，是真波动。
+  上面那句「哪天 Group 1 分裂成两个数值，这一列会立刻露馅」的意图是对的，
+  `n_series_at_that_es` 保留（现在记的是 Group 1 的家数），
+  组内分裂由 `parse_10d()` 里 0.01pp 的末位容差把关，超出直接抛。
   ⚠️ 回补到 2016 之后这一列**常年在动**（实测 2016 年 8 个 series、2019-04 到 12 个、
   2022-04 降到 5 个、2025-07 又到 14 个）。它是「Group 1 分裂预警」的哨兵，
   数值本身变动是正常的发债节奏，不是异常。
@@ -436,6 +451,44 @@ def _grab(text, pattern, label, cast=float):
     return cast(v)
 
 
+def _series_groups(t, want='Group 1'):
+    """从 10-D 的 `B. Series Allocations` 段读出某一组的 series 花名册。
+
+    组别**只写在 B 段**，不在各 series 分节的 `Excess Spread Percentage` 那一行旁边 ——
+    所以「这个数属于哪一组」没法就地判断，必须回来查花名册。这正是取众数会错的原因：
+    众数只看「哪个数字出现得多」，看不见组别。
+    """
+    lo = t.lower()
+    i, j = lo.find('b. series allocations'), lo.find('c. group allocations')
+    if i < 0 or j < 0 or j <= i:
+        return []
+    seg = t[i:j]
+    parts = re.split(r'(Group\s+[12])\b', seg)
+    cur, out = None, []
+    for p in parts:
+        if re.fullmatch(r'Group\s+[12]', p or ''):
+            cur = re.sub(r'\s+', ' ', p)
+        elif cur == want and p:
+            for n in re.findall(r'\b(20\d{2}-[0-9A-Z]{1,4})\b', p):
+                if n not in out:
+                    out.append(n)
+    return out
+
+
+def _series_excess_spread(t):
+    """{series 代号: Excess Spread Percentage}，取每个 series 自己那一节里的第一处。"""
+    out = {}
+    for m in re.finditer(r'Series\s+(20\d{2}-[0-9A-Z]{1,4})\b', t):
+        nm = m.group(1)
+        if nm in out:
+            continue
+        e = re.search(r'Excess Spread Percentage \(?(-?[\d,]+\.\d+)\)? ?%',
+                      t[m.end():m.end() + 9000])
+        if e:
+            out[nm] = _num(e.group(1))
+    return out
+
+
 def parse_10d(html_bytes):
     """解析 Monthly Servicer's Certificate（10-D 的 EX-99.01）。
 
@@ -507,14 +560,38 @@ def parse_10d(html_bytes):
         r[f'{key}_usd'] = _num(m.group(1))
         r[f'{key}_pct'] = _num(m.group(2))
 
-    # excess spread 逐 series 列出；Group 1 各 series 同值，取众数并记录家数。
-    es = re.findall(r'Excess Spread Percentage \(?(-?[\d,]+\.\d+)\)? ?%', t)
-    es = [v for v in es if _num(v) not in (None, 0.0)]
-    if not es:
-        raise FetchError('10-D 里找不到非零的 Excess Spread Percentage')
-    val, cnt = collections.Counter(es).most_common(1)[0]
-    r['excess_spread_pct_group1'] = _num(val)
-    r['n_series_at_that_es'] = float(cnt)
+    # excess spread 逐 series 列出。**按 B 段花名册只认 Group 1**，不取众数。
+    #
+    # ⚠️ 这里原来是「取众数」，2026-08-19 证伪并改掉。原 docstring 写的意图就是
+    #    Group 1（「Group 1 各 series 数值相同…哪天 Group 1 分裂成两个数值，
+    #    这一列会立刻露馅」），众数只是当年手头只有 2023+ 数据时的省事写法 ——
+    #    那几年 Group 1 恰好是人多的一组，众数碰巧撞对。
+    #    回补到 2016 之后两组人数换边，众数就**静默倒向 Group 2**：
+    #      2016-01 实测 Group 1 = {2013-3, 2014-2, 2014-3, 2014-4} 四家全报 16.5179；
+    #               Group 2 十家里九家报 16.7992（2012-A 报 0）。
+    #      众数取到 16.7992 —— 那是 Group 2 的数，装进了名叫 _group1 的列。
+    #    后果不是「差一点」：127 个月里众数换过 11 次组，在 2020-10/12、2022-02/04/05
+    #    这些两组人数打平或差一家的月份来回跳，凭空造出 ±2pp 的假台阶
+    #    （2020-09→10→11→12 真实 Group 1 是 19.58→19.51→19.69→20.18 平走，
+    #     众数印成 19.58→21.63→21.87→20.18）。而这条线正是 AXP 页 Ex8 整张图。
+    grp = _series_groups(t)
+    if not grp:
+        raise FetchError('10-D 的 B. Series Allocations 段里读不到 Group 花名册 —— '
+                         '版式变了。不要退回取众数：那会静默取到 Group 2（见上方注释）')
+    es_by = _series_excess_spread(t)
+    vals = [(n, es_by[n]) for n in grp if n in es_by and es_by[n] not in (None, 0.0)]
+    if not vals:
+        raise FetchError('10-D 里 Group 1 的 series 一个都没有非零 Excess Spread Percentage')
+    lo, hi = min(v for _, v in vals), max(v for _, v in vals)
+    # 组内理应同值。留 0.01pp 的末位容差：2016-07 实测 3 家报 17.0978、1 家报 17.0990。
+    # 真分裂（超出容差）必须炸 —— 那正是原作者埋的那道「立刻露馅」的护栏。
+    if hi - lo > 0.01:
+        raise FetchError(
+            'Group 1 的 excess spread 分裂成多个数值（%s），超出 0.01pp 的末位容差 —— '
+            '原作者预言的那种情形真的发生了，需要人工决定取哪一个：%s'
+            % (f'{lo}…{hi}', ', '.join(f'{n}={v}' for n, v in vals)))
+    r['excess_spread_pct_group1'] = vals[0][1]
+    r['n_series_at_that_es'] = float(len(vals))
     return r
 
 
