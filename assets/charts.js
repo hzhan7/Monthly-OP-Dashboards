@@ -1087,15 +1087,28 @@
        FS=1 时 fscale(8) 恰为 8，半栏图输出逐字节不变。 */
     var capSlots = [], CAPGAP = fscale(8);
     function capSlot(x) {
-      var moved = true, k;
-      while (moved) {
+      var moved = true, k, it;
+      /* 这个循环有两道**互相独立**的保险，两道都要在，别当冗余删掉其中一道：
+
+         ① 判据留 1e-6 裕度，不能写成 `< CAPGAP`。槽距成了浮点之后，
+            `x = capSlots[k] + CAPGAP` 再回头算 `|capSlots[k] - x|`，浮点误差可能让它
+            仍旧**差一丁点**小于 CAPGAP，于是把同一个 x 反复赋成同一个值，循环永不退出。
+            槽距还是整数 8 时不会发生 —— 这个坑是随 fscale 一起引入的。
+
+         ② 硬性迭代上限。①只挡得住**已经想到的**那条路径；而这里的失败后果与收益
+            极不对称 —— 排不开只是标签叠字（🟡），死循环是**整页白屏、站点挂掉**。
+            为这种不对称多写一行是划算的。到顶就带着当前位置退出：位置可能不完美，
+            但页面一定画得出来。
+
+            上限取 `capSlots.length + 2`，**不是拍一个常数**。它是可以证明够用的：
+            x 每一轮严格增大（无论原来在槽的左边还是右边，都跳到 `slot + CAPGAP`），
+            而跳过之后该槽的距离恰为 CAPGAP、不再满足 `< CAPGAP - 1e-6`，
+            所以**每个槽最多挡一次** ⇒ 正常路径最多 `capSlots.length + 1` 轮。
+            拍常数反而危险：先前写死 200，实测 400 条注记的密排就会触顶被截断 ——
+            那是把死循环换成了「悄悄排不开」，一样是缺陷，只是更难发现。 */
+      for (it = 0; moved && it <= capSlots.length + 1; it++) {
         moved = false;
         for (k = 0; k < capSlots.length; k++)
-          /* 判据要留 1e-6 的裕度，**不能写成 `< CAPGAP`**：槽距成了浮点之后，
-             `x = capSlots[k] + CAPGAP` 再回头算 `|capSlots[k] - x|`，浮点误差可能
-             让它仍旧**差一丁点**小于 CAPGAP，于是把同一个 x 反复赋成同一个值 ——
-             `while (moved)` 永不退出，整页卡死白屏。槽距还是整数 8 时不会发生，
-             所以这一行是随 fscale 一起引入的，不是本来就有的坑。 */
           if (Math.abs(capSlots[k] - x) < CAPGAP - 1e-6) {
             x = capSlots[k] + CAPGAP; moved = true; break;
           }
