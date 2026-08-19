@@ -240,6 +240,20 @@ table.sum td.lo  { color: var(--red); }     /* 分位低 */
     radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, .14), rgba(0, 0, 0, 0))
       right / 11px 100% no-repeat scroll;
 }
+/* ── 长 URL 撑破页面 ─────────────────────────────────────────────────────────
+   注释里的链接是一个不可断的长词。mtk 的 IR 季报链接被 %20 转义到 150 字符、
+   渲染出来 763px 宽，而 768px 视口下 .prose li 的可用宽只有 702px —— 词放不下又
+   断不开，就顶着 li 的右缘伸出去，把 body 撑到 798px，整页出现横向滚动条
+   （tools/visual_qa.py 的 HSCROLL，全站只有 mtk 触发：它的链接长度是次长那批的两倍）。
+   注意这跟核对表无关 —— 核对表的单元格是 white-space: nowrap，一直由 .tblwrap
+   自己横滚、并不外溢；visual_qa 的「最宽越界元素」是拿 getBoundingClientRect 量的，
+   量得到被 .tblwrap 裁掉的部分，所以每次都把表格报成头号嫌疑，是个障眼法。
+
+   overflow-wrap 只在「一个词单独占满一行都放不下」时才切词，对放得下的文字是彻底的
+   no-op，所以这里一次性覆盖所有会渲染作者手写长文的容器（今天只有 notes 里有长链接，
+   但 brief／图注／页脚随时可能加一条），不会动到任何现有版式。 */
+.brief p, .headline, .card .src, .card .note, .prose li, footer { overflow-wrap: break-word; }
+
 /* 光有阴影还不够明确，真的溢出时（由 page.js 实测 scrollWidth 后挂 class）再加一行字 */
 .tblwrap.scrollable::after {
   content: '← 表格可左右滑动，共 ' attr(data-cols) ' 列 →';
