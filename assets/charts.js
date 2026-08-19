@@ -1583,14 +1583,26 @@
       var cb = col((ex.base && ex.base.color) || 'GRAY');
       var ca = col((ex.actual && ex.actual.color) || 'MBLUE');
       var bvals = (ex.base && ex.base.values) || [], avals = (ex.actual && ex.actual.values) || [];
+      var labsn = [];
       for (i = 0; i < n; i++) {
         if (isNum(bvals[i])) capBar(Xc(i) - wb, wb, bvals[i], cb);
         if (!isNum(avals[i])) continue;
         var cuta = capBar(Xc(i), wb, avals[i], ca);
         if (!cuta && ex.bar_labels !== false)
-          txt(g, Xc(i) + wb / 2, Y(avals[i]) + (avals[i] < 0 ? 9 : -4), fsz(avals[i]),
-            { size: 7.6, fill: ca });
+          labsn.push({ i: i,
+            el: txt(g, Xc(i) + wb / 2, Y(avals[i]) + (avals[i] < 0 ? 9 : -4), fsz(avals[i]),
+              { size: 7.6, fill: ca }) });
       }
+      /* seasonality 是**唯一一个没接 thinLabels 的图型** —— bar_line / gs_bar /
+         gs_line / stacked / stacked_dual 五处都接了，这里漏了，于是标签画出来就不管。
+         它正好符合 thinLabels 的适用面（一个 x 只标一个值：只标蓝柱那根）。
+         标签宽度只受数值位数支配、间距只受 band 支配：asx Ex24 的 7 位数标签实测约 39.8px，
+         而 1280px 卡上的 band 只有 36.1px —— 相邻两期数值一接近（592,898 vs 593,598，
+         差 0.1%）末位数字就被邻居啃掉，读者读出来是个错数，比读不到更糟。
+         不挤的图一个标签都不删（thinLabels 在 k=1 时提前返回，输出逐字节不变）：
+         实测全站 20 张 seasonality × 2 视口，只有 asx Ex24 @1280 会抽稀（13 → 7，
+         抽稀是从末期往回数的，最新一期必留），被抽掉的数值在「表格」视图里一个不少。 */
+      thinLabels(labsn);
 
     /* bridge_bar ← gsx.bridge_bar：正的往上堆、负的往下堆，菱形标净额。
        堆叠段不参与截轴（截一段堆叠柱等于把恒等式画错），只有净额点会被截。 */
