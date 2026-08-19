@@ -2107,13 +2107,16 @@ class Page:
                 r[k] = fmt_val(v, c['fmt']) or None
             rows.append(r)
         scaled = [f'{c["zh"]}（× {c["scale"]:g}）' for _, c in keys if c['scale'] != 1.0]
+        # 倍数本身也要带出去：notes() 要按「是不是全都 ×100」分档措辞，
+        # 不能靠回头解析上面那串中文（那是 stringly-typed，改个字就悄悄失效）。
+        scales = [float(c['scale']) for _, c in keys if c['scale'] != 1.0]
         return {
             'n': n,
             'title': f'近 {len(win)} 个月月度指标核对表（本页单位，可与官方披露逐格对账）',
             'idx': '月份',
             'cols': [[f'{c["zh"]}（{c["unit"]}）', k] for k, c in keys],
             'rows': rows,
-        }, scaled
+        }, scaled, scales
 
     # ────────────────────── 慢腿提示 ──────────────────────
     def slow_tail(self, cols):
@@ -2214,7 +2217,7 @@ class Page:
                 f'不许无条件写进 f-string（见 _CALIBER_CONFLICTS 上方的注释）')
 
         summary = self.summary(latest)
-        table, scaled = self.table(n)                         # ⑧ 核对表
+        table, scaled, _scales = self.table(n)                # ⑧ 核对表
 
         # ── 抬头一行数据条：同比与环比都写 ──
         # 只写同比的话，同比在高位、环比在跌的月份会给出一个纯正面的印象，
@@ -2256,7 +2259,7 @@ class Page:
             'summary': summary,
             'exhibits': ex,
             'table': table,
-            'notes': self.notes(latest, common, ex, scaled, newest, disp),
+            'notes': self.notes(latest, common, ex, scaled, newest, disp, _scales),
             'footer': f'{self.spec["name"]} · {src_head} · charts only, no commentary · '
                       f'个人研究用，不构成投资建议',
         }
@@ -2268,7 +2271,7 @@ class Page:
         return payload, None
 
     # ────────────────────── 口径与方法说明 ──────────────────────
-    def notes(self, latest, common, ex, scaled, newest, disp):
+    def notes(self, latest, common, ex, scaled, newest, disp, _scales=()):
         idx = list(self.df.index)
         head_zh = '、'.join(c['zh'] for c in self.head)
         out = [
@@ -2300,11 +2303,23 @@ class Page:
             txt = '；'.join(f'{m} {z}' for m, z in uniq)
             has_heat = any(e.get('kind') == 'heat_matrix' for e in ex)
             if drawn:
+                # 「其余各图窗口里没落进断点」曾经是写死的一句 —— 而它在 asx / enx 上是**假的**
+                # （asx 37 张图只有 2 张画了线，其余 31 张的窗口里都含着 2023-10 与 2024-08）。
+                # 断点画在哪几张图上，由各页 spec 的 break 登记决定（按列登记，只画到用了那列的图）；
+                # 「窗口含不含断点月」是另一回事，两者本来就不是一码事。所以这句改成**现算**：
+                # 逐图把断点月换成本页的 x 标签，看在不在它自己的 xlabels 里。
+                bm = {mlab(pd.Period(m, 'M')) for m, _ in uniq}
+                silent = [e for e in ex
+                          if not e.get('break_at') and bm & set(e.get('xlabels') or ())]
                 out.append(
                     '<b>⚠️ 口径断点。</b>' + txt + '。红色竖虚线画在 Exhibit '
                     + '、'.join(str(e['n']) for e in drawn)
-                    + '（断点那一期的<b>左缘</b>，语义是「从这一期起与左侧不可比」）；'
-                      '其余各图的横轴窗口里没有落进断点。'
+                    + '（断点那一期的<b>左缘</b>，语义是「从这一期起与左侧不可比」）'
+                    + (f'。<b>另有 {len(silent)} 张图的横轴窗口同样跨过这些月份、但没有画线</b>'
+                       f'（Exhibit ' + '、'.join(str(e['n']) for e in silent)
+                       + '）—— 断点是<b>按列</b>登记的，只画到用了那一列的图上，'
+                         '而窗口跨不跨断点月是另一回事。读这些图的跨断点比较同样要扣掉这一层。'
+                       if silent else '；其余各图的横轴窗口里没有落进断点。')
                     + ('热力矩阵没有连续横轴、画不出断点线，跨断点读它的同比要自己扣掉这一层。'
                        if has_heat else ''))
             else:
@@ -2411,8 +2426,15 @@ class Page:
         out.append(
             f'<b>末尾核对表。</b>近 {WIN_SHORT} 个月、本页单位，可与官方披露逐格对账；'
             f'列数较多时窄屏需要左右滚动。'
-            + (f'其中 {"、".join(scaled)} 做过恒等换算（源表是 0–1 的小数比率，'
-               f'本页统一按百分数显示），除此之外不做任何换算。' if scaled else
+            # 这句原来写死成「源表是 0–1 的小数比率，本页统一按百分数显示」——
+            # 但喂它的判据是 `c['scale'] != 1.0`，那涵盖**任何**倍数换算。tmx 上列出的
+            # 15 列全是 ×1e-9 / ×1e-6 的量级换算，一个比率都没有，那句话 100% 是假的。
+            # 改成按实际倍数分档：全是 ×100 才说「比率→百分数」，否则只说量级换算。
+            + (f'其中 {"、".join(scaled)} 做过恒等换算'
+               + ('（源表是 0–1 的小数比率，本页统一按百分数显示）'
+                  if _scales and set(_scales) == {100.0} else
+                  '（括号里是换算倍数；这是量级换算，不改变口径）')
+               + '，除此之外不做任何换算。' if scaled else
                '除各列自己声明的单位外不做任何换算。')
             + f'表尾若有月份晚于本页数据月 {latest}，那是发布更快的腿，'
               f'其余列在那些行显示「—」。')

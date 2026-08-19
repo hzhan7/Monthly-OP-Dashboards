@@ -3136,7 +3136,7 @@ def all_tickers():
 def owned_elsewhere(t):
     """这个 ticker 的 data/<t>.js 是不是**别的生成器**在负责。判据是文件在不在，不是名单。
 
-    `monthly_run.py:389` 的 `builder()` 按 `build/<t>.py` → 下划线版 → `build/single.py`
+    `monthly_run.py` 的 `builder()` 按 `build/<t>.py` → 下划线版 → `build/single.py`
     + `build/specs/<t>.py` 的顺序解析。所以：
       · `build/specs/<t>.py` 存在 ⇒ 每月 cron 会用 single.py 重新生成 data/<t>.js，
         而 single.py 那套图列带 decomp / ttm_yoy / seasonality 等本底座**不产出**的图。

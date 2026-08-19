@@ -76,7 +76,9 @@ LAG = {
     # ── 10 家新增交易所（2026-08 接入）—— 一家一行，删掉一家就删掉它这一行 ─────
     # 数值取自各 fetch/<t>.py docstring 的「发布节奏」实测统计，不是公司承诺。
     # ⚠ **LAG 要跟着「哪条腿决定这一页的 data_through」走，不是跟着最快那条腿走。**
-    #    多源的四家（ndaq / tmx / db1 / miax）由 build/specs/<t>.py 的 headline 列
+    #    多源的五家（ndaq / tmx / db1 / miax / lseg）由 build/specs/<t>.py 的 headline 列
+    #    （曾写「四家」漏了 lseg —— 本文件往下 15 行就有它的 LAG 与 slow_cols，
+    #     与 docs/CRON_WIRING.md 也对不上。2026-08-19 更正。）
     #    决定 data_through；拿快腿的日子当 LAG，红点会在慢腿到达之前每月假红几天。
     'db1':  (5, 5),      # 头条是 Eurex 快腿，次月 1-5 日（Clearstream 等慢腿在 slow_cols 里）
     'ice':  (6, 6),      # 次月第 3 个美股交易日；124 期实测落在 3-6 号，最晚 6 号无例外

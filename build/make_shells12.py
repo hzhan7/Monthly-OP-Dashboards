@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""生成 12 家扩容版新增页面的 index.html 外壳：5 张横截面页 + `build/specs/` 下每一家。
+"""生成 12 家扩容版新增页面的 index.html 外壳：5 张横截面页 +
+`build/specs/` 与 `build/mrspecs/` 下每一家。
 
 这些页与现有 14 页共用同一份外壳模板 —— 模板**直接从 build/make_shells.py 导入**，
 不在这里复制一份：复制出来的第二份模板迟早与第一份分叉（改版式时只改到其中一处），
@@ -12,7 +13,8 @@
                    四家法域隔离、几乎零替代性，分母只能是自己圈的；争夺只在产品级可测
 
 外加 9 家新交易所的单公司页（ice / ndaq / miax / tmx / enx / db1 / jpx / sgx / asx）。
-它们的名单**不写死在本文件里**，而是扫 `build/specs/` 得到 —— 理由见 singles()。
+它们的名单**不写死在本文件里**，而是扫 `build/specs/` + `build/mrspecs/` 得到 ——
+理由见 singles()。
 
 `exchanges-eu` 与 `exchanges-apac` 曾是一张合页 `exchanges-intl`（欧洲与亚太）里的两半，
 2026-08-06 拆分完成后合页已删除，本脚本不再为它铺壳。拆的理由是口径而不是版面：
@@ -48,9 +50,11 @@ CROSS = ['exchanges12', 'exchanges-na', 'exchanges-eu', 'exchanges-apac',
 
 
 def singles():
-    """9 家新交易所的目录名 = `build/specs/` 下有几份配置就有几个，**不另列清单**。
+    """单公司页的目录名 = `build/specs/` 与 `build/mrspecs/` 下有几份配置就有几个，
+    **不另列清单**（下面的循环扫的就是这两个目录；别在 docstring 里数家数）。
 
-    单公司页的一家 = 一份 `build/specs/<t>.py`（见 docs/SINGLE_SPEC.md §0）。
+    单公司页的一家 = 一份 `build/specs/<t>.py` 或 `build/mrspecs/<t>.py`
+    （见 docs/SINGLE_SPEC.md §0）。
     在这里再抄一份名单，等于给「删得干净」这条前提加一个必然被忘掉的同步点：
     删了 spec 却留着这里的名字，本脚本会给一个再也不会有数据的 ticker 铺一张空壳，
     而空壳打开是「缺少 data/*.js」——看上去像是数据坏了，不像是没删干净。
