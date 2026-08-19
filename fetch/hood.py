@@ -39,7 +39,10 @@ investors.robinhood.com → robinhood.gcs-web.com → Akamai。Akamai 按 **TLS 
 1. **两种 Excel 布局，不能用同一套行号。**
    · Earnings Supplement：多 sheet（Quarterly GAAP P&L / Quarterly Balance Sheet /
      Quarterly KPIs / Monthly KPIs / Definitions），月度表在 'Monthly KPIs'，
-     且是**从 2023-04 起的全历史**。
+     窗口是**滚动 39 个月**（= 本季起始月往前推三年）：Q2'26 那份从 2023-04 起、
+     Q1'26 那份从 2023-01 起。**不是全历史** —— 早年月份要去 Quarterly Results 页翻
+     当年的 Supplement（Q1'23 那份就覆盖 2021-01~2023-03），那是历史回填脚本
+     build/basefill/hood_2021.py 的活，本模块不碰。
    · 独立 Monthly Metrics：单 sheet 'Monthly Metrics'，只有**滚动 13 个月**，
      且指标行整体下移 3 行。
    build/extract_hood.py 是按行号硬取的（因为标签重复：'Equity ($B)' 在总量和日均各出现
@@ -100,6 +103,34 @@ MONTHLY_SPEC = {
     ('securities lending ($m)', 'total securities lending revenue'): 'seclend_total_usdmn',
     ('securities lending ($m)', 'securities lending, net'): 'seclend_net_usdmn',
 }
+
+# ── 纯改名的别名。官方对**同一行**用过两种措辞，新旧文件混用：
+#   · 章节「Interest Earning Assets ($B)」在 Earnings Supplement 里叫
+#     「Customer Margin and Cash Sweep ($B)」（2024 年前的还带 Balances 后缀，
+#     故按前缀匹配）—— 两边都是 Margin Book / Cash and Deposits / Cash Sweep 三行；
+#   · 「Total Trading Volumes」下的两条加密拆分行在 Supplement 里带单位后缀
+#     （'Robinhood App ($B)' / 'Bitstamp ($B)'），日均那一节则不带。
+# 别名与本名指向同一个列名。parse_sheet 按**列名**判缺，不按 key 判，所以两套写法
+# 同时挂在 spec 里不会互相判成「缺列」。
+MONTHLY_ALIASES = {
+    ('total trading volumes', 'robinhood app ($b)'): 'vol_crypto_app_usdbn',
+    ('total trading volumes', 'bitstamp ($b)'): 'vol_crypto_bitstamp_usdbn',
+    ('customer margin and cash sweep', 'margin book'): 'margin_book_usdbn',
+    ('customer margin and cash sweep', 'cash and deposits'): 'cash_and_deposits_usdbn',
+    ('customer margin and cash sweep', 'cash sweep'): 'cash_sweep_usdbn',
+}
+MONTHLY_SPEC.update(MONTHLY_ALIASES)
+
+# ⚠ **DARTs 故意不做别名**，虽然它看着只是改名。Q2'26 Earnings Supplement（2026-07-29）
+# 之前，那一节叫「Daily Average Revenue Trades (DARTs) (M)」，之后改叫
+# 「Daily Average Trades (DATs) (M)」，而且**数字跟着变了**：同一个 2025-01，
+# Q1'26 文件印 2.6，Q2'26 文件印 3.3（+27%）；crypto 同样（0.7 → 1.1 之类）。
+# 只有 2025-01 起被重述，2023-04~2024-12 两种口径逐月完全相同 —— 也就是说
+# DATs = DARTs + 不产生收入的交易，而那部分 2025 年才变得可观。
+# 若把 DARTs 挂成 dats_* 的别名，某个月官方万一又发一份老版式文件，update() 就会把
+# 窄口径的数悄悄写进宽口径的列，一列里混两把尺子且没人会发现。
+# 历史回填要用老文件的 DARTs 是另一回事：那走 build/basefill/hood_2021.py，
+# 由人一次性判断并写在图注里，不进无人值守链路。
 
 # 季度 P&L：这张表标签不重复，'revenues:' 一个章节盖全部
 PL_SPEC = {
@@ -363,15 +394,17 @@ def parse_sheet(ws, spec, kind):
         if empty:
             section = _section_of(lab) or section   # 章节标题行本身没有数值
             continue
-        key = (section, lab)
-        if key in spec and key not in hit:         # 只认第一次命中，防脚注区重名
-            hit[key] = [r[i] if isinstance(r[i], (int, float)) else None for i in data_cols]
-    missing = [spec[k] for k in spec if k not in hit]
+        col = spec.get((section, lab))
+        # 按**列名**去重（不是按 key）：同一个列可以有多个 (章节, 标签) 写法挂在 spec 上
+        # （见 MONTHLY_ALIASES），命中哪一个都算这一列有了。仍然只认第一次，防脚注区重名。
+        if col and col not in hit:
+            hit[col] = [r[i] if isinstance(r[i], (int, float)) else None for i in data_cols]
+    want = list(dict.fromkeys(spec.values()))      # 列序固定，跟 CSV 一致
+    missing = [c for c in want if c not in hit]
     if missing:
         raise RuntimeError(f'{ws.title}: 这些行没找到 → {missing}；'
                            f'官方大概率改了标签或章节名，先人工看一眼 Excel')
-    df = pd.DataFrame({spec[k]: v for k, v in hit.items()}, index=[p for _, p in cols])
-    return df[[spec[k] for k in spec]]             # 列序固定，跟 CSV 一致
+    return pd.DataFrame({c: hit[c] for c in want}, index=[p for _, p in cols])
 
 
 def parse_workbook(path):
@@ -454,11 +487,13 @@ def _append(csv_path, new_rows):
 def update(series_dir, cache_dir):
     """把新月份写进 series/hood.csv（和有财报时的 hood_q.csv），返回新增月份列表。
 
-    只处理**比 CSV 末期更新**的期次，不回填中间空洞：
-    IR 页面的 Excel 格子一路排到 2023-01，而 series 是从 2023-04 起的（官方文件的滚动
-    窗口就是从那里开始）。若把「CSV 里没有的期次」全当成缺口，会一路往回翻到 2023 年的
-    老 Excel —— 那时候还没有 Bitstamp / DATs / Margin Book 这些行，解析必然报缺列。
-    真要回填历史，人工指定文件另跑，别让日常任务去碰。
+    只处理**比 CSV 末期更新**的期次，不回填中间空洞。
+    series 现在从 2021-01 起（2026-08-19 由 build/basefill/hood_2021.py 回填），
+    而回填段有一半的列是空的 —— 老版式的官方表根本没有 ADV / Cash and Deposits /
+    Bitstamp / Event contracts 那几行。若把「CSV 里有空格」当成缺口让 update() 去补，
+    它会一路往回翻 2023 年的老 Excel，而那些文件里这些行不存在，解析必然报缺列；
+    真要它别报错就得放宽「缺列即失败」，那等于把无人值守链路唯一的安全网拆了。
+    历史回填是一次性的、有人看着的活，走 build/basefill/hood_2021.py，别让日常任务去碰。
     """
     files = list_excel_files()
     mcsv = os.path.join(series_dir, 'hood.csv')

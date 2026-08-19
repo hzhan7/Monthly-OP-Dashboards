@@ -43,6 +43,7 @@ margin book（近 24 个月里 18 个月钉 100）这类「上下波动但分位
 import datetime
 import importlib.util
 import json
+import math
 import os
 import re
 
@@ -391,9 +392,13 @@ MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 #: 时序图窗口的左端。2026-08-18 从「近 25 个月」改成「2016-01 起」，全站统一
 #: （build/single.py 的 WIN_FROM、cboe / cme / hkex / cost 的同名常量、msci 的 WIN0）。
-#: 本页月度披露 2023-04 才开始（Robinhood 2021-07 才上市，官方最早的月度数字是 2021-01，
-#: 见 fetch/hood.py），所以 WIN_FROM 在这一页实际拿到的就是序列自己的全长 ——
-#: 只往右让、不往左借。变量名保留 W25 是因为它散落在几十处，改名的 diff 会淹没实质改动。
+#: 本页序列 2026-08-19 从 2023-04 起回填到 **2021-01**（build/basefill/hood_2021.py，
+#: 源是 IR 站上还挂着的最早几份 Earnings Supplement）。2021-01 是天花板：公司 2022-04
+#: 才开始月度披露、首期回填 12 个月，更早只在 S-1/10-Q 且不是月度粒度。
+#: 所以 WIN_FROM 在这一页实际拿到的仍是序列自己的全长 —— 只往右让、不往左借。
+#: ⚠ 回填段的**列不齐**（老版式没有 ADV / Cash and Deposits / Bitstamp / Event 那几行），
+#: 各图的左端因此不再统一：一律由 mrwin.resolve() 按各自序列裁，见 lvl() 的 docstring。
+#: 变量名保留 W25 是因为它散落在几十处，改名的 diff 会淹没实质改动。
 WIN_FROM = '2016-01'
 _I0 = next((i for i, p in enumerate(df.index)
             if f'{p.year}-{p.month:02d}' >= WIN_FROM), 0)
@@ -407,6 +412,27 @@ XL_LONG = [mlab(p) for p in df.index]
 XQ = [str(p) for p in q.index]
 
 EX = []
+
+
+def xstep_for(n):
+    """x 标签步长。
+
+    ⚠ `mrwin.layout()` 也会抽稀，但它**只在 payload 没写 xstep 时才动手**，而本页每张
+    时序图都显式写了 xstep —— 所以长轴的编辑上限（`mrwin.MAX_XLABS`，只对 n > 60 生效）
+    必须在这里跟上。序列回填到 2021-01 之后 x 轴从 40 期变成 67 期，还照写 xstep=2
+    就是 34 个 90° 竖排标签，一堵字墙。抽的是标签不是数据点。
+    """
+    if n <= 14:
+        return 1
+    if n > mrwin.LONG_AXIS_N:
+        return max(2, math.ceil(n / mrwin.MAX_XLABS))
+    return 2
+
+
+# ── 右轴同比口径的**实际**去向：由 lvl() 现填，页尾口径说明照它生成 ──
+# 手写「Exhibit 3、7、8 的右轴是滚动同比」这种名单必然烂掉：y/y 覆盖率不够时 lvl()
+# 会把整张图退成 bars_labeled（连线都没有），而名单不会自己知道。
+AXIS_KIND, AXIS_ZH = {}, {}
 
 # 图注与口径说明里被点名引用的 Exhibit 编号集中在这里。上一版把费率图拆成两张时，
 # 散在正文里的「Exhibit 14」「Exhibit 21」「Exhibit 22 / 25」会集体指错一张图，
@@ -428,7 +454,7 @@ YOY_MIN_COVER = 0.60
 
 def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_series=False,
         breaks=(), show_mom=False, bar_name='Monthly', yoy_drop_note='', roll=True,
-        roll_src=None, what='', ratio_extra=''):
+        roll_src=None, what='', ratio_extra='', left_zh=''):
     """gsx.lvl_bar → bar_line_dual：浅蓝柱（左轴水平值）+ 右轴 y/y 线。
 
     `roll=True`（流量类的默认）右轴画 <b>12 个月滚动合计同比</b>；
@@ -448,6 +474,15 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
     引擎的 bar_line_dual 是**硬双轴**，无条件取 ex.line.values，缺了会抛 TypeError
     把整页打挂（这条路踩过一次：Exhibit 10 去掉 y/y 后页面只渲染到第 9 张卡）。
     退化写在这里而不是在调用点各写各的，是为了让以后任何一条新序列都自动走这条安全路径。
+
+    ⚠ **左端不由本函数拍板，交给 `mrwin.resolve()`（只调用，不改）。**
+    2026-08-19 序列回填到 2021-01 之后这条第一次咬人：老版式的 Earnings Supplement
+    没有 ADV 那一节、没有 Cash and Deposits、没有 Bitstamp / Event 拆分，
+    所以 `adv_*` 等列的前 24 期全是 null。柱图能吃 null（引擎按缺格处理），但
+    ①左端会挂一大截空柱，②`cover` 被 null 拖到 60% 以下，整张图会误退成
+    `bars_labeled`，把本来画得出的 y/y 线丢掉。裁到「这条序列自己第一个有值的月」
+    两个问题一起消失，而且不需要在每个调用点各写一遍。
+    `left_zh` 是这一段的人话理由（写进图注）；不给就用一句通用的。
     """
     # win=None（默认）= 跟着 W25（现在是 WIN_FROM 起的全窗口）走。
     # 原默认写死 25，窗口一变就会出现「values 长 25、x 轴 40 格」——
@@ -463,7 +498,26 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
     cal = 'y/y (pp, 12M roll, RHS)' if pct_series else 'y/y (12M roll, RHS)'
     if not roll:
         cal = 'y/y (pp, 单月, RHS)' if pct_series else 'y/y (单月, RHS)'
-    labels = [mlab(p) for p in d.index]
+
+    # ── 左端裁决（见 docstring）：柱是主腿，y/y 是派生腿；bar_line_dual 不属 DENSE，
+    #    所以 resolve 只把左端推到**柱自己第一个有值的月**，派生腿的前导 null 交给
+    #    引擎断笔。`w.why` 里那句「y/y 比柱短 N 期」也由它生成，本页不再手写。──
+    _labels = [mlab(p) for p in d.index]
+    _lag = ('滚动 12 个月合计同比要 24 个月历史' if roll and not pct_series else
+            '滚动口径要 24 个月历史' if roll else '单月同比要 12 个月历史')
+    _legs = [mrwin.Leg('bar', bar_name, L(d), 'primary'),
+             mrwin.Leg('yoy', cal.replace(', RHS', ''), L(ys), 'derived', _lag)]
+    _w = mrwin.resolve('bar_line_dual', _legs, _labels, 0)
+    left_txt = ''
+    if _w.start:
+        left_txt = (f'<b>本图左端截在 {_labels[_w.start]}，不是序列起点 {_labels[0]}</b>：'
+                    + (left_zh or '官方那一行更早的月份根本没有印过')
+                    + '，左边那一段补零或补上一期的值都能让图画满，但那是画一个数据里'
+                      '不存在的点，本页不做。')
+    d, ys = d.iloc[_w.start:], ys.iloc[_w.start:]
+    labels = _labels[_w.start:]
+    win = len(d)
+
     line_fmt = ('pp1' if pct_series and win <= 15 else 'pp0') if pct_series else 'pct0'
     txt = note
     mtxt = None
@@ -473,6 +527,9 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
         txt = (txt + ' ' if txt else '') + f'Latest reading: {mtxt}.'
     ok = np.isfinite(np.asarray(ys.values, float))
     cover = float(ok.sum()) / len(ok) if len(ok) else 0.0
+    # 这张图的右轴最终**画了什么** —— 页尾的口径名单照它生成，不手写（见 AXIS_KIND）。
+    AXIS_ZH[n] = what or title
+    AXIS_KIND[n] = (('roll' if roll else 'mono') if cover >= YOY_MIN_COVER else None)
     if cover >= YOY_MIN_COVER:
         if roll:
             why = roll_note(caliber_stats(mono, rl, d.index), 'pp' if pct_series else '%')
@@ -483,7 +540,7 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
         txt = (txt + ' ' if txt else '') + why
         ex = {
             'n': n, 'kind': 'bar_line_dual', 'title': title,
-            'xlabels': labels, 'xstep': 2 if win > 14 else 1,
+            'xlabels': labels, 'xstep': xstep_for(win),
             'fmt': fmt, 'ylab': ylab,
             'ylab2': cal.replace(', RHS', '').replace('(', '(').strip(),
             'bar': {'name': bar_name, 'color': 'BLUE', 'values': L(d), 'yfmt': yfmt or fmt},
@@ -492,7 +549,7 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
     else:
         ex = {
             'n': n, 'kind': 'bars_labeled', 'title': title,
-            'xlabels': labels, 'xstep': 2 if win > 14 else 1,
+            'xlabels': labels, 'xstep': xstep_for(win),
             'values': L(d), 'fmt': fmt, 'yfmt': yfmt or fmt, 'label_fmt': fmt,
             'ylab': ylab, 'legend': f'{title} ({ylab})' if ylab else title,
         }
@@ -519,6 +576,11 @@ def lvl(n, s, title, *, win=None, fmt='f1', yfmt=None, ylab='', note='', pct_ser
             'A right-hand axis stretched to fit them turns the line into near-vertical '
             'segments that say only "a lot" while covering the bars. Levels are labelled on '
             'the bars; the exact y/y is in the Exhibit 1 summary table. ' + both)
+    # 左端为什么截在这里、右轴那条线为什么比柱短 —— 两句都不手写，来自 mrwin.resolve()
+    # 的裁决结果（`_w.why` 只在派生腿真的更短时才有内容）。
+    for _bit in (left_txt, _w.why if cover >= YOY_MIN_COVER else ''):
+        if _bit:
+            txt = (txt + ' ' if txt else '') + _bit
     bk, seg = breaks_for(n, d.index, breaks)
     ex.update(bk)
     if seg:
@@ -585,15 +647,24 @@ EX.append({
 })
 
 # ══════════════════════ 交易量 ══════════════════════
+# ⚠ ADV 三列在 2023-01 之前**是空的，而且必须是空的**：2021-01~2022-12 那 24 个月的
+# 官方月度表（老版式 Earnings Supplement）只有「Total Trading Volumes」与交易日两节，
+# 「Average Daily Trading Volumes」那一节是后来才加的。两个分量（当月合计、交易日）
+# series 里都有，除一下就能把格子填满 —— 但那是**我们算的**，不是公司印的，
+# 仓规「入库值必须是当期官方公告原值、不许换算」把这条路堵死了。
+# 于是这几张图的左端由 mrwin.resolve() 裁到 2023-01（见 lvl 的 docstring）。
+ADV_LEFT = ('官方 2023-01 才开始印「日均成交量（ADV）」那一节，更早的月度表只有当月合计'
+            '与交易日两行；ADV = 合计 ÷ 交易日 这个除法本页不代做 —— 换算值不是披露值')
+
 # ADV 是「每天平均多少量」的流量率：12 个月滚动合计同比与「滚动 12 个月日均量的同比」
 # 是同一个数（分子分母都乘了同样的月数），所以照流量处理，roll=True。
 lvl(7, df['adv_equity_usdbn'], 'Equity notional ADV', win=len(W25), fmt='usd1', ylab='$bn / day',
-    show_mom=True,
+    show_mom=True, left_zh=ADV_LEFT,
     note='m/m shown: equity volume is running at more than twice last year, so y/y '
          'alone no longer separates months.')
 
 lvl(8, df['adv_options_mn'], 'Options contracts ADV', win=len(W25), fmt='f1',
-    ylab='mn contracts / day', show_mom=True)
+    ylab='mn contracts / day', show_mom=True, left_zh=ADV_LEFT)
 
 _c = df.iloc[-15:]
 _cshare = (_c['adv_crypto_bitstamp_usdmn'] /
@@ -624,36 +695,63 @@ EX.append(_ex9)
 # 0–3000%，绿线退化成两段近乎垂直的竖线加一段贴地的直线，除了「涨了很多」读不出任何
 # 东西，还横穿柱子。现在每根柱直接标出数值，「这个月到底多少」一眼可得。
 lvl(10, df['adv_event_mn'], 'Event contracts ADV', win=len(W25), fmt='f0',
-    ylab='mn contracts / day', show_mom=True,
+    ylab='mn contracts / day', show_mom=True, left_zh=ADV_LEFT,
     note='Prediction Markets Hub, launched at scale in 2025.')
 
 _d = df.iloc[_I0:]          # 与 W25/XL25 同窗口（原先写死 -25）
+
+# ⚠ dats_* 三列在 2023-03 及更早那一段装的是 **DARTs**，不是 DATs。
+# 官方 2026-07-29 发的 Q2'26 Earnings Supplement 起，那一节从「Daily Average *Revenue*
+# Trades (DARTs)」改叫「Daily Average Trades (DATs)」，并把 **2025-01 起**的历史重述
+# （equity 2025-01 由 2.6 改成 3.3，+27%）。重述只回溯到 2025-01：2024-12 及更早
+# 两种口径逐月逐位相同（build/basefill/hood_2021.py 的看门狗 B 每次运行都重算一遍）。
+# 所以回填段填 DARTs 接得上，但**这件事必须写在图注里**，不能让读者以为整条线一把尺子。
+DARTS_UNTIL = pd.Period('2023-03', 'M')
+DATS_CALIBER = (
+    f'口径提示：{mlab(DARTS_UNTIL)} 及更早这一段填的是官方当期印的 <b>DARTs</b>'
+    '（Daily Average <i>Revenue</i> Trades）。公司 2026-07 才把这一节改名 DATs 并重述历史，'
+    '而重述只回溯到 Jan-25（equity 由 2.6 改成 3.3）—— Dec-24 及更早两种口径逐月逐位相同，'
+    '所以两段接得上；但左段严格说是窄口径（不含不产生收入的交易），这里一并说明。')
+
+_l11 = [mrwin.Leg('eq', 'Equity DATs', L(_d['dats_equity_mn']), 'primary'),
+        mrwin.Leg('op', 'Options DATs', L(_d['dats_options_mn']), 'primary'),
+        mrwin.Leg('cr', 'Crypto DATs', L(_d['dats_crypto_mn']), 'primary')]
+_w11 = mrwin.resolve('lines_endlabels', _l11, XL25, 0)
 EX.append({
     'n': 11, 'kind': 'lines_endlabels', 'title': 'Daily average trades by asset class',
-    'xlabels': XL25, 'xstep': 2, 'fmt': 'f1', 'ylab': 'mn trades / day',
-    'series': [
-        {'name': 'Equity', 'color': 'NAVY', 'values': L(_d['dats_equity_mn'])},
-        {'name': 'Options', 'color': 'RED', 'values': L(_d['dats_options_mn'])},
-        {'name': 'Crypto', 'color': 'MBLUE', 'values': L(_d['dats_crypto_mn'])},
-    ],
+    'xlabels': XL25[_w11.start:], 'xstep': xstep_for(len(XL25) - _w11.start),
+    'fmt': 'f1', 'ylab': 'mn trades / day',
+    'series': [{'name': nm, 'color': c, 'values': _w11.cut(leg.vals)}
+               for leg, nm, c in zip(_l11, ('Equity', 'Options', 'Crypto'),
+                                     ('NAVY', 'RED', 'MBLUE')) if not leg.drop],
     'note': 'Crypto DATs exclude Bitstamp institutional activity; crypto trades every '
-            'calendar day while equities and options use exchange trading days',
+            'calendar day while equities and options use exchange trading days. '
+            + DATS_CALIBER + _w11.why,
 })
 
-BASE = pd.Period('2023-04', 'M')
 _idx = {'Equity notional': df['adv_equity_usdbn'], 'Options contracts': df['adv_options_mn'],
         'Crypto notional': df['adv_crypto_usdmn'], 'Funded customers': df['funded_customers_mn']}
+# 基期不写死：它必须是**四条线都已经有值**的第一个月，否则除数是 NaN，整条线全空。
+# 原来写死 2023-04（当时的序列起点），序列回填到 2021-01 之后那句「the first month in
+# the published file」就成了假话 —— 现在起点是 2021-01，而 ADV 三列 2023-01 才有。
+_l12 = [mrwin.Leg(k, k, L(v.iloc[_I0:]), 'primary') for k, v in _idx.items()]
+_w12 = mrwin.resolve('lines', _l12, XL25, 0)
+BASE = W25[_w12.start]
 EX.append({
     # zero_base：指数图的 100 与 0 都是有意义的刻度，而通用留白分支给的是
     # y0 = min − 极差×5%、y1 = max + 极差×5%，刻度只排到 800，两条跑到 935/954 的线
     # 就落在最高刻度线以上的无刻度区里 —— 整张图最想让人看的两个高点没有任何参照。
     # end_label：末点数值是这类图上唯一的绝对锚点。
     'n': 12, 'kind': 'lines', 'title': 'Volume vs. customer growth, rebased',
-    'xlabels': XL_LONG, 'xstep': 3, 'fmt': 'f0', 'label_fmt': 'f0',
+    'xlabels': XL25[_w12.start:], 'xstep': xstep_for(len(XL25) - _w12.start),
+    'fmt': 'f0', 'label_fmt': 'f0',
     'ylab': 'index, base = 100', 'zero_base': True, 'end_label': True,
-    'series': [{'name': k, 'color': c, 'values': L(v / v.loc[BASE] * 100)}
+    'series': [{'name': k, 'color': c,
+                'values': L((v / v.loc[BASE] * 100).iloc[_I0 + _w12.start:])}
                for (k, v), c in zip(_idx.items(), ['NAVY', 'RED', 'MBLUE', 'GREEN'])],
-    'note': f'Rebased to 100 at {mlab(BASE)}, the first month in the published file. '
+    'note': f'Rebased to 100 at {mlab(BASE)}, the first month in which all four series '
+            'exist — the monthly file only starts publishing average daily volumes then, '
+            f'while funded customers and total volumes go back to {mlab(df.index[0])}. '
             'The gap between the volume lines and the customer line is monetisation '
             'per customer, not customer acquisition. Axis starts at zero and the last '
             'point of each line is labelled.',
@@ -737,6 +835,8 @@ EX.append({
 
 lvl(N_IMPLIED, df['implied_txn_rev_usdmn'], 'Implied transaction revenue', win=len(W25), fmt='usd0',
     ylab='$mn / month',
+    left_zh=f'费率是季度收入 ÷ 季度成交量反解出来的，而 series/hood_q.csv 只回溯到 '
+            f'{q.index[0]}，更早的月份反解不出费率（不是成交量缺，是收入那一半缺）',
     note='Assumption: constant take rate within a quarter, back-solved as reported revenue / volume '
          f'({LAST_Q}: options {rate_options_c[LAST_Q]:.0f}c/contract, '
          f'equities {rate_equities_bp[LAST_Q]:.2f}bp, crypto {rate_crypto_bp[LAST_Q]:.1f}bp), '
@@ -774,43 +874,63 @@ lvl(18, df['margin_book_usdbn'], 'Margin book', win=len(W25), fmt='usd1', ylab='
     note='Period-end margin loans receivable, including balances from RIAs on the '
          'TradePMR platform.')
 
+# ⚠ Exhibit 19 / 20 都是 `lines_endlabels`，属 mrwin.DENSE：引擎把整条 values 交给
+# Catmull-Rom 平滑，null 参与插值就是一条塌到零的假线，逐点标数值那步还会抛 TypeError
+# 把该卡片之后的 exhibit 全打挂（build/verify_pages.py 有专门一条规则拦它）。
+# 序列回填到 2021-01 之后这两张第一次咬人：Cash and Deposits 那一行 2023-01 才进官方表，
+# Securities lending 更晚（Total 2022-05 出借业务上线才有数、Net 那一行 2023-01 才单列）。
+# 左端一律交给 mrwin.resolve() 按「所有线都已经有值」裁 —— **只调用它，不改它**，
+# 也不补 0、不补上一期的值（那是画一个数据里不存在的点）。
+# 谁是 primary 谁是 derived 决定图注措辞：`mrwin.resolve()` 的「定住左端的是谁」
+# 只点名 **derived** 腿（primary 被当成「本来就该有」）。所以更晚才有的那条挂 derived，
+# 图注里才会印出「Cash and deposits（官方 2023-01 才单列，首点 Jan-23）」而不是干巴巴一个期号。
+_l19 = [mrwin.Leg('sweep', 'Cash sweep', L(_d['cash_sweep_usdbn']), 'primary'),
+        mrwin.Leg('cash', 'Cash and deposits', L(_d['cash_and_deposits_usdbn']), 'derived',
+                  '官方 2023-01 才把 Cash and Deposits 单列进月度表')]
+_w19 = mrwin.resolve('lines_endlabels', _l19, XL25, 0)
+_i19 = _d.index[_w19.start:]
 _ex19 = {
     'n': 19, 'kind': 'lines_endlabels', 'title': 'Cash sweep vs. cash and deposits',
-    'xlabels': XL25, 'xstep': 2, 'fmt': 'usd1', 'ylab': '$bn',
-    'series': [
-        {'name': 'Cash sweep (off balance sheet)', 'color': 'NAVY',
-         'values': L(_d['cash_sweep_usdbn'])},
-        {'name': 'Cash and deposits', 'color': 'MBLUE',
-         'values': L(_d['cash_and_deposits_usdbn'])},
-    ],
+    'xlabels': XL25[_w19.start:], 'xstep': xstep_for(len(XL25) - _w19.start),
+    'fmt': 'usd1', 'ylab': '$bn',
+    'series': [{'name': nm, 'color': c, 'values': _w19.cut(leg.vals)}
+               for leg, nm, c in zip(_l19, ('Cash sweep (off balance sheet)',
+                                            'Cash and deposits'), ('NAVY', 'MBLUE'))
+               if not leg.drop],
     'note': 'In Feb-2026 the first $10k of enrolled balances per customer moved to '
             'free credit balances to fund margin lending, shifting over $6bn between '
             'these two lines. The y/y decline in cash sweep after that date is '
-            'mechanical, not customer attrition — read the two lines together.',
+            'mechanical, not customer attrition — read the two lines together. '
+            + _w19.why,
 }
 # 断点标签是从绘图区顶端往下竖排的，字越长挂得越深。原来的 'High-Yield Cash change'
 # 正好挂到 Cash sweep 那条深蓝线的拐点上，红字与深蓝线在交叉处互相糊掉。
 # 完整说法在图注里，标签只留能认出是哪件事的最短形式。
-_bk19, _seg19 = breaks_for(19, _d.index, BK_SWEEP)
+_bk19, _seg19 = breaks_for(19, _i19, BK_SWEEP)
 _ex19.update(_bk19)
 if _seg19:
     _ex19['note'] += f' 红色竖虚线为口径断点：{_seg19}；线右侧与左侧不可直读。'
 EX.append(_ex19)
 
-EX.append({
-    'n': 20, 'kind': 'lines_endlabels', 'title': 'Securities lending revenue',
-    'xlabels': XL25, 'xstep': 2, 'fmt': 'usd0', 'ylab': '$mn / month',
-    'series': [
-        {'name': 'Total securities lending revenue', 'color': 'NAVY',
-         'values': L(_d['seclend_total_usdmn'])},
+_l20 = [mrwin.Leg('tot', 'Total securities lending revenue', L(_d['seclend_total_usdmn']),
+                  'primary', '出借业务 2022-05 才上线，之前官方那一格印 NA'),
+        # Net 那一行更晚，挂 derived 才会在图注里被点名（见 Ex19 上面那段注释）
         # 原来这条用 C.BLUE(#9DC3E6)：它是柱图的填充色，画成 1.8px 的细线、
         # 端点标签又拿它当字色时，白底上的对比度只有 1.9:1，「$10」「$2」两个端点值
         # 要凑近才看得清。MBLUE(#2E75B6) 是同色系的线条色，对比度 4.8:1。
-        {'name': 'Securities lending, net', 'color': 'MBLUE',
-         'values': L(_d['seclend_net_usdmn'])},
-    ],
+        mrwin.Leg('net', 'Securities lending, net', L(_d['seclend_net_usdmn']),
+                  'derived', 'Net 那一行 2023-01 才单列进月度表')]
+_w20 = mrwin.resolve('lines_endlabels', _l20, XL25, 0)
+EX.append({
+    'n': 20, 'kind': 'lines_endlabels', 'title': 'Securities lending revenue',
+    'xlabels': XL25[_w20.start:], 'xstep': xstep_for(len(XL25) - _w20.start),
+    'fmt': 'usd0', 'ylab': '$mn / month',
+    'series': [{'name': nm, 'color': c, 'values': _w20.cut(leg.vals)}
+               for leg, nm, c in zip(_l20, ('Total securities lending revenue',
+                                            'Securities lending, net'), ('NAVY', 'MBLUE'))
+               if not leg.drop],
     'note': 'Net excludes interest on cash collateral for margin-based lending, so the '
-            'gap between the two lines widens as the margin book grows.',
+            'gap between the two lines widens as the margin book grows. ' + _w20.why,
 })
 
 # 两个期末数之比（期末资产 ÷ 期末客户数）：按**存量**处理，右轴点对点同比。
@@ -826,14 +946,21 @@ lvl(21, df['assets_per_customer_usdk'], 'Assets per funded customer', win=len(W2
 # ══════════════════════ 长历史 ══════════════════════
 EX.append({
     # 长历史图务必给 zero_base + end_label：不给 zero_base 时引擎走的是
-    # y0 = min − 极差×5%，那是一次没有任何标注的隐性截轴，会把 39 个月的增长幅度
+    # y0 = min − 极差×5%，那是一次没有任何标注的隐性截轴，会把整段的增长幅度
     # 凭空放大；不给 end_label 就没有任何绝对水平锚点，只能拿眼睛去够刻度。
     'n': N_HIST, 'kind': 'lines', 'title': 'Total platform assets — full published history',
-    'xlabels': XL_LONG, 'xstep': 2, 'fmt': 'usd0', 'label_fmt': 'usd0', 'ylab': '$bn',
+    'xlabels': XL_LONG, 'xstep': xstep_for(len(XL_LONG)),
+    'fmt': 'usd0', 'label_fmt': 'usd0', 'ylab': '$bn',
     'zero_base': True, 'end_label': True,
     'series': [{'name': 'Total platform assets', 'color': 'NAVY', 'values': L(tpa)}],
-    'note': 'The monthly file publishes a rolling window starting Apr-2023; earlier '
-            'months exist only in prior monthly releases and are not carried here. '
+    'note': f'{mlab(df.index[0])} 起的全部官方月度披露。'
+            'The current monthly file only publishes a rolling three-year window; the '
+            f'months before {mlab(pd.Period("2023-04", "M"))} come from the earliest '
+            'earnings supplement that still carries them (Q1-23 for 2021-01~2022-12, '
+            'Q1-26 for 2023-01~03) — 取的一律是<b>能拿到的最早那一版</b>，不是后来重述过的值。'
+            f'{mlab(df.index[0])} 是天花板：公司 2022-04 才开始月度披露、首期回填 12 个月，'
+            '更早的数只存在于 S-1 与 10-Q，且不是月度粒度。'
+            '这一段口径叫 Assets Under Custody（后改名 Total Platform Assets，见 Exhibit 2）。'
             'Axis starts at zero, so the slope on this chart is the real slope.',
 })
 
@@ -870,13 +997,21 @@ for _y in _yrs:
     for p, v in sub.items():
         vals[p.month - 1] = round(float(v), 6)
     _ylines.append({'name': str(_y), 'values': vals})
+# 哪几条线不是整年、为什么，一律现算：序列左端往前推之后「2023 只有 4~12 月」那句
+# 会变成假话（2023 现在是完整的 12 个月），而那种错没有任何自动化能发现。
+_part = [(y, sum(1 for v in ln['values'] if v is not None))
+         for y, ln in zip(_yrs, _ylines)
+         if sum(1 for v in ln['values'] if v is not None) < 12]
+_pnote = ('' if not _part else ' ' + '；'.join(
+    f'{y} 线只有 {n} 个月'
+    + ('（本年尚未走完）' if y == LATEST.year
+       else f'（官方月度披露自 {mlab(df.index[0])} 起，这一年被序列左端截断）')
+    for y, n in _part) + ' —— 与整年线不可直读。')
 EX.append({
     'n': 24, 'kind': 'year_lines', 'title': 'Net deposits path by year',
     'xlabels': MON, 'fmt': 'usd0', 'label_fmt': 'usd0', 'ylab': '$bn cumulative',
     'series': _ylines, 'highlight': len(_ylines) - 1,
-    'note': 'Cumulative within each calendar year. The 2023 line starts in April '
-            'because that is where the published file begins — it is not a weak year, '
-            'it is a short one, and is not comparable with the full years.',
+    'note': 'Cumulative within each calendar year.' + _pnote,
 })
 
 # 混合占比（两条流量之比）：实测下来单月与滚动的标准差只差 1.1 倍、且没有一个月符号相反 ——
@@ -944,12 +1079,22 @@ heat(27, df['organic_growth_ann'], 'Annualised organic growth rate — 单月年
      '格内是<b>单月</b>年化增速（当月净流入 x 12 ÷ 上月末资产），不是 Exhibit 4 右轴的滚动口径 —— '
      '逐格的季节形状正是这张图要看的东西，换成滚动就全抹平了。',
      'Annualised organic growth, 单月 (%)')
-heat(28, df['adv_equity_usdbn'].pct_change(12) * 100,
-     'Equity notional ADV y/y — 单月同比 (%)',
-     'Green = faster growth. The first 12 months of the published file have no prior-year '
-     'comparison, so 2024 starts in April. '
-     '格内是<b>单月同比</b>（本月 ÷ 去年同月 − 1），Exhibit 7 右轴画的是 12 个月滚动合计同比，'
-     '两者当期读数差见页尾「同比口径」那一条。',
+_adv_yoy = df['adv_equity_usdbn'].pct_change(12) * 100
+_adv0 = df['adv_equity_usdbn'].dropna().index[0]
+heat(28, _adv_yoy, 'Equity notional ADV y/y — 单月同比 (%)',
+     # 「表从哪一格开始」不写死：ADV 那一节官方 2023-01 才印，同比又要去年同月的基数，
+     # 所以第一格是 ADV 起点 + 12 个月。回填把序列左端推到 2021-01 之后，
+     # 旧稿那句「2024 starts in April」已经不成立了 —— 改成现算。
+     'Green = faster growth. Average daily volumes are only published from '
+     f'{mlab(_adv0)}, and a y/y cell needs the same month a year earlier, so the first '
+     f'cell in this table is {mlab(_adv_yoy.dropna().index[0])}. '
+     '格内是<b>单月同比</b>（本月 ÷ 去年同月 − 1）'
+     # Exhibit 7 的右轴只有在可比点覆盖率过线时才存在（不够就退成柱上标数），
+     # 所以这句话得看 AXIS_KIND 现说，不能写死。
+     + ('，Exhibit 7 右轴画的是 12 个月滚动合计同比' if AXIS_KIND.get(7) == 'roll'
+        else '；Exhibit 7 本轮没有右轴同比线（可比点不够），页顶 headline 引用的是'
+             '12 个月滚动合计同比')
+     + '，两者当期读数差见页尾「同比口径」那一条。',
      'Equity notional ADV y/y, 单月 (%)')
 
 
@@ -1092,6 +1237,21 @@ if None not in (ND_M, ND_Q):
 
 _EQ_M, _EQ_R = _my(df['adv_equity_usdbn']), _ry(df['adv_equity_usdbn'])
 
+
+def _axis_named(kind):
+    """右轴口径 → 「Exhibit n（中文名）」串。名单由 lvl() 实际画出来的东西现生成。
+
+    手写这份名单栽过：y/y 覆盖率低于 YOY_MIN_COVER 时 lvl() 会把整张图退成
+    bars_labeled（右轴连线都没有），而写死在页尾的「Exhibit 7 / 8 的右轴是滚动同比」
+    不会自己知道。序列一回填、覆盖率一变，名单就该跟着变 —— 所以它必须是算出来的。
+    """
+    return '、'.join(f'Exhibit {n}（{AXIS_ZH[n]}）'
+                     for n in sorted(AXIS_KIND) if AXIS_KIND[n] == kind) or '（本轮一张都没有）'
+
+
+_AX_ROLL, _AX_MONO = _axis_named('roll'), _axis_named('mono')
+_AX_NONE = _axis_named(None)
+
 summary = {
     'title': f'Robinhood monthly metrics — {mlab(LATEST)}',
     'heads': [mlab(CUR), mlab(PRV), mlab(YAG), 'm/m', 'y/y 单月', '3Y %ile'],
@@ -1110,8 +1270,8 @@ summary = {
             '<br><b>本表的 y/y 列是「单月口径」= 本月 ÷ 去年同月 − 1，与多数图上的右轴不同口径。</b>'
             '不改它是刻意的：这一列恒等于表内算术（第一列 ÷ 第三列），读者可以直接验算；'
             '换成滚动口径后这一步会得出另一个数，表内自相矛盾比口径混用更糟。'
-            '流量类的图（Exhibit 3 / 4 / 7 / 8 / '
-            f'{N_IMPLIED}）右轴画的是 12 个月滚动合计同比，比这一列稳得多。' + _MIX_ND,
+            f'本轮右轴画 12 个月滚动合计同比的图是 {_AX_ROLL}，比这一列稳得多'
+            '（这份名单由构建期按各图实际画出来的东西现生成，不手写）。' + _MIX_ND,
 }
 
 # ────────────────────────── 核对表（官方原始单位，未换算）──────────────────────────
@@ -1222,13 +1382,14 @@ notes = [
     # 12 个月滚动合计），如果没人告诉他分母不同，他只会以为哪里算错了。
     '<b>⚠ 同比口径：本页有四种，逐处点名。</b>'
     '(1) <b>12 个月滚动合计同比</b>（本年 12 个月合计 ÷ 上年同 12 个月合计 − 1）—— '
-    f'Exhibit 3（净流入）、4（年化有机增速，取滚动比率的 pp 差）、7（股票名义 ADV）、'
-    f'8（期权 ADV）、{N_IMPLIED}（隐含交易收入）的右轴。<b>流量类一律用这个口径。</b>'
-    '(2) <b>单月同比</b>（本月 ÷ 去年同月 − 1）—— Exhibit 2（总平台资产）、5（入金客户数）、'
-    f'18（期末融资余额）、21（户均资产）、25（Bitstamp 占比）的右轴，Exhibit 1 汇总表的 y/y 列，'
+    f'{_AX_ROLL} 的右轴。<b>流量类一律用这个口径。</b>'
+    '(2) <b>单月同比</b>（本月 ÷ 去年同月 − 1）—— '
+    f'{_AX_MONO} 的右轴，Exhibit 1 汇总表的 y/y 列，'
     f'页顶 brief 里标「单月同比」的读数（与汇总表同口径、可与表逐格对上；brief 里的单月读数'
     '只作位置与口径背离陈述，不作趋势断言），'
     f'以及 Exhibit 27 / 28 两张热力矩阵的逐格读数。'
+    f'<b>本轮没有右轴同比线的图</b>：{_AX_NONE} —— 窗口内可比点覆盖率低于 '
+    f'{YOY_MIN_COVER:.0%}（判据见下条），整张图退成柱上标数，确切的 y/y 在汇总表里。'
     '<b>前四张保留点对点是实测结论，不是「存量不能平滑」</b> —— 后者是句错话，'
     '本页更正过：存量的合法平滑口径是 <b>12 个月滚动均值同比</b>（去年一整年的平均余额 '
     'vs 前年；数值上等同于滚动合计比，除数约掉了），不能叫的只是「12 个月<b>合计</b>同比」，'
@@ -1240,7 +1401,12 @@ notes = [
     '(4) <b>环比</b> —— 各图图注与页顶 brief 里的 m/m（brief 的日历修正句给的是'
     '「表面 vs 日均」两个环比，喂的是当月合计 vol_*，与图上已日均化的 ADV 不是同一列）。'
     + (f'<br>{_MIX_ND}' if _MIX_ND else '')
-    + (f'<br>股票名义 ADV 同样两处混用：Exhibit 7 右轴（滚动）{_EQ_R:+,.1f}% vs '
+    # 「那个滚动读数印在哪儿」得跟着实际走：Exhibit 7 的可比点覆盖率不够时它退成
+    # bars_labeled，右轴上根本没有线，再说「Exhibit 7 右轴（滚动）」就是假话。
+    + (f'<br>股票名义 ADV 同样两处混用：'
+       + ('Exhibit 7 右轴（滚动）' if AXIS_KIND.get(7) == 'roll'
+          else '页顶 headline 引用的 12 个月滚动合计同比')
+       + f' {_EQ_R:+,.1f}% vs '
        f'Exhibit 28 热力矩阵当月格（单月）{_EQ_M:+,.1f}%，差 {abs(_EQ_M - _EQ_R):,.0f}pp。'
        '热力矩阵不换口径是刻意的 —— 逐格的月度波动与季节形状就是那张图的题眼，'
        '平滑掉等于把它唯一的信息抹掉；标题里已写明是「单月同比」。'
@@ -1251,8 +1417,23 @@ notes = [
     '正是为了抹掉月长与月末时点差异而做的。',
 
     '<b>Total platform assets 曾名 Assets Under Custody</b>，改名后口径扩大到包含 TradePMR 顾问的'
-    f'资产（这部分并不由 Robinhood 托管）。Exhibit {N_HIST} 的全历史只到 2023-04 —— 月度文件发布的是'
-    '滚动窗口，更早的月份只存在于历史新闻稿里，本站不做拼接。',
+    '资产（这部分并不由 Robinhood 托管）。',
+
+    # ── 历史从哪里来、为什么各图左端不一样：这一条是 2026-08-19 回填之后新增的 ──
+    f'<b>序列起点 {mlab(df.index[0])}，但各图左端不一样，这是数据决定的不是排版决定的。</b>'
+    '当期那份月度 Excel 只发<b>滚动三年</b>窗口，2023-04 之前的月份要去 Quarterly Results 页'
+    '翻当年的 Earnings Supplement（另一张页、另一种版式）。本站取的一律是'
+    '<b>还拿得到的最早那一版</b>（2021-01~2022-12 用 Q1-23 那份、2023-01~03 用 Q1-26 那份），'
+    '不用后来重述过的值 —— 实测被后期改过的只有净流入 4 个月各 0.1（脚本每次运行都重列一遍）。'
+    f'再往前没有了：公司 2022-04 才开始月度披露、首期回填 12 个月，所以 {mlab(df.index[0])} 是天花板。'
+    '<b>老版式的行少一半</b>：没有 ADV 那一节、没有 Cash and Deposits、没有 Bitstamp / '
+    'Event contracts 拆分、没有加密交易日，出借收入 2022-05 才有数、Net 那一行 2023-01 才单列。'
+    '这些格子<b>留空</b>，不补 0 也不用「成交量 ÷ 交易日」自己算 ADV —— 换算值不是披露值。'
+    '于是每张图的左端由 <code>mrwin.resolve()</code> 按它自己那几条序列裁，'
+    '各图图注里都写了截在哪一期、被谁定住。'
+    f'另有一处口径提示：{mlab(DARTS_UNTIL)} 及更早的 DATs 三列填的是当期印的 <b>DARTs</b>'
+    '（公司 2026-07 才改名并重述，且只回溯到 Jan-25，Dec-24 及更早两种口径逐月相同），'
+    f'见 Exhibit 11 图注。',
 
     f'<b>Exhibit 10（事件合约）没有画 y/y 线</b>，不是漏了：窗口内只有少数几个月有大于零的'
     '上年同月基数，画出来是两段近乎垂直的竖线加一段贴地的直线，还会把右轴撑到 3,000% 以上，'
@@ -1277,8 +1458,10 @@ def compose_brief(df, nd, bk_nd, brk_sweep):
     多几天少几天，下个月重跑全部自己会变。
 
     ═══ 与本页 2026-08 同比口径改造（CONTRACT §6）的关系（移植时的口径适配）═══
-      本页流量类各图（Exhibit 3 / 4 / 7 / 8 与隐含收入）的右轴已改画 **12 个月滚动合计
-      同比**，而 brief 排在 headline 之下、Exhibit 1（汇总表）之上 —— 汇总表的 y/y 列按
+      本页流量类各图的右轴已改画 **12 个月滚动合计同比**（**具体哪几张是算出来的**，
+      见 `AXIS_KIND` / `_axis_named()` —— 可比点覆盖率不够的会退成柱上标数、右轴上
+      根本没有线，写死名单必然烂掉），而 brief 排在 headline 之下、Exhibit 1（汇总表）
+      之上 —— 汇总表的 y/y 列按
       §6.2 豁免、保留单月，所以本段引用 m/m / y/y 时**与汇总表同口径（单月）**，凡同比
       措辞一律写明「单月同比」（§6.1 第 2 条的正文版），不得让读者拿它去对图上的滚动
       绿线；页尾「同比口径逐处点名」的 (2)（单月）与 (4)（环比）两条已把 brief 计入名单。

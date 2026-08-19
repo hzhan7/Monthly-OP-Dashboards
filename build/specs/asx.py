@@ -248,11 +248,75 @@ def _page_cols():
 _PAGE_COLS = []
 
 
+# ── 每一列的起点各自对应什么事，逐列写死理由（月份仍然现算）─────────────────────
+#
+# 为什么要有这张表：`_late_starts()` 能算出「哪一列晚了几个月」，算不出「为什么」。
+# 没有理由那一半，图上左边那片空白只能被读成「数据缺失」——而它其实是**披露史**：
+# ASX 每隔几年往月报里加行 / 换行，加之前那几年官方根本没印过这个数。
+#
+# 三类理由，措辞固定，别再发明第四类：
+#   源头未印  官方那时的 MAR 里没有这一行（别处也没有，或在另一份文档里）；
+#   口径切换  同一件事换了定义，旧列在同一期停发、新列在同一期开印 —— 必须打断点；
+#   披露扩充  官方那一期新增了行，旧行照常继续（不是断点，只是左边没有）。
+# 「产品那时没上线」这一类在 ASX **一条都没有**：本页所有列的起点差异全是文档变更，
+# SPI 200、国债期货、Centre Point 在 2016-01 之前很久就都在跑了。有人以后想拿
+# 「产品新上线」解释某条线的起点，先回来看这里。
+#
+# 每条理由后面的月份与行名都是 2026-08 逐期打开官方 PDF 核出来的（缓存在 cache/）。
+_START_WHY = {
+    'participants_asx_total': (
+        '源头未印',
+        '2016-06 及更早的 MAR 正文到 SETTLEMENT 段就结束了（共 6 页），'
+        '没有 PARTICIPANTS 段 —— 参与者数当时印在**另发的 ASX Compliance activity '
+        'report** 里（2016-02…2016-05 期 MAR 末页明写「A separate ASX Compliance '
+        'activity report … has also been released today」）。'
+        '2016-07 那一期把 LISTINGS COMPLIANCE ACTIVITY / PARTICIPANTS / ENFORCEMENT '
+        '三段并进 MAR，这一行才出现。不是那时没有参与者，是这份文档那时不登它'),
+    'participants_asx24_total': ('同上', '与上一列同一段、同一期并入'),
+    'value_cash_onmarket_audbn': (
+        '源头未印',
+        '2016-01…2017-09 的现货段只印 <code>Total value</code>（含场外报告）与 '
+        '<code>Average daily value on-market</code>，**没有**「当月仅场内成交额」这一行；'
+        '2017-10 那一期现货段改版，三行同时改名并新增 <code>On-market value</code>。'
+        '21 期缓存 PDF 逐期核过行名，一次都没出现过 ⇒ 是官方没印，不是解析器没认出来'),
+    'margin_cash_onbs_audbn': (
+        '源头未印',
+        '2019-09 及更早的 Collateral Balances 表只逐项印 <code>- ASX Clear</code> / '
+        '<code>- ASX Clear (Futures)</code> / <code>Cash equivalents…</code>，'
+        '没有合计行；<code>Total cash margins held on balance sheet</code> '
+        '自 2019-10 那一期才开始印（44 期缓存 PDF 逐期核过）。'
+        '三项相加确实等于正文要点里说的那个总额，但那是我们加的，不入库'),
+    'mktcap_new_listings_audmn': (
+        '口径切换',
+        '2023-10 那一期同时做了两件事：停印 <code>Initial capital raised</code> 与 '
+        '<code>Total capital raised including other</code>，改印 '
+        '<code>Quoted market cap of new listings</code> 与 '
+        '<code>Total new capital quoted</code>。'
+        '旧列的最后一期与新列的第一期严丝合缝，所以是换口径不是加行 ⇒ 页面打断点'),
+    'capital_new_quoted_audmn': ('同上', '与上一列同一期切换'),
+    'delisted_entities': (
+        '披露扩充',
+        '2024-05 那一期新增三行（<code>Entities de-listed</code>、'
+        '<code>Quoted market capitalisation of entities de-listed</code>、'
+        '<code>Total net new capital quoted</code>），旧行一行没停 ⇒ 不是断点，'
+        '只是 2024-04 及更早官方没把退市侧的数披露出来'),
+    'mktcap_delisted_audmn': ('同上', '与上一列同一期新增'),
+    'capital_net_new_quoted_audmn': ('同上', '与上一列同一期新增'),
+    'margin_total_audbn': (
+        '口径切换',
+        '2024-08 那一期停印 <code>Total cash margins held on balance sheet</code>、'
+        '改印 <code>Total margins held</code>（由「表内现金保证金」扩到「保证金总额」）。'
+        '两列首尾相接，2024-07 是旧口径最后一期 ⇒ 页面打断点'),
+}
+
+
 def _late_starts():
     """上页面的列里，起点晚于全页首月的那些 —— (列名, 首月, 晚了几个月)。
 
     回补一次历史，这张清单就会变长：2026-08 之前只有 3 列晚于首月，回补到 2016-01
-    之后变成 9 列。写死一句「VIX 起点比主体晚 24 个月」那样的话必然过期，所以现算。
+    之后变成 10 列。写死一句「VIX 起点比主体晚 24 个月」那样的话必然过期，所以现算。
+    （VIX 曾经在这张清单里，2026-08 起不在了 —— 它的正文口径已回补到 2016-01，
+    见 fetch/asx.py 口径坑 21。这正是「月份现算」的价值：清单自己缩短了。）
     """
     rows = _rows()
     if not rows:
@@ -445,7 +509,9 @@ SPEC = {
              'unit': 'A$/trade', 'fmt': 'f0c'},
         ]},
 
-        # 官方到 2019-10 才开始印这一行，起点比页面主体晚 45 个月（现算，见 _span_zh）。
+        # 官方到 2019-10 才把这个数排进现货**表**；在那之前它只印在正文的波动率要点里，
+        # 是同一个数的另一处印刷（26 期重叠逐位相同，见 fetch/asx.py 口径坑 21）。
+        # 2026-08 起两处都取，这一列因此与页面主体同起点 —— 起点仍现算，不写死。
         {'zh': f'S&P/ASX 200 VIX（{_span_zh("vix_asx200_avg")}）', 'cols': [
             {'col': 'vix_asx200_avg', 'zh': '月内日均值',
              'unit': 'index level', 'fmt': 'f1'},
@@ -676,6 +742,19 @@ SPEC = {
         # ⚠️ 另有两条随 CSV 现算的图注（「起点不齐的列」与「界内空格」）在 SPEC
         #    组装完之后追加，见文件末尾 —— 它们要先知道本页到底上了哪些列。
 
+        '<b>VIX 那张图左边 45 个月的数来自官方正文要点，不是表行 —— 同一个数，'
+        '两处印刷。</b>ASX 的 MAR 到 <b>2019-10</b> 那一期才把 '
+        '<code>S&P/ASX 200 VIX (average daily value)</code> 排进现货表；'
+        '在那之前（' + (_first_present('vix_asx200_avg') or '2016-01') + '…2019-09，'
+        '共 45 个月）这个数只印在正文的波动率要点里'
+        '（"…as measured by the S&P/ASX 200 VIX… was an average of 12.7"）。'
+        '<b>两处从来没有不一致过</b>：26 期两者同时存在（2019-10 / 2019-11 / '
+        '2024-09…2026-07），逐位相同、精度同为 1 位小数 —— 这条实测已经在 '
+        '<code>fetch/asx.py</code> 里固化成闸门，两处哪天对不上就当场拒绝入库。'
+        '所以左边那 45 个月<b>仍然是当期官方公告原值</b>，不是换算、不是派生、'
+        '也不是拿后期报告的重述值倒填。'
+        '（这一列 2026-08 之前从 2019-10 才起 —— 那不是官方没发，是抓取器只认表行。）',
+
         '<b>结算报文量在 ' + (_MSG_STEP or '2017-10') + ' 之前只印到 1 位小数。</b>'
         'ASX 的 MAR 从那一期起把 <code>Dominant settlement messages (million)</code> '
         '由 1 位小数改成 3 位（实测前一期印 1.5、该期印 1.433）。'
@@ -723,17 +802,39 @@ _FIRST, _LATE = _late_starts()
 _HOLES = _interior_holes()
 
 if _LATE:
+    # 每一列都要给出理由。给不出的（有人新加了列、或改了列名）**不许静默略过** ——
+    # 直接把「本页还没给它写理由」印在图注上，比让读者以为那是数据缺失强得多。
+    _bullets = []
+    for c, a, n in _LATE:
+        why = _START_WHY.get(c)
+        if why:
+            _bullets.append(f'<li><code>{c}</code> 自 <b>{a}</b> 起（晚 {n} 个月）'
+                            f'—— <b>{why[0]}</b>：{why[1]}。</li>')
+        else:
+            _bullets.append(f'<li><code>{c}</code> 自 <b>{a}</b> 起（晚 {n} 个月）'
+                            f'—— <b>本页还没给它写理由</b>，请补 '
+                            f'<code>build/specs/asx.py:_START_WHY</code>。</li>')
     _NOTE_STARTS = (
-        f'<b>本页各图的窗口都自 {_FIRST} 起，但线不都从左边缘开始。</b>'
-        f'ASX 是逐年往月报里加行的，所以有 {len(_LATE)} 列的官方披露起点晚于本页首月，'
-        f'在图上表现为「同一张图里两条线起点不同」或「左边一段没有柱」——'
-        f'那是<b>官方当时没印这一行</b>，不是我们漏抓，更不能拿别的列相加去补：'
-        + '；'.join(f'<code>{c}</code> 自 {a} 起（晚 {n} 个月）' for c, a, n in _LATE)
-        + '。其中 <code>value_cash_onmarket_audbn</code>（仅场内成交额）最容易被误会：'
-          '它可由「连续竞价 + 集合竞价 + Centre Point」三项相加倒推'
-          '（2017-09 算出来 80.829，与官方 2017-10 首次印出的 80.296 量级一致），'
-          '但那是派生量，写进 series 就再也分不清哪个数是 ASX 印的、哪个是我们算的，'
-          '所以留空。<b>要看不受起点影响的现货口径，用「含场外报告」那条线。</b>')
+        f'<b>本页各图的窗口都自 {_FIRST} 起，但线不都从左边缘开始 —— 左半边的空白是'
+        f'披露史，不是数据缺失。</b>'
+        f'ASX 每隔几年往月度活动报告（MAR）里加行 / 换行，所以有 {len(_LATE)} 列的'
+        f'官方披露起点晚于本页首月，在图上表现为「同一张图里两条线起点不同」或'
+        f'「左边一段没有柱」。逐列的起点各自对应什么事（月份现算，理由逐列核过官方 PDF）：'
+        # 内联 style 是刻意的：assets/style.css 只给 `.prose ol` 定了 padding-left: 19px，
+        # 嵌套的 ul 会吃浏览器默认的 40px，缩进比外层还深一倍。样式表是**共用文件**，
+        # 为一页图注去动它不划算，所以就地写死这两条。
+        '<ul style="margin:6px 0 0;padding-left:17px">' + ''.join(_bullets) + '</ul>'
+        '<b>三类理由的区别要紧：</b>「源头未印」是官方那时根本没发这个数，'
+        '「口径切换」是同一件事换了定义（旧列同期停发、页面必须打断点），'
+        '「披露扩充」是新增行、旧行照常。<b>没有任何一列属于「产品那时才上线」</b>——'
+        'SPI 200、国债期货、Centre Point 在 2016-01 之前很久就在跑了，'
+        '起点差异全部来自文档本身的变更。'
+        '<b>一律不许拿别的列相加去补左边那段。</b>最容易被误会的是 '
+        '<code>value_cash_onmarket_audbn</code>（仅场内成交额）：它可由'
+        '「连续竞价 + 集合竞价 + Centre Point」三项相加倒推'
+        '（2017-09 算出来 80.829，与官方 2017-10 首次印出的 80.296 量级一致），'
+        '但那是派生量，写进 series 就再也分不清哪个数是 ASX 印的、哪个是我们算的，'
+        '所以留空。<b>要看不受起点影响的现货口径，用「含场外报告」那条线。</b>')
 else:
     _NOTE_STARTS = ('本页各图的窗口自序列首月起，且每一列都从窗口左边缘就有值。')
 
@@ -747,7 +848,13 @@ if _HOLES:
           '两格的真值都能算出来（前者由官方同表的合计相减、后者由成交额 ÷ 笔数或'
           '看下一年同期报告的 pcp 列），但那都不是<b>当期官方公告原值</b>，'
           '所以一律留空。<b>断一格远好过一个看不出来的错数</b> —— '
-          '尤其 2016-09 那个错值只有真值的千分之一，画上去是一根扎到零的刺。')
+          '尤其 2016-09 那个错值只有真值的千分之一，画上去是一根扎到零的刺。'
+          '<b>这两处是全表仅有的界内空格</b>（2026-08 逐列重扫 127×55 格复核过）；'
+          '2017-04 那一期的错行还连带打空了一个不上页面的列'
+          '（<code>contracts_options_on_futures_total</code>，与 ADV 同源同因）。'
+          '2017-04 的错行已用 PDF 字符坐标坐实是**官方排版**而非解析顺序问题：'
+          '那 4 个数与小标题 <code>Options on futures volume</code> 共处同一条基线，'
+          '而本该有数的 <code>Average daily contracts</code> 行整行为空。')
 else:
     _NOTE_HOLES = None
 

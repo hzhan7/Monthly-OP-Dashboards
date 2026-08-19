@@ -221,9 +221,114 @@ def _cov_txt(col):
                                  '无空洞' if not holes else '空洞 ' + '；'.join(holes))
 
 
+#: 现货两组折线图上真正画出来的四条**分资产类别**列，顺序与 GROUPS 一致。
+#: 图注里点名哪几段没数据时只念这四条 —— 念没入图的列会让读者去图上找一条不存在的线。
+_SPOT_DRAWN = [
+    ('turnover_xetra_equities_eurbn', 'Xetra 股票'),
+    ('turnover_xetra_etp_eurbn', 'Xetra ETF/ETC/ETN'),
+    ('turnover_fwb_equities_eurbn', '法兰克福场内股票'),
+    ('turnover_fwb_structured_eurbn', '法兰克福场内结构化产品'),
+]
+
+
+def _segs(col):
+    """一列在时间轴上被空洞切成几段：返回各段的月数（一段 = 折线上的一笔）。"""
+    nz = [r['month'] for r in _rows() if _num(r, col) is not None]
+    if not nz:
+        return []
+    segs, cur = [], 1
+    for i in range(1, len(nz)):
+        if _mi(nz[i]) - _mi(nz[i - 1]) == 1:
+            cur += 1
+        else:
+            segs.append(cur)
+            cur = 1
+    segs.append(cur)
+    return segs
+
+
+def _drawn_gap_txt():
+    """四条分类线的空洞段 + 会被切成几笔，现算。
+
+    「有洞」与「洞多到画不出线」是两件事，读者需要一个量分辨；段数、最长段与
+    「长度 1 的段」（孤立点，前后都是 null，SVG 里连一个笔画都构不成）就是那个量。
+    """
+    out, lone_any = [], 0
+    for col, zh in _SPOT_DRAWN:
+        _first, _n, _cont, holes = _SPOT_COV.get(col, (None, None, None, []))
+        segs = _segs(col)
+        lone_any += sum(1 for s in segs if s == 1)
+        out.append('<b>%s</b> 缺 %s ⇒ 画成 %d 笔，最长一笔 %d 个月'
+                   % (zh, '、'.join(holes) if holes else '（无）',
+                      len(segs), max(segs) if segs else 0))
+    return ('；'.join(out) + '。'
+            + ('其中长度只有 1 个月的段共 %d 处（前后都是 null 的孤立点）：'
+               '折线画不出笔画，那几个月请看末尾核对表。' % lone_any if lone_any else ''))
+
+
+def _med(col, only=None):
+    """一列的中位数（可限定到 only 这组月份）。算不出返回 None。"""
+    v = sorted(_num(r, col) for r in _rows()
+               if _num(r, col) is not None and (only is None or r['month'] in only))
+    return v[len(v) // 2] if v else None
+
+
+def _ratio_pct(num_col, den_col):
+    """两列在**共同有值的月份**上的中位数之比（%）。「量级差多少」那句话的算术底。
+
+    取共同月份而不是各算各的全程中位数 —— 两列覆盖区间不同时，各算各的会把
+    「区间不同」混进「量级不同」里读。算不出返回 None。
+    """
+    both = {r['month'] for r in _rows()
+            if _num(r, num_col) is not None and _num(r, den_col) is not None}
+    a, b = _med(num_col, both), _med(den_col, both)
+    return None if not a or not b else a / b * 100.0
+
+
+#: 1 位小数 €bn 的四舍五入半宽。**图注里印的那个 "0.05 €bn" 也从这里取** ——
+#: 写成两处字面量就会各改各的，图注哪天说 0.05 而算式用 0.005 谁都看不出来。
+_ROUND_HALF = 0.05
+
+
+def _round_err_pct(cols, half=_ROUND_HALF):
+    """四舍五入半宽 half 落在这几列的中位数上是百分之几。
+
+    精度闸门那句话的算术底：闸门比的是每组里**最小**的值，这里给读者一个更温和的
+    中位数版本 —— 中位数都超 3%，最小值只会更糟。
+    """
+    v = [m for m in (_med(c) for c in cols) if m]
+    return None if not v else half / (sorted(v)[len(v) // 2]) * 100.0
+
+
+def _ledger_gap():
+    """(可比月数, |台账合计 − Xetra| ÷ 台账合计 的中位数 %, 最大 %)。
+
+    「台账合计与 Xetra 合计两条线为什么几乎重合」那句话的算术底 —— 那道缝就是
+    法兰克福场内。**不写死**：官方哪天改了场所构成，这个数自己会变。
+    """
+    d = []
+    for r in _rows():
+        t, x = _num(r, 'turnover_cash_total_eurbn'), _num(r, 'turnover_xetra_eurbn')
+        if t and x:
+            d.append(abs(t - x) / t * 100.0)
+    if not d:
+        return None, None, None
+    d.sort()
+    return len(d), d[len(d) // 2], d[-1]
+
+
 _NMONEY, _NCONTRACTS, _NQTY = _column_census()
 _FDN, _FDMAX, _FDMED = _fd_reconcile()
 _CALN, _CALDIFF = _calendar_gap()
+_LEDN, _LEDMED, _LEDMAX = _ledger_gap()
+#: 「为什么不按场所总额/分资产类别拆」那句话的两个量级比（现算，别写死）。
+_R_VENUE = _ratio_pct('turnover_fwb_eurbn', 'turnover_xetra_eurbn')
+_R_CLASS = _ratio_pct('turnover_fwb_structured_eurbn', 'turnover_xetra_equities_eurbn')
+#: 1 位小数 €bn 的四舍五入半宽落在法兰克福分类列上是百分之几（精度闸门阈值 3%）。
+_R_ROUND = _round_err_pct(['turnover_fwb_equities_eurbn', 'turnover_fwb_structured_eurbn',
+                           'turnover_fwb_etp_eurbn', 'turnover_fwb_bonds_eurbn',
+                           'turnover_fwb_funds_eurbn'])
+_R_ROUND_X = _round_err_pct(['turnover_xetra_eurbn'])
 
 _NO_DECOMP_NOTE = (
     '📌 <b>本页不具备量价分解的数据条件 —— 缺的是列，不是口径。</b>'
@@ -270,8 +375,14 @@ _NOTE_TTM_CASH = (
     '<b>为什么现货这条尤其需要滚动</b>：德国现货的月度形状被复活节、'
     '圣灵降临节与年末假期推着走，各月交易日数在 18–23 天之间浮动，'
     '「当月合计」的单月同比里有一大截只是日历差。任意连续 12 个月覆盖同一套日历。'
-    '⚠️ 这一列是<b>集团台账口径</b>的现货合计（2010-01 起深史），'
-    '与上面那张 Xetra / 法兰克福分项的热力矩阵不是同一套口径，不要逐格相加对账。'
+    '⚠️ 这一列是<b>集团台账口径</b>的现货合计（2010-01 起深史），与 FWB 工作簿那条'
+    '产线彼此独立。它同时画在上面「Xetra 电子盘成交额」那张折线里 —— '
+    + ((f'与 Xetra 合计只差 <b>{_LEDMED:.1f}%</b>（{_LEDN} 个可比月的中位，最大 {_LEDMAX:.1f}%），'
+        if _LEDMED is not None else '与 Xetra 合计只差百分之几，')
+       + '两条线几乎重合是对的，不是同一列画了两遍：那道缝正是法兰克福场内，'
+         '紧随其后的那张「法兰克福场内成交额」就是把这道缝单独放大来画。')
+    + '⚠️ 缝虽小，两条线仍是**两套口径**：Xetra / 法兰克福两列出自 FWB 现货工作簿，'
+      '这一列出自集团 IR 台账，逐月能对上是回填时那道闭合闸门的结论，不是定义上的恒等。'
 )
 
 
@@ -326,11 +437,20 @@ HEADLINE = [
 # 刻意排除 turnover_xetra_structured_eurbn：**官方多数月压根不发这一格**
 # （工作簿里留空、新闻稿里印 '-'），所以它天生是一条稀疏序列，回填也救不了 ——
 # 2026-08-18 回填后它反而更稀（首月往前挪到 2016-06，中间的洞比有数的月还多，
-# 实测覆盖见 notes 里那条现算的 _cov_txt）。平滑类图型遇到 null 会把它当 0
-# 画出塌到零的假线，gs_line 还会 null.toFixed() 抛 TypeError 让该卡片之后的 exhibit 全不渲染。
+# 实测覆盖见 notes 里那条现算的 _cov_txt）。
 # 同理不入图的还有 turnover_fwb_etp / bonds / funds 三列（本来就没进过任何 exhibit）：
 # 它们在 0.03~1.0 €bn 量级，回填源里 1 位小数时代的相对误差 5%~50%，
 # build/basefill/db1_spot_2016.py 的精度闸门已经把那些格子整组丢掉，序列因此是断的。
+#
+# ⚠ 2026-08-19 更新排除理由。原来写的是「平滑类图型遇到 null 会画出塌到零的假线」——
+#   现货两组现在走的是 kind='lines'（doSmooth=false，null 是断笔），那条理由**不再成立**，
+#   留着会让下一个人以为「换个图型就能把这四列加回来」。真正的两条理由是：
+#   ① 密度：turnover_xetra_structured 在 127 个月的窗口里只有 21 个值、101 个洞，
+#      画出来是一串互不相连的孤点，而 lines 的孤立点（前后都是 null）在 SVG 里是
+#      「M 但没有 L」—— 一个像素都画不出来（assets/charts.js: polyline，markers 默认关）。
+#      有洞的线还能读，全是洞的线读不了，这不是图型能救的。
+#   ② 名额：加回去就撞 MAX_LINES。法兰克福那组现在 3 列，再塞 etp/bonds/funds 就是 6 列
+#      > 5，底座立刻退回 heat_matrix，本次拆组要修的正是这个。
 GROUPS = [
     # 头条那一列在这里再出现一次是**故意的**：头条的契约职责是「定共同最新月与门槛」，
     # 它会不会同时被画成图由底座决定。列在组里 ⇒ 底座只画组时不会丢掉旗舰序列；
@@ -430,21 +550,58 @@ GROUPS = [
     # ⚠ 这一组全是**月度总额**，不是 ADV。官方现货工作簿只发月总额；
     #   ADV = 月总额 ÷ trading_days_cash（fetch/db1.py 口径坑 7），而 trading_days_cash
     #   是慢腿列，本页不做算术，所以这里如实标成「月度总额」，别在标题里写 ADV。
-    {'zh': '现货成交额（Xetra / 法兰克福场内，月度总额，单边计）', 'cols': [
+    #
+    # ══ 2026-08-19：原本 7 列一组，现在按**场所**拆成两组 ═══════════════════════
+    # 为什么拆：7 列 > single.py 的 MAX_LINES=5 ⇒ 底座只能画 heat_matrix，而热力矩阵
+    # (a) 画的是同比不是水平值、(b) 窗口固定 WIN_HEAT=24 个月。于是 2026-08-18 那次
+    # 把 turnover_xetra_* / turnover_fwb_* 回补到 2016 年的 572 格，在页面上的全部体现
+    # 只是「矩阵里 74 个 null 变成了 0」—— 2016~2023 的水平值读者一个都看不到。
+    # 拆到每组 ≤ 5 列，底座就走折线，窗口跟着 WIN_FROM=2016-01 铺满 127 个月。
+    #
+    # 为什么按**场所**拆，而不是按「场所总额 / 分资产类别」拆：后者两组都会撞上
+    # **同轴量级差**。本机实测 2016-01~2026-07 窗口内的中位数（€bn/月）：
+    #     Xetra 合计 117.8 · Xetra 股票 101.8 · Xetra ETP 16.7
+    #     法兰克福合计 3.7 · 法兰克福股票 1.59 · 法兰克福结构化 1.08 · 台账合计 121.1
+    # 「场所总额」那组会把 3.7 和 121.1 摆在一根轴上（法兰克福那条压成零线，
+    # 振幅占画布 <2%）；「分资产类别」那组会把 1.08 和 101.8 摆在一起，更糟。
+    # 按场所拆之后，组内中位数的最大 / 最小是 121.1÷16.7 ≈ 7.2 倍与 3.7÷1.08 ≈ 3.4 倍，
+    # 三四条线都读得出来 —— 这正是页尾「图型选择规则」第 ① 条（同一张图只放同一单位
+    # **且**同量级的列）想拦的那种图；底座按单位自动拆，同单位不同量级只能在 spec 这层拆。
+    # ⚠ 上面这几个中位数是写这段注释时的实测，注释会过期而图注不会：
+    #   页面上印出来的那两个比例走 `_ratio_pct()` 现算，别拿这里的数去核页面。
+    #
+    # 台账合计放在 Xetra 这一组：它 = Xetra + 法兰克福（回填时逐月过了闭合闸门），
+    # 两条线几乎重合（差多少由 `_ledger_gap()` 现算后印进 ttm 那张的图注），
+    # 而**那道缝就是下一张图的全部内容**。
+    # 它不能自己单独成组：单列组走 gs_bar + 次轴单月同比，而这一列已经在 ttm_yoy
+    # 那张（Exhibit「集团台账口径现货成交额」）画了滚动同比 —— 同一列同一页两种同比口径
+    # 正是 CONTRACT §6 拿 cme Ex2/Ex8 当反例的那件事。也不能整个从 groups 里拿掉：
+    # allc = headline + groups 同时决定末尾核对表，拿掉它表里就没有这一列了。
+    {'zh': 'Xetra 电子盘成交额（月度总额，单边计）', 'cols': [
         {'col': 'turnover_xetra_eurbn', 'zh': 'Xetra 电子盘合计',
          'unit': 'EUR bn/month', 'fmt': 'f1'},
-        {'col': 'turnover_fwb_eurbn', 'zh': '法兰克福场内合计',
-         'unit': 'EUR bn/month', 'fmt': 'f2'},
         {'col': 'turnover_xetra_equities_eurbn', 'zh': 'Xetra 股票',
          'unit': 'EUR bn/month', 'fmt': 'f1'},
         {'col': 'turnover_xetra_etp_eurbn', 'zh': 'Xetra ETF/ETC/ETN',
          'unit': 'EUR bn/month', 'fmt': 'f1'},
+        {'col': 'turnover_cash_total_eurbn', 'zh': '集团台账口径合计（深史，2010-01 起）',
+         'unit': 'EUR bn/month', 'fmt': 'f1'},
+    ]},
+
+    # ⚠ 这一组三条线的**中间大洞是真的**（法兰克福分类列 2017-06~2022-04 整段没有）。
+    #   底座对「窗口内有 null」的组自动降级到 kind='lines'（doSmooth=false，null 是断笔），
+    #   横轴仍由 win_long() 逐月铺开、缺月留 null —— 绝不能把「有值的月」拼成横轴，
+    #   那会把 2017-05 与 2022-05 画成相邻格（exchanges-eu Ex12 栽过，CONTRACT 规矩 3）。
+    #   lines_endlabels 属 mrwin.DENSE，吃不了中间的洞，所以这一组**永远不许**凑够
+    #   「逐点稠密」去换平滑图型。缺哪几段、为什么缺，见 notes 里由 `_drawn_gap_txt()`
+    #   现算的那一条（段数 / 最长段 / 孤立点都是当场从 CSV 数出来的，不写死）。
+    {'zh': '法兰克福场内成交额（月度总额，单边计）', 'cols': [
+        {'col': 'turnover_fwb_eurbn', 'zh': '法兰克福场内合计',
+         'unit': 'EUR bn/month', 'fmt': 'f2'},
         {'col': 'turnover_fwb_equities_eurbn', 'zh': '法兰克福场内股票',
          'unit': 'EUR bn/month', 'fmt': 'f2'},
         {'col': 'turnover_fwb_structured_eurbn', 'zh': '法兰克福场内结构化产品',
          'unit': 'EUR bn/month', 'fmt': 'f2'},
-        {'col': 'turnover_cash_total_eurbn', 'zh': '集团台账口径合计（深史，2010-01 起）',
-         'unit': 'EUR bn/month', 'fmt': 'f1'},
     ]},
 
     # 与上面 adv_eurex_* / oi_eurex_* 是**两套并行口径**，永不互校。
@@ -580,8 +737,12 @@ SPEC = {
 
     # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
     # 两条腿各一张：Eurex 衍生品（快腿，2008-01 起）与集团台账口径现货（慢腿，2010-01 起）。
-    # 两条 level 列在 groups 里分别落在「5 列同轴的 lines」与「7 列的热力矩阵」里，
-    # 都不是单桶 gs_bar ⇒ 这两张滚动图不会与任何一张单月同比图重复。
+    # 两条 level 列在 groups 里分别落在「5 列同轴的 lines」与「4 列同轴的 lines」
+    # （2026-08-19 之前是「7 列的热力矩阵」）里，都不是单桶 gs_bar
+    # ⇒ 这两张滚动图不会与任何一张单月同比图重复。
+    # ⚠ 拆组时务必保住这条：turnover_cash_total_eurbn 一旦落单成组，底座会给它
+    #   gs_bar + 次轴**单月**同比，同一列同一页立刻有了两种同比口径（CONTRACT §6 第 3 条
+    #   点名的 cme Ex2/Ex8 就是这个形状），tools/check_yoy_caliber.py 也会跟着响。
     'ttm_yoy': [
         {'zh': 'Eurex 衍生品成交量',
          'granularity': 'daily_avg',      # 官方工作簿直接发 Daily average
@@ -628,7 +789,55 @@ SPEC = {
         'stock: True 的缺省语义是配月末汇率，而这几列跨币种换算应配**月均汇率**。'
         '本页是 EUR 本币页、不做换算，所以不影响当前呈现；notional.py 接手之前必须先解决这个冲突。',
 
-        '⚠ 现货那一组是**月度总额**不是 ADV。官方现货工作簿只发月总额；'
+        '📈 <b>现货成交额 2026-08-19 从一张热力矩阵改成两张折线，'
+        '2016~2023 的水平值这才真的画在了页面上。</b>'
+        '2026-08-18 那次把 Xetra 与法兰克福两条产线回补到 2016 年 —— 实测覆盖 '
+        '<code>turnover_xetra_eurbn</code>（' + _cov_txt('turnover_xetra_eurbn')
+        + '）、<code>turnover_fwb_eurbn</code>（' + _cov_txt('turnover_fwb_eurbn')
+        + '）。但当时七列同组、超过「一张图最多 5 条靠颜色区分的序列」的上限，'
+          '底座只能画热力矩阵；而矩阵格里是<b>同比</b>不是水平值、窗口又固定在近 24 个月，'
+          '于是那次回补在页面上的全部体现只是「矩阵里少了几十个空格」，'
+          '<b>2016~2023 那段水平值一格都看不见</b>。'
+          '现在按<b>场所</b>拆成两组（Xetra 电子盘 4 列、法兰克福场内 3 列），'
+          '两组都在上限之内 ⇒ 走折线，横轴一路铺回 2016-01。'
+          '为什么不按「场所总额 / 分资产类别」拆：那样两组都会把量级差一两个数量级的列'
+          '摆到同一根轴上（现算：法兰克福合计的中位数只有 Xetra 合计的 '
+        + (('<b>%.1f%%</b>' % _R_VENUE) if _R_VENUE else '百分之几')
+        + '、法兰克福结构化产品只有 Xetra 股票的 '
+        + (('<b>%.1f%%</b>' % _R_CLASS) if _R_CLASS else '百分之一二')
+        + '），小的那条会压成一条贴着零线的直线 —— 那只是把「看不见」换了个形状。'
+          '按场所拆之后每组内部的极差都在一个数量级以内，三四条线都读得出来。',
+
+        '⚠ <b>分资产类别那几条线中间是断的 —— 不是抓漏，是官方当年就没有。</b>'
+        '现货两组走的是<b>不平滑</b>的 <code>lines</code> 图型：横轴由窗口<b>逐月</b>铺开，'
+        '缺月留 null、折线在那里断笔。<b>绝不</b>把「有值的月」拼起来当横轴 —— '
+        '那会把 2017-05 与 2022-05 画成相邻的两格（假时间轴）。现算：'
+        + _drawn_gap_txt()
+        + '成因分三层，实测都在 <code>build/basefill/db1_spot_2016.py</code> 的 docstring 里：'
+          '① <b>官方那几年根本不发分场所的分类拆分</b> —— 2018-04 及更早的月度现货新闻稿'
+          '是散文，只给得出两个场所总额（稿里那组分类数是 Xetra + 法兰克福 + Tradegate '
+          '<b>三</b>场所合计，与本仓这两条场所列不是一个口径，不能拿来充数）；'
+          '能给满精度拆分的存档工作簿只有 2016-06、2016-08~2017-05 与 2022-05 之后的若干期，'
+          '中间那几年一期都没有 —— 两条 Xetra 分类线上 2017-06~2018-04 那个洞就是它。'
+          '② <b>四个月官方没发月度稿</b>（2017-12、2018-06、2018-07、2019-12）：'
+          '这几个月的场所总额是从次年同月那篇的「去年同月」对照行捡回来的，'
+          '而那一行只有总额、没有分类 —— Xetra 分类线上 2018-06~2018-07 与 2019-12 '
+          '那三个洞就是它。'
+          '③ <b>精度闸门</b>：2018-05~2022-07 的新闻稿只印 1 位小数 €bn，四舍五入半宽 '
+        + ('%g €bn' % _ROUND_HALF)
+        + ' 落在法兰克福那五条分类列（equities / etp / bonds / funds / structured）'
+          '上是 '
+        + (('<b>±%.1f%%</b>' % _R_ROUND) if _R_ROUND else '百分之几')
+        + '（各列中位数的中位；闸门比的是每组里最小的那个值，只会更糟），'
+          '超过闸门的 3% ⇒ 整组丢弃。'
+          '与其入库一个连环比方向都可能读反的数，不如让线断在那里。'
+          '⇒ 反过来，两条<b>场所总额</b>位数绰绰有余（同样 '
+        + ('%g €bn' % _ROUND_HALF) + ' 落在 Xetra 合计上只有 '
+        + (('±%.2f%%' % _R_ROUND_X) if _R_ROUND_X else '万分之几')
+        + '），所以它们 2016-01 起 127 个月无洞 —— 那 96 个月的回补在这两张图上是'
+          '<b>连续、可读的水平值</b>，不必再退到表格视图去查。',
+
+        '⚠ 现货那两组是**月度总额**不是 ADV。官方现货工作簿只发月总额；'
         'ADV = 月总额 ÷ trading_days_cash，官方新闻稿印的 ADV 正是这个商。'
         + ((f'本机最新一个两列都有值的月是 {_ADVM}：'
             f'turnover_xetra_eurbn = {_ADVT:.3f} ÷ {_ADVD:.0f} 个现货交易日 = {_ADVV:.3f} €bn/日。'
@@ -662,8 +871,12 @@ SPEC = {
 
         'turnover_xetra_structured_eurbn 刻意不入图：官方多数月本来就不发这一格'
         '（工作簿留空、新闻稿印 "-"），本机实测 ' + _cov_txt('turnover_xetra_structured_eurbn')
-        + '。平滑类图型遇到 null 会把它当 0 画出塌到零的假线。'
-        '同样不入图的还有 turnover_fwb_etp / bonds / funds（' + _cov_txt('turnover_fwb_etp_eurbn')
+        + '。<b>不入图的理由不是「怕平滑图型把 null 当 0」</b>（现货两组走的是不平滑的 '
+          'lines，null 就是断笔）：是这条序列洞比值多，画出来是一串前后都是 null 的孤点，'
+          '而孤点在折线里连一个笔画都构不成 —— 有洞的线还能读，全是洞的线读不了。'
+          '再者法兰克福那组只剩 2 个名额，加回 3 条就重新越过 5 条线的上限、'
+          '整组退回热力矩阵，正好把这次拆组要修的问题原样退回去。'
+          '同样不入图的还有 turnover_fwb_etp / bonds / funds（' + _cov_txt('turnover_fwb_etp_eurbn')
         + '）—— 它们在 0.03~1.0 €bn 量级，官方新闻稿的位数不够，回填时被精度闸门整段丢弃。',
 
         '成交额一律**单边计**（single-counted）：FWB 工作簿「Explanation Report」表与 IR 台账 PDF '
@@ -686,7 +899,7 @@ SPEC = {
             'turnover_xetra_equities_eurbn', 'turnover_xetra_etp_eurbn',
             'turnover_fwb_equities_eurbn', 'turnover_fwb_structured_eurbn')) + '。',
 
-        '⚠ <b>现货那一组有精度分层，跨年比要知道哪一段是四舍五入值。</b>'
+        '⚠ <b>现货那两组有精度分层，跨年比要知道哪一段是四舍五入值。</b>'
         '2016-01~2023-12 不是本仓抓的，是 build/basefill/db1_spot_2016.py 一次性回填的：'
         '满精度（官方工作簿原值）只有 2016-06、2016-08~2017-05、2022-01~2024-05 与 2024-12 起；'
         '其余月份取自同站<b>月度现货新闻稿</b>，2016-01~2022-07 是 1 位小数 €bn、'

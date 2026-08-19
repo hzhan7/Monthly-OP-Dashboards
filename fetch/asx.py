@@ -166,16 +166,31 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
         `Average daily value on-market ($bn)`   → `On-market average daily value ($bn)`
         `Average daily value ($billion)`        → `Total average daily value ($billion)`
     唯独 `On-market value`（当月 on-market 成交额）2017-10 之前**官方没印过**。
-    另外 `S&P/ASX 200 VIX` 行 **2019-10** 才出现，`Entities de-listed` 等四行 **2024-05** 才出现。
+    2026-08 复核：2016-01…2017-09 共 21 期缓存 PDF 逐期扫过行名，`On-market value`
+    一次都没出现，而同期 `Total value` / `Average daily value on-market` 21/21 都在
+    ⇒ **是源头没印，不是解析器没认出来**，`since='2017-10'` 是对的。
+    另外 `Total cash margins held on balance sheet` 行 **2019-10** 才出现
+    （2019-09 及更早只逐项印 `- ASX Clear` / `- ASX Clear (Futures)` /
+    `Cash equivalents…`，没有合计行，44 期逐期核过），
+    `Entities de-listed` 等三行 **2024-05** 才出现（旧行一行没停 ⇒ 是新增不是切换），
+    上市融资在 **2023-10**、保证金在 **2024-08** 是**旧列停印 + 新列开印**的同期切换
+    （2023-09/2023-10 与 2024-07/2024-08 四期逐期核过）。
     ⇒ 每一列都带 `since`/`until` 月份边界（`COLUMN_SPEC`），越界为空是合法的，
     界内为空一律抛异常。
     2026-08 起点前推到 2016-01 之后，这些 `since` 全都落在 series 内部，于是**同一张图上
     会出现起点不同的两条线**：现货成交额那张图里「含场外报告」自 2016-01、「仅场内」自
-    2017-10；参与者数那两列自 2016-07（2016-01…2016-06 的 MAR 里根本没有
-    `…Participants at month end` 这一行，实测 2016-01 / 2016-06 均无）。
+    2017-10；参与者数那两列自 2016-07 —— 2016-01…2016-06 的 MAR 正文到 SETTLEMENT 段
+    就结束了（共 6 页），**整个 PARTICIPANTS 段都不存在**，那时参与者数印在**另发的
+    ASX Compliance activity report** 里（2016-02…2016-05 期 MAR 末页明写
+    "A separate ASX Compliance activity report … has also been released today"）；
+    2016-07 那一期起 MAR 并入 LISTINGS COMPLIANCE ACTIVITY / PARTICIPANTS /
+    ENFORCEMENT 三段，这一行才有。6 期逐期核过，不只抽查 2016-01 / 2016-06。
     这是官方披露起点的差异，**不是数据缺失**，更不许用 open+auctions+centre point
     相加去把 `value_cash_onmarket_audbn` 倒推补齐（2017-09 实测能算出 80.829，与官方
     2017-10 的 80.296 量级一致 —— 但那是派生量，写进 series 就分不清哪个是官方印的）。
+    ⚠ **`vix_asx200_avg` 是这条规矩的例外，而且是唯一的例外** —— 那个数在 2019-10
+    之前虽然不是表行，却**印在同一份公告的正文要点里**，所以它不属于「源头未印」，
+    见下面口径坑 21。别把「表里没这一行」直接当成「官方没发这个数」。
 
 16. **2017-04 那一期 PDF 的期货期权小块整体错行，本模块拒绝解析它。** 实测该页
     `Options on futures volume`（小标题行）上挂着 `Total contracts` 的值，
@@ -228,6 +243,24 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     夹在 2017-04 的 2,695.544 与 2017-06 的 2,924.287 中间）；
     2018-01 期把 pcp(2017-01) 的参与者数印成 122，而 2017-01 当期印的是 121
     （2016-07…2017-05 连续 11 个月都是 121）。
+
+21. **`S&P/ASX 200 VIX` 在 2019-10 之前不是表行，而是正文要点里的一句话 —— 同一个数。**
+    这一列 2026-08 之前从 2019-10 才起，看着像「官方那时没发」，实际是**抓取器只认表行**：
+        2019-09 及更早：只有正文 "…(as measured by the S&P/ASX 200 VIX) in September
+                        was an average of 12.7…"（2017-02 起句式）／
+                        "…increased in January to an average of 22.1 (compared to 18.0
+                        in December)."（2016-01…2017-01 句式）
+        2019-10 起    ：正文那句照写，**同时**多了表行 `S&P/ASX 200 VIX (average daily value)`
+    两处一致性是实测出来的，不是假设：26 期两者同时存在（2019-10 / 2019-11 /
+    2024-09…2026-07），**26/26 逐位相同**，精度同为 1 位小数。
+    ⇒ `_vix_from_prose()` 在表里取不到时从正文取，`since` 因此是 2016-01 而不是 2019-10；
+    两处都取到时**必须相等，否则抛异常**（把上面那条实测钉成永久闸门，官方哪天改口径
+    就当场炸，而不是让两种数悄悄混进同一列）。回补进 series 的 45 格（2016-01…2019-09）
+    仍然是**当期官方公告原值**：同一份 PDF、同一个月、官方自己印的数字，
+    既不是换算也不是派生，更不是拿后期报告的重述值倒填。
+    ⚠ 抓正文那句时**必须校验句子里的英文月名 = 数据月**：2016-01…2017-01 那种句式里
+    句尾还挂着一个 pcp 数（"compared to 18.0 in December"），两个数字同在一句，
+    位置不能当判据，只有月名能。
 
 ━━ 依赖 ━━ pymupdf（import 名 fitz）。不依赖 pandas / requests。
 """
@@ -315,6 +348,20 @@ _PUB_DATE = re.compile(
 # 分品种辅源：链接印在 MAR 正文里，直接从 PDF 文本里抠
 _SFE_LINK = re.compile(
     r'https?://[^\s]*monthly-futures-markets-report-(\d{8})\.pdf', re.I)
+
+# 口径坑 21：`S&P/ASX 200 VIX` 的月内日均值在 **2019-10 之前不是表行，而是正文要点里的一句话**。
+# 两种句式（实测就这两种，2016-01…2026-07 共 71 期 PDF 逐期跑过）：
+#     "…(as measured by the S&P/ASX 200 VIX) increased in January to an average of 22.1
+#      (compared to 18.0 in December)."      2016-01…2017-01
+#     "…(as measured by the S&P/ASX 200 VIX) in September was an average of 12.7…"
+#                                            2017-02 起
+# `mid` 那一段**必须含数据月的英文月名**，这是防止抓到句尾 "(compared to 18.0 in December)"
+# 那个 pcp 数的唯一屏障 —— 两个数字都在同一句里，位置不能当判据。
+# `[^.]` 顺带保证不会跨句：两种句式里，月名与 "average of" 之间从来没有句点。
+_VIX_PROSE = re.compile(
+    r'S&P\s*/\s*ASX\s*200\s*VIX\s*\)'
+    r'(?P<mid>[^.]{0,120}?)'
+    r'\baverage(?:d|\s+of)\s+(?P<v>\d+(?:\.\d+)?)', re.I)
 
 
 class AsxFetchError(RuntimeError):
@@ -606,8 +653,11 @@ COLUMN_SPEC = [
       'average daily value on-market and trade reporting'], None, None),
     ('avg_value_per_trade_aud', 'trading - cash markets', 'cash market value',
      ['average value per trade'], None, None),
+    # 表行 2019-10 才有；2016-01…2019-09 由 `_vix_from_prose` 从正文要点取同一个数
+    # （口径坑 21），所以 since 是 2016-01 而不是 2019-10 —— 界内为空照样炸。
+    # 2016-01 这个下界是**实测下界**：本仓 SERIES_START 就是 2016-01，再往前没验过。
     ('vix_asx200_avg', 'trading - cash markets', 'cash market value',
-     ['s&p/asx 200 vix (average daily value)'], '2019-10', None),
+     ['s&p/asx 200 vix (average daily value)'], '2016-01', None),
     # ── ASX 24 期货与期货期权 ────────────────────────────────────────
     ('trading_days_futures', 'trading - futures', None,
      ['futures and options total trading days'], None, None),
@@ -736,11 +786,41 @@ def _values_for(rows, i):
     return []
 
 
-def parse_mar(path, skip_first_page=False):
+def _vix_from_prose(doc, month, skip_first_page=False):
+    """正文要点里的 `S&P/ASX 200 VIX` 月内日均值 -> 值字符串；读不出返回 None（口径坑 21）。
+
+    2019-10 起这个数**同时**印在表里和正文里，2019-09 及更早**只印在正文里**。
+    两处从来没有不一致过：实测 26 期两者都在（2019-10 / 2019-11 / 2024-09…2026-07），
+    26/26 逐位相同、精度同为 1 位小数。所以正文那句话给出的不是「近似」也不是
+    「另一种口径」，就是同一个数的另一处印刷 —— 拿它入库仍然是**当期官方公告原值**，
+    不是换算、不是派生、也不是后期重述。
+
+    `parse_mar` 只在表里取不到时才调它，且两边都取到时会撞一次（见 `parse_mar`）：
+    那道撞法把上面这 26 期的实测结论钉成了一条永久闸门，官方哪天让两处不一致就当场炸。
+
+    month 为 None（有人只想看表行解析结果）时直接返回 None —— 没有数据月就无法
+    校验句子说的是不是本月，宁可不给值。
+    """
+    if not month:
+        return None
+    text = re.sub(r'\s+', ' ', '\n'.join(
+        doc[i].get_text() for i in range(doc.page_count)
+        if not (skip_first_page and i == 0)))
+    want = datetime.strptime(month, '%Y-%m').strftime('%B').lower()
+    for m in _VIX_PROSE.finditer(text):
+        if want in m.group('mid').lower():
+            return _num(m.group('v'))
+    return None
+
+
+def parse_mar(path, skip_first_page=False, month=None):
     """解析一份 MAR PDF，返回 {csv 列名: 值字符串}（缺的键就不出现）。
 
     skip_first_page：更正稿专用（口径坑 17）。更正稿第 1 页是「错误值 / 正确值」
     对照表，**错误值就印在那一页**，不跳过就会把错值当本月值读走。
+
+    month（'YYYY-MM'，可选）：只被正文要点里的 VIX 用到（口径坑 21）——
+    要靠英文月名确认那句话说的是本月而不是 pcp。不给就不取正文 VIX。
     """
     doc = fitz.open(path)
     try:
@@ -749,6 +829,7 @@ def parse_mar(path, skip_first_page=False):
             if skip_first_page and pi == 0:
                 continue
             rows.extend(_page_rows(doc[pi]))
+        vix_prose = _vix_from_prose(doc, month, skip_first_page)
     finally:
         doc.close()
 
@@ -784,6 +865,20 @@ def parse_mar(path, skip_first_page=False):
             if v:
                 out[name] = v[0]        # 口径坑 4：永远取值列从左数第 1 个
                 break
+
+    # 口径坑 21：VIX 在 2019-10 之前只印在正文要点里。
+    # 两处都有时**必须逐位相同** —— 这条撞法是把「正文那句话就是表里那个数」
+    # 从 26 期实测结论升格成永久闸门：官方哪天让两处不一致（换了口径、
+    # 或正文改印月末值），这里当场炸，而不是让两种数悄悄混在同一列里。
+    if vix_prose is not None:
+        got = out.get('vix_asx200_avg')
+        if got is None:
+            out['vix_asx200_avg'] = vix_prose
+        elif float(got) != float(vix_prose):
+            raise AsxFetchError(
+                '%s 的 S&P/ASX 200 VIX 表行印 %s、正文要点印 %s —— 两处不一致，'
+                '说明官方把其中一处改了口径（见模块 docstring 口径坑 21），拒绝写入'
+                % (month or os.path.basename(path), got, vix_prose))
     return out
 
 
@@ -1092,7 +1187,7 @@ def _fetch_one(month, urls, cache_dir, want_sfe=True):
                  if urls.get('orig') else None)
 
     path = corr_path or orig_path
-    rec = parse_mar(path, skip_first_page=bool(corr_path))
+    rec = parse_mar(path, skip_first_page=bool(corr_path), month=month)
     # 先剔掉「官方那一期自己印错」的单格（口径坑 19），再校验 —— 顺序不能反：
     # 错值留在 rec 里会让 `_check_identities` 报一条与真实原因无关的恒等式失败。
     _drop_source_errors(month, rec)

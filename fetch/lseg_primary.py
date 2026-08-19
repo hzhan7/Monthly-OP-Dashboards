@@ -63,7 +63,11 @@ xlsx 零失败（8 线程），满足 cron 无人值守。
 发布节奏（实测，不是官网承诺）
 ════════════════════════════════════════════════════════════════════════════
 判据取工作簿 `docProps/core.xml` 的 `dcterms:created`（文件生成时刻），
-样本 = START(2018-05) 起两个市场**全部 197 期**，逐期解出来的，不是抽样：
+样本 = **2018-05 起两个市场共同覆盖的全部 197 期**，逐期解出来的，不是抽样。
+⚠ AIM 2017-01…2018-04 那 16 期**不进这个样本**：它们是 2026-08 一次性回补下载的，
+created 已经被官方重传污染 —— 2017-01 是 +97 天、2017-02 +69、2017-03 +25，
+而同一批里 2017-07/10/11、2018-02/04 又都是 +1，中位 +5。这种「有的 +1 有的 +97」
+不是当年的发布节奏，是重传时刻的分布。拿它去调闸门只会得到一个假的长尾。
 
 | 市场        | 样本 | 最早 | 中位 | P75 | P90 | 最晚 | ≤3 天 | ≤5 天 | ≤9 天 | ≤12 天 |
 |-------------|-----|-----|-----|-----|-----|-----|-------|-------|-------|--------|
@@ -162,18 +166,24 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
    两处在别处都拿不到：年度块对**往年**只给年末数，只有当年那一行才是月末数，
    所以 2019-09 的 AIM 月末市值、2022-12 的 Main Market 全套存量，
    在后续任何一期 factsheet 里都不存在。
-   ⇒ 这两个月**整行不写**（见模块常量 KNOWN_SOURCE_GAPS），而不是写半空行或 NaN。
-     除这两个白名单月份外，任何一格解析为空仍然直接 raise —— 白名单是为了让模块
-     能跑完，不是为了让它对新出现的空格睁一只眼。
+   ⇒ 这两个洞**各自只砸一个市场**（键是 (市场, 月份)，见模块常量 KNOWN_SOURCE_GAPS）：
+     2022-12 的 AIM factsheet、2019-09 的 Main Market factsheet 都好端端地在。
+     缺的那一侧整段列留空，另一侧照写 —— 按月**整行**跳过等于替官方多挖一个洞
+     （2026-08-19 前的版本就是这么干的，白丢了 MM 2019-09 与 AIM 2022-12 两段）。
+     除这两个白名单条目外，一个市场只要出场，它那一段列任何一格解析为空仍然直接
+     raise —— 白名单是为了让模块能跑完，不是为了让它对新出现的空格睁一只眼。
+   ⚠ 半空的那一侧**不许拿别处凑**：AIM 2019-09 的家数其实是有的（753/129/882），
+     但市值那一格拿不到，本模块不写「只差一列」的半段 —— 一段列要么格格齐，要么整段空。
    另：AIM 2023-04 那期年度块用了另一套子标签（`Further Issues` 而不是 `Further`），
    不是洞，已在解析里兼容两种写法。
 
 7. **xlsx 只回溯到某个月，再往前是 .xls / .pdf，本模块不碰。**
-   索引里 2016 年以前多数月份只有 .xls（BIFF）与 .pdf。xlsx 起点：
-   AIM 2016-11、Main Market 2018-05，所以 START 取 2018-05（两边都有 xlsx 的
-   第一个月）。更早的月份要么没有 xlsx，要么版式差异大，遇到直接 raise 而不猜。
-   实测：2018-05 ~ 2026-07 共 99 个月，AIM 99 期 + Main Market 98 期 = 197 个 xlsx，
-   **196 个解析通过**，唯一不通过的就是上面 (b) 的 AIM 2019-09。
+   索引里 2016 年以前多数月份只有 .xls（BIFF）与 .pdf（2026-08-19 实测：AIM 索引
+   145 个 xlsx / 214 个 xls / 214 个 pdf，Main Market 97 / 112 / 112）。
+   xlsx 起点：AIM 2016-11、Main Market 2018-05 —— 但**能读的**起点见口径坑 10。
+   更早的月份要么没有 xlsx，要么版式差异大，遇到直接 raise 而不猜。
+   实测（2026-08-19，含本轮回补）：AIM 2017-01 起 115 期解析通过 114 期
+   （不过的就是上面 (b) 的 AIM 2019-09）、Main Market 2018-05 起 98 期全过。
    期间版式至少换过三代（表头对调、列号漂移、AIM 的 Total 列在 2021 与 2026 位置不同），
    全靠标签定位吃下来，没有一处按行号 / 列号写死。
 
@@ -186,6 +196,33 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
    工作簿表头原文 `Market Value (£m)` / `Money Raised (£m)`。
    Main Market 2026-07 市值 4,253,398.855454 —— 这是 £4.25tn 写成百万英镑。
    列名一律带 `_gbp_mn` / `_count` 后缀，别在下游再猜一次。
+
+10. **两个市场的可读起点差 16 个月，共用一个 START 会白扔 AIM 的 16 期。**
+    这一条是 2026-08-19 补的，之前模块只有一个全局 `START = '2018-05'`，
+    而且 `fetch_rows()` 里写着「两个市场必须同时有，否则整月跳过」——
+    两者叠加，AIM 单独能拿的 2017-01…2018-04 那 16 个月一起被丢掉了。
+    现在起点按市场分开（模块常量 `MARKET_START`），一行里两个市场各写各的那一段列。
+
+    · **AIM 2017-01 起可读，且解析器一行都不用改。**
+      2026-08-19 实测：2017-01…2018-04 全部 16 期用现有 `_parse_factsheet()` 直接
+      通过（含月度块闭合检验），UK + International == Total 在家数与新上市两组上
+      16 期零违例。跨期对账也过：2017-12 那一行的年末存量（808/152/960，
+      市值 106,882.266107）与 2018-05 / 2019-01 / 2020-06 / 2026-07 四期后来的
+      factsheet 年度块里印的 2017 行**逐位相同**（后来那几期把市值印成 106882.3，
+      是它们自己少印了小数位，入库取的是当期原值这个更精确的写法）；
+      2018-01…2018-04 的新上市 / 退市家数与 2018-05 那期月度块也逐格相同。
+    · **AIM 2016-11 / 2016-12 虽然是 xlsx，但读不了 —— 别把起点往前挪。**
+      那两期是老版式：标题格写的是日期序列值（`2016-11-30 00:00:00`）而不是
+      「November 2016」，分组名写 `Number of Admissions` 而不是 `New Issues`。
+      现有解析器在 `_check_title()` 那一步就 raise，这是对的 —— 老版式要另写一套
+      映射，不是把校验放宽。
+    · **再往前是 .xls（BIFF）**，读它要给仓库加 `xlrd` 依赖。加依赖是仓库级决定，
+      本模块不偷偷加；真要啃老版式时，先在 requirements.txt 里把理由写清楚。
+      ⚠ 啃之前必须先解决 Main Market 的口径陷阱：老版式 .xls 里 `mm_companies_*`
+      有两个都叫「家数」的数，只有 `T8 Co's by value` 的 `Totals*` 与现有序列接得上
+      （2018-04 = 946 → 2018-05 = 944），Summary 的 `Total companies`（987）
+      会在接缝上造一个 −4.4% 的假台阶。而 `mm_companies_intl_eop_count` 的旧口径
+      来源至今没找到 —— 找不到就让这一列从 2018-05 起，别为了凑齐一段列去猜。
 
 ════════════════════════════════════════════════════════════════════════════
 列口径表
@@ -208,6 +245,10 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
 | aim_*                             | 同构，AIM 市场                | AIM since launch 等  |
 | （AIM 无市值 UK/Intl 拆分，故只有 aim_marketcap_eop_gbp_mn）              |
 
+⚠ **两段列的起点不同**（口径坑 10）：`aim_*` 11 列从 2017-01 起，`mm_*` 13 列从
+2018-05 起。CSV 左上角 2017-01…2018-04 的 mm_* 一片空白是官方归档深度的真实形状，
+不是抓漏 —— 下游画图必须按**列**自己的起点裁窗口，不能拿「表有 115 行」当每列都有 115 个观测。
+
 「新上市」= 官方口径 New Issues，含 IPO、从另一个板转板、反向收购、introduction，
 **不等于 IPO**；两份专表都给了 by Type 拆分，需要纯 IPO 时得另开列，本模块没取。
 所有列来源等级 **[A] 公司/交易所原始披露** —— 全部出自 LSEG 自家 factsheet，
@@ -218,9 +259,10 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
 ════════════════════════════════════════════════════════════════════════════
 · 工作簿标题月 == 索引给的月份（防 `_N` 重传链接与内容错位）
 · 月度块逐月之和 == `Sum:` / `YTD Total` 行（新上市家数、注销家数两列）
-· 每一行的每一列都非空，否则 raise
+· **出场的那个市场**，它那一段列每一格都非空，否则 raise
+  （某个市场整段缺席是允许的 —— 起点没到 / 官方的洞；半段缺席不允许）
 另外两条是**跑完之后的事后核对**，不在模块里断言，记在这里备查
-（2026-08-07 对 97 行 × 全部 4 组做过，零违例）：
+（2026-08-19 对 115 行 × 全部 4 组重做过，零违例）：
 · UK + International == Total（家数两组 + 主板市值一组 + 新上市家数两组）
 · 二次运行 series/lseg_part_primary.csv 字节级相同
 """
@@ -250,13 +292,25 @@ MARKETS = [
     ('AIM', 'aim', 'AIM',         'AIM factsheet',         'since launch'),
 ]
 
-# 两个市场都有 xlsx 的第一个月（AIM 从 2016-11 就有，Main Market 要等到这里）。
-START = '2018-05'
-# 官方源自己缺的月份 —— 见口径坑 6。整行不写，不写半空行。
+# 每个市场自己的起点 —— **两个市场共用一个 START 是错的**（口径坑 10）。
+# 官方索引里 AIM 的 xlsx 归档比 Main Market 深 16 个月，共用起点等于把 AIM 那 16 个月
+# 白扔。值的含义：「这个市场从这个月起，用本模块现有解析器可以零改动读通」。
+MARKET_START = {
+    'MM':  '2018-05',   # 索引里 Main Market 最早的 xlsx 就是这一期，再往前只有 .xls/.pdf
+    'AIM': '2017-01',   # 2016-11/12 有 xlsx 但是**老版式**（标题格写日期、用 Number of
+                        # Admissions），本模块读不了 —— 见口径坑 10，别把它往前挪
+}
+# 全模块最早可能出现的月份。只用来铺循环区间，**不是任何一个市场的起点**。
+START = min(MARKET_START.values())
+
+# 官方源自己缺的月份 —— 见口径坑 6。键是 **(市场, 月份)**，不是月份：
+# 两个洞各自只砸一个市场，砸不到另一个（2022-12 的 AIM、2019-09 的 Main Market
+# 都好端端地在），按月整行跳过等于替官方多挖一个洞。缺的那一侧整段列留空，
+# 另一侧照写 —— 宽表本来就允许列各自起点不同、各自留洞。
 # 白名单之外的任何空格仍然直接 raise，别往这里加东西来「让它跑过去」。
 KNOWN_SOURCE_GAPS = {
-    '2022-12': 'Main Market factsheet 这一期在官方索引里不存在（2022 年组只到 11 月）',
-    '2019-09': 'AIM factsheet 这一期的年度块 Market Value 格是空的，官方留白',
+    ('MM', '2022-12'): 'Main Market factsheet 这一期在官方索引里不存在（2022 年组只到 11 月）',
+    ('AIM', '2019-09'): 'AIM factsheet 这一期的年度块 Market Value 格是空的，官方留白',
 }
 
 MONTHS = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY',
@@ -814,11 +868,20 @@ def latest_month(cache_dir):
     return min(newest.values())
 
 
-def fetch_rows(cache_dir=None, start=START, end=None):
+def fetch_rows(cache_dir=None, start=None, end=None):
     """返回 [{'month':'YYYY-MM', ...列...}, ...]，按月份升序。
 
-    每一行的所有列都有值 —— 官方归档缺的月份（口径坑 6）整行不写，
-    绝不写半空行或 NaN。缺任何一个已有列一律抛 LsegPrimaryFetchError。
+    **一行 = 一个月，两个市场各写各的那一段列**（口径坑 10）。某个市场在这个月
+    没有可读的 factsheet（还没到它的 `MARKET_START`、索引里没有、或落在
+    `KNOWN_SOURCE_GAPS` 里），它那 11/13 列就整段不出现在这个 dict 里 ——
+    `write_csv()` 把它们写成空格。**空格就是空格**：不填 0、不填 NaN、不用前值。
+
+    一个市场只要出场，它那一段列就必须**格格有值**：任何一格解析为空一律抛
+    LsegPrimaryFetchError（半空的一段列是「解析悄悄坏了」，不是「官方没披露」）。
+    两个市场都缺席的月份整行不写。
+
+    `start` 缺省 None = 每个市场用自己的 `MARKET_START`；给了值就当**下限**
+    压在两个市场上（排障用，例如只重跑最近半年）。
     """
     if cache_dir is None:
         cache_dir = os.path.join(
@@ -836,24 +899,31 @@ def fetch_rows(cache_dir=None, start=START, end=None):
                                   cta, tag)
         newest[tag] = max(index[tag])
     common_latest = min(newest.values())
-    end = end or common_latest
+    # 右端也按市场各走各的：某个月只有一个市场发了，就先写那一段列，另一段留空等回补
+    # （合流层 fetch/lseg.py 是「只填空不覆盖」的外连接，这正是它要保护的场景）。
+    # `latest_month()` 仍然取 min —— 「两边都发了」是 monthly_run 闸门唯一说得清的定义。
+    end = end or max(newest.values())
+    # start 给了就是压在两个市场上的下限；没给则各用各的 MARKET_START。
+    mstart = dict((tag, max(MARKET_START[tag], start) if start else MARKET_START[tag])
+                  for tag, _p, _l, _c, _n in MARKETS)
 
     needle = {tag: nd for tag, _p, _l, _c, nd in MARKETS}
     rows, conflicts, skipped = [], [], []
-    for month in _months_between(start, end):
-        if month in KNOWN_SOURCE_GAPS:
-            skipped.append((month, KNOWN_SOURCE_GAPS[month]))
-            continue
-        missing = [tag for tag in index if month not in index[tag]]
-        if missing:
-            skipped.append((month, '官方索引里没有 %s 的 xlsx' % '/'.join(sorted(missing))))
-            continue
+    for month in _months_between(min(mstart.values()), end):
         rec = {'month': month}
         for tag, _pfx, _label, _cta, _nd in MARKETS:
+            if month < mstart[tag]:
+                continue            # 这个市场的归档还没到这里 —— 不是洞，不记 skipped
+            why = KNOWN_SOURCE_GAPS.get((tag, month))
+            if why is None and month not in index[tag]:
+                why = '官方索引里没有 %s 的 xlsx' % tag
+            if why:
+                skipped.append((month, tag, why))
+                continue
             url = index[tag][month]
             dst = _cache(cache_dir, 'lseg_primary_%s_%s.xlsx' % (tag, month))
-            # 最新一期每次重下（官方会在发布后几天内补数据），历史月份复用缓存。
-            path = _download(url, dst) if month == common_latest else _cached_download(url, dst)
+            # 该市场最新一期每次重下（官方会在发布后几天内补数据），历史月份复用缓存。
+            path = _download(url, dst) if month == newest[tag] else _cached_download(url, dst)
             parsed = _parse_factsheet(path, month, needle[tag])
             # 募资额取专表，与 Summary 月度块比对（口径坑 2）：不等只记录，不吞、不改
             for key, sumkey in [('money_new', 'sum_money_new'),
@@ -870,13 +940,15 @@ def fetch_rows(cache_dir=None, start=START, end=None):
                         '%s %s: 列 %s 解析结果为空 —— 缺列一律失败，不写 NaN'
                         % (month, tag, col))
                 rec[col] = val
-        rows.append(rec)
+        if len(rec) > 1:            # 两个市场都缺席 → 整行不写（不写只有 month 的空行）
+            rows.append(rec)
 
     if not rows:
         raise LsegPrimaryFetchError('一行都没解析出来（start=%s end=%s）' % (start, end))
     _write_conflicts(cache_dir, conflicts)
     fetch_rows.skipped = skipped
     fetch_rows.latest_month = common_latest
+    fetch_rows.market_latest = dict(newest)
     return rows
 
 
@@ -902,14 +974,19 @@ def _fmt(v):
 
 
 def write_csv(series_dir, rows):
-    """落到 series/lseg_part_primary.csv，首列 month，升序。"""
+    """落到 series/lseg_part_primary.csv，首列 month，升序。
+
+    某个市场在某个月缺席时，它那一段列写**空格**（`r` 里根本没有这些键）——
+    不写 0、不写 NaN、不用前值。左上角 2017-01…2018-04 只有 aim_* 那 11 列有值，
+    是官方归档深度的真实形状（AIM 的 xlsx 比 Main Market 深 16 个月）。
+    """
     os.makedirs(series_dir, exist_ok=True)
     path = os.path.join(series_dir, 'lseg_part_primary.csv')
     with open(path, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f, lineterminator='\n')
         w.writerow(COLUMNS)
         for r in sorted(rows, key=lambda x: x['month']):
-            w.writerow([r['month']] + [_fmt(r[c]) for c in COLUMNS[1:]])
+            w.writerow([r['month']] + [_fmt(r.get(c)) for c in COLUMNS[1:]])
     return path
 
 

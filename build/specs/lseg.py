@@ -28,13 +28,20 @@ series/lseg.csv 的 86 个数据列来自**四个互不相干的官方源**（fe
   一句「XX 是慢腿：发布比头条晚，最新月留空是正常的」，并在页尾统一点名。
 
 ━━ 头条为什么放 Tradeweb（这一条决定 data_through、LAG 与红点）━━━━━━━━━━━━━
-SINGLE_SPEC §5 的三条判据「历史长 / 发布快 / 无空洞」逐条比下来只有一个答案：
+SINGLE_SPEC §5 的三条判据「历史长 / 发布快 / 无空洞」。三条里**只有「发布快」是决定性的**，
+另外两条 2026-08-19 复量之后已经不再单指 Tradeweb（下面这三行是当天现量的，
+页面上那句话由 `_NOTE_HEADLINE` 现算，不写死 —— 数字变了图注会自己跟上）：
 
-  历史长   tradeweb 115 月（2017-01 起）> primary 97 > orderbook 66 > lch 24
-  无空洞   tradeweb 那 27 列是 86 列里**唯一零空格**的一组；
-           orderbook 前置 48 月空，primary 有 2019-09 / 2022-12 两个官方自己的洞，
-           swapclear / repoclear 各只有 12 期
-  发布快   见上表，tradeweb 是唯一进得了「次月一周内」的腿
+  历史长   orderbook 127 月（2016-01 起）> tradeweb 115 = primary 115（AIM 那 11 列
+           2017-01 起，Main Market 那 13 列 2018-05 起）> lch 24
+  无空洞   orderbook 17 列与 tradeweb 27 列**都是**零空格；primary 在自己的跨度里
+           还空着 232 格（两段列起点差 16 个月 + 2019-09 / 2022-12 两个官方自己的洞），
+           lch 空 168 格（三个法人各有各的滚动窗口）
+  发布快   见上表，tradeweb 是**唯一**进得了「次月一周内」的腿 —— 头条留在它这里
+           靠的是这一条，不是前两条
+
+⚠ 前两条既然已经不再独指 Tradeweb，就别再拿它们当头条的理由讲。真正的理由只有
+  「发布快」加下面那条硬代价 —— 这也是为什么 orderbook 追平历史长度之后头条没动。
 
 另外两条是**硬性排除**，不是偏好：
   · lch 连门槛都过不了 —— SINGLE_SPEC §3 要求共同连续历史 ≥ 24 个月，
@@ -227,6 +234,33 @@ def _span_txt():
             continue
         bits.append('<code>%s</code> %d 列 %s–%s（%d 个月有值）' % (lg, n, a, b, k))
     return '、'.join(bits)
+
+
+def _leg_blanks(leg):
+    """该腿在**自己的跨度**内还空着几格。算不出返回 None。
+
+    「零空格」这句话原先是写死在图注里的，而它随时会被回补改掉 ——
+    orderbook 补到 2016-01 之后 tradeweb 就不再是「唯一零空格的一组」了，
+    图注却还在那么说。这里改成现算：判据 = 该腿首个有值月到末个有值月之间，
+    该腿的列 × 月里有多少格是空的。同一路里各列起点不同（primary 的两个市场、
+    lch 的三个法人）会**如实计入**，因为那正是读图的人会撞上的空白。
+    """
+    cols = [c for c, lg in COLUMN_LEG.items() if lg == leg]
+    n, a, b, _k = _SPAN[leg]
+    if not cols or a is None:
+        return None
+    win = [r for r in _ROWS if a <= r['month'] <= b]
+    return sum(1 for r in win for c in cols if _num(r, c) is None)
+
+
+def _col_span(col):
+    """(首个有值月, 末个有值月, 有值月数, [跨度内的空洞月])；算不出返回 (None,)*4。"""
+    got = [r['month'] for r in _ROWS if _num(r, col) is not None]
+    if not got:
+        return (None,) * 4
+    holes = [r['month'] for r in _ROWS
+             if got[0] <= r['month'] <= got[-1] and _num(r, col) is None]
+    return got[0], got[-1], len(got), holes
 
 
 # ── build/yoy.py 的单例加载器 ──────────────────────────────────────────────
@@ -676,7 +710,8 @@ GROUPS = [
     ]},
 
     # ── 二、LSE 一级市场：Main Market 与 AIM（慢腿）─────────────────────────
-    # 家数与募资额这几列有大量 0 值月（新上市家数 97 个月里 7–62 个月为 0），
+    # 家数与募资额这几列有大量 0 值月（2026-08-19 现量：主板 98 期里 7–36 个月为 0，
+    # AIM 114 期里 9–71 个月为 0，最狠的是 AIM 新上市家数 Intl 那一列），
     # 按 CONTRACT §6.1 第 6 条属于近零基数序列：**只画水平值、不画同比**。
     # 落实办法是把它们放进多列同单位桶 → 底座画 lines（没有次轴同比），
     # 而不是让它们各自成为单桶 gs_bar 去画一条会跳到几百个百分点的金线。
@@ -736,11 +771,11 @@ GROUPS = [
 
     # Main Market 与 AIM 的增发笔数**合成一组**。这不是排版偏好，是口径：
     # 单列成桶的组底座一律画 gs_bar，而 gs_bar 的次轴写死是**单月**同比；
-    # 这两列各有 97 期、滚动口径完全算得出来，按 CONTRACT §6.1 第 1 条默认就该用滚动，
+    # 这两列分别有 98 / 114 期、滚动口径完全算得出来，按 CONTRACT §6.1 第 1 条默认就该用滚动，
     # 而第 2 条要求用单月必须给出**口径上的**理由 —— 这两列给不出（既不是比率、
     # 历史也不短、命题也不是「一个月之内会怎样」）。与其在标题上硬编一个站不住的理由，
     # 不如让它们不再单列成桶：两列同单位（issues/month）、量级只差约 2 倍
-    # （中位 57 vs 115，远在本文件「差 20 倍才拆组」那条纪律之内），
+    # （2026-08-19 现量中位 57 vs 123，远在本文件「差 20 倍才拆组」那条纪律之内），
     # 并成一个桶后底座改画 lines —— 只有水平值、没有次轴同比，
     # 于是这一页上不再出现一条无法辩护的单月同比线。
     {'zh': 'Main Market 与 AIM 当月增发笔数（同单位合图：避免各自成为单列柱图而被迫画单月同比）',
@@ -1078,11 +1113,43 @@ _NOTE_LEGS = (
       'Tradeweb 那 27 列已经是最新月而其余 59 列还空着 —— 那是发布进度，不是抓取故障。'
 )
 
+def _headline_case():
+    """头条那三条判据的**现算**说法。读不到就退回不含数字的定性版本。
+
+    原先这句话把「115 个月（其余三腿 97/66/24）、唯一零空格」写死在字面上。
+    两次回补之后（orderbook 补到 2016-01、AIM 补到 2017-01）三个数字全错、
+    「唯一」也不成立了 —— 图注于是在页面上撒了两句谎。判据本身没变，变的只是数字，
+    所以数字改成现算。
+    """
+    if not _ROWS or any(_SPAN[lg][1] is None for lg in _LEGS):
+        return ('历史最长的不再是它、零空格的也不止它一组，但它是唯一进得了'
+                '「次月一周内」的腿 —— 头条靠的是这一条。')
+    rank = sorted(_LEGS, key=lambda lg: -_SPAN[lg][3])
+    longest = rank[0]
+    zero = [lg for lg in _LEGS if _leg_blanks(lg) == 0]
+    n_tw = _SPAN['tradeweb'][3]
+    bits = ['<code>tradeweb</code> 那 27 列有 %d 个月的连续历史' % n_tw]
+    if longest != 'tradeweb':
+        bits.append('但**不是最长的** —— <code>%s</code> 有 %d 个月'
+                    % (longest, _SPAN[longest][3]))
+    if len(zero) > 1:
+        bits.append('零空格的也不止它一组（%s 都是）'
+                    % '、'.join('<code>%s</code>' % z for z in zero))
+    bits.append('它真正独占的是第三条：<b>唯一</b>进得了「次月一周内」的腿'
+                '（其余三腿分别 %s）'
+                % '、'.join('<code>%s</code> %s'
+                            % (lg, {'orderbook': '中位次月第 21 天',
+                                    'primary': '次月第 1–9 天',
+                                    'lch': '次月第 3–4 天但官方月表本身滞后约两个月'}[lg])
+                            for lg in ('orderbook', 'primary', 'lch')))
+    return '；'.join(bits).replace('**', '') + '。'
+
+
 _NOTE_HEADLINE = (
     '<b>头条为什么是 Tradeweb 而不是伦敦交易所自己的订单簿。</b>'
-    '选头条的三条判据是「历史长 / 发布快 / 无空洞」，Tradeweb 三条全占：'
-    '115 个月的连续历史（其余三腿 97 / 66 / 24）、86 列里<b>唯一零空格</b>的一组、'
-    '也是唯一进得了「次月一周内」的腿。反过来看代价：'
+    '选头条的三条判据是「历史长 / 发布快 / 无空洞」，而 Tradeweb <b>只占决定性的那一条</b>：'
+    + _headline_case() +
+    '反过来看代价：'
     '若拿 LSE 订单簿做头条，本页今天的数据月立刻退回上一个月，'
     '且按 docs/CRON_WIRING §2.1「LAG 跟着决定 data_through 的那条腿走」，'
     'build/roster.py 的 <code>LAG[\'lseg\'] = (8, 8)</code> 要抬到 (26, 26)，'
@@ -1123,15 +1190,41 @@ _NOTE_ORDERBOOK = (
     '两个百分数不能相加也不能互比高低，本页刻意用两个不同的单位串把它们分成两张图。'
 )
 
+def _primary_span_txt():
+    """一级市场两段列各自的起点与空洞 —— 现算，别写死。
+
+    这一段的字面值 2026-08-19 之前是错的：图注写「起点 2018-05、2019-09 与 2022-12
+    两个月整行为空」，而那两个「洞」其实各自只砸一个市场，取数腿按月整行跳过时
+    把另一个市场好好的数一起丢了。现在两段列各写各的，说法也得跟着数据现算。
+    """
+    a_first, a_last, a_n, a_hole = _col_span('aim_companies_eop_count')
+    m_first, m_last, m_n, m_hole = _col_span('mm_companies_eop_count')
+    if a_first is None or m_first is None:
+        return ('AIM 与 Main Market 两段列的起点不同，左端的空白是官方归档深度，'
+                '不是抓漏。')
+    return ('<b>AIM 那 11 列与 Main Market 那 13 列起点差 16 个月</b>：'
+            'AIM %s 起（%d 个月有值），Main Market %s 起（%d 个月有值）—— '
+            '官方索引里 Main Market 的 factsheet xlsx 最早就是 %s，'
+            '这是<b>源侧硬限制</b>，不是取数腿裁的。'
+            '各自跨度里还各有一个<b>官方自己的洞</b>：AIM 缺 %s（那一期年度块的 '
+            'Market Value 格 LSEG 留白了，文件与家数都在），'
+            'Main Market 缺 %s（那一期在官方索引里根本不存在，2022 年组只到 11 月）。'
+            '<b>两个洞各自只砸一个市场</b>，另一个市场那个月照常有数 —— '
+            '所以这两个月不是整行空白，看图时别把某一条线的断点读成两个市场一起停摆。'
+            % (a_first, a_n, m_first, m_n, m_first,
+               '/'.join(a_hole) or '（无）', '/'.join(m_hole) or '（无）'))
+
+
 _NOTE_PRIMARY = (
     '<b>一级市场这一组的四件事。</b>① 官方口径的 "New Issues" <b>不等于 IPO</b>：'
     '它含转板、introduction 与反向收购，所以家数会高于财经媒体口径的 IPO 数。'
-    '② 2019-09 与 2022-12 两个月整行为空，是<b>官方自己的洞</b>'
-    '（Main Market 的官方索引里根本没有 2022-12 那一期），不是解析失败。'
-    '③ 起点 2018-05 是<b>源侧硬限制</b>：官方索引里 Main Market 的 factsheet xlsx '
-    '最早就是 2018-05（AIM 的从 2016-11 起就有），取数腿把 START 取在'
-    '「两个市场都有 xlsx 的第一个月」，所以 AIM 这几列的前 18 个月是被取数腿裁掉的、'
-    '不是官方没有 —— 要往前接得先接受两个市场起点不同。'
+    '② ' + _primary_span_txt() +
+    '③ 更早的月份要往前接，得先啃<b>老版式与 .xls</b>：'
+    'AIM 2016-11/12 虽然也是 xlsx 但用的是另一套表头（写 "Number of Admissions" '
+    '而不是 "New Issues"），再往前官方只给 .xls 与 .pdf；'
+    '而 Main Market 的老版式里「上市公司家数」有两个互不相等的官方数，'
+    '取错那个会在接缝上造出一个 −4.4% 的假台阶。所以本页这两段列<b>就停在这里</b>，'
+    '宁可左上角空一片，不拿一个说不清口径的数把它填满。'
     '④ <b>官方同一份文件里有自相矛盾的格子</b>：Summary 表与 Further Issues 明细表'
     '在少数月份对不上（本机 <code>cache/lseg_primary_conflicts.csv</code> 记了 3 处，'
     '最近一次是 2026-05 的主板增发募资，明细表比 Summary 高 16.4%）。'
