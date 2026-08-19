@@ -202,20 +202,30 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     之前虽然不是表行，却**印在同一份公告的正文要点里**，所以它不属于「源头未印」，
     见下面口径坑 21。别把「表里没这一行」直接当成「官方没发这个数」。
 
-16. **2017-04 那一期 PDF 的期货期权小块整体错行，本模块拒绝解析它。** 实测该页
-    `Options on futures volume`（小标题行）上挂着 `Total contracts` 的值，
-    `Total contracts` 行上挂着 `Change on pcp` 的百分比，`Average daily contracts` 行是空的
-    —— 值列相对标签列整体上移了一行。加总恒等式可以证明真值
-    （8,901,810 + 124,649 = 9,026,459 ✔；494,545 + 6,925 = 501,470 ✔），
-    但那是**人拿算术推回来的**，不是解析出来的。实测本模块在这一期上抛的是
-    `_validate` 的缺列异常（`contracts_options_on_futures_total` /
-    `adv_options_on_futures_contracts` 两列取不到值），不是加总恒等式 ——
-    错行错得够狠时值列直接落空，轮不到恒等式说话；恒等式管的是另一种情况：
-    **每个格子都有数、但装错了格子**（见 `_check_identities`）。两道闸门各守一边。
-    2026-08 起点前推到 2016-01 之后，这一期**进了 series**：那两格由
-    `_KNOWN_SOURCE_GAPS` 显式豁免、**留空**（不写恒等式反推出来的数）。
-    ⇒ series/asx.csv 里 2017-04 这一行的这两列是全表唯一的「界内空格」，
-    下游任何「界内为空即异常」的检查都要认这条豁免，否则它会变成沉默的 NaN。
+16. **2017-04 那一期 PDF 的期货期权小块整体错行 —— 值印在纸上，但挂在了错误的标签上。**
+    实测该页（第 3 页）逐条基线，是**官方排版**错了，不是 pymupdf 的阅读顺序问题：
+        y=374.23  `Options on futures volume`（小标题）＋ 124,649 / 144,826 / 1,142,509 / 1,589,153
+        y=387.55  `Total contracts`                  ＋ -14% / -28%
+        y=400.99  `Change on pcp`                    ＋ 6,925 / 6,896 / 5,415 / 7,461
+        y=414.43  `Average daily contracts`          ＋ 什么都没有
+    四行的值整体落在自己标签的**上一行**。对照 2017-03 / 2017-05 同一段：小标题行空、
+    `Total contracts` 带值 —— 版式没变，是这一期排的。
+    **本模块把它还原，但只搬不算。** `_shifted_blocks()` 认签名（两条都要满足）：
+      ① 小标题行**带值** —— 小标题在健康报告里永远是纯文字，带值本身就是物证。
+         实测 127 期全段扫描只此 1 处（另有 `Change on pcp` 带值 610 处，2024-11 起
+         那一代版式去掉了百分号，是**常态**，所以单靠 ② 判会误伤，必须 ① 打头）；
+      ② 本该带值的末行 `Average daily contracts` **整行为空**。
+    认出后把值搬回它本该挂的标签，搬回来的每一格**先过 `_identity_gate()` 再入库**，
+    撞的是官方在同一张表里自己印出来的合计：
+        8,901,810 + 124,649 = 9,026,459 ✔（残差 0）
+          494,545 +   6,925 =   501,470 ✔（残差 0）
+    ⇒ **入库的是官方原值，不是恒等式反推值**：124,649 与 6,925 就印在上面那两条基线上，
+    恒等式在这里当验钞机（证明搬对了标签），不当计算器。闸门任一条不过就退回留空、
+    打印原因，绝不硬写；`_KNOWN_SOURCE_GAPS` 里那两条登记保留为兜底，所以退回时
+    `_validate` 不会炸整月。回归实测：127 期 × 逐格 5,210 格，改动前后只有这 2 格变化。
+    另注：错行错到值列直接落空时（本期还原前就是这样），拦下它的是 `_validate` 的缺列
+    异常而不是恒等式 —— 恒等式管的是另一种病：**每个格子都有数、但装错了格子**
+    （见 `_check_identities`）。两道闸门各守一边。
 
 17. **同月有更正稿时必须用更正稿，且要跳过第 1 页。** 更正稿第 1 页是
     「Incorrect figure / Correct figure」对照表，**错值就印在第 1 页上**
@@ -346,7 +356,8 @@ _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 #     零改动的天花板其实是 2015-10（2015-10/11/12 三期 `_validate` 直接过），
 #     2015-09 及更早才要第二套映射 —— 与 2016-01 这个目标无关。
 #   · 「2017-04 那期 PDF 错行」—— 属实，但只影响该月的两格，不影响另外 20 期。
-#     现在按 `_KNOWN_SOURCE_GAPS` 显式豁免那两格（留空，不写反推值）。
+#     那两格由 `_shifted_blocks()` 按签名搬回原标签、过 `_identity_gate()` 后入库
+#     （口径坑 16），入的是官方原值；`_KNOWN_SOURCE_GAPS` 里的登记退为兜底。
 # 顺带纠正一条记在 docs/verify/asx.md 里的误记：「Listings 段在 2016/2017 之间换过
 # 定义」是错的。`capital_initial_raised_audmn` 与 `capital_total_raised_incl_other_audmn`
 # 在这 21 期里 21/21 都有，`mktcap_new_listings_audmn` 一期都没有 ⇒ 上市融资的口径断点
@@ -851,6 +862,49 @@ def _values_for(rows, i):
     return []
 
 
+# 量块的固定形态：小标题 / `Total contracts` / `Change on pcp` / `Average daily contracts`。
+# 2016 版与 2024/2026 版都是这四行（实测 127 期，期货 / 期货期权 / 合计 / 单股期权 /
+# 指数期权五个块一律如此），所以「下移一行」这种病可以按形态认。
+_SHIFTED_SHAPE = ('total contracts', 'change on pcp', 'average daily contracts')
+
+
+def _shifted_blocks(rows):
+    """认出「值列相对标签整体上移一行」的量块 -> [(小标题键, {标签键: 值列表})]（口径坑 16）。
+
+    ━━ 签名（两条判据 + 一条形状约束，**全部**满足才算，缺一不认）━━
+      ① **小标题行带值**。小标题（`Options on futures volume` 那种）在健康的报告里
+         永远是一行纯文字 —— 它带值本身就是排版坏了的物证，而不是推断。
+         实测 127 期全段扫描，这种行**只有 1 处**：2017-04 的期货期权块。
+      ② 本该带值的末行 `Average daily contracts` **整行为空**。
+      ③（形状）块要逐行对上 `_SHIFTED_SHAPE`，且中间的 `Total contracts` 行也整行为空
+         —— 「值整体上移一行」必然长这样：i 行的值属于 i+1 行的标签，i+1 行自己空掉。
+
+    ⚠ 本函数**只搬运，不计算**：把 PDF 上印着的那串数字挪到它本该挂的标签上，
+    一个数都不加不减不四舍五入。搬回来的值还要逐格过 `_identity_gate` 才准入库
+    （见 `parse_mar`），过不了就当没看见。
+
+    ⚠ 不能只靠 ② 判：`Change on pcp` 行带值在 2024-11 起的版式里是**常态**
+    （官方那一代把百分号去掉了，实测 127 期共 610 处），只有 ① 能把病态与常态分开。
+    """
+    out = []
+    for i, (label, vals) in enumerate(rows):
+        k = _key(label)
+        if k not in _SUBSECTIONS or not vals:
+            continue                                  # ① 小标题必须带值
+        if i + 3 >= len(rows):
+            continue
+        shape = [_key(rows[j][0]) for j in (i + 1, i + 2, i + 3)]
+        if tuple(shape) != _SHIFTED_SHAPE:
+            continue                                  # ③ 形态必须逐行对上
+        if rows[i + 1][1] or rows[i + 3][1]:
+            continue                                  # ②③ 这两行必须整行为空
+        if not rows[i + 2][1]:
+            continue                                  # 没东西可搬
+        out.append((k, {_SHIFTED_SHAPE[0]: vals,
+                        _SHIFTED_SHAPE[2]: rows[i + 2][1]}))
+    return out
+
+
 def _vix_from_prose(doc, month, skip_first_page=False):
     """正文要点里的 `S&P/ASX 200 VIX` 月内日均值 -> 值字符串；读不出返回 None（口径坑 21）。
 
@@ -930,6 +984,24 @@ def parse_mar(path, skip_first_page=False, month=None):
             if v:
                 out[name] = v[0]        # 口径坑 4：永远取值列从左数第 1 个
                 break
+
+    # 口径坑 16：极少数期的量块「值列相对标签整体上移一行」（实测 127 期只有 2017-04）。
+    # `_shifted_blocks` 用一条很窄的签名认出这种块并把值搬回原标签，搬回来的每一格
+    # **先过 `_identity_gate` 再入库**：官方在同一张表里印的加总撞得上才算数，
+    # 撞不上就当没看见（保持留空、打印原因），绝不硬写。已有值一律不覆盖。
+    _who = month or os.path.basename(path)
+    for sub, fixed in _shifted_blocks(rows):
+        for name, _sec, want_sub, aliases, _since, _until in COLUMN_SPEC:
+            if want_sub != sub or name in out:
+                continue
+            v = next((fixed[a] for a in aliases if a in fixed), None)
+            if not v:
+                continue
+            ok, why = _identity_gate(dict(out, **{name: v[0]}), name)
+            print('%s %s：排版错行还原值 %s —— %s，%s'
+                  % (_who, name, v[0], why, '入库' if ok else '不入库，保持留空'))
+            if ok:
+                out[name] = v[0]
 
     # 口径坑 21：VIX 在 2019-10 之前只印在正文要点里。
     # 两处都有时**必须逐位相同** —— 这条撞法是把「正文那句话就是表里那个数」
@@ -1109,6 +1181,30 @@ def _f(rec, name):
     return None if v in (None, '') else float(v)
 
 
+# (说明, 加数列名…, 合计列名, 容差)。官方自己在同一张表里印出来的加总关系。
+# 这张表有两个用处，**必须是同一张表**，否则两处会各自漂移：
+#   · `_check_identities()` —— 事后体检，不成立就炸；
+#   · `_identity_gate()`    —— 事**前**闸门，排版错行还原出来的格子过不了就不许入库。
+_IDENTITIES = [
+    ('期货 + 期货期权 = 合计（总张数）',
+     ['contracts_futures_total', 'contracts_options_on_futures_total'],
+     'contracts_futures_and_options_total', 0.0),
+    ('期货 + 期货期权 = 合计（ADV）',
+     ['adv_futures_contracts', 'adv_options_on_futures_contracts'],
+     'adv_futures_and_options_contracts', 1.5),              # 官方各自四舍五入到整张
+    ('open + auctions + centre point + trade reporting = 现货总成交额',
+     ['value_open_trading_audbn', 'value_auctions_audbn',
+      'value_centrepoint_audbn', 'value_tradereport_audbn'],
+     'value_cash_total_audbn', 0.002),
+    ('open + auctions + centre point = on-market 成交额',
+     ['value_open_trading_audbn', 'value_auctions_audbn',
+      'value_centrepoint_audbn'], 'value_cash_onmarket_audbn', 0.002),
+    ('二次融资 + 换股对价 = 二次融资合计',
+     ['capital_secondary_audmn', 'capital_other_scrip_audmn'],
+     'capital_secondary_total_audmn', 0.5),
+]
+
+
 def _check_identities(month, rec):
     """用官方自己在同一张表里印出来的加总关系做体检。
 
@@ -1117,25 +1213,7 @@ def _check_identities(month, rec):
     只有加总恒等式能当场发现。2017-04 那一期 PDF 值列整体上移一行（口径坑 16），
     就是被第 1 条抓出来的。
     """
-    checks = [
-        ('期货 + 期货期权 = 合计（总张数）',
-         ['contracts_futures_total', 'contracts_options_on_futures_total'],
-         'contracts_futures_and_options_total', 0.0),
-        ('期货 + 期货期权 = 合计（ADV）',
-         ['adv_futures_contracts', 'adv_options_on_futures_contracts'],
-         'adv_futures_and_options_contracts', 1.5),          # 官方各自四舍五入到整张
-        ('open + auctions + centre point + trade reporting = 现货总成交额',
-         ['value_open_trading_audbn', 'value_auctions_audbn',
-          'value_centrepoint_audbn', 'value_tradereport_audbn'],
-         'value_cash_total_audbn', 0.002),
-        ('open + auctions + centre point = on-market 成交额',
-         ['value_open_trading_audbn', 'value_auctions_audbn',
-          'value_centrepoint_audbn'], 'value_cash_onmarket_audbn', 0.002),
-        ('二次融资 + 换股对价 = 二次融资合计',
-         ['capital_secondary_audmn', 'capital_other_scrip_audmn'],
-         'capital_secondary_total_audmn', 0.5),
-    ]
-    for desc, parts, total, tol in checks:
+    for desc, parts, total, tol in _IDENTITIES:
         pv = [_f(rec, p) for p in parts]
         tv = _f(rec, total)
         if tv is None or any(v is None for v in pv):
@@ -1145,6 +1223,33 @@ def _check_identities(month, rec):
                 '%s 加总恒等式不成立：%s —— %s 之和 %.6f，官方印的 %s = %.6f。'
                 '这是解析串行的典型症状（见模块 docstring 口径坑 3 / 16），拒绝写入'
                 % (month, desc, parts, sum(pv), total, tv))
+
+
+def _identity_gate(rec, name):
+    """`name` 这一格能不能入库 -> (True|False, 说明)。**先验后写**专用（口径坑 16）。
+
+    只被排版错行的还原路径调用。与 `_check_identities` 的区别是**举证责任反过来**：
+    那边「成员不齐就跳过」（缺格交给 _validate），这边「成员不齐就否决」——
+    还原值是我们从错行里搬回来的，没有独立证据就不许进 CSV。三条否决：
+      · 这一列不参与任何加总恒等式  ⇒ 没有闸门可用，不放行；
+      · 它参与的某条恒等式成员不齐  ⇒ 验不了，不放行；
+      · 任何一条不成立              ⇒ 搬错了，不放行。
+    """
+    used = []
+    for desc, parts, total, tol in _IDENTITIES:
+        if name not in parts:
+            continue
+        pv = [_f(rec, p) for p in parts]
+        tv = _f(rec, total)
+        if tv is None or any(v is None for v in pv):
+            return False, '「%s」成员不齐（%s / %s），无法验证' % (desc, parts, total)
+        if abs(sum(pv) - tv) > tol:
+            return False, ('「%s」不成立：%s 之和 %.6f，官方印的 %s = %.6f'
+                           % (desc, parts, sum(pv), total, tv))
+        used.append('「%s」%.6f = %.6f ✔' % (desc, sum(pv), tv))
+    if not used:
+        return False, '%s 不参与任何加总恒等式，无从验证' % name
+    return True, '；'.join(used)
 
 
 def _in_window(month, since, until):
@@ -1163,6 +1268,10 @@ def _in_window(month, since, until):
 # 一律**留空，不写替代值**。恒等式能反推、后一期报告的 pcp 列也印着正确值，但那两种
 # 都不是「当期官方公告原值」：写进去就再也分不清哪些数是 ASX 印的、哪些是我们凑的。
 # 空格在图上是断笔（一个月），比一个看不出来的错数好得多。
+# ⚠ 「不写替代值」管的是**我们算出来的数**。2017-04 那两格现在有值了，走的不是替代值 ——
+#   `_shifted_blocks` 把官方印在纸上的那两个数搬回了它们本该挂的标签（口径坑 16），
+#   入库的仍是当期公告原值。那两条登记因此降级为**兜底**：签名哪天认不出来、
+#   或还原值过不了 `_identity_gate`，这一格退回留空而不是让整月炸。
 #
 # 黑名单只处理这几格，不放行「值可疑但没登记」—— 未登记的格照常走 `_check_identities`。
 _KNOWN_SOURCE_GAPS = {
@@ -1173,14 +1282,23 @@ _KNOWN_SOURCE_GAPS = {
     #     rows[98] 'Change on pcp'              挂着 ['6925','6896',…]
     #     rows[99] 'Average daily contracts'    空
     # 对照 2017-03 同一段：rows[96] 小标题空、rows[97] 'Total contracts' 带值 —— 版式没变，
-    # 是这一期排版坏了。真值可由官方在同一张表里印出的合计反推
-    # （8,901,810 + 124,649 = 9,026,459 ✔；494,545 + 6,925 = 501,470 ✔），
-    # 但那是**人拿算术推回来的，不是解析出来的**，所以这两格留空。
-    # 该月其余 36 列正常，五条加总恒等式里凡是两侧齐全的都照常校验并通过。
+    # 是这一期排版坏了。
+    #
+    # ⇒ **2026-08 起这两格不再留空**：`_shifted_blocks()` 用「小标题带值 + Average daily
+    #   contracts 整行为空」这条签名认出错行块，把值搬回原标签（只搬不算），
+    #   再由 `_identity_gate()` 拿官方同表印的合计做**准入闸门**，两条都撞上才入库：
+    #       8,901,810 + 124,649 = 9,026,459 ✔（残差 0）
+    #         494,545 +   6,925 =   501,470 ✔（残差 0；该式容差 1.5 是官方各自舍入的余量）
+    #   入库的 124,649 / 6,925 是官方印在第 3 页 y=374.23 / y=400.99 两条基线上的原值，
+    #   不是恒等式反推出来的数 —— 恒等式在这里只当验钞机，不当计算器。
+    # 下面这两条登记保留为**兜底**：签名认不出或闸门不放行时，这一格退回留空，
+    # `_validate` 照旧放行（打印原因，不炸整月）。
     ('2017-04', 'contracts_options_on_futures_total'):
-        (None, '官方 PDF 值列错行（口径坑 16），真值只能靠恒等式反推 ⇒ 留空'),
+        (None, '官方 PDF 值列错行（口径坑 16）；已由签名检测搬回原标签、'
+               '两条恒等式已验 ⇒ 正常情况下有值，此条仅兜底'),
     ('2017-04', 'adv_options_on_futures_contracts'):
-        (None, '官方 PDF 值列错行（口径坑 16），真值只能靠恒等式反推 ⇒ 留空'),
+        (None, '官方 PDF 值列错行（口径坑 16）；已由签名检测搬回原标签、'
+               '两条恒等式已验 ⇒ 正常情况下有值，此条仅兜底'),
 
     # 口径坑 19：2016-09 那一期把千分位逗号印成了小数点。
     #     'Average value per trade ($)'  ['4.852', '5710', '4.701', '5784']
