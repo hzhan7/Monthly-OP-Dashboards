@@ -4,21 +4,26 @@
 本文件只声明「画哪些列、叫什么、什么单位、什么格式」，**不含任何算术、不含任何取数**。
 
 ━━ 为什么这家的 slow_cols 是空的 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Euronext 全部 71 个数据列（series/enx.csv 含 month 共 72 个字段）出自**同一份官方 xlsx**
+series/enx.csv 的每一个数据列都出自**同一份官方 xlsx**
 （euronext_monthly_historical_volumes.xlsx，
 文件名固定不带月份，每月原地覆盖），所以所有列同时发布、同一个最新月。
-「多少行 / 到哪个月 / 几列在最新月有值 / 几列首末月之间有空洞」这四个数**不写在文档里** ——
-它们每月都变，写死一次就过期一次。`_shape_zh()` 在 import 期从 series/enx.csv 现算，
-结果原样印进页尾 notes 的最后一条（连「空洞是 0」都不预设，数出来几个就印几个）。
-没有慢腿，`slow_cols` 留空。
+「多少列 / 多少行 / 到哪个月 / 几列在最新月有值 / 几列首末月之间有空洞」这几个数
+**一个都不写在文档里** —— 它们每月都变，写死一次就过期一次
+（上一版这里写着「全部 71 个数据列……含 month 共 72 个字段」，正是这种数）。
+`_shape_zh()` 在 import 期从 series/enx.csv 现算，结果原样印进页尾 notes 的最后一条
+（连「空洞是 0」都不预设，数出来几个就印几个）。没有慢腿，`slow_cols` 留空。
 
-（发布节奏另说：实测 50 期，月末后第 4–13 天，中位数第 8 天；历史最小值第 3 天
- —— 2020-06 数据月发布于 2020-07-03。闸门那一层是 monthly_run.py 的事，不在本文件。）
+（发布节奏另说，**发布日实测于 2026-08、不随 CSV 更新**：至那时共 50 期，
+ 月末后第 4–13 天，中位数第 8 天；历史最小值第 3 天 —— 2020-06 数据月发布于
+ 2020-07-03。发布日不在 series/ 里，现算不了，所以这里只能是带日期的一次性实测。
+ 闸门那一层是 monthly_run.py 的事，不在本文件。）
 
 ━━ 为什么口径断点是这一家的重点 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Euronext 是靠连续并购长起来的：都柏林、奥斯陆、米兰、雅典逐个并进主列，
 **每并一次，被并的那段历史都不重算**。所以主列在并表月会出现「不是业务增长的跳变」。
-最危险的一列是单股衍生品：雅典的单股期货占并表后的 90–98%，
+最危险的一列是单股衍生品：雅典的单股期货占并表后的绝大部分（具体区间由
+`_athex_share()` 现算，序列中文名与页尾图注共用它的结果；**这里不抄一个数** ——
+上一版抄的「90–98%」已经被 2026-02 的 89.1% 顶出下沿），
 2025-11 那一格若当成增长读，就是 3–6 倍的假跳。
 
 断点月份**一律从 `series/enx_breaks.csv` 读**，不写死 —— 那张台账由 fetch/enx.py
@@ -28,7 +33,9 @@ Euronext 是靠连续并购长起来的：都柏林、奥斯陆、米兰、雅�
 股指/单股衍生品与商品列，画到对方的图上就是错的（旧的欧亚合页生成器已经纠正过一次
 「2019-07 是现货断点」的口传错误；那张页与它的生成器已于 2026-08-06 删除，
 但这条结论本身与页面无关，逐列限定的规矩照旧）。底座 `build/single.py` 的 `breaks` 每条支持一个
-可选的 `col`（`single.py:537`：断点只挂到画了那一列的图上），所以本文件把台账里的
+可选的 `col`（底座 `Page.breaks_for()` 里那句 `if b['col'] and names and b['col'] not
+in names: continue` —— 断点只挂到画了那一列的图上；**写函数名不写行号**，
+上一版写的 `single.py:537` 早已漂到 `tail_contiguous()` 头上），所以本文件把台账里的
 每一条 (列, 月) 原样带上 `col` 输出 —— 覆盖全部 10 个断点月，且每条红线只出现在
 它真正影响的那张图上。既不漏，也不误伤。
 
@@ -38,13 +45,15 @@ Euronext 是靠连续并购长起来的：都柏林、奥斯陆、米兰、雅�
 
 ━━ 📌 本页**不画** `decomp`（量价分解），理由不是缺数据，是图注会说假话 ━━━━━━
 数据条件其实够：`adv_cash_adnv_eurbn`（成交额 ADV，单边计）与 `adv_cash_trades_k`
-（成交笔数 ADV）都自工作簿起点 2012-01 起零断档，是全仓最长的一对（月数由 `_span()` 现算）。
+（成交笔数 ADV）都自工作簿起点起零断档（起点与月数由 `_span()` 现算；
+**不写「全仓最长的一对」** —— 那句话的判据在别的九个 spec 里，本页现算不到）。
 `build/exchanges_eu.py` 的 Exhibit 15 就用这一对画了「成交额 = 笔数 × 每笔均值」的
 对数分解，并用三重检验判定「**增长率分解成立、绝对水平不可读**」：
 
   ① 常数缩放不变性 —— 分解对笔数列乘任何常数完全不变（实测残差 2.1e-14）；
-  ② 计数惯例没有中途翻转 —— 惯例一翻，每笔均值会在那一个月跳约 ln2 ≈ 69.3%，
-     而排除并表断点月之后实测最大单月跳变只有 21.1%（2020-03，COVID）；
+  ② 计数惯例没有中途翻转 —— 惯例一翻，每笔均值会在那一个月跳约 ln2；而排除并表
+     断点月之后的实测最大单月跳变远低于它（**幅度与月份这里不抄**，由
+     `_conv_stability()` 现算并印进 `_NO_DECOMP_NOTE`；抄一份就是养第二个会过期的数）；
   ③ 断点集合逐个相同。
 
 「绝对水平不可读」的原因：官方同一张表里**金额列单边计、笔数列买卖双边计**
@@ -90,10 +99,11 @@ def _read_breaks(charted):
     """读 series/enx_breaks.csv，返回 (逐列断点 list, 说明 list)。
 
     每条形如 {'month': '2018-01', 'zh': '现货并入 Euronext Oslo', 'col': 'adv_cash_adnv_eurbn'}
-    —— 带 `col` 的断点只会画在画了那一列的图上（single.py:537），所以可以把台账里
-    **全部**断点带出来，不必为了不误伤别的图而丢掉一半。
+    —— 带 `col` 的断点只会画在画了那一列的图上（底座 `Page.breaks_for()`），
+    所以可以把台账里**全部**断点带出来，不必为了不误伤别的图而丢掉一半。
 
-    只保留本页真的画了的列：底座对 col 不在 CSV 里的断点会硬失败（single.py:447），
+    只保留本页真的画了的列：底座对 col 不在 series 里的断点会抛 `SpecError` 硬失败
+    （`Page.build()` 里那句 "breaks 里 col=… 不在 series/… 里"），
     而画不到的列上的断点纯属噪声。
 
     台账读不到时**不抛异常**：返回空断点 + 一条显式说明，让「红线没画」这件事
@@ -175,6 +185,30 @@ def _num(r, col):
         return float(v)
     except ValueError:
         return None
+
+
+def _assert_all_numeric():
+    """入库后的 series/enx.csv 里**一格非数值都不许有** —— 有就停机。
+
+    这是页尾那句「fetch/enx.py 把 "NA" 当缺失丢掉，所以入库后不会留下非数值格」
+    的判据。没有这道闸门，那句话就只是一句人写的全称断言：抓取器哪天漏放一个
+    "NA" / "n.a." / "-" 进来，`_num()` 会静静地把它当缺失，图上断一笔、
+    图注继续印「不会留下非数值格」，而没有任何东西会报错。
+    """
+    bad = []
+    for r in _rows():
+        for c, v in r.items():
+            if c == 'month' or not (v or '').strip():
+                continue
+            try:
+                float(v)
+            except ValueError:
+                bad.append('%s/%s=%r' % (r.get('month'), c, v))
+    if bad:
+        raise SystemExit(
+            'series/enx.csv 里有非数值格 %s（共 %d 处）—— 页尾那条注断言「入库后不会'
+            '留下非数值格」，判据与数据对不上，先查 fetch/enx.py 再构建'
+            % ('、'.join(bad[:5]), len(bad)))
 
 
 def _span(col):
@@ -268,12 +302,94 @@ _VN, _VM0, _VM1, _VGAP = _span('adv_cash_adnv_eurbn')      # 成交额 ADV
 _TN, _TM0, _TM1, _TGAP = _span('adv_cash_trades_k')        # 成交笔数 ADV
 _PN, _PM0, _PM1, _PGAP = _span('adv_power_systemprice_futures_gwh')   # 电力衍生品
 
+
+def _band(lo, hi, nd):
+    """把 (lo, hi) 收成一对**印得出来又含得住实测值**的端点：下界向下取、上界向上取。
+
+    ⚠ 上一版这两处（结构化产品量级、雅典占比）都是直接 `%.2f` / `%.0f` 四舍五入
+    印出去的，而四舍五入会把区间**收窄**：下界被取大、上界被取小，于是真实读数
+    落在页面自己声明的区间之外 —— 一句自称「现算」的话，被它自己现算的那列当场
+    证伪（本轮这两处都实际发生了）。端点是要当**边界**用的，就只能一个向下、
+    一个向上取。（这里**不举实测数字当例子** —— 举一个就等于再养一个会过期的数。）
+    """
+    if lo is None or hi is None:
+        return None, None
+    f = 10.0 ** nd
+    return math.floor(lo * f + 1e-9) / f, math.ceil(hi * f - 1e-9) / f
+
+
+def _col_range(col):
+    """一列的 (最小值, 最大值)；算不出返回 (None, None)。
+
+    「结构化产品那列量级很小」那半句的算术底 —— 原先写死成「0.03–0.22 EUR bn/日」，
+    而区间每个月都可能被一个新读数顶出去。区间是能现算的，就别抄。
+    """
+    v = [x for x in (_num(r, col) for r in _rows()) if x is not None]
+    return (min(v), max(v)) if v else (None, None)
+
+
+_assert_all_numeric()
+_STRU_MIN, _STRU_MAX = _band(*_col_range('adv_cash_structured_adnv_eurbn'), nd=2)
+
+
+def _athex_month(main):
+    """雅典并进 `main` 这一列的月份 —— 从 series/enx_breaks.csv 读，不写死。
+
+    ⚠ **这个起点非有不可**：athex_* 备注列被官方回填到 2021-01，而主列直到并表月
+    才含雅典。拿全部重叠月去算「雅典占主列多少」，得到的是备注列 ÷ 不含雅典的主列
+    —— 那个比值可以大到几百倍，根本不是要说的那件事。
+    """
+    months = []
+    try:
+        with open(_BREAKS_CSV, newline='') as fh:
+            for r in csv.DictReader(fh):
+                if (r.get('column') or '').strip() != main:
+                    continue
+                m = (r.get('break_month') or '').strip()
+                if m:
+                    months.append(m)
+    except (IOError, OSError):
+        return None
+    ath = [m for m in months if '雅典' in _BREAK_ZH.get(m, '')]
+    return min(ath) if ath else (max(months) if months else None)
+
+
+def _athex_share(main, note_col):
+    """并表之后雅典占主列多少（%）的 (最小, 最大, 月数, 并表月)；算不出返回 (None,)*4。
+
+    ⚠ 这个区间 2026-08-19 之前写死成「90–98%」，写在四处（模块 docstring、组注释、
+    **序列中文名**、页尾图注）。实测已经掉出下沿：2026-02 是 89.1%。
+    区间会被每一个新月份顶宽，写死的必然先烂 —— 而它完全能现算。
+    """
+    m0 = _athex_month(main)
+    if not m0:
+        return (None,) * 4
+    v = []
+    for r in _rows():
+        if r['month'] < m0:
+            continue
+        m, a = _num(r, main), _num(r, note_col)
+        if m and a is not None:
+            v.append(a / m * 100.0)
+    return (min(v), max(v), len(v), m0) if v else (None,) * 4
+
+
+_ATH_LO, _ATH_HI, _ATH_N, _ATH_M0 = _athex_share(
+    'adv_singlestock_futures_kcontracts', 'athex_adv_singlestock_futures_kcontracts')
+#: 序列中文名与图注共用同一个区间字符串 —— 两处各写各的，迟早只改一处。
+#: 端点走 `_band()`（下界向下取、上界向上取）：上一版直接 `%.0f` 四舍五入，
+#: 而四舍五入会把上界取小、下界取大 —— 印出来的区间装不下自己的数据。
+_ATH_BLO, _ATH_BHI = _band(_ATH_LO, _ATH_HI, 1)
+_ATH_ZH = ('%.1f–%.1f%%' % (_ATH_BLO, _ATH_BHI)) if _ATH_BLO is not None else '绝大部分'
+
 _NO_DECOMP_NOTE = (
     '📌 <b>本页刻意不画量价分解图。</b>数据条件是够的（'
-    + ((f'成交额 ADV 与成交笔数 ADV 都是 {_VM0} 起 {_VN} 个月、首末月之间 {_VGAP} 个空洞，'
-        f'是全仓最长的一对'
+    # ⚠ 这里原先还写着「是全仓最长的一对」。那是一句**跨页**的最高级断言：判据散在
+    #   别的九个 spec 里，本页现算不到，别页加一个月或换一列它就悄悄变假 —— 而它对
+    #   「本页为什么不画这张图」这个论点一点用都没有。⇒ 删掉，只留本页自己数得出的两个数。
+    + ((f'成交额 ADV 与成交笔数 ADV 都是 {_VM0} 起 {_VN} 个月、首末月之间 {_VGAP} 个空洞'
         if (_VN and (_VN, _VM0, _VGAP) == (_TN, _TM0, _TGAP)) else
-        '成交额 ADV 与成交笔数 ADV 是全仓最长的一对'))
+        '成交额 ADV 与成交笔数 ADV 逐月成对'))
     + '），欧洲横截面页 '
     '<code>build/exchanges_eu.py</code> 的 Exhibit 15 就用这一对画了'
     '「成交额 = 笔数 × 每笔均值」的对数分解。但那张图的结论是'
@@ -391,8 +507,9 @@ GROUPS = [
          'unit': 'k contracts', 'fmt': 'f0', 'stock': True},
     ]},
 
-    # ⚠ 全表最危险的一组：2025-11 并入雅典之后，雅典的单股期货占并表后 90–98%。
-    #   那一格是口径跳变不是增长。读同比必须先看「Athens 并表备注列」那一组。
+    # ⚠ 全表最危险的一组：2025-11 并入雅典之后，雅典的单股期货占了并表后的绝大部分
+    #   （区间见 `_ATH_ZH`，现算）。那一格是口径跳变不是增长。
+    #   读同比必须先看「Athens 并表备注列」那一组。
     {'zh': '单股衍生品（⚠ 2025-11 并入雅典后口径跳变，见备注列）', 'cols': [
         {'col': 'adv_singlestock_futures_kcontracts', 'zh': '单股期货 ADV',
          'unit': 'k contracts/day', 'fmt': 'f1'},
@@ -550,7 +667,7 @@ GROUPS = [
 
     {'zh': 'Athens（Athex）并表备注列 —— 2025-11 红线的桥', 'cols': [
         {'col': 'athex_adv_singlestock_futures_kcontracts',
-         'zh': '雅典单股期货 ADV（占并表后 90–98%）',
+         'zh': '雅典单股期货 ADV（占并表后 %s）' % _ATH_ZH,
          'unit': 'k contracts/day', 'fmt': 'f1'},
         {'col': 'athex_adv_index_futures_kcontracts', 'zh': '雅典指数期货 ADV',
          'unit': 'k contracts/day', 'fmt': 'f2'},
@@ -593,6 +710,7 @@ def _starts_zh():
 
 
 _STARTS_ZH = _starts_zh()
+
 
 
 SPEC = {
@@ -654,8 +772,10 @@ SPEC = {
 
         '⚠ 2025-11 并入雅典是本页最容易读错的一格。官方把雅典做成**贯穿全历史的备注列**'
         '（athex_*，2021-01 起），主列只从 2025-11 起含雅典 ⇒ 主列+备注列 = 官方 pro-forma、'
-        '主列−备注列 = legacy Euronext。最危险的是单股期货：雅典占并表后的 90–98%，'
-        '不做处理时 2025-11 那一格是 3–6 倍的假跳。实测 Q2-25 单股衍生品主列 19,608,871 + '
+        '主列−备注列 = legacy Euronext。最危险的是单股期货：'
+        + ((f'雅典占并表后的 {_ATH_ZH}（{_ATH_M0} 起 {_ATH_N} 个月现算的区间），')
+           if _ATH_LO is not None else '雅典占并表后的绝大部分，')
+        + '不做处理时 2025-11 那一格是 3–6 倍的假跳。实测 Q2-25 单股衍生品主列 19,608,871 + '
         '雅典 = 22,791,315，与官方备考数相对差 0。',
 
         '⚠ 同一张官方表里混着单边计与双边计，本页逐列标注：现货成交额单边、'
@@ -669,10 +789,17 @@ SPEC = {
 
         '现货恒等式：adv_cash_adnv_eurbn ≡ equities + etf + structured，'
         'fetch/enx.py 每月撞一次，撞得上说明四列一格没错行。结构化产品那列量级很小'
-        '（0.03–0.22 EUR bn/日），入图是为了让这条恒等式看得见。',
+        + ((f'（现算 {_STRU_MIN:.2f}–{_STRU_MAX:.2f} EUR bn/日）')
+           if _STRU_MIN is not None else '')
+        + '，入图是为了让这条恒等式看得见。',
 
         'listed_funds 的起点是 **2019-01** 不是 2018-01：官方 2018 全年那 12 格写的是'
-        '字面量字符串 "NA"，不是 0，也不是缺失。这是整个工作簿里唯一的非数值污染。',
+        # ⚠ 原文这里还有一句「这是整个工作簿里唯一的非数值污染」。那是对**官方 xlsx**
+        #   的全称断言：xlsx 不在本仓（fetch/enx.py 每月现下、当场把非数值当缺失丢掉），
+        #   仓库里没有任何东西能复算它，也没有任何东西会在它变假时报警。⇒ 删掉断言，
+        #   只留能核的那一半：入库之后的 series/enx.csv 里一格非数值都没有。
+        '字面量字符串 "NA"，不是 0，也不是缺失 —— <code>fetch/enx.py</code> 把它当缺失丢掉，'
+        '所以入库后的 series/enx.csv 里不会留下非数值格。',
 
         '电力衍生品（系统价格期货 / EPAD / 名义未平仓）2026-03-16 才全面上线 —— 官方 '
         'FICC Markets 脚注 (5) 原文 "Power derivatives market became fully operational on '

@@ -48,11 +48,18 @@ HKEX / JPX / SGX / ASX 是法域隔离的市场，几乎零替代性 —— 想�
 ═══════════════════════════════════════════════════════════════════════════
 衍生品：只有张数，没有基期价格 ⇒ 各自指数化，水平值不可跨所比
 ═══════════════════════════════════════════════════════════════════════════
-series/contract_specs.csv 里 HKEX_DERIV / JPX_DERIV / SGX_DERIV / ASX_DERIV 四个篮子的
-base_price_local 全是空的（本轮实测），定基名义额算不出来。所以衍生品这一段
-**各家用自己的张数指数化**，只比增速、不比水平 —— 张数的单张大小是各所自己选的产品
-设计参数（JPX 的 mini 是大板的 1/10、micro 是 1/100），跨所比水平值等于比谁把合约切得更碎。
-Exhibit 9 把这件事直接画出来：JPX 的原始张数与它自己的「大合约当量」相差 4.5 倍。
+series/contract_specs.csv 里四家衍生品篮子的 base_price_local **凑不齐**，定基名义额
+算不出来。⚠️ **这一段不许写死「谁有、谁没有」的名单**：填没填是 CSV 里的一格，随时会变，
+写进散文就得有人每月来核。缺谁一律由 `bp_txt()` 在构建期现读 contract_specs.csv 算出来，
+正文与图注都只印它的返回值。判据也别写成「一家都没有」（那句已经被表本身证伪过一次），
+真正成立的是「**缺一家就没有共同口径**」——`bp_txt()` 说的就是这一句。
+所以衍生品这一段**各家用自己的张数指数化**，只比增速、不比水平 —— 张数的单张大小是
+各所自己选的产品设计参数（JPX 的 mini 是大板的 1/10、micro 是 1/100），
+跨所比水平值等于比谁把合约切得更碎。
+Exhibit 9 把这件事直接画出来：JPX 的原始张数与它自己的「大合约当量」差几倍
+由页上那句现算（`DERIV['jpx'][CUR] ÷ JPX_LGEQ[CUR]`）。
+⚠️ **这里不许抄那个倍数**：它逐月在变，抄一次下个月就与同一页上的数打架 ——
+上一版抄过 4.5，被当期读数证伪；改写时又顺手抄了一次当期值，同一个坑踩了两遍。
 
 ═══════════════════════════════════════════════════════════════════════════
 数据源（只读 series/*.csv）
@@ -76,6 +83,7 @@ import pandas as pd
 import axisfmt
 import payload_guard
 import pctile
+import pools
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -330,6 +338,59 @@ for k in KEYS:
     if not np.isfinite(float(DERIV[k].get(BASE, np.nan))):
         skip(f'{DISP[k]} 的衍生品 ADV 在基期 {mlab(BASE)} 无值，指数化做不了')
 
+# ── 「为什么只能指数化」那句话的判据：现读 contract_specs.csv，不写死 ──────────
+# 旧文案写的是「四家的衍生品篮子 base_price_local **全是空的**」，被表本身证伪。
+# 真正成立的判据是**四家里只要有一家缺，池就折不出定基名义额** —— 所以这里算
+# 「缺的是谁」，措辞跟着算出来的名单走。
+# 篮子成员也**不在本文件抄一份**：直接读 build/pools.py 的 apac_deriv，那才是唯一的
+# 定义处。抄一份的后果是静默的 —— pools 那边加一条腿，本页照旧宣称「都齐了」。
+_APAC_DERIV_POOL = next((_p for _p in pools.POOLS if _p['id'] == 'apac_deriv'), None)
+if _APAC_DERIV_POOL is None:
+    raise SystemExit('build/pools.py 里找不到 apac_deriv 池 —— '
+                     '本页的衍生品篮子名单以它为唯一定义处，找不到就不能发')
+_DERIV_BASKETS = {_m['key']: [_c['product'] for _c in _m['chain']]
+                  for _m in _APAC_DERIV_POOL['members']}
+if set(_DERIV_BASKETS) != set(KEYS):
+    raise SystemExit(f'apac_deriv 的成员 {sorted(_DERIV_BASKETS)} 与本页的四家 '
+                     f'{sorted(KEYS)} 对不上 —— 页上「缺基期价格的是谁」那句话'
+                     f'就会漏算或多算，先把两处对齐再发')
+
+
+def _base_prices():
+    """product_id -> base_price_local（空串/缺行都算「没有」）。读不到表就返回 None，
+    调用方退回不带名单的定性措辞，不抛异常。"""
+    path = os.path.join(SERIES, 'contract_specs.csv')
+    try:
+        t = pd.read_csv(path, dtype=str).fillna('')
+    except Exception:                                    # noqa: BLE001
+        return None
+    return {r['product_id']: r['base_price_local'].strip() for _, r in t.iterrows()}
+
+
+_BP = _base_prices()
+if _BP is None:
+    BP_MISS, BP_HAVE = None, None
+else:
+    BP_MISS = [(k, pid) for k in KEYS for pid in _DERIV_BASKETS[k] if not _BP.get(pid)]
+    BP_HAVE = [(k, pid) for k in KEYS for pid in _DERIV_BASKETS[k] if _BP.get(pid)]
+
+
+def bp_txt():
+    """「基期价格缺在哪」的一句话，全部现算。"""
+    if _BP is None:
+        return ('series/contract_specs.csv 读不到，衍生品篮子有没有基期价格无从判断，'
+                '本页按最保守的口径处理：只指数化。')
+    if not BP_MISS:
+        return ('series/contract_specs.csv 里四家的衍生品篮子基期价格都齐了 —— '
+                '这段措辞本该跟着改，出现即说明文案没跟上数据。')
+    miss = '、'.join(f'<code>{pid}</code>' for _k, pid in BP_MISS)
+    have = '、'.join(f'<code>{pid}</code>' for _k, pid in BP_HAVE)
+    return (f'series/contract_specs.csv 里衍生品篮子的 <code>base_price_local</code> '
+            f'还缺 {len(BP_MISS)} 个（{miss}）'
+            + (f'；已填上的是 {have}' if BP_HAVE else '')
+            + '。定基名义额要四家都有基期常数才折得出来，缺一个这张图就没有共同口径 —— '
+              '所以这一段只剩张数。')
+
 # ────────────────────────── 3. 产品级：日经 225 双挂牌 ──────────────────────────
 # SGX 的分产品列是**当月总量**，不是日均 ⇒ 必须除以交易日才能与 JPX 的 ADV 同轴。
 # 用 deriv_vol ÷ ddav 反推的**隐含衍生品交易日**，不用 sec_trading_days ——
@@ -384,8 +445,33 @@ TW_BRK = int(list(TW_IDX).index(TW_F_FIRST)) if TW_F_FIRST in TW_IDX else None
 SB = RAW['hkex']['southbound_adt_hkdbn']
 SB_RATIO = (SB / RAW['hkex']['adt_hkdbn'] * 100).reindex(IDX)
 SB_HOLE = [p for p in IDX if not np.isfinite(float(SB_RATIO.get(p, np.nan)))]
-SB_HOLE_TXT = (f'{mlab(SB_HOLE[0])} – {mlab(SB_HOLE[-1])}（{len(SB_HOLE)} 个月）'
+
+
+def _runs(missing, idx):
+    """把缺月压成**连续段**。旧写法只印 first – last + 总数，读者会把它读成一整段空白，
+    而中间那些有值的月份在同一张图上就看得见 —— 图注当场被图证伪。
+    ⚠️ 这里不许写「本轮缺 N 个月、分 M 段」之类的实测数：段与月数逐月在变，
+    要看当轮是几段几个月，读页上 `SB_HOLE_TXT` 的输出，别在注释里抄一份。"""
+    pos = {p: i for i, p in enumerate(idx)}
+    out = []
+    for p in missing:
+        if out and pos[p] == pos[out[-1][-1]] + 1:
+            out[-1].append(p)
+        else:
+            out.append([p])
+    return out
+
+
+SB_RUNS = _runs(SB_HOLE, list(IDX))
+SB_HOLE_TXT = ('、'.join(f'{mlab(r[0])} – {mlab(r[-1])}（{len(r)} 个月）' if len(r) > 1
+                        else f'{mlab(r[0])}（1 个月）' for r in SB_RUNS)
+               + (f'，共 {len(SB_HOLE)} 个月，中间各段有值'
+                  if len(SB_RUNS) > 1 else '')
                if SB_HOLE else '无缺口')
+# 第一段若紧贴窗口左端，那不是「停发」而是「本页窗口早于这一列的起点」——
+# 两件事在图上长得一样（都是左边没线），但归因完全不同，措辞按现算的判据分岔。
+SB_LEAD_GAP = bool(SB_RUNS) and SB_RUNS[0][0] == IDX[0]
+SB_HOLE_WORD = '官方停发／窗口早于本列起点' if SB_LEAD_GAP else '官方停发'
 
 # ────────────────────────── 6. 季度序列（长历史）──────────────────────────
 def quarterly(s, upto=LATEST):
@@ -948,8 +1034,11 @@ ex.append({
     'src_extra': 'Monthly average spot rates, series/fx.csv',
     'note': ('线在 0 以下 = 该货币相对美元比基期便宜。'
              '<b>Exhibit 4 里「定基汇率」与「当期汇率」两根柱之间的落差，就是这四条线累出来的</b>。'
-             '<b>这四条线是本页唯一一处汇率会影响读数的地方</b>，'
-             '把它单独画出来正是为了让其余每一张图都能干净地只讲成交量。'
+             # ⚠️ 别写「本页唯一一处汇率会影响读数的地方」：上一张图的「当期汇率」柱
+             #    按它自己的图注就是**全部来自汇率**，同一页当场把「唯一」证伪。
+             #    这里只说本页主口径为什么干净 —— 那是锁基期汇率带来的，自明。
+             f'<b>本页主口径的成交额一律按 {mlab(BASE)} 的汇率折美元</b>，'
+             '此后汇率是常数、进不了那些图的增长结论；这四条线画的就是被锁掉的那一部分。'
              '港元挂钩美元，所以那条线基本贴着 0。'),
 })
 
@@ -980,9 +1069,9 @@ ex.append({
                 'values': L(idx100(DERIV[k]).reindex(IDX).values)} for k in KEYS],
     'src_extra': ('Contract counts, each rebased to its own 2019-01 level. Levels are NOT '
                   'comparable across exchanges — contract size is a product-design choice'),
-    'note': ('<b>为什么只能指数化：衍生品这一段没有基期价格。</b>'
-             'series/contract_specs.csv 里四家的衍生品篮子 base_price_local 全是空的（本轮实测），'
-             '定基名义额算不出来，只剩张数。而张数<b>不可跨所比水平值</b> —— '
+    'note': ('<b>为什么只能指数化：这一段凑不齐基期价格。</b>'
+             + bp_txt() +
+             '而张数<b>不可跨所比水平值</b> —— '
              '单张合约的大小是各所自己选的产品设计参数，把合约切碎张数就上去了，'
              '市场上并没有多一分钱的风险转移。所以这张图只读<b>各条线自己的斜率</b>，'
              '<b>不读线之间的高低</b>。下一张图把这件事在 JPX 身上直接量出来。'),
@@ -1127,7 +1216,8 @@ ex.append({
              'buy and sell trades」（南向含买卖双边），而现货总 ADT 未注明双边。'
              '<b>所以这条线不是「南向占比」，它是一个上界</b> —— 若总 ADT 是单边计数，'
              '真实占比约为图上读数的一半。<b>只可读走势与拐点，不可读水平值。</b>'
-             f'⚠ 官方停发过一段：{SB_HOLE_TXT}，线在那里断开，不外推。'),
+             f'⚠ 图上有 {len(SB_RUNS)} 段没有线（{SB_HOLE_WORD}）：{SB_HOLE_TXT}，'
+             '断开处不外推。'),
 })
 
 # ────────────── 8b. Exhibit 15–17：量价分解与量本身 ──────────────
@@ -1305,7 +1395,8 @@ TBL_COLS = [
     ('HKEX 南向 ADT (HK$bn)', 'hk_sb', lambda p: SB.get(p, np.nan), 3),
 ]
 W13 = IDX[-TBL_MONTHS:]
-# 核对表由 page.js 渲染在**所有 exhibit 之后**（assets/page.js:125 先跑 exhibits、138 才是 table），
+# 核对表由 page.js 渲染在**所有 exhibit 之后**（page.js 先跑 `D.exhibits.forEach`、
+# 之后才是 `var T = D.table`；按符号 grep，不写行号 —— 行号一改动就漂）,
 # 所以它的编号必须永远是「最后一张图 + 1」。写死数字的话，每次在末尾追加一张图，
 # 页面上就会出现「Exhibit 17 之后跟着 Exhibit 15」，而没有任何东西会报错。
 table = {
@@ -1319,6 +1410,110 @@ table = {
 }
 
 # ────────────────────────────── 10. 口径与方法说明 ──────────────────────────────
+# ── 「本页所有图表一律截到此月」这句话的现算判据 ─────────────────────────────
+# 旧文案是一句无条件的全称断言，而本页有画历史片段的图（右端停在过去某个月），
+# 那句话在它身上就是假的。所以这里逐张现算右端，例外名单由代码给出 ——
+# 以后再加一张历史片段图，这句话会自己跟着改，不需要有人记得回来改文案。
+def _xl_of(e):
+    if e.get('xlabels'):
+        return e['xlabels']
+    return XL_LONG if e.get('x') == 'long' else XL25
+
+
+def _is_mlab(lab):
+    lab = str(lab)
+    return len(lab) == 6 and lab[3] == '-' and lab[:3] in MONTHS
+
+
+_CUR_LAB = mlab(LATEST)
+TRUNC_EXC = [(e['n'], _xl_of(e)[-1]) for e in ex
+             if _xl_of(e) and _is_mlab(_xl_of(e)[-1]) and _xl_of(e)[-1] != _CUR_LAB]
+# 例外可能不止一张 —— 措辞按现算的条数分岔，不能用「只有 X 例外」硬套：
+# 两张例外时那句会印成「只有 A 例外、只有 B 例外」，自己跟自己打架。
+_exc_txt = '、'.join(f'Exhibit {n}（止于 {lab}）' for n, lab in TRUNC_EXC)
+TRUNC_TXT = ('—— 本页凡是以月为横轴的图，右端一律截到此月。' if not TRUNC_EXC else
+             '—— 本页以月为横轴的图，右端截到此月，'
+             + (f'只有 {_exc_txt}例外' if len(TRUNC_EXC) == 1
+                else f'例外是 {_exc_txt} 这 {len(TRUNC_EXC)} 张')
+             + '：画的是已经结束的历史片段，不跟着门槛往前走。'
+             ) + f'（季度图落在 {qlab(QIDX[-1])} 那一季，类别轴的图没有时间右端。）'
+
+# ── 「身份色的例外是哪几张」也现算 ───────────────────────────────────────────
+# 旧文案手点了一张图号，而同形态的还有别的图：成员身份挂在 x 轴上时，
+# NAVY / MBLUE / GRAY 编码的是口径或年份，不是哪一家。判据是「x 轴标签就是成员名单」，
+# 由代码比对，不靠作者记得住有几张。
+_MEMBER_XL = [DISP[k] for k in KEYS]
+IDENT_X_EX = [e['n'] for e in ex if list(_xl_of(e)) == _MEMBER_XL]
+_COLOR_OWNER = {COLOR[k]: DISP[k] for k in KEYS}
+
+
+def _ident_lines(e):
+    """这张图是不是「一条线一家、颜色 = 身份」。判据不是图号：
+    ① 成员名单已经在 x 轴上的先排除 —— 那里颜色编的是别的维度；
+    ② 其余图要求每条线的颜色都是四家的身份色**且互不重复**。
+    一家之内拆多条线的图会用到 BLUE / GRAY 这类非身份色，或把身份色重复用在
+    同一家的两条线上，因此自动落选。"""
+    if list(_xl_of(e)) == _MEMBER_XL:
+        return False
+    cols = [s.get('color') for s in (e.get('series') or [])]
+    return bool(cols) and all(c in _COLOR_OWNER for c in cols) and len(set(cols)) == len(cols)
+
+
+IDENT_LINE_EX = [e['n'] for e in ex if _ident_lines(e)]
+# 单家多线的图：线之间分的是产品或口径，不是家 —— 同样不能按身份色读。
+INTRA_EX = [e['n'] for e in ex
+            if (e.get('series') and len(e['series']) > 1 and not _ident_lines(e)
+                and list(_xl_of(e)) != _MEMBER_XL)]
+
+# ── 「本页的图分几类」：登记在代码里，漏一张就停机 ─────────────────────────
+# 前几版是把图号手写进散文（先写两类、后来改成三类），加一张图就得有人回来改这句话，
+# 而漏改不会报错 —— 页上直接多一句假话。这里改成登记表 + 构建期断言：
+# 每一张 exhibit 都必须恰好落进一类，漏登记或重复登记当场 raise，发不出去。
+# ⚠️ 类目描述只讲这一类是什么，**不许点名某张图画的是哪个产品** —— 那种句子又会
+#    退回「加图就得有人记得改」的老路。
+EX_CLASS = [
+    ('横向对比', [2, 3, 4, 5, 6, 7, 8, 15, 16, 17],
+     '把有数据的几家放在同一根轴上对读增长趋势 —— 汇率口径对照、汇率本身、'
+     '以及把增长拆成量与价，都归在这一类'),
+    ('产品级头对头', [10, 11],
+     '同一个标的在两所双挂牌，一边多一张另一边就少一张，那才是真零和'),
+    ('只有一侧可测的产品对', [12, 13],
+     '对手方要么不单列这个产品的量、要么根本不在本仓，'
+     '所以画的是一侧的量、<b>不是分流比例</b>，别当头对头读'),
+    ('单家的内部结构', [9, 14],
+     '整张图都在一家之内，不与别家比'),
+]
+_cls_all = [n for _lab, ns, _d in EX_CLASS for n in ns]
+_ex_all = [e['n'] for e in ex]
+if sorted(_cls_all) != sorted(_ex_all):
+    raise SystemExit(
+        f'EX_CLASS 与本页实际的 exhibit 对不上：登记 {sorted(_cls_all)}、'
+        f'实际 {sorted(_ex_all)}。页尾第一条要按这张表点名图号，'
+        f'对不上就会印出假话 —— 先把新图归类再发。')
+if len(set(_cls_all)) != len(_cls_all):
+    raise SystemExit(f'EX_CLASS 里有图号被登记了不止一次：{sorted(_cls_all)}')
+
+
+def _exrange(ns):
+    """把图号压成 2–8 这样的连续段，纯排版，不改变名单。"""
+    ns, out, i = sorted(ns), [], 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
+            j += 1
+        out.append(f'{ns[i]}–{ns[j]}' if j - i >= 2 else '、'.join(str(x) for x in ns[i:j + 1]))
+        i = j + 1
+    return 'Exhibit ' + '、'.join(out)
+
+
+_CLS_TXT = '；'.join(
+    f'{mark} <b>{lab}</b> —— {_exrange(ns)}，{desc}'
+    for mark, (lab, ns, desc) in zip('①②③④⑤⑥⑦⑧⑨', EX_CLASS))
+
+# 「哪几张画了红虚线」同样现读 payload：断点滚出某张图的窗口、或某张图换了窗口长度，
+# 手写的编号就成了一句指着不存在的线说话的假话，而没有任何东西会报错。
+BRK_DRAWN = [e['n'] for e in ex if e.get('break_at') is not None]
+
 _ahead_txt = ('；'.join(f'{d} 自身已更新至 {mlab(m)}' for d, m in AHEAD)
               if AHEAD else '本期四家的最新月恰好一致，无人跑在前面')
 _rank_txt = '、'.join(f'{DISP[k]} {v:,.0f}' for k, v in _rank_idx)
@@ -1336,8 +1531,8 @@ NOTES = [
     '得到的比值<b>没有任何外部指涉</b>：加进一家台湾或韩国，所有人的数字立刻全变；'
     '拿掉 ASX，其余三家又全变。那个数字唯一反映的是「谁碰巧长得快」，'
     '而这件事用增长率讲更直接、也不会被误读成「谁抢了谁的单」。'
-    '所以本页只有两种口径：<b>增长对比</b>（Exhibit 2–8 与 15–17，含把增长拆成量与价）与'
-    '<b>产品级头对头</b>（Exhibit 10–13，同标的双挂牌，那才是真零和）。'
+    f'所以本页的图分 <b>{len(EX_CLASS)} 类</b>（名单由代码逐张归类给出，'
+    f'新增的图没归类就构建停机，不会悄悄漏在句子外面）：{_CLS_TXT}。'
     '与 <code>/exchanges-na/</code> 对照着读会更清楚：那一页能说份额，'
     '是因为 ICE 逐月披露官方行业总量、四家争的是同一批订单流；这里两个条件一个都不成立。',
 
@@ -1400,9 +1595,9 @@ NOTES = [
     'JPX 含 ETF/REIT 与场内大宗；HKEX 含南向；SGX 含 ETF、结构化权证与 DLC。'
     '本页因此<b>从不对四家的水平值排名</b>，汇总表里列出水平值只为逐条与官方披露核对。',
 
-    '<b>衍生品只能各自指数化，因为没有基期价格。</b>'
-    'series/contract_specs.csv 里四家的衍生品篮子 <code>base_price_local</code> 全是空的'
-    '（本轮实测），定基名义额算不出来，只剩张数。而张数<b>不可跨所比水平值</b>：'
+    '<b>衍生品只能各自指数化，因为凑不齐基期价格。</b>'
+    + bp_txt() +
+    '而张数<b>不可跨所比水平值</b>：'
     '单张合约的大小是各所自己选的产品设计参数。Exhibit 9 把这件事量出来了 —— '
     'JPX 同一批成交按原始张数与按大合约当量相差 '
     f'{float(DERIV["jpx"][CUR]) / float(JPX_LGEQ[CUR]):.1f} 倍。'
@@ -1460,14 +1655,24 @@ NOTES = [
     'HKEX 表内注明「ADT for Stock Connect includes buy and sell trades」（南向含买卖双边），'
     '而现货总 ADT 未注明双边 ⇒ 两列计数基准不一致，比值是一个<b>上界</b>；'
     '若总 ADT 为单边计数，真实占比约为图上读数的一半。'
-    f'另外官方停发过一段（{SB_HOLE_TXT}），线在那里断开、不外推。',
+    f'另外图上有 {len(SB_RUNS)} 段没有线（{SB_HOLE_WORD}）：{SB_HOLE_TXT}，'
+    '断开处不外推 —— 段与段之间的月份是有值的，别把首尾两头连起来当成一整段空白。',
 
-    '<b>颜色是身份，不是数值。</b>HKEX 金、JPX 深蓝、SGX 中蓝、ASX 绿，'
-    '全页所有图一致，且与 <code>build/pools.py</code> 里 apac_cash / apac_deriv 的定义逐字相同 —— '
-    '同一家在不同页换色，跨页对照就全废了。红色在本站是<b>结构性断点与截轴离群值的专用色</b>，'
-    '不做数据色，所以 Exhibit 12 / 13 / 15 里的红虚线是断点或口径分界标记，不是某一家。'
-    '（例外只有 Exhibit 15：那张图的 NAVY / MBLUE 两段是<b>分解项</b>不是成员身份，'
-    '成员身份在那里靠 x 标签给出；Exhibit 16 / 17 仍按四家的身份色画线。）',
+    '<b>颜色是身份，不是数值 —— 但只在「一条线一家」的那些图上。</b>'
+    'HKEX 金、JPX 深蓝、SGX 中蓝、ASX 绿，与 <code>build/pools.py</code> 里 '
+    'apac_cash / apac_deriv 的定义逐字相同 —— 同一家在不同页换色，跨页对照就全废了。'
+    f'本轮真正「一条线一家」的是 Exhibit {"、".join(str(n) for n in IDENT_LINE_EX)}，'
+    '只有这几张能按身份色读。<b>两类不能：</b>'
+    f'① 把成员身份放在 x 轴、让颜色去编码别的维度（口径、年份窗口、分解项）的 '
+    f'Exhibit {"、".join(str(n) for n in IDENT_X_EX)}；'
+    f'② 线与线之间分的不是家、而是产品或口径的 '
+    f'Exhibit {"、".join(str(n) for n in INTRA_EX)}。'
+    '这两类图上的 NAVY / MBLUE / GRAY <b>不是</b>某一家。'
+    '（三份名单都由代码逐条线核颜色算出，不靠人记得住有几张。）'
+    '红色在本站是<b>结构性断点与截轴离群值的专用色</b>，不做数据色，'
+    + (f'所以 Exhibit {"、".join(str(n) for n in BRK_DRAWN)} 里的红虚线是断点或'
+       '口径分界标记，不是某一家。' if BRK_DRAWN else
+       '本轮没有任何一张图画红虚线。'),
 
     f'<b>核对表（Exhibit {table["n"]}）用的是各家官方原始单位与币种</b>，没折美元也没指数化，'
     '就是为了让人拿官方新闻稿逐位对账。'
@@ -1488,7 +1693,7 @@ payload = {
                  f'（{len(IDX)} 个月）；季度长历史 {qlab(QIDX[0])} – {qlab(QIDX[-1])}'
                  f'（{len(QIDX)} 季）· 发布门槛取共同最新月，短板 {"、".join(LAG)} · '
                  f'现货折美元一律锁 {mlab(BASE)} 汇率 · '
-                 # ⚠ subtitle / headline 由 page.js 用 textContent 写入（assets/page.js:35, 68-69），
+                 # ⚠ subtitle / headline 由 page.js 的 set() 用 textContent 写入（搜 `set('sub'`），
                  # 里面放 HTML 标签会原样印在页面上。允许 HTML 的只有 notes / footer /
                  # summary.note / exhibit.note 四处。本轮浏览器实测撞过一次，故留此注。
                  '本页不画跨市场占比：四家法域隔离、几乎零替代性，'
@@ -1515,7 +1720,7 @@ payload = {
     'footer': (f'亚太交易所横截面 · HKEX / JPX / SGX / ASX · '
                f'<b>发布门槛：共同最新月 {mlab(LATEST)}</b>，本期短板 '
                f'{"、".join(f"{DISP[k]}（{mlab(latest_each[k])}）" for k in KEYS if latest_each[k] == LATEST)} '
-               f'—— 本页所有图表一律截到此月。'
+               + TRUNC_TXT
                + (f'跑在前面的 {"、".join(f"{d}（已更新至 {mlab(m)}）" for d, m in AHEAD)} '
                   f'的最新月未纳入本页。' if AHEAD else '本期四家最新月一致。')
                + f'各家最新披露：{" · ".join(f"{DISP[k]} 更新至 {mlab(latest_each[k])}" for k in KEYS)} · '
@@ -1579,8 +1784,11 @@ def selfcheck_page():
                 hit += 1
         if not hit:
             bad.append(f'Exhibit {e["n"]}：基期 {want} 上没有任何一条序列等于 100')
-    # page.js 用 textContent 写 subtitle / headline / through_label（assets/page.js:35, 63, 68-69），
+    # page.js 的 set() 用 **textContent** 写 title / subtitle / headline（搜 `set('sub'`），
     # 放 HTML 进去会把标签原样印在抬头上。
+    # ⚠ through_label 走的是**另一条路**：它拼进 `el('meta').innerHTML`（搜 `数据截至`），
+    #   那里 HTML 其实会被解释。这里仍然一并拦下 —— 抬头那一行是纯文本区，
+    #   混进标签同样不该发生。但别再把它记成「textContent 写入」，那是句错的机制描述。
     for f in ('subtitle', 'headline', 'through_label', 'hub_line', 'title'):
         if '<' in payload.get(f, ''):
             bad.append(f'payload["{f}"] 里有 HTML 标签，但这个字段由 page.js 按纯文本写入')

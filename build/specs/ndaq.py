@@ -98,11 +98,157 @@ def _span_zh(m0, n, fallback=''):
     return f'{m0} 起 {n} 个月' if m0 else fallback
 
 
+# 四条绝对成交股数列（本页不画、只在页注里交代）的覆盖 —— **逐列**现算。
+# 上一版这里写死成「2005-09 起 250 个月」，两处都不对：① 251 不是 250
+#    （写死那天数据月是 2026-06，每发一期就差 1）；
+# ② 四列根本不同起点，PSX 要到 2010-10 —— 而同一页上一条注就写着
+#    「三个盘口凑齐的时间不同：2005-09 / 2009-01 / 2010-10」，自己打自己。
+_SHARE_SRC_COLS = (
+    ('vol_us_cash_consolidated_sh', '全美 consolidated'),
+    ('vol_us_cash_matched_nasdaq_sh', 'The Nasdaq Stock Market'),
+    ('vol_us_cash_matched_ntx_sh', 'Nasdaq NTX'),
+    ('vol_us_cash_matched_psx_sh', 'Nasdaq PSX'),
+)
+
+
+def _share_src_spans():
+    """→ ('四列', '全美 consolidated 2005-09 起 251 个月、…')；条数与覆盖都现算。
+
+    条数也得现算：页注上一版写「官方文件里还有**四列**绝对成交股数」，而这里
+    有几列 CSV 里就真有几列 —— 少一列（源不再给）时那句话立刻变成假话，
+    而条数与名单印在同一句里，读者一数就对不上。
+    """
+    bits = []
+    for col, zh in _SHARE_SRC_COLS:
+        m0, _m1, n = _span(col)
+        if m0:
+            bits.append(f'{zh} {m0} 起 {n} 个月')
+    if not bits:
+        return '若干', '这几列本轮在 CSV 里一列都没读到'
+    k = len(bits)
+    n_zh = ('%s列' % '一两三四五六七八九十'[k - 1]) if k <= 10 else ('%d 列' % k)
+    return n_zh, '、'.join(bits)
+
+
+_SHARE_SRC_N, _SHARE_SRC_SPANS = _share_src_spans()
+
+
 # 拼接列的接缝：IR 段从哪个月起，用**探针列**现算，不写死 '2025-01'。
 # 探针 = `vol_us_options_mmcontracts` 的首月 —— 那一列只来自 IR 那份 PDF、从来没被回补过，
 # 所以它在 CSV 里的首月就是「IR 第一次进这张表」的那个月，正是接缝的位置。
 # （它不会随 PDF 的滚动窗口移动：已入库的月份永不删除，见 fetch/ndaq.py 的幂等约定。）
 _SPLICE_AT = _OPT0
+
+
+# 拼接列的两段在重叠月上对不对得上 —— **现算**，不写死「19 个重叠月里 18 个月」。
+# 那两个数每发一期就变一次（IR 段每月长一个月），而 CSV 里三个盘口的分列还在，
+# 「IR 原值 vs 三盘口之和」随时可以重算，没有理由写死。
+# 阈值 0.05%：实测一致的那批在 0.01% 量级（官方四舍五入的痕迹），
+# 唯一一个真正的离群点在 0.3% 量级，两者之间空着一个数量级，取中间。
+_SPLICE_TOL = 0.05
+
+
+def _splice_overlap():
+    """(重叠月数, 一致月数, 一致那批的最大 |差|%, [(离群月, 差%)])；算不出返回 None。
+
+    差的方向：**nasdaqtrader 三盘口之和相对 IR 原值**（负 = nasdaqtrader 少计），
+    与页注的措辞一致。
+    """
+    if not _SPLICE_AT:
+        return None
+    ok, bad, worst = 0, [], 0.0
+    n = 0
+    for r in _rows():
+        if r['month'] < _SPLICE_AT:
+            continue
+        ir = _num(r, 'vol_us_cash_matched_mnsh')
+        parts = [_num(r, c) for c in ('vol_us_cash_matched_nasdaq_sh',
+                                      'vol_us_cash_matched_ntx_sh',
+                                      'vol_us_cash_matched_psx_sh')]
+        if ir in (None, 0) or any(p is None for p in parts):
+            continue
+        n += 1
+        d = (sum(parts) / 1e6 / ir - 1.0) * 100.0
+        if abs(d) <= _SPLICE_TOL:
+            ok += 1
+            worst = max(worst, abs(d))
+        else:
+            bad.append((r['month'], d))
+    return (n, ok, worst, bad) if n else None
+
+
+_SPLICE_OV = _splice_overlap()
+
+
+def _splice_bad_zh():
+    """例外那几个月落在哪儿 —— **现判**，不写死「都在 IR 段内部、与接缝无关」。
+
+    「与接缝无关」这句话只有在例外月**不是接缝那一格**时才成立。上一版把它写成
+    对一个现算列表的全称断言：列表是活的、断言是死的，哪天离群点正好落在接缝上，
+    页面就会一边列出接缝那个月、一边说「与接缝无关」。这里按 `_SPLICE_AT` 现判。
+    """
+    if not _SPLICE_OV or not _SPLICE_OV[3]:
+        return '窗口内没有例外。'
+    bad = _SPLICE_OV[3]
+    lst = '、'.join('%s 差 %+.4f%%' % (m, d) for m, d in bad)
+    on_seam = [m for m, _ in bad if m == _SPLICE_AT]
+    if not on_seam:
+        where = '都在 IR 段内部（不是接缝那一格），与接缝无关'
+    elif len(on_seam) == len(bad):
+        where = '<b>正落在接缝那一格</b>（%s）—— 不能再说「与接缝无关」，请重新裁定' % _SPLICE_AT
+    else:
+        where = ('其中 %s <b>正落在接缝那一格</b>，其余在 IR 段内部 —— 接缝那一格'
+                 '请重新裁定' % '、'.join(on_seam))
+    return '例外 %d 个月：%s —— %s。' % (len(bad), lst, where)
+
+
+def _splice_step_zh():
+    """接缝那一格的环比，以及同月三个盘口分列的环比 —— 逐个现算。
+
+    这三个数上一版是写死的（-2.69% / -2.65% / -2.66%），而它们旁边的月份
+    (`_SPLICE_AT`) 是现算的：接缝一移，月份跟着走、数字不跟着走，两半立刻打架。
+    这一段的论证是「台阶与分列同步 ⇒ 是真实波动不是接缝台阶」，所以三个数必须同源。
+    """
+    if not _SPLICE_AT:
+        return ''
+    months = [r['month'] for r in _rows()]
+    if _SPLICE_AT not in months:
+        return ''
+    i = months.index(_SPLICE_AT)
+    if i == 0:
+        return ''
+    prev = months[i - 1]
+    idx = {r['month']: r for r in _rows()}
+
+    def mom(cols):
+        a = b = 0.0
+        for c in cols:
+            x, y = _num(idx[prev], c), _num(idx[_SPLICE_AT], c)
+            if x is None or y is None:
+                return None
+            a += x
+            b += y
+        return None if not a else (b / a - 1.0) * 100.0
+
+    ir = mom(['vol_us_cash_matched_mnsh'])
+    nd = mom(['vol_us_cash_matched_nasdaq_sh'])
+    # 第三个数取**份额**列而不是三盘口之和：拼接列在接缝左侧就等于那个和，
+    # 拿和来印证等于自己证自己。份额列是另一条独立落库的序列，才有证据力。
+    sh = mom(['share_us_cash_matched_group'])
+    if ir is None or nd is None or sh is None:
+        return ''
+    # 「同步」是本段的论点，所以它也得是判据而不是形容词：三个环比互差 ≤ 0.2pp 才叫同步。
+    same = max(abs(ir - nd), abs(ir - sh), abs(nd - sh)) <= 0.2
+    return ('接缝那一格 %s → %s 环比 %+.2f%%，与同月三个盘口分列的环比'
+            '（Nasdaq %+.2f%%、三盘口合成份额 %+.2f%%）%s ⇒ %s。'
+            % (prev, _SPLICE_AT, ir, nd, sh,
+               '完全同步' if same else '<b>并不同步</b>',
+               '那是真实的市场波动，不是接缝台阶' if same else
+               '<b>这一段的原结论（真实波动、不是接缝台阶）在本期数据下不成立，请重新裁定</b>'))
+
+
+_SPLICE_BAD = _splice_bad_zh()
+_SPLICE_STEP = _splice_step_zh()
 
 _NO_DECOMP_NOTE = (
     '📌 <b>本页不具备量价分解的数据条件 —— 金额与股数分属两个法域。</b>'
@@ -281,7 +427,8 @@ SPEC = {
         #    它们的单位是裸股数/月，量级 1e11（2026-06 全美 consolidated = 491,030,721,182），
         #    唯一能读的显示方式是 ×1e-9 换成「十亿股/月」；
         #    但底座给 scale 列生成的表注文案写死成「源表是 0–1 的小数比率，本页统一按百分数显示」
-        #    （build/single.py:1143），对非比率列会在页面上印出一句假话。
+        #    （底座 `Page.notes()` 里拼「末尾核对表」那一条时写死的那半句），
+        #    对非比率列会在页面上印出一句假话。
         #    ⇒ 信息没有丢：上面四条份额列就是这四列除出来的，且历史一样长。
         #      等底座把那句表注一般化之后，这四列可以一行一条加回来（scale: 1e-9）。
 
@@ -363,14 +510,19 @@ SPEC = {
         'scope 复原不了 —— 那是口径断点，不是抓取难题）。'
         % (_SPLICE_AT or '最近一段', _ND0 or '更早', _MN0 or '更早', _SPLICE_AT or '最近一段'),
 
-        '<b>美股 matched 成交股数那条线上有一处来源切换，落差在 0.01%% 量级。</b>'
-        '%s 起是 IR 月报的原值，更早是同一张 CSV 里 nasdaqtrader 三个盘口（Nasdaq + NTX + PSX）'
-        '撮合量之和 ÷ 1e6。两段实测是同一个东西：19 个重叠月里 18 个月 |差| ≤ 0.0101%%。'
-        '（唯一的例外是 2026-07，差 -0.2896%% —— 那一格在 IR 段内部、与接缝无关，'
-        '是 nasdaqtrader 自己当月少计，用第三方 Cboe 日频 tape 逐日求和裁定 IR 对。）'
-        '接缝那一格 2024-12 → 2025-01 环比 -2.69%%，与同月三个盘口分列的环比'
-        '（Nasdaq -2.65%%、三盘口合成份额 -2.66%%）完全同步 ⇒ 那是真实的市场波动，不是接缝台阶。'
-        % (_SPLICE_AT or '最近一段'),
+        ('<b>美股 matched 成交股数那条线上有一处来源切换，落差在 0.01%% 量级。</b>'
+         '%s 起是 IR 月报的原值，更早是同一张 CSV 里 nasdaqtrader 三个盘口'
+         '（Nasdaq + NTX + PSX）撮合量之和 ÷ 1e6。'
+         % (_SPLICE_AT or '最近一段'))
+        + (('两段在重叠月上逐月比过（现算）：%d 个重叠月里 %d 个月 |差| ≤ %.4f%%。'
+            % (_SPLICE_OV[0], _SPLICE_OV[1], _SPLICE_OV[2]))
+           + _SPLICE_BAD
+           + ('2026-07 那一格已经逐日裁定过：是 nasdaqtrader 自己当月少计，'
+              '用第三方 Cboe 日频 tape 逐日求和判 IR 对。'
+              if any(m == '2026-07' for m, _ in _SPLICE_OV[3]) else '')
+           if _SPLICE_OV else
+           '（本次算不出重叠月的对账结果，请查 CSV。）')
+        + _SPLICE_STEP,
 
         '<b>北欧期权与期货那条线的产品覆盖面是逐年扩的，但那不是口径变更。</b>'
         '重建口径 = 交易所月报里各<b>权益类</b>产品族的 "Cleared volumes / No. of Contracts" 求和。'
@@ -408,11 +560,11 @@ SPEC = {
         'share ÷（matched 股数 ÷ consolidated 股数）的中位比值 = 1.000。'
         '注意 series/miax.csv 的 share_*_pct 存的是百分数，两家形态相反。',
 
-        '官方文件里还有四列绝对成交股数（全美 consolidated 与三个盘口的 matched，2005-09 起 250 个月），'
+        '官方文件里还有%s绝对成交股数（全美 consolidated 与三个盘口的 matched，%s），'
         '<b>本页故意不放</b>：它们的单位是裸股数/月、量级 1e11（2026-06 全美 consolidated = '
         '491,030,721,182 股），按裸数显示读不动。信息没有丢 —— 上面四条份额线正是这四列除出来的，'
-        '历史一样长。另外同一个行业分母在 ICE 页上有可读形态（三个 tape 的 consolidated ADV，'
-        '百万股/日，2011-01 起）。',
+        '逐条历史一样长。另外同一个行业分母在 ICE 页上有可读形态（三个 tape 的 consolidated ADV，'
+        '百万股/日，2011-01 起）。' % (_SHARE_SRC_N, _SHARE_SRC_SPANS),
 
         '<b>Nasdaq 不重述美股月度成交量。</b>2025-12 定格版与 2026-06 版在 244 个重叠月 × 5 字段上'
         '逐格比对，不一致数 = 0。（例外在季度面板的 revenue capture 四列，那四列当期是估计值会被改，'

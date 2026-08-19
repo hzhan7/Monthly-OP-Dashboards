@@ -16,7 +16,7 @@
     **所有存量/流量指标都从这里读**，本模块不下载、不自己解析历史 PDF 的数字。
   · `cache/ibkr/pr_YYYYMM.pdf` —— 月度新闻稿，佣金与平均订单规模
     （历史指标表里没有这两列，CSV 也就没有）；页尾脚注里「交易所／清算／监管费用占
-    期货佣金的百分比」也在这份稿子里，**公司逐月披露、每月都在动**，故一律现算。
+    期货佣金的百分比」也在这份稿子里，**公司逐月披露、不是固定口径**，故一律现算。
     解析函数复用 `fetch/ibkr_source.py`（`parse_pr` / `parse_pr_fut_fee`），
     不重写：解析口径只能有一处定义，各写一份迟早分叉，而分叉的表现是
     「fetch 落库的数与网页画出来的 CPT 对不上同一个月」——最难发现的那种错。
@@ -355,7 +355,8 @@ def compose_brief(ALL, acc, eq, cr, mg, ann, nn, dart, td, opt, fut, stk):
     ═══ IBKR 独有，别家不能照抄 ═══
       · `ann_dart_acct` 的分母是 **cleared** 账户，而 `darts` 含 non-cleared，
         两者不同源。所以文中保留「cleared」一词，且全篇不做 darts ÷ accounts
-        这类跨口径除法（Exhibit 13 的图注讲的就是这个推导误差）。
+        这类跨口径除法（讲这个推导误差的是 Total client DARTs 那张双轴图的图注 ——
+        不写死图号：它在 2026-08 的合并里已经从 Exhibit 18 变成 Exhibit 17 一次了）。
       · `net_new` 的 2025-03 / 2025-09 一次性调整（见 ADJ）是 IBKR 专有，
         排名一律按**还原口径**算，句子里必须写「（还原口径）」。
       · R3 日历护栏在这里成立，是因为 opt/fut/stk 三列是**当月合计**。
@@ -503,7 +504,7 @@ def main():
         _p0 -= 1
     PWIN, PXL = ALL[_p0:_pi + 1], XL_LONG[_p0:_pi + 1]
     COMM = {m: br.parse_pr(_pr_path(m)) for m in PWIN}
-    # 页尾脚注要的「交易所／清算／监管费用占期货佣金」比例：**公司逐月披露、每月都在动**，
+    # 页尾脚注要的「交易所／清算／监管费用占期货佣金」比例：**公司逐月披露、不是固定口径**，
     # 一律从目标月的新闻稿现算。原先这里写死了一个 56%（某一期的读数），而目标月那期是 54%
     # —— 一个不随数据走的常数，只要月份一翻就变成假话。缓存区间的跨度一并印出来，
     # 免得读者把当期这一个数当成公司的固定口径。
@@ -569,6 +570,16 @@ def main():
     noncl_all = 100 - cleared_all / dart_all * 100
     cr_share = cr_all / eq_all * 100
     mg_share = mg_all / eq_all * 100
+    # Exhibit 16 的对照基准：三年的年均占比。基准年份写在这里一处，图注与页尾都引它
+    # —— 「一半」这种量级形容词一概不写死（见 Ex16 的图注注释）。
+    # 连**标签**也从年份列表生成：原来正文里手打「2016-18」，改一次 _B_YEARS 就成假话。
+    _B_YEARS = ('2016', '2017', '2018')
+    _B_LAB = f'{_B_YEARS[0]}-{_B_YEARS[-1][2:]}'
+    _B1618 = [i for i, k in enumerate(ALL) if k[:4] in _B_YEARS]
+    if not _B1618:
+        raise SystemExit(f'Exhibit 16 的对照基准年 {_B_YEARS} 在序列 {ALL[0]}–{ALL[-1]} 里一格都没有')
+    _cr_b1618 = float(np.nanmean(cr_share[_B1618]))
+    _mg_b1618 = float(np.nanmean(mg_share[_B1618]))
     cov_cleared = cleared_all / dart_all * 100                # 推导 cleared 对披露总量的覆盖率
 
     # ── 主窗口序列（WIN ≡ ALL，直接引用上面的数组）──
@@ -630,6 +641,22 @@ def main():
         idx = [i for i, k in enumerate(ALL) if k[:4] == yr]
         return float(np.nanmean(arr[idx])) if idx else float('nan')
 
+    def peak_zh(arr, unit='$', dec=1, suffix='B'):
+        """当期相对**全历史峰值**的位置，一句话现算。
+
+        ⚠ 这个函数是为了根除「余额在创新高」那类写死的断言而存在的。2026-07 实测：
+        融资余额峰值停在 2026-06 的 $108.5B、客户现金停在 2026-06 的 $182.4B，当月
+        两条都不是新高 —— 而页面上两处「在创新高」是写死的英文/中文短语，数据怎么走
+        它们都不会变。凡是要说「新高／离高点多远」，一律调这里，不要自己写形容词。
+        """
+        a = np.asarray(arr, float)
+        i = int(np.nanargmax(a))
+        f = lambda v: f'{unit}{v:,.{dec}f}{suffix}'
+        if i == len(a) - 1:
+            return f'当期 {f(a[-1])} 就是 {ALL[0]} 以来的最高'
+        return (f'当期 {f(a[-1])}，峰值 {f(a[i])} 停在 {ALL[i]}'
+                f'（当期比峰值低 {(1 - a[-1] / a[i]) * 100:.1f}%）')
+
     # 首年与当年（Exhibit 5 的年均对照要用，原先定义在长历史那一段的开头）
     y16, ylast = ALL[0][:4], target[:4]
     pre25 = [i for i, k in enumerate(ALL) if k < '2025-01']
@@ -662,6 +689,24 @@ def main():
 
     # ── Exhibit 定义（标题文案逐字照抄 build_report.py 的 title_src 调用）──
     ex = []
+    # 左端裁决登记簿：{exhibit 编号: 为什么它的左端比主窗口晚}。**在建图现场登记，
+    # 理由字符串与交给 mrwin.Leg 的那一份是同一个变量** —— 页尾窗口说明照它现算，
+    # 不再手抄一份「Exhibit 3 / 11 / 13 / 4」的名单（手抄的那份改一次图号就成假话）。
+    # 建完之后有一道硬校验：实际左端晚了却没登记理由的，直接让构建失败。
+    LATE_WHY = {}
+
+    # 图注里要指**另一张图**时不写死图号：写占位符，建完统一回填。
+    # 照 build/cme.py 的 ⟨nav:…⟩ 办法：登记了却没有任何一处用到 → 停机；
+    # 回填之后 payload 里还残留 ⟨nav: → 停机。2026-08 的合并里各图前移过一号，
+    # 手写的「见 Exhibit 16」当时全靠人肉跟着改，没有任何东西会报错。
+    NAV = {}
+
+    # 序列类型登记簿：'flow' = 流量／流量率，'stock' = 期末存量。**在建图现场登记**。
+    # 页尾那句「流量走 12 个月滚动、存量走点对点」的**例外名单**由它与图上真印出来的
+    # 口径标记（标题的 (12M rolling)／(单月…)、气泡的 ·12M／·单月）对撞现算：
+    # 凡是有同比读数的图都必须登记，登记与图上标记不符就停机。
+    # 原来页尾写的是手抄的「唯一的例外是 Exhibit 6」—— 那句话没有任何东西在守。
+    KIND = {}
 
     # ⚠ 口径调整月的标记方式换了（窗口 13 → 127 逼出来的）。
     # 原来是往 x 轴标签里塞一个 †（`XL2 = [x + '†' …]`）。127 个月的轴由 mrwin 按
@@ -711,18 +756,21 @@ def main():
         # 就是 `pctf(mom(net_new))`，与气泡是同一个表达式，永远逐字相同。Ex4/10/12 的
         # 标题不含 MoM，气泡是它们唯一的环比读数，所以保留。
         #
-        # 顺带记一个**系统性**的量：窗口拉到 127 根柱之后，charts.js 把 MoM 气泡钉在
-        # `Xc(n-4) + band*0.2`，band 只剩 8.3px（13 个月窗口时 ~78px），气泡（宽 ~63px）
-        # 于是整个压进末柱数值标签（宽 ~34px）的横向区间 —— 1280px 实测四张图的横向
-        # 交叠都在 8.9–13.7px，**没有一张是分开的**。真正把它们分开的只有纵向，而纵向
-        # 间距 = Y(min(last*1.13, y1*0.94)) 与 Y(last)−4.5 之差，完全由 last/量程决定：
-        # Ex12 差 −1.0px（刚好错开）、Ex10 +0.7px、Ex4 +3.2px、Ex2 +7.3px。
-        # 也就是说这四张谁越线只取决于当月数据，今天只有 Ex2 超了 visual_qa 的 8px² 底噪。
+        # 顺带记一个**系统性**的量（记机制，不记某一期的读数）：charts.js 把 MoM 气泡钉在
+        # `Xc(n-4) + band*0.2`，band 随窗口拉长而缩（127 期通栏后 8.7px，13 个月窗口时
+        # ~78px），气泡于是整个落进末柱数值标签的横向区间；真正把两者分开的只有纵向，
+        # 而纵向间距 = Y(min(last*1.13, y1*0.94)) 与 Y(last)−4.5 之差，**完全由当月的
+        # last 与量程决定**——也就是说 Ex2/4/10/12 谁越线只取决于当月数据。
+        # 所以这里一个 px 读数都不抄（抄了下个月就是假话）：要看当期状态就跑
+        # `python3 tools/visual_qa.py --page ibkr`（TEXT_OVERLAP 底噪 8px²）。
+        # 2026-08-19 那次：1280 与 768 两个视口都是 0 defect。
         # 不用「把 Ex2 调高一点」的办法收：那是拿一个写死的 height 去追一个随数据漂的
-        # 间距，下个月就可能换成 Ex4 越线，而 Ex2 白高出 40px。
+        # 间距，下个月就可能换成别的一张越线，而 Ex2 白高出 40px。
         'bar_marks': [i for i, w in enumerate(WIN) if w in adj_nn],
         'mark_note': '该月含一次性账户口径调整，不可与相邻柱直读（见图注）',
     })
+    KIND[ex[-1]['n']] = 'flow'          # 净新增账户 = 流量
+    _n_nn = ex[-1]['n']
     # 净新增账户是**流量**：同比换成 12 个月滚动合计口径。
     # 本页早就有一条现成的滚动线 —— Exhibit 14 画的就是 T12M 净新增账户，
     # 这张图画的正是那条线的同比，两张图对得上（原先一张滚动、一张单月）。
@@ -773,13 +821,17 @@ def main():
         'values': L(_v3),
         'note': _n3_note + _w3.why,
     })
+    LATE_WHY[ex[-1]['n']] = _lag3
+    KIND[ex[-1]['n']] = 'flow'          # 净新增账户同比 = 流量
+    _n_nn_yoy = ex[-1]['n']
     # cleared DARTs 是**流量率**（每天多少笔）：气泡与标题的 y/y 换滚动口径。
     # 左端：推导式要**月初**账户数，序列首月没有上月 → cleared_all[0] 恒为 NaN。
     # gs_bar 不属 DENSE、能吃前导 null，但那一格是「算不出」而不是「为 0」，
     # 留一根空柱在最左边只会让人以为那个月没数据。交给 resolve() 裁到 2016-02。
+    _lag4 = '推导式要月初账户数，序列首月没有上月'
     _w4 = mrwin.resolve('gs_bar',
                         [mrwin.Leg('cl', 'Implied cleared DARTs', cleared_all, 'primary',
-                                   '推导式要月初账户数，序列首月没有上月')], XL, 0)
+                                   _lag4)], XL, 0)
     XL4, cl4 = _w4.cut(XL), np.array(_w4.cut(cleared_all), float)
     _y4 = at(CL_ROLL)
     _y4v = _y4 if _y4 is not None else yoy(cl4)
@@ -805,6 +857,9 @@ def main():
         'mom_txt': pctf(mom(cl4)),
     })
     ex[-1]['note'] += _w4.why
+    LATE_WHY[ex[-1]['n']] = _lag4
+    KIND[ex[-1]['n']] = 'flow'          # cleared DARTs = 流量率（笔/日）
+    _n_cl = ex[-1]['n']
     # ── Exhibit 5：人均年化 cleared DART ──────────────────────────────────────
     # 两处改动，理由都在这里：
     #
@@ -812,7 +867,9 @@ def main():
     #    原 Exhibit 14 画的是**同一列 CSV（ann_dart_acct）、同一段月份**——两张一模一样
     #    的图。所以把两张合成一张：保留 Exhibit 5 的位置（Exhibit 4 的标题以「…」结尾，
     #    接的就是这张的「…leading to」，GS deck 的叙事链不能断），采用原 Exhibit 14 的
-    #    画法（`lines` + `zero_base`）。**`zero_base` 只有 `lines` 认**（charts.js:48），
+    #    画法（`lines` + `zero_base`）。**`zero_base` 是给 `kind:'lines'` 用的**
+    #    （assets/charts.js 顶部的字段表里写着，`grep -n 'zero_base bool' assets/charts.js`；
+    #    不写死行号 —— 那份文件 34 页共用，谁在上面插一行本注释就指错地方），
     #    而它是必须的：本图标题引用「比 2016 年低 N%」这种幅度，引擎默认下界是
     #    「最小值 − 极差 5%」，那是一次没有标注的隐性截轴，会把这个幅度在视觉上放大。
     #    顺带的好处：`lines` 不属 mrwin.DENSE，127 个点也不再逐点标数值。
@@ -843,14 +900,23 @@ def main():
                   '纵轴从 0 起（标题引用的是降幅，截过的轴会把降幅凭空放大）。'
                 + roll_note(ST_AN),
     })
+    KIND[ex[-1]['n']] = 'flow'          # 人均年化 cleared DART = 流量率
+    _n_ann = ex[-1]['n']
     # ── Exhibit 6-9：新闻稿窗口（PWIN）────────────────────────────────────────
     # 这四张短，短的**不是窗口是数据**：CPT 与 Average Order Size 只印在月度新闻稿上，
     # 历史指标表（= series/ibkr.csv 的全部内容）没有这两列。可用区间 = 本地已缓存且
     # 紧贴最新月的那一段连续新闻稿，由构建期扫出来。图注里逐张写明起点与原因。
-    _PR_WHY = (f'<b>本图只覆盖 {PXL[0]}–{PXL[-1]}（{len(PWIN)} 个月），不是本页其余各图的 '
-               f'{XL[0]} 起全历史</b>：本图要用的 CPT（单笔佣金）与 Average Order Size '
+    #
+    # ⚠ 参照物只许写「本页主窗口」（= XL，页顶副标题里印的那条轴），**不许写「本页其余
+    #   各图」**。这句话在 Ex6/7/8/9 上复用四次，而「其余各图」的外延是本页另外那十二张
+    #   图 —— 它们里只有八张真的从 XL[0] 起：Ex3 / 4 / 11 / 13 的左端由 mrwin 按「这一期
+    #   算不出来」往后裁过，页尾那条窗口说明当场把它们逐张点了名。同一页上一句话被另一
+    #   句话证伪，读者往下滚三张图就抓到。XL[0] 是**主窗口起点**，不是全页横轴的通称；
+    #   要点名「哪几张真的从 XL[0] 起」得等 ex 建完才算得出来，这里还早，所以不点名。
+    _PR_WHY = (f'<b>本图只覆盖 {PXL[0]}–{PXL[-1]}（{len(PWIN)} 个月），不是本页主窗口那 '
+               f'{len(XL)} 个月（{XL[0]}–{XL[-1]}）</b>：本图要用的 CPT（单笔佣金）与 Average Order Size '
                '<b>只印在月度新闻稿上</b>，官方那份 Historical Brokerage Metrics 表（本站'
-               '落库为 series/ibkr.csv 的全部 11 列）里根本没有这两列，所以更早的月份'
+               f'落库为 series/ibkr.csv 的全部 {len(COLS)} 列）里根本没有这两列，所以更早的月份'
                '<b>不是被截掉了，是这两个数不存在于任何已入库的来源</b>。'
                f'窗口 = <code>cache/ibkr/pr_YYYYMM.pdf</code> 里紧贴最新月的连续区间，'
                '构建期扫出来、不写死，每月自动长一格。'
@@ -883,6 +949,7 @@ def main():
         'legend': 'Implied Commission Revenue/Day', 'values': L(comm_day), 'avg12': avg12(comm_day),
         'yoy_txt': (pctf(_y6) + ' y/y·单月') if _y6ok else '', 'mom_txt': pctf(mom(comm_day)),
     })
+    KIND[ex[-1]['n']] = 'flow'          # 隐含佣金收入/日 = 流量率（$mn/日）
     dc = (cpt[-1] - cpt[-2]) * 100
     vs7 = cpt[-1] / avg12(cpt) - 1
     ex.append({
@@ -952,24 +1019,37 @@ def main():
         'note': f'公司披露的期末余额，{XL[0]} 起逐月。虚线是<b>最近 12 个月</b>（不含当期）'
                 '的均值，不是逐月滚动均值。' + stock_note(ST_MG, '客户融资余额'),
     })
+    _n_mg = ex[-1]['n']          # 融资余额柱图的图号，后面几处引用它，不手抄数字
+    KIND[ex[-1]['n']] = 'stock'         # 融资余额 = 期末存量
     # Ex11 / Ex13 画的是**单月同比**：按定义要 12 个月历史，序列头 12 期算不出来。
     # 两张都是 gs_line（mrwin.DENSE），前导 null 会被 Catmull-Rom 当 0 插值、逐点标
     # 数值时抛 TypeError，所以左端交给 resolve() 裁到第一个真有读数的月份。
     # 这与「掐头」不同：2016 全年不是被藏起来，是那 12 个月没有去年同月可比
     #（series/ibkr.csv 从 2016-01 起，2015 年的数据本站一格都没有）。
     marg_yoy_pct = marg_yoy * 100
+    _lag_mono = '单月同比要去年同月做基数，序列前 12 个月没有'
     _w11 = mrwin.resolve('gs_line',
                          [mrwin.Leg('mg', '融资余额单月同比', marg_yoy_pct, 'primary',
-                                    '单月同比要去年同月做基数，序列前 12 个月没有')], XL, 0)
+                                    _lag_mono)], XL, 0)
     XL11, v11 = _w11.cut(XL), np.array(_w11.cut(marg_yoy_pct), float)
     ex.append({
         'n': 11, 'kind': 'gs_line', 'fmt': 'pct0', 'xlabels': XL11, 'xstep': 12,
         'title': f'Customer margin balances {"increased" if v11[-1] > 0 else "decreased"} by {abs(v11[-1]):.0f}% YoY (单月同比)',
         'ylab': 'YoY customer margin balances change, 单月 (%)', 'values': L(v11),
-        'note': '融资余额不是高增速指标，m/m 基本是噪音，故本图画 y/y（相对 Exhibit 10 同一序列的去年同月）。'
-                '余额的绝对水平在创新高，但相对客户权益的占比仍在低位，见 Exhibit 16。'
+        # ⚠ 这里原来写的是「余额的绝对水平在创新高，但相对客户权益的占比仍在低位」。
+        #   两半都是写死的形容词：2026-07 实测融资余额峰值停在 2026-06（$108.5B），
+        #   当月 $100.7B 根本不是新高 —— 而同一份 payload 的 brief 里那句「账户是四个
+        #   总量里唯一创新高的」是现算的，两处当场打架。改成两边都调 peak_zh() 现算，
+        #   占比也只给区间与当期，不给「低位」这种量级词。
+        'note': f'融资余额不是高增速指标，m/m 基本是噪音，故本图画 y/y（相对 Exhibit {_n_mg} 同一序列的去年同月）。'
+                f'绝对水平：{peak_zh(mg_all)}；相对客户权益的占比是另一回事 —— 当期 '
+                f'{mg_share[-1]:.1f}%，{ALL[0]} 以来的区间 {np.nanmin(mg_share):.1f}%–'
+                f'{np.nanmax(mg_share):.1f}%，见 ⟨nav:share⟩。'
                 + stock_note(ST_MG, '客户融资余额') + _w11.why,
     })
+    LATE_WHY[ex[-1]['n']] = _lag_mono
+    KIND[ex[-1]['n']] = 'stock'         # 余额单月同比 = 期末存量
+    _n_mg_yoy = ex[-1]['n']
     va12 = credits[-1] / avg12(credits) - 1
     ex.append({
         'n': 12, 'kind': 'gs_bar', 'fmt': 'f1', 'xlabels': XL, 'xstep': 12,
@@ -982,10 +1062,12 @@ def main():
         'legend': 'Total Client Cash', 'values': L(credits), 'avg12': avg12(credits),
         'yoy_txt': pctf(yoy(credits)) + ' y/y·单月', 'mom_txt': pctf(mom(credits)),
     })
+    _n_cr = ex[-1]['n']          # 客户现金柱图的图号，同上
+    KIND[ex[-1]['n']] = 'stock'         # 客户现金 = 期末存量
     cred_yoy_pct = cred_yoy * 100
     _w13 = mrwin.resolve('gs_line',
                          [mrwin.Leg('cr', '客户现金单月同比', cred_yoy_pct, 'primary',
-                                    '单月同比要去年同月做基数，序列前 12 个月没有')], XL, 0)
+                                    _lag_mono)], XL, 0)
     XL13, v13 = _w13.cut(XL), np.array(_w13.cut(cred_yoy_pct), float)
     ex.append({
         'n': 13, 'kind': 'gs_line', 'fmt': 'pct0', 'xlabels': XL13, 'xstep': 12,
@@ -998,11 +1080,14 @@ def main():
                 f'（{XL[1]}–{XL[-1]} 全区间实测），画 y/y 才有信息量。'
                 + stock_note(ST_CR, '客户现金（credit balances）') + _w13.why,
     })
+    LATE_WHY[ex[-1]['n']] = _lag_mono
+    KIND[ex[-1]['n']] = 'stock'         # 余额单月同比 = 期末存量
+    _n_cr_yoy = ex[-1]['n']
 
     # ── 长历史（Exhibit 14-17）：2016-01 起，x 轴每 12 个月一个标签 ──
     # 这三张 lines 图一律显式 zero_base：不给它时引擎走 y0 = min − 极差×5%，那是一次**没有
-    # 任何标注的隐性截轴**，而它们的标题偏偏都在讲倍数／降幅（Ex15「14.0x」、Ex16
-    # 「不到一半」）——截过的轴会把这些幅度凭空放大，图与文字互相打架。
+    # 任何标注的隐性截轴**，而它们的标题偏偏都在讲倍数／降幅（Ex15 的「N.Nx」、Ex16 的
+    # 「当期 % vs 1/16 的 %」）——截过的轴会把这些幅度凭空放大，图与文字互相打架。
     # Ex14 的数据本来就贴近 0，给上只是把「从 0 起」这件事写实。
     # 三张都给 end_label：末点读数正是各自标题引用的那个数，且末点都落在序列的极值端，
     # 标签周围是空的。
@@ -1036,6 +1121,7 @@ def main():
                 f'（{nn_adj_txt}），前 11 个月不足一年故留空。',
         'series': [{'name': 'Net new accounts, T12M', 'color': 'NAVY', 'values': LN(roll12)}],
     })
+    _n_t12 = ex[-1]['n']         # T12M 净新增账户水平图的图号，页尾引它
     ex.append({
         'n': 15, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'f0c',
         'zero_base': True, 'end_label': True,
@@ -1046,23 +1132,57 @@ def main():
                 '此前站上一张图都没有。',
         'series': [{'name': 'Client Equity', 'color': 'NAVY', 'values': LN(eq_all)}],
     })
+    # ⚠ 标题原来写死「**Both** interest-earning bases keep shrinking vs. client equity」：
+    #   数字现算、方向词写死。2026-07 实测融资余额/权益近 12 个月是 9.86%→11.11%
+    #   （**+1.25pp，在涨**，且比自身历史最低 9.74% 高 1.36pp），只有客户现金/权益在降
+    #   —— 一句 Both 把一条成立、一条不成立的断言捆在一起发上线，而证伪它的第二条线就
+    #   画在同一张图上。方向词改成现算：判据是近 LAG 个月的 pp 变化，两条同向才允许出现
+    #   Both；下面还有一道停机兜底，判据从原始序列重算，与标题字面对不上就让构建失败。
+    _w16 = min(LAG, len(cr_share) - 1)
+    _d16c = float(cr_share[-1] - cr_share[-1 - _w16])
+    _d16m = float(mg_share[-1] - mg_share[-1 - _w16])
+    _sg = lambda v: (v > 0) - (v < 0)
+    _verb16 = {1: 'rising', -1: 'shrinking', 0: 'flat'}
+    _t16 = ((f'Both interest-earning bases keep {_verb16[_sg(_d16c)]} vs. client equity'
+             if _sg(_d16c) == _sg(_d16m) != 0 else
+             'Interest-earning bases split vs. client equity')
+            + f': client cash {cr_share[-1]:.1f}% ({_d16c:+.1f}pp over {_w16}M) and margin loans '
+              f'{mg_share[-1]:.1f}% ({_d16m:+.1f}pp), vs. '
+              f'{cr_share[0]:.1f}% / {mg_share[0]:.1f}% in {XL_LONG[0]}')
+    # 停机兜底：判据重算一遍（不复用上面那两个变量），标题里有没有 Both 必须与它一致。
+    _chk16 = [float(s[-1] - s[-1 - _w16]) for s in (cr_share, mg_share)]
+    if ('Both' in _t16) != (_chk16[0] * _chk16[1] > 0):
+        raise SystemExit(
+            f'Exhibit 16 标题与数据对不上：标题{"有" if "Both" in _t16 else "没有"} Both，'
+            f'而近 {_w16} 个月客户现金/权益 {_chk16[0]:+.2f}pp、融资余额/权益 {_chk16[1]:+.2f}pp')
     ex.append({
         'n': 16, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'pct1',
         'zero_base': True, 'end_label': True,
-        'title': f'Both interest-earning bases keep shrinking vs. client equity: client cash '
-                 f'{cr_share[-1]:.1f}% and margin loans {mg_share[-1]:.1f}%, vs. '
-                 f'{cr_share[0]:.1f}% / {mg_share[0]:.1f}% in {XL_LONG[0]}',
+        'title': _t16,
         'ylab': 'as % of client equity (%)',
         'note': '<b>这是比值，不是公司披露值</b>：分子分母都取自官方历史指标表同一张表内的 Client Credits / '
                 'Client Margin Loans / Client Equity。历史最低：客户现金/权益 '
                 f'{np.nanmin(cr_share):.2f}%（{ALL[int(np.nanargmin(cr_share))]}）、融资余额/权益 '
                 f'{np.nanmin(mg_share):.2f}%（{ALL[int(np.nanargmin(mg_share))]}）。'
-                'Exhibit 10 / 12 的绝对额在创新高，但这两条生息基数相对资产规模仍不到 2016-18 年的一半。',
+                # ⚠ 这里原来写的是「这两条生息基数相对资产规模仍不到 2016-18 年的一半」。
+                # 2026-08-19 实测：客户现金/权益 19.9% 确实不到 2016-18 年均 43.9% 的一半，
+                # 但融资余额/权益 11.1% **高于**年均 21.6% 的一半（10.8%）—— 一句「这两条」
+                # 把一个成立、一个不成立的断言捆在一起发上线，而证伪它要的数就在本图里。
+                # 改成两条各自现算「当期是基准的百分之几」，一个量级形容词都不留。
+                # ⚠ 同一句里原来还有「Exhibit 10 / 12 的绝对额在创新高」—— 2026-07 实测
+                #   两条的峰值都停在 2026-06，当月都不是新高。改成调 peak_zh() 现算。
+                f'两条绝对额（Exhibit {_n_mg} / {_n_cr}）与这里的占比是两件事：'
+                f'融资余额{peak_zh(mg_all)}、客户现金{peak_zh(cr_all)}。'
+                f'占比与 {_B_LAB} 年均相比：'
+                f'客户现金/权益 {cr_share[-1]:.1f}% vs {_cr_b1618:.1f}%'
+                f'（为其 {cr_share[-1] / _cr_b1618 * 100:.0f}%）、融资余额/权益 '
+                f'{mg_share[-1]:.1f}% vs {_mg_b1618:.1f}%（为其 {mg_share[-1] / _mg_b1618 * 100:.0f}%）。',
         'series': [
             {'name': 'Client cash / client equity', 'color': 'NAVY', 'values': LN(cr_share)},
             {'name': 'Margin loans / client equity', 'color': 'MBLUE', 'values': LN(mg_share)},
         ],
     })
+    NAV['⟨nav:share⟩'] = ex[-1]['n']     # Exhibit 11 的图注要指这张（占比图），回填见文末
     # 断点索引现算且**允许算不出**：`ALL.index()` 找不到就 ValueError，整个 routine 硬失败退出，
     # 页面永久停更（build/lpla.py 就是栽在这上面）。这里照 schw.py / wealth.py 的写法降级——
     # 断点不在轴上就不给 break_at，同时把图注里「红色虚线」那句话一并省掉：
@@ -1098,6 +1218,133 @@ def main():
         # 不然又会出现「图注说画了红虚线、图上一条都没有」。
         ex[-1]['break_at'] = brk
         ex[-1]['break_label'] = f'{BRK_M[:4]}：疑似口径变更'
+
+    # ── 页尾脚注要点名的几批图：**一律从建完的 `ex` 现算**，不在文案里手抄编号 ──
+    # 本轮之前这些名单是写死的（「Exhibit 2 / 4 / 6 / 10 / 12」「Exhibit 5 与 14-16 四张」
+    # 「Exhibit 3 / 11 / 13 / 4」）。写死的名单在 2026-08 的合并里已经被撞过一次：原
+    # Exhibit 14 并进 Ex5、其后各图前移一号，任何一处漏改都会指到别的图上，而没有东西报错。
+    def _exlist(ns):
+        return ('Exhibit ' + ' / '.join(str(n) for n in ns)) if ns else ''
+
+    _pr_ns = [e['n'] for e in ex if e.get('xlabels') == PXL]          # 新闻稿窗口那几张
+    _pr_span = (f'{_pr_ns[0]}-{_pr_ns[-1]}'
+                if _pr_ns == list(range(_pr_ns[0], _pr_ns[-1] + 1))
+                else '／'.join(str(n) for n in _pr_ns))
+    _csv_ns = [e['n'] for e in ex if e['n'] not in _pr_ns]            # 取自 series/ibkr.csv 的
+    _xl_of = {e['n']: (e.get('xlabels') or XL) for e in ex}
+    # ⚠ 判据要与句子逐字对应。页尾那句说的是「覆盖**完整**的主窗口（127 个月逐月连续）」，
+    #   所以判据就得是「这张的 xlabels 与主窗口逐格相同」，不能只比左端 —— 只比左端时，
+    #   一张起点相同但右端更短的图会被算进「覆盖完整」，而没有东西会报错。
+    _ontime_ns = [n for n in _csv_ns if _xl_of[n] == XL]
+    _late_ns = [n for n in _csv_ns if _xl_of[n][0] != XL[0]]
+    _odd = [n for n in _csv_ns if n not in _ontime_ns and n not in _late_ns]
+    if _odd:
+        raise SystemExit(f'Exhibit {_odd} 的轴既不等于主窗口、左端又不比它晚（右端短了？）'
+                         f'—— 页尾把 {len(_csv_ns)} 张分成「完整」与「左端更晚」两堆，'
+                         f'出现第三种形状就必须先把那段话改对')
+    # 左端晚了却没在建图现场登记理由 —— 宁可构建失败，也不要页尾少说一张。
+    _unreg = [n for n in _late_ns if n not in LATE_WHY]
+    if _unreg:
+        raise SystemExit(f'Exhibit {_unreg} 的左端比主窗口 {XL[0]} 晚，'
+                         f'但 LATE_WHY 里没有登记理由（见 ex = [] 处的说明）')
+    # 理由相同的合并成一行（Ex11 / Ex13 是同一句），并且用「——」而不是括号：
+    # 登记的理由本身带括号，再套一层括号读者数不清层级。
+    _late_groups = []
+    for n in _late_ns:
+        if _late_groups and _late_groups[-1][0] == LATE_WHY[n]:
+            _late_groups[-1][1].append(n)
+        else:
+            _late_groups.append((LATE_WHY[n], [n]))
+    _late_txt = '；'.join(f'{_exlist(g)} —— {why}' for why, g in _late_groups)
+
+    _gsbar_ns = [e['n'] for e in ex if e['kind'] == 'gs_bar']
+    _avg_ns = [e['n'] for e in ex if e.get('avg12') is not None]
+    _avg_other = [n for n in _avg_ns if n not in _gsbar_ns]           # 同一条虚线的非 gs_bar 图
+    _yoyline_ns = [e['n'] for e in ex if e['kind'] == 'gs_line']      # 专门的 y/y 折线
+    _zb_ns = [e['n'] for e in ex if e.get('zero_base')]
+    _zb_kinds = sorted({e['kind'] for e in ex if e.get('zero_base')})
+    _cap_ns = [e['n'] for e in ex if e.get('ycap') is not None or e.get('yfloor') is not None]
+    _nyears = len({k[:4] for k in ALL})
+    _extra_ns = [e['n'] for e in ex if e.get('x') == 'long']         # 另加的长历史图
+    _exn = {e['n']: e for e in ex}
+
+    # ── 回填①：左端更晚的那几张，把登记的**根因**写进它自己的图注 ─────────────
+    # 页尾原来声称「另外 N 张更晚，原因逐张写在各自图注里」，而 Exhibit 4 的图注里
+    # 连「左端」二字都没有：它是 gs_bar（不属 mrwin.DENSE），`resolve().why` 返回空串，
+    # 那句 `note += _w4.why` 什么也没加。Ex3/11/13 虽有 mrwin 那一段，但单腿时它的
+    # `who` 退化成一个日期，印出来是「定住左端的是 12/17」这种同义反复 —— 登记在
+    # LATE_WHY 里的真正理由一个字都没进图注。mrwin.py 是全站共用文件、本轮不许改，
+    # 所以改法留在本页：把登记的那句话 append 进对应图注，然后**逐张核对，对不上就停机**。
+    # 页尾那句话从此是被守住的，不是被相信的。
+    for _n in _late_ns:
+        _e = _exn[_n]
+        _exl = _e.get('xlabels') or XL
+        _k = len(XL) - len(_exl)                      # 比主窗口起点晚几期
+        if LATE_WHY[_n] not in (_e.get('note') or ''):
+            # mrwin 已经写过「本图左端截在 X」那一段的（DENSE 图型），这里不再重复左端，
+            # 只补它没印出来的那半句：**数据上**为什么这几期不存在。
+            _said = '本图左端截在' in (_e.get('note') or '')
+            _e['note'] = (_e.get('note') or '') + (
+                (f'<b>而那 {_k} 期本来就算不出来</b>：{LATE_WHY[_n]} —— '
+                 f'不是截掉不看。' if _said else
+                 f'<b>本图左端是 {_exl[0]}、比主窗口起点 {XL[0]} 晚 {_k} 期</b>：'
+                 f'{LATE_WHY[_n]}，那 {_k} 期<b>算不出来</b>，不是截掉不看。'))
+    _nowhy = [_n for _n in _late_ns if LATE_WHY[_n] not in (_exn[_n].get('note') or '')]
+    if _nowhy:
+        raise SystemExit(f'Exhibit {_nowhy} 的左端比主窗口 {XL[0]} 晚，LATE_WHY 里登记了理由，'
+                         f'却没有写进它自己的图注 —— 页尾「原因逐张写在各自图注里」会变成假话')
+
+    # ── 回填②：图注里的图号占位符 ⟨nav:…⟩（照 build/cme.py 的办法）──────────
+    for _tag, _tn in NAV.items():
+        _hit = 0
+        for _e in ex:
+            for _f in ('title', 'note', 'ylab'):
+                if _tag in (_e.get(_f) or ''):
+                    _e[_f] = _e[_f].replace(_tag, f'Exhibit {_tn}')
+                    _hit += 1
+        if _hit == 0:
+            raise SystemExit(f'占位符 {_tag} 登记了图号 {_tn}，却没有任何一处用到 —— '
+                             f'要么那句导航被删了，要么占位符敲错了')
+
+    # ── 同比口径：从图上**真印出来的标记**反读，再与建图现场登记的 KIND 对撞 ──────
+    # 页尾要说「哪几张走滚动、哪几张走点对点、例外是谁」。这三份名单以前都是手抄的，
+    # 其中「Exhibit 2 / 4 / 5 的标题」这一条是错的：Ex2 的标题只有 MoM，一个 YoY 读数
+    # 都没有，而且它的标题模板恒定不变 —— 那不是「这个月恰好不成立」，是恒不成立。
+    # 现在名单一律从 title / yoy_txt 里真印出来的口径标记反读，读者对着图就能数。
+    _cal = {}
+    for _e in ex:
+        _tg, _bub = set(), (_e.get('yoy_txt') or '')
+        if '12M rolling' in _e['title'] or '·12M' in _bub:
+            _tg.add('roll')
+        if '(单月' in _e['title'] or '单月同比' in _e['title'] or '·单月' in _bub:
+            _tg.add('mono')
+        if len(_tg) > 1:
+            raise SystemExit(f'Exhibit {_e["n"]} 同时标了两种同比口径：'
+                             f'title={_e["title"]!r} yoy_txt={_bub!r}')
+        if _tg:
+            _cal[_e['n']] = _tg.pop()
+    _unkind = sorted(_n for _n in _cal if _n not in KIND)
+    if _unkind:
+        raise SystemExit(f'Exhibit {_unkind} 印了同比读数却没在建图现场登记 KIND'
+                         f'（flow／stock）—— 页尾的口径规则与例外名单正是从它算出来的')
+    _roll_ttl = [e['n'] for e in ex if '12M rolling' in e['title']]
+    _roll_bub = [e['n'] for e in ex if '·12M' in (e.get('yoy_txt') or '')]
+    _mono_ns = sorted(_n for _n, _c in _cal.items() if _c == 'mono')
+    _roll_whole = [_n for _n in _yoyline_ns if _cal.get(_n) == 'roll']   # 整张图画的就是这条同比
+    _mono_stock = [_n for _n in _mono_ns if KIND[_n] == 'stock']
+    _mono_late = [_n for _n in _late_ns if _cal.get(_n) == 'mono']   # 左端晚、且画单月同比的
+    # 规则：流量／流量率走 12 个月滚动，存量走点对点。不按规则走的必须有由头，而本页
+    # 认的唯一由头是「这张画在新闻稿窗口上，历史凑不出滚动同比要的 24 个月」。
+    # 别的情况一律让构建失败 —— 页尾那句「例外只有一张」才敢印。
+    _rule_break = [_n for _n, _c in _cal.items() if (KIND[_n] == 'flow') != (_c == 'roll')]
+    # 页尾那句只描述一种偏离：「流量图本该走滚动却走了单月」。所以例外名单也只收这一种，
+    # 别的偏离（存量图跑去用滚动）没有对应的措辞，一律停机而不是默默印进那句话里。
+    _cal_exc = [_n for _n in _rule_break if _n in _pr_ns and KIND[_n] == 'flow']
+    _cal_bad = [_n for _n in _rule_break if _n not in _cal_exc]
+    if _cal_bad:
+        raise SystemExit(f'Exhibit {_cal_bad} 的同比口径与「流量走滚动、存量走点对点」对不上，'
+                         f'而它不是「流量图 + 画在新闻稿窗口 {PXL[0]}–{PXL[-1]} 上」这唯一一种'
+                         f'有措辞的例外 —— 页尾的规则说明会变成假话')
 
     # ── Exhibit 1：汇总表（本月|上月|去年同月 ‖ m/m|y/y|3Y %ile）──
     # 单元格全部是**已格式化的字符串** + 颜色类：pp/bp、反向指标、分位反转这些格式化口径
@@ -1182,13 +1429,15 @@ def main():
         gap = (f'（差 {abs(m - r) * 100:,.0f}pp）' if (m is not None and r is not None) else '')
         return f'{name}：{both}{gap}'
 
+    # 括号里的图号一律引建图现场捞下来的 `_n_*`，不手抄数字：2026-08 的合并里各图
+    # 前移过一号，这一串当时全靠人肉跟着改，改漏了也没有任何东西会报错。
     _CAL_ROWS = [t for t in (
-        _pair('净新增账户（Exhibit 2/3 画滚动）', at(NN_MONO), at(NN_ROLL)),
-        _pair('Implied cleared DARTs（Exhibit 4 画滚动）', at(CL_MONO), at(CL_ROLL)),
-        _pair('人均年化 cleared DART（Exhibit 5 画滚动）', at(AN_MONO), at(AN_ROLL)),
-        _pair('客户现金（存量，Exhibit 12/13 画点对点）', at(mono_yoy_arr(cr_all, ALL)),
+        _pair(f'净新增账户（Exhibit {_n_nn}/{_n_nn_yoy} 画滚动）', at(NN_MONO), at(NN_ROLL)),
+        _pair(f'Implied cleared DARTs（Exhibit {_n_cl} 画滚动）', at(CL_MONO), at(CL_ROLL)),
+        _pair(f'人均年化 cleared DART（Exhibit {_n_ann} 画滚动）', at(AN_MONO), at(AN_ROLL)),
+        _pair(f'客户现金（存量，Exhibit {_n_cr}/{_n_cr_yoy} 画点对点）', at(mono_yoy_arr(cr_all, ALL)),
               at(mean_yoy_arr(cr_all, ALL))).replace('12 个月滚动', '12 个月均值'),
-        _pair('融资余额（存量，Exhibit 10/11 画点对点）', at(mono_yoy_arr(mg_all, ALL)),
+        _pair(f'融资余额（存量，Exhibit {_n_mg}/{_n_mg_yoy} 画点对点）', at(mono_yoy_arr(mg_all, ALL)),
               at(mean_yoy_arr(mg_all, ALL))).replace('12 个月滚动', '12 个月均值'),
     ) if t]
     _CAL_TXT = (f'当期各口径并排现算 —— {"；".join(_CAL_ROWS)}。' if _CAL_ROWS else '')
@@ -1199,12 +1448,22 @@ def main():
     # 只印一个光秃秃的百分数会被当成公司的固定口径（页尾从前那个写死的 56% 就是这样读的）。
     # 解析不到就一个数字都不印 —— 宁可少一句，也不能拿别的月份的读数顶上。
     _ff = sorted(v for v in FUT_FEE.values() if v is not None)
+    # ⚠「每月都在动」是个**可数的**全称断言，而它自己引用的这批读数当场证伪它：
+    #   2026-08-19 实测 14 期里有 4 个环比与上月完全相同（7/25→8/25 都是 57%、
+    #   2/26→3/26→4/26 连着三期 58%、5/26→6/26 都是 56%）。方向没错（写死一个百分数会
+    #   过期），但频次不能拍脑袋 —— 改成现算：相邻两期**都**解析到才算一个环比，
+    #   免得把「没变」和「那个月没解析到」混成一件事。
+    _ffs = [FUT_FEE[m] for m in PWIN]
+    _ff_pairs = [(a, b) for a, b in zip(_ffs, _ffs[1:]) if a is not None and b is not None]
+    _ff_moves = sum(1 for a, b in _ff_pairs if a != b)
     if FUT_FEE.get(target) is not None:
         fut_fee_txt = (f'公司在 {month_name} 新闻稿里估计交易所／清算／监管费用约占期货佣金的 '
                        f'<strong>{FUT_FEE[target]:g}%</strong>'
-                       + (f'（该比例<strong>逐月披露、每月都在动</strong>：本地缓存的 '
+                       + (f'（该比例<strong>逐月披露、不是固定口径</strong>：本地缓存的 '
                           f'{PXL[0]}–{PXL[-1]} 共 {len(_ff)} 期落在 {_ff[0]:g}%–{_ff[-1]:g}% 之间，'
-                          f'不是固定口径）' if len(_ff) >= 2 and _ff[0] != _ff[-1] else '')
+                          f'{len(_ff_pairs)} 个月环比里 {_ff_moves} 个变了、'
+                          f'{len(_ff_pairs) - _ff_moves} 个与上月持平）'
+                          if len(_ff) >= 2 and _ff[0] != _ff[-1] else '')
                        + '。')
     else:
         fut_fee_txt = ('公司在月度新闻稿里逐月估计交易所／清算／监管费用占期货佣金的比例；'
@@ -1225,7 +1484,10 @@ def main():
                 + f'净新增账户按公司 Notes 还原（{nn_adj_txt}）。'
                 f'CPT 与 F&O 占比来自月度新闻稿，本地只缓存 {len(PWIN)} 个月'
                 f'（{PXL[0]}–{PXL[-1]}），做不出 3Y 分位，故不列。'
-                '<br><b>本表的 y/y 列是「单月口径」= 本月 ÷ 去年同月 − 1，与 Exhibit 2/3/4/5 '
+                # 「与 Exhibit 2/3/4/5 的滚动口径不同」原来是手抄的图号；现在从图上真印出
+                # 的口径标记反读（见上面 `_cal` 那一段），加图删图都不用回来改这句。
+                f'<br><b>本表的 y/y 列是「单月口径」= 本月 ÷ 去年同月 − 1，与 '
+                f'{_exlist(sorted(_roll_ttl + [n for n in _roll_bub if n not in _roll_ttl]))} '
                 '的滚动口径不同。</b>不改它是刻意的：这一列恒等于表内算术（第一列 ÷ 第三列），'
                 '读者可以直接验算；换成滚动口径之后这一步会得出另一个数，'
                 '表内自相矛盾比口径混用更糟。' + _CAL_TXT,
@@ -1261,6 +1523,29 @@ def main():
     #    实测决定，**本页不自己判、也不改 mrwin**。窗口从 13 拉到 127 之后这一步是必需的：
     #    127 根柱塞进半栏卡片每根不到 3px（CONTRACT 的 `full` 字段那一行就是这么写的）。
     #    已经显式写了 xstep 的图（长历史一律 12，好让标签落在每年同一个月）它不会覆盖。
+    #
+    # ── 已知残留：Ex2 / 4 / 10 / 12 的柱顶数值标签超预算 —— **判 KEPT，不回退窗口** ──
+    # 现象：`mrwin.label_clash()` 量出这四张末柱的数值标签比预算宽 +2.34 / +2.27 /
+    #   +2.34 / +2.34 px（Ex2 / Ex4 / Ex10 / Ex12）。当场复核（cd build 之后整段粘贴）：
+    #     python3 -c "import mrwin,json;s=open('../data/ibkr.js',encoding='utf-8').read();\
+    #     [print(e['n'],e['kind'],round(mrwin.label_clash(e)['over'],2),\
+    #     round(mrwin.label_clash(e,False)['over'],2)) for e in \
+    #     json.loads(s[s.index('{'):s.rindex('}')+1])['exhibits'] \
+    #     if mrwin.label_clash(e) and mrwin.label_clash(e)['over']>0]"
+    #   末两列 = 现状（通栏）与反事实（半栏）的超支。
+    # 三条不动它的理由，每条都能当场复核，所以这里记的是**怎么复核**，不是一句结论：
+    #   ① 通栏是在**减轻**它，不是造成它。上面那条命令的两列就是证据：半栏 +7.07 /
+    #      +7.04 / +7.07 / +7.07，通栏 +2.34 / +2.27 / +2.34 / +2.34 —— 通栏后各小 4.7px。
+    #      真要清零只能把窗口缩回 13 个月，那与「数据只要存在就必须从 2016-01 画起」
+    #      直接冲突，并且会把「通栏反而更好」这个事实一起丢掉。
+    #   ② 页面上没有落地：`python3 tools/visual_qa.py --page ibkr`（TEXT_OVERLAP 底噪
+    #      8px²）在 1280 与 768 两个视口都是 🔴0 🟡0 🔵0（2026-08-19 实测；这是**跑出来的**
+    #      结论，每月重跑一次即可，不要把它当成一条永远成立的话）。
+    #   ③ 真要收口只能改 `assets/charts.js` —— 34 页共用的渲染层，本页无权改；而它已经
+    #      自带兜底：数值标签真的压上刻度时删掉**那一根**刻度（1px 容差、至少留 2 根），
+    #      见 charts.js 里处理 `data-tick` 的那一段（grep 「不做预防性删除」）。
+    # 哪天 charts.js 的边距算式或本页的量纲变了，上面三条命令会给出新的数；
+    # 注释里不留写死的结论，就不会有人拿一句过期的话当依据。
     mrwin.layout_all(ex)
     table = {
         'n': _ens[-1] + 1, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）',
@@ -1271,7 +1556,8 @@ def main():
     # 抬头看上去一片大好，而同月净新增与 cleared DARTs 的 MoM 都在两位数下跌，
     # 要翻到 Exhibit 1 汇总表才看得到。抬头是多数人唯一会读的一行，不能只挑好消息。
     # （那个月的具体读数不抄进注释：每个月都会变，抄了下个月就是假话；而这条规矩不变。）
-    # 同时补上人均年化 DART：它是这页唯一结构性下行的指标（Exhibit 5 讲的就是它），
+    # 同时补上人均年化 DART：抬头列的这六个读数里只有它是结构性下行（Exhibit 5 讲的就是
+    # 它；页上另有 Exhibit 16 那两条占比也在长期下行，所以「全页唯一」是句假话），
     # 抬头里一个字都没有，等于把最该看的那条曲线藏起来。
     # 每个 y/y 都带口径标签：本页有两种同比口径，一个光秃秃的 YoY 在抬头里等于误导
     # （读者会拿它去核汇总表或图上的线，然后对不上）。流量类用滚动、存量类用点对点。
@@ -1294,10 +1580,11 @@ def main():
         'title': f'Monthly Brokerage Metrics — {month_name}',
         'data_through': target,
         'through_label': month_name,
-        'subtitle': (f'{month_name} update — Exhibits 2–17, recreated in Goldman Sachs GIR exhibit '
+        'subtitle': (f'{month_name} update — Exhibits {ex[0]["n"]}–{ex[-1]["n"]}, '
+                     f'recreated in Goldman Sachs GIR exhibit '
                      f'format from IBKR company data · 主窗口 {XL[0]} – {XL[-1]}'
                      f'（{len(XL)} 个月全历史）· '
-                     f'Exhibits 6–9 只覆盖月度新闻稿区间 {PXL[0]} – {PXL[-1]}'),
+                     f'Exhibits {_pr_span} 只覆盖月度新闻稿区间 {PXL[0]} – {PXL[-1]}'),
         'headline': headline,
         # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
         # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
@@ -1312,7 +1599,8 @@ def main():
         'table': table,
         'notes': [
             '<strong>数据源</strong>：IBKR 官网 IR 的 Historical Brokerage Metrics PDF（每月更新，'
-            f'共 11 个年度逐月数据，本站落库为 <code>series/ibkr.csv</code>，{ALL[0]} 起 {len(ALL)} 个月连续）'
+            f'共 {_nyears} 个年度逐月数据，本站落库为 <code>series/ibkr.csv</code>，'
+            f'{ALL[0]} 起 {len(ALL)} 个月连续）'
             '+ 各月度 Metrics 新闻稿（佣金与产品明细，历史表里没有这两列）。',
             '<strong>单位</strong>：历史指标表首个区块标注 “(in Thousands, except Trading Days)”，'
             '故账户数、净新增、DARTs、期权／期货合约数、股票成交股数均以<strong>千</strong>为单位；'
@@ -1341,36 +1629,46 @@ def main():
             + 'Exhibit 3 与 Exhibit 14 的分子分母一律用公司给的真实增长。解析器每月重新抓这段 Notes，'
             '出现未登记的调整会直接让构建失败。',
 
-            '<strong>与本站其余各页的一处版式差异</strong>：本页 gs_bar 图（Exhibit 2 / 4 / 6 / 10 / 12）'
-            '上的那条虚线画的是<strong>当期之前 12 个月的均值</strong>——'
+            f'<strong>与本站其余各页的一处版式差异</strong>：本页 gs_bar 图（{_exlist(_gsbar_ns)}）'
+            + (f'与 {_exlist(_avg_other)} ' if _avg_other else '')
+            + '上的那条虚线画的是<strong>当期之前 12 个月的均值</strong>——'
             '窗口拉到全历史之后它仍然只是右端那一格的参照水平，'
             '<strong>不是逐月滚动均值</strong>，一条横线跨过全图时这一点必须写明；'
             '而从 Goldman Sachs deck 移植的各页'
             '（HKEX / CME / CBOE / MSCI / SPGI 等）在同一位置画的是<strong>次轴 y/y 折线</strong>。'
             '本页与 /cost/ 来自两个已上线并逐张验收过的独立站，均线是原站既有版式，故保留不动；'
-            'y/y 在本页另有出处——图左上角气泡，以及 Exhibit 3 / 11 / 13 三张专门的 y/y 图，数字同源。',
+            f'y/y 在本页另有出处——图左上角气泡，以及 {_exlist(_yoyline_ns)} '
+            f'这 {len(_yoyline_ns)} 张专门的 y/y 图，数字同源。',
 
             # ── 同比口径：本页有两种，逐处点名 ──
             # 「点名」不是客套：读者在同一页上看到两个都叫 YoY 的净新增账户读数，
             # 没人告诉他分母不同，他只会以为哪里算错了。
+            # ⚠ 这三份名单原来是手抄的，其中一条是错的：「Exhibit 2 / 4 / 5 的标题」——
+            #   Exhibit 2 的标题只有 MoM，一个 YoY 读数都没有，而且它的标题模板恒定不变，
+            #   所以那不是「这个月恰好不成立」，是恒不成立。现在一律从图上真印出来的口径
+            #   标记反读（见 `_cal` 那一段），读者对着图数得清；「例外只有一张」也不再是
+            #   人肉断言，而是 KIND 登记簿与图上标记对撞的结果，对不上就停机。
             '<b>⚠ 同比口径：本页有两种，逐处点名。</b>'
             '(1) <b>12 个月滚动合计同比</b>（本年 12 个月合计 ÷ 上年同 12 个月合计 − 1）—— '
-            'Exhibit 3（净新增账户，整张图）、Exhibit 2 / 4 的 YoY 气泡与 Exhibit 2 / 4 / 5 的标题。'
-            '<b>流量与流量率一律用这个口径。</b>'
+            + (f'标题标 “(12M rolling)” 的是 {_exlist(_roll_ttl)}，' if _roll_ttl else '')
+            + (f'左上角 YoY 气泡标 “·12M” 的是 {_exlist(_roll_bub)}；' if _roll_bub else '')
+            + (f'其中 {_exlist(_roll_whole)} 整张图画的就是这条同比。' if _roll_whole else '')
+            + '本页的取舍：流量与流量率取这个口径，期末存量取 (2)。'
             + (f'实测（对齐到两种口径都算得出的同一批月份，全历史 {ST_NN_ALL["n"]} 个月）：'
                f'净新增账户的单月同比标准差 {ST_NN_ALL["sd_m"]:,.1f}pp 是滚动口径 '
                f'{ST_NN_ALL["sd_r"]:,.1f}pp 的 {ST_NN_ALL["sd_m"] / ST_NN_ALL["sd_r"]:,.2f} 倍，'
                f'相邻月最大跳变 {ST_NN_ALL["jump_m"]:,.0f}pp vs {ST_NN_ALL["jump_r"]:,.0f}pp，'
                f'{len(ST_NN_ALL["flips"])} 个月两种口径符号相反。' if ST_NN_ALL else '')
-            + f'<b>唯一的例外是 Exhibit 6</b>（隐含佣金收入/日）：它的乘数 CPT 只存在于月度'
-            f'新闻稿里、本地只缓存 {len(PWIN)} 个月（{PXL[0]}–{PXL[-1]}），'
-            f'凑不出滚动同比要的 24 个月历史，'
-            '所以那一张仍是单月同比 —— 这是数据长度的限制，不是口径选择，图注里写明了。'
-            '(2) <b>点对点（单月）同比</b>（本月末 ÷ 去年同月末 − 1）—— Exhibit 10 / 11'
-            '（融资余额）、12 / 13（客户现金）与 Exhibit 1 汇总表的 y/y 列；'
+            + (f'<b>按这条取舍本该走 (1) 而没走的，只有 {_exlist(_cal_exc)}</b>'
+               f'（这 {len(_cal_exc)} 张的乘数 CPT 只存在于月度新闻稿里、本地只缓存 '
+               f'{len(PWIN)} 个月（{PXL[0]}–{PXL[-1]}），凑不出滚动同比要的 24 个月历史，'
+               '所以仍是单月同比 —— 这是数据长度的限制，不是口径选择，图注里写明了）。'
+               if _cal_exc else '本页当前没有任何一张流量图偏离这条取舍。')
+            + f'(2) <b>点对点（单月）同比</b>（本月末 ÷ 去年同月末 − 1）—— '
+            f'{_exlist(_mono_stock)} 这 {len(_mono_stock)} 张期末存量图，'
+            '与 Exhibit 1 汇总表的 y/y 列；'
             '顶部「本月读数怎么读」一段中标明「单月」的读数与汇总表同口径、可逐格对上，'
-            '同属 (2) —— 该段引用的 12 个月滚动同比已在句内点名（Exhibit 3 的口径），'
-            '属 (1)。'
+            '同属 (2)；该段引用的 12 个月滚动同比已在句内点名，属 (1)。'
             '<b>这里要更正一句本站从前的说法</b>：「存量不能做滚动，所以只能点对点」是'
             '<b>错的</b> —— Σ12/Σ12′ 里的除数约掉，12 个月滚动合计比恒等于 12 个月滚动'
             '<b>均值</b>比，而「去年一整年的平均客户现金 vs 前年」是个真实存在的量。'
@@ -1385,32 +1683,61 @@ def main():
                    '水平」而不是「现在相对去年此刻」—— 本页要的是后者）')
                 + f'，两种口径 {len(ST_CR["flips"])} 个月符号相反。') if ST_CR else '')
             + _CAL_TXT
-            + f'<b>Exhibit 14（T12M 净新增账户）本来就是滚动口径的水平值</b>'
-            f'（当期 {roll12[-1]:,.0f}k），Exhibit 3 现在画的正是它的同比 —— '
-            '本轮之前这两张一张滚动一张单月，同一页里对同一件事给两个答案。',
+            + (f'<b>Exhibit {_n_t12}（T12M 净新增账户）本来就是滚动口径的水平值</b>'
+               f'（当期 {roll12[-1]:,.0f}k），{_exlist(_roll_whole)} 现在画的正是它的同比 —— '
+               '本轮之前这两张一张滚动一张单月，同一页里对同一件事给两个答案。'
+               if _roll_whole else ''),
 
-            '<strong>纵轴</strong>：Exhibit 5 与 14-16 四张 <code>lines</code> 图一律'
-            '<strong>从 0 起</strong>。引擎默认的下界是「最小值 − 极差 5%」，那是一次没有标注的'
+            f'<strong>纵轴</strong>：{_exlist(_zb_ns)} 这 {len(_zb_ns)} 张 '
+            f'<code>{"／".join(_zb_kinds)}</code> 图一律<strong>从 0 起</strong>。'
+            '引擎默认的下界是「最小值 − 极差 5%」，那是一次没有标注的'
             f'隐性截轴，会把这几张标题里引用的倍数与降幅（{_y5g:.0f}% below／'
-            f'{eq_all[-1] / eq_all[0]:.1f}x／不到一半）在视觉上凭空放大。'
-            '本页没有任何一张图设了截轴（ycap／yfloor）——各图序列量纲一致、没有把其余序列压平的离群尖峰。',
-            '<strong>窗口</strong>（2026-08 改）：<b>本页所有取自 series/ibkr.csv 的图现在都从 '
-            f'{XL[0]} 起画</b>（{len(XL)} 个月逐月连续）。'
+            f'{eq_all[-1] / eq_all[0]:.1f}x／{cr_share[0]:.1f}%→{cr_share[-1]:.1f}% 与 '
+            f'{mg_share[0]:.1f}%→{mg_share[-1]:.1f}%）在视觉上凭空放大。'
+            # 「——各图序列量纲一致、没有把其余序列压平的离群尖峰」这半句删掉了：
+            # 前半句（有没有图设了 ycap／yfloor）是从 ex 现算的，后半句是对**每一张图**
+            # 的人肉判断，没有任何东西在守它 —— 哪天新增一张带离群尖峰的图，它就静默变假。
+            # 读者从前半句已经知道「本页没有截轴」，删掉不损失可核对的信息。
+            + ('本页没有任何一张图设了截轴（ycap／yfloor）。' if not _cap_ns else
+               f'本页设了截轴（ycap／yfloor）的是 {_exlist(_cap_ns)}。'),
+            # ⚠ 这一条的首句在前两轮里换过两次皮，两次都是同一种假话：
+            #   第一版「本页**所有**取自 series/ibkr.csv 的图现在都从 1/16 起画」；
+            #   第二版「取自 series/ibkr.csv 的 12 张图**都**画在同一条主窗口轴上
+            #   （1/16–7/26，127 个月逐月连续）」—— 12 张里有 4 张既不在那条轴上、也不是
+            #   127 个月连续，而紧接着的下一句自己就在列这 4 张。把一个假全称换成另一个
+            #   假全称正是前三轮的做法，所以这一版首句里一个「都」字都不留：只印现算的
+            #   计数与名单，读者对着页面能一张一张数。
+            f'<strong>窗口</strong>（2026-08 改）：<b>取自 <code>series/ibkr.csv</code> 的 '
+            f'{len(_csv_ns)} 张图里，{len(_ontime_ns)} 张覆盖完整的主窗口 '
+            f'{XL[0]}–{XL[-1]}（{len(XL)} 个月逐月连续）：{_exlist(_ontime_ns)}</b>。'
             '此前 Exhibit 2-13 是写死的「最近 13 个月」，而 CSV 从上线第一天起就有全部 '
             f'{len(ALL)} 个月 —— 那 {len(ALL) - 13} 个月是画的时候扔掉的，不是没有。'
-            '几张图的左端比 {0} 晚，原因逐张写在各自图注里，一律是「这一期算不出来」而不是'
-            '「截掉不看」：Exhibit 3（12 个月滚动同比要 24 个月历史）、Exhibit 11 / 13'
-            '（单月同比要去年同月做基数，本站没有 2015 年数据）、Exhibit 4'
-            '（推导式要月初账户数，首月没有上月）。裁决与措辞都走全站共用的 '
-            '<code>build/mrwin.py</code>，不在本页各写一份。'.format(XL[0])
-            + f'<b>Exhibit 6-9 例外</b>：CPT 与平均订单规模只在月度新闻稿里，'
+            + ((f'另外 {len(_late_ns)} 张的左端更晚。每一张的根因都在建图现场登记，'
+                f'并回填进它<b>自己的图注</b>——登记了却没进图注就让构建失败，'
+                f'所以这句话不是承诺而是判据：{_late_txt}。'
+                + (f'（{_exlist(_mono_late)} 的基数要 {int(ALL[0][:4]) - 1} 年，'
+                   f'而本站序列从 {ALL[0]} 起，一格都没有。）' if _mono_late else ''))
+               if _late_ns else
+               f'这 {len(_csv_ns)} 张的左端当前正好都是 {XL[0]}。')
+            # ⚠ 这句原来写的是「裁决与措辞**都**走 mrwin」。裁决确实是它的，措辞不全是：
+            #   mrwin 对非平滑图型（如 gs_bar）根本不产出文字，Exhibit 4 的左端说明就是
+            #   本页自己写的。本轮把根因文字改成本页登记 + 回填之后，这句更要说准。
+            + '<b>左端裁到哪一期</b>由全站共用的 <code>build/mrwin.py</code> 判，本页不另写一套；'
+              '<b>根因文字</b>登记在本页：mrwin 只为它的 <code>DENSE</code> 图型'
+              '产出左端说明，非 DENSE 的图型拿到的是空串。'
+            + f'<b>Exhibit {_pr_span} 例外</b>：CPT 与平均订单规模只在月度新闻稿里，'
             f'本地缓存只回到 {PXL[0]}，故只有 {len(PWIN)} 个月 —— 这是来源限制，不是窗口选择。'
-            f'Exhibit 14-17 本来就是 {ALL[0]} 起全历史；Exhibit 1 的 3Y %ile 取近 36 个月；'
-            '文末核对表刻意保持 13 行（它是对数用的表，不是图）。'
+            'Exhibit 1 的 3Y %ile 取近 36 个月；'
+            f'文末核对表刻意保持 {len(TWIN)} 行（它是对数用的表，不是图）。'
             '窗口一律从数据最新月倒推，不依赖构建当天的日期。',
+            # 「本站的」那一串编号现算（`x: 'long'` 的那几张就是另加的长历史图）：它在
+            # 2026-08 的合并里已经从 15-18 前移到 14-17，恰好与原 note 的 14-17 撞成同一串
+            # 数字 —— 越是撞巧，越要把「无对应关系」说死，否则读者会以为是一一对应。
             'Exhibits 14-17 of the original Goldman Sachs note (IBKR app downloads and MAU) rely on '
             'proprietary Sensor Tower data and cannot be updated from public company disclosures; '
-            '本站的 Exhibit 14-17 是另加的长历史图，与原 note 的编号无对应关系。',
+            f'本站的 {_exlist(_extra_ns)} 是另加的长历史图，'
+            '与原 note 的 Exhibits 14-17 内容上毫无关系（数字撞巧：本站这几张在 2026-08 的'
+            '合并里从 15-18 前移了一号）。',
             '本页图表版式模仿 Goldman Sachs GIR exhibit 风格，仅为视觉版式，不含其研究观点或数据。'
             '仅供个人研究，不构成投资建议。',
         ],
@@ -1424,6 +1751,12 @@ def main():
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     # 这里原来是裸 json.dump（allow_nan 默认 True），最新行少一个值就把字面 NaN
     # 写进 data/ibkr.js —— 文件变成非法 JSON、合法 JS，页面照渲染而退出码是 0。
+    # 图号占位符必须全部兑现：漏一个就会把 ⟨nav:…⟩ 原样印到页面上。
+    # （回填在 ex 里做，这里是最后一道 —— 防的是有人把占位符写进 payload 的别处。）
+    _resid = json.dumps(payload, ensure_ascii=False)
+    if '⟨nav:' in _resid:
+        _i = _resid.index('⟨nav:')
+        raise SystemExit(f'payload 里还残留图号占位符：…{_resid[max(0, _i - 60):_i + 40]}…')
     payload_guard.write_dash(path, payload, 'ibkr')
 
     print(f'目标月 {target} | 主窗口 {WIN[0]} → {WIN[-1]}（{len(WIN)} 个月全历史）| '

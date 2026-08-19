@@ -5,18 +5,23 @@
 数值在通用底座里算完再进 payload，页面只画不算。
 
 ━━ 为什么这家的 slow_cols 特别长 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DB1 一家缝了**三个官方源、两种发布节奏**（fetch/db1.py 模块 docstring「发布节奏」节，
-全量实测 223 期 Eurex + 20 期 FWB）：
+DB1 一家缝了**三个官方源、两种发布节奏**（fetch/db1.py 模块 docstring「发布节奏」节）。
+发布日不在 series/db1.csv 里（CSV 只有数据月），所以下面的带宽**现算不出来**，
+只能是带日期的一次性实测 —— 期数与具体天数一律以 notes 里那条（同样标着实测日期的）
+为准，**这里不再抄一份**，抄下来的那份没有任何检查会在它过期时报警：
 
-  快腿 Eurex 工作簿   月末后第 2–6 天（2016-01 以来 127 期全部落在这个带宽内）
-  快腿 FWB 现货工作簿 月末后第 1–4 天（20 期里 18 期）
+  快腿 Eurex 工作簿   月末后第 2–6 天
+  快腿 FWB 现货工作簿 月末后第 1–4 天
   慢腿 集团 IR 台账   月末后约第 10 天（落地页原文 "available as of the second week
                       after the reporting month"）
 
 所以每个月都有一段时间：Eurex / Xetra 列已经有最新月，而 Clearstream / EurexOTC /
 360T / EEX / 台账口径成交量这些列**天生是空的**。这不是解析失败，也不是数据缺失。
-本机实测（series/db1.csv，2026-08-06）：快腿列最新月 2026-07，慢腿列最新月 2026-06，
-正好差一个月 —— 如果把慢腿列放进门槛判定，整页会被拖住一整个月。
+两条腿各自的最新月**不写在这里**：它是 `_FASTM` / `_SLOWM` 从 CSV 现算的，
+notes 里那条印的就是它们的返回值。上一版这里写死了「快腿 2026-07、慢腿 2026-06，
+正好差一个月」，而慢腿追上来之后，同一个文件里的注与这段 docstring 就开始互相打脸
+—— 正是这一轮要消灭的那种句子。差不差一个月都不影响结论：
+慢腿列放进门槛判定，整页就会被拖住整整一个月。
 
 ⇒ `slow_cols` 不手抄。fetch/db1.py 的 docstring 口径坑 12 明写「模块常量
    `FAST_LEG_COLUMNS` / `SLOW_LEG_COLUMNS` 就是给下游做这个排除用的，别再手抄一份清单」。
@@ -33,7 +38,9 @@ DB1 一家缝了**三个官方源、两种发布节奏**（fetch/db1.py 模块 d
 换算不在这里发生（notional.py 的事），但标注必须先对 —— 见 notes 里 AuC 那条**冲突声明**。
 """
 
+import collections
 import csv
+import math
 import os
 
 _CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -317,8 +324,107 @@ def _ledger_gap():
     return len(d), d[len(d) // 2], d[-1]
 
 
+def _parallel_gap(ledger, eurex):
+    """两套并行口径逐月对不对得上：(可比月数, 不等的月数)。
+
+    `ledger` = 台账口径的列名列表（当月**合计**），`eurex` = Eurex 工作簿口径的
+    ADV 列名列表（乘 trading_days_eurex 还原成当月合计再比）。Eurex 那侧缺格
+    （股息组 2008-06 才有）按 0 计 —— 那正是「摊回股指+单股」这句话的算法。
+
+    2026-08-19 现算化：这两组数原先写死成「222 个月里 48 个不等 / 217 个仍然不等」，
+    而同一页 Exhibit 41 的图注印的是 `_calendar_gap()` / `_fd_reconcile()` 现算的
+    223 / 211 —— 同一页两个分母，读者往下滚一屏就能抓到。分母每个月长 1，
+    写死的那个必然先烂。算不出返回 (None, None)。
+    """
+    n = diff = 0
+    for r in _rows():
+        d = _num(r, 'trading_days_eurex')
+        led = [_num(r, c) for c in ledger]
+        eur = [_num(r, c) for c in eurex]
+        if d is None or any(v is None for v in led) or eur[0] is None:
+            continue
+        n += 1
+        if abs(sum(led) - sum(v or 0.0 for v in eur) * d) > 0.5:
+            diff += 1
+    return (n, diff) if n else (None, None)
+
+
+def _fd_unequal():
+    """Eurex「ADV × 交易日」与台账 vol_fd_total 逐月不等的月数（分母同 `_FDN`）。"""
+    return _parallel_gap(['vol_fd_total_contracts'], ['adv_eurex_total_contracts'])
+
+
+def _first_months(cols):
+    """{列名: 首个非空月}，读不到的列不进字典。「各列首个非空月」那条注的算术底。
+
+    ⚠ 这条注原先是**手抄**的，抄错过一处：`vol_fd_total_contracts` 实际自 2009-01 起，
+    注里写的是 2010-01。手抄的清单没有任何检查会报错，所以改成现算。
+    """
+    out = {}
+    for r in _rows():
+        for c in cols:
+            if c not in out and _num(r, c) is not None:
+                out[c] = r['month']
+    return out
+
+
+#: 一次性回填的窗口右端（build/basefill/db1_spot_2016.py 的作用域）。
+#: 这是个**闭区间**：回填做完就冻住了，不随 CSV 生长 —— 所以它可以写死，
+#: 而窗口里的月数与残差不行（官方回补一格就变），那两个现算。
+_BF_END = '2023-12'
+
+
+def _ceil_to(v, nd):
+    """把 v 向**上**取到 nd 位小数 —— 印「最大不超过 X」时必须这么取。
+
+    四舍五入有一半的概率把上界取**小**，页面印出来的「最大值」于是比真正的最大值
+    还小，被它自己的数据证伪。上界只能向上取。（**不举实测数字当例子** ——
+    举一个就等于再养一个会过期的数。）
+    """
+    f = 10.0 ** nd
+    return math.ceil(v * f - 1e-9) / f
+
+
+def _closure_check(hi=_BF_END):
+    """回填窗口内的台账闭合：|Xetra + 法兰克福 − turnover_cash_total| 有多大。
+
+    返回 (首月, 可比月数, 最大残差 €bn, 最大残差那个月)；算不出返回 (None,)*4。
+
+    ⚠ 只算到 `hi` 为止。窗口之外还有官方事后重述造成的大残差
+    （basefill 的 KNOWN_RESTATEMENTS 里记着的那个月就是），把它们算进来，
+    「全在四舍五入界内」这半句立刻变成假话 —— 这条注说的本来就只是回填那一段。
+    """
+    out = []
+    for r in _rows():
+        if r['month'] > hi:
+            continue
+        x = _num(r, 'turnover_xetra_eurbn')
+        f = _num(r, 'turnover_fwb_eurbn')
+        t = _num(r, 'turnover_cash_total_eurbn')
+        if None in (x, f, t):
+            continue
+        out.append((r['month'], abs(x + f - t)))
+    if not out:
+        return (None,) * 4
+    m, v = max(out, key=lambda z: z[1])
+    return out[0][0], len(out), v, m
+
+
+def _span_months(col):
+    """一列的 (首月, 末月, 月数)；算不出返回 (None, None, None)。"""
+    nz = [r['month'] for r in _rows() if _num(r, col) is not None]
+    return (nz[0], nz[-1], len(nz)) if nz else (None, None, None)
+
+
 _NMONEY, _NCONTRACTS, _NQTY = _column_census()
 _FDN, _FDMAX, _FDMED = _fd_reconcile()
+_FDGN, _FDGDIFF = _fd_unequal()
+_RATEN, _RATEDIFF = _parallel_gap(['vol_fd_rates_contracts'],
+                                  ['adv_eurex_rates_contracts'])
+_EQN, _EQDIFF = _parallel_gap(['vol_fd_index_contracts', 'vol_fd_equity_contracts'],
+                              ['adv_eurex_index_contracts', 'adv_eurex_equity_contracts',
+                               'adv_eurex_dividend_contracts'])
+_BF0, _BFN, _BFMAX, _BFM = _closure_check()
 _CALN, _CALDIFF = _calendar_gap()
 _LEDN, _LEDMED, _LEDMAX = _ledger_gap()
 #: 「为什么不按场所总额/分资产类别拆」那句话的两个量级比（现算，别写死）。
@@ -404,7 +510,8 @@ def _slow_universe():
     """返回「哪些列属于慢腿」的全集。读得到 fetch/db1.py 就用它的常量。
 
     用 spec_from_file_location 而不是 import fetch.db1 —— 本仓没有 __init__.py，
-    monthly_run.py 自己也是这么加载模块的（monthly_run.py:151）。
+    monthly_run.py 自己也是这么加载模块的（那边的 `load()`；**这里不写行号** ——
+    上一版写的 `monthly_run.py:151` 早就漂到别的函数里去了，行号一改就成假话）。
     任何失败都静默退回兜底清单：spec 被读的时候不该因为 fetch/ 缺席而炸。
     """
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -763,6 +870,37 @@ _SLOW_ALL = _slow_universe()
 SLOW_COLS = sorted(c for c in _charted() if c in _SLOW_ALL)
 
 
+def _starts_zh():
+    """本页画的列按**现算出来的首月**分组，列成一句中文（同 build/specs/enx.py）。
+
+    ⚠ 这条注 2026-08-19 之前是手抄的枚举，抄错过一处：`vol_fd_total_contracts`
+    实际自 2009-01 起，注里跟 turnover_cash_total / settle_* 一道写成了 2010-01。
+    手抄清单没有任何检查会报错 —— 官方回填一次、或者谁加一列，它就再错一处。
+    列名用 CSV 原名而不是中文名：这条注是给回源核对用的，原名才对得上 head -1。
+    """
+    cols = _charted()
+    first = _first_months(cols)
+    if not first:
+        return ''
+    by = collections.defaultdict(list)
+    for c in cols:
+        if c in first:
+            by[first[c]].append(c)
+    # 一个月里超过 5 列就只点名前 5 条 + 报总数：Eurex 那一批有二十几列，
+    # 全铺出来这一条注比整页别的注加起来还长，读者反而找不到重点。
+    # 「等 N 条」是真话（不是省略号冒充完整枚举），要全清单看 head -1 series/db1.csv。
+    def _one(m):
+        cs = sorted(by[m])
+        head = '、'.join('<code>%s</code>' % c for c in cs[:5])
+        return '<b>%s</b>：%s' % (m, head if len(cs) <= 5
+                                 else '%s 等 %d 条' % (head, len(cs)))
+
+    return '；'.join(_one(m) for m in sorted(by))
+
+
+_STARTS_ZH = _starts_zh()
+
+
 SPEC = {
     'ticker': 'db1',
     'name':   'Deutsche Börse',
@@ -819,10 +957,22 @@ SPEC = {
     'notes': [
         _NO_DECOMP_NOTE,
 
-        '发布节奏：三个源两种节奏。Eurex 工作簿月末后第 2–6 天（2016-01 以来 127 期'
-        '全部在此带宽内）、FWB 现货工作簿第 1–4 天（20 期里 18 期）、集团 IR 台账'
-        '约第 10 天（落地页原文 "available as of the second week after the reporting '
-        'month"）。本机实测 series/db1.csv：快腿列最新月 2026-07，慢腿列最新月 2026-06。',
+        # ⚠ 括号里那两个「N 期」是**发布日**的实测，而发布日不在 series/db1.csv 里
+        #   （CSV 只有数据月，没有那一期什么时候上线），所以这两个数**现算不出来**。
+        #   现算不了就把它写成带日期的一次性实测，别让它冒充一个会自己更新的数 ——
+        #   原文「2016-01 以来 127 期全部在此带宽内」不带日期，读起来像「此刻」，
+        #   而 127 每个月都会少一个。
+        '发布节奏：三个源两种节奏（发布日实测于 2026-08，不随 CSV 更新）：'
+        'Eurex 工作簿月末后第 2–6 天（2016-01…2026-07 共 127 期全部在此带宽内）'
+        '、FWB 现货工作簿第 1–4 天（20 期里 18 期）、集团 IR 台账'
+          '约第 10 天（落地页原文 "available as of the second week after the reporting '
+          'month"）。'
+        # ⚠ 这半句原先写死成「快腿列最新月 2026-07，慢腿列最新月 2026-06」，
+        #   而同一页下面那条注是拿 _FASTM/_SLOWM 现算的 —— 慢腿追上来那个月，
+        #   两条注就在同一页上互相打脸。判据能现算就不许写快照。
+        + ((f'本机实测 series/db1.csv：快腿列最新月 {_FASTM}、慢腿列最新月 {_SLOWM}'
+            + ('，两者已追平。' if _FASTM == _SLOWM else '，正差着。'))
+           if _FASTM and _SLOWM else '本次未能从 CSV 复算两条腿各自的最新月。'),
 
         'slow_cols（共 %d 列）不参与门槛判定，最新月留空是正常的。清单不手抄，'
         '由 fetch/db1.py 的模块常量 SLOW_LEG_COLUMNS 派生（本文件保留同名字面量兜底，'
@@ -901,13 +1051,17 @@ SPEC = {
                  if _FASTM else '每个月总有几天它落在后面')
               + '）：拿它当除数，')
            + '算出来的 ADV 会跟着变成慢腿列，正好丢掉快腿的意义 —— 这就是本页只画月度总额的原因。')
-        + '除数与 trading_days_eurex 在 222 个可比月里有 27 个不等'
-          '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），两个日历不能互相顶替。',
+        + '除数与 trading_days_eurex '
+        + ((f'在 {_CALN} 个可比月里有 {_CALDIFF} 个不等') if _CALN else '并不总是相等')
+        + '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），两个日历不能互相顶替。',
 
         '⚠ vol_fd_*（台账口径）与 adv_eurex_* / oi_eurex_*（Eurex 工作簿口径）是两套并行口径，'
-        '**永不互校、也不要放进同一条线**。全量实测：vol_fd_rates 与 Eurex 利率组小计'
-        '222 个月里 48 个不等；按官方脚注把股息衍生品摊回股指+单股之后，222 个月里 217 个'
-        '仍然不等。官方脚注自己也写明「总数不等于分项之和」（含 ETC / 农产品 / 贵金属）。',
+        '**永不互校、也不要放进同一条线**。全量实测（现算，不是写死的快照）：'
+        + ((f'vol_fd_rates 与 Eurex 利率组小计 {_RATEN} 个月里 {_RATEDIFF} 个不等；')
+           if _RATEN else 'vol_fd_rates 与 Eurex 利率组小计逐月不等；')
+        + ((f'按官方脚注把股息衍生品摊回股指+单股之后，{_EQN} 个月里 {_EQDIFF} 个仍然不等。')
+           if _EQN else '按官方脚注把股息衍生品摊回股指+单股之后仍然不等。')
+        + '官方脚注自己也写明「总数不等于分项之和」（含 ETC / 农产品 / 贵金属）。',
 
         '⚠ EEX 三列的单位是 **MWh 不是 TWh**。官方工作簿表头写「(in TWh)」是笔误，'
         '差 10⁶：2026-06 单元格 power spot 88,034,094.5 / power deriv 960,720,291 / '
@@ -938,14 +1092,19 @@ SPEC = {
 
         '三条腿都会被官方事后重述，fetcher 一律「只填空不覆盖」、冲突写 '
         'cache/db1_restatements.csv。实测：Eurex 月成交总数 vs 台账 vol_fd_total，'
-        '210 个可比月里 50 个不等；Eurex 未平仓 222 对里 17 对不等（最大 2.48%，2008-07）。'
-        '所以历史段与当年印出来的数字对不上是官方重述，不是本页算错。',
+        + ((f'{_FDGN} 个可比月里 {_FDGDIFF} 个不等') if _FDGN else '逐月常常不等')
+        # ⚠ 下面这半句**不是本仓能现算的**：它比的是同一列在两期工作簿里的两个 vintage，
+        #   而旧 vintage 只在抓取时见过一次（冲突写 cache/db1_restatements.csv，
+        #   当前无冲突、文件尚未生成）。所以只能是一次性实测 —— 那就把日期写出来，
+        #   让读者知道它是快照而不是「此刻」，别再让它冒充一个会自己更新的数。
+        + '；另有一次性 vintage 对比（2026-08 实测，不随 CSV 更新）：'
+          'Eurex 未平仓 222 对里 17 对不等，最大 2.48%（2008-07）。'
+          '所以历史段与当年印出来的数字对不上是官方重述，不是本页算错。',
 
-        '各列首个非空月（实测）：vol_fd_index/equity/rates 自 2002-01；gsf_collateral 自 2007-01；'
-        'Eurex 各列自 2008-01（股息组 2008-06、FVS 2009-05、FBTP 2009-09、FOAT 2012-04）；'
-        'vol_fd_total / turnover_cash_total / settle_* 自 2010-01；auc_* 与 aum_stoxx_dax_etf '
-        '自 2012-01；360T 与 EEX 与 cash_balances 自 2015-01；otc_* 与 vol_licensed 自 2016-01。'
-        '早于首月为空是官方就没有。现货那几列 2026-08-18 回填过，逐列现算如下 —— '
+        '各列首个非空月（<b>逐列现算</b>，不是手抄的清单 —— 手抄的那版把 '
+        '<code>vol_fd_total_contracts</code> 写成 2010-01，实际是 2009-01）：'
+        + (_STARTS_ZH or '（本次未能从 CSV 复算各列首月。）')
+        + '。早于首月为空是官方就没有。现货那几列 2026-08-18 回填过，覆盖与空洞逐列现算如下 —— '
         + '；'.join('<code>%s</code> %s' % (c, _cov_txt(c)) for c in (
             'turnover_xetra_eurbn', 'turnover_fwb_eurbn',
             'turnover_xetra_equities_eurbn', 'turnover_xetra_etp_eurbn',
@@ -961,8 +1120,17 @@ SPEC = {
         '所以它们是断的而不是被凑出来的。'
         '<b>口径没有变</b>：回填值与本仓其余月份同为单边计的 order book turnover、同两个场所，'
         '逐月都过了「Xetra + 法兰克福 ≡ turnover_cash_total_eurbn」的台账闭合检验'
-        '（46 个工作簿月残差 ≤6.7e-5 €bn、2022 年起逐位相等；123 个新闻稿月最大残差 '
-        '0.0947 €bn @2020-11，全在四舍五入界内）。'
-        '所以 breaks 仍然留空 —— 这是精度断点，不是口径断点，画红竖线会误导。',
+        # ⚠ 这个括号原先抄的是 build/basefill/db1_spot_2016.py 运行时打印的两个计数
+        #   （「N 个工作簿月…；M 个新闻稿月…」）。工作簿那一侧在 CSV 里复算得出，
+        #   新闻稿那一侧**复算不出来**：按回填窗口去数得到的是另一个数，而 basefill
+        #   自己的 docstring 与 `CLOSURE_SLACK` 的常量注释里，同一个计数还写着两个不同的
+        #   值（两处对不上）。抄一个没人能复算、源头还自相矛盾的数进图注 = 又养一句假话。
+        #   ⇒ 只印**从 series/db1.csv 现算得出来**的那部分：窗口右端是回填的作用域、
+        #   一次性冻住的闭区间，不随 CSV 生长；月数与残差每次构建现算。
+        + ((f'（现算：回填窗口 {_BF0}…{_BF_END} 里 {_BFN} 个三列都有值的月，'
+            f'残差最大 {_ceil_to(_BFMAX, 4):.4f} €bn @{_BFM}'
+            f'（上界向上取整），全在 1 位小数的四舍五入界内）。')
+           if _BFN else '（本次未能从 CSV 复算这道闭合检验。）')
+        + '所以 breaks 仍然留空 —— 这是精度断点，不是口径断点，画红竖线会误导。',
     ],
 }

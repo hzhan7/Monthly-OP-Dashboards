@@ -1024,13 +1024,24 @@ def main():
                   breaks=BKN, brk_note=BNN))
 
     # ── Exhibit 4：Annualised organic growth rate（gsx.lvl_bar, pct_series）──
-    # 派生列：年化增速要用**上月末**资产，序列第一个月算不出来。窗口左端因此比其余各图
-    # 晚一格（_w_finite），而不是留一个空柱假装那个月没数据。
+    # 派生列：年化增速要用**上月末**资产，序列第一个月算不出来。窗口左端因此比主窗口
+    # 起点晚一期（_w_finite），而不是留一个空柱假装那个月没数据。
+    # ⚠ 这句话原先写的是「比**其余各图**晚一格」，被同一页的下一张图当场证伪：
+    #   Exhibit 5 / 6 的左端是近端 13 个月、Exhibit 11 / 14 是近端若干季度，都比它晚
+    #   九年多。参照系必须是**主窗口起点**（那才是这一刀真正让开的东西），而且两端都
+    #   现读、差几期现算 —— 不写「一格」这种下个月可能不成立的话。
     W4 = _w_finite(df, 'organic_growth_ex')
     XL4 = [mlab(p) for p in W4.index]
     BK4, BN4 = brk_pack(W4.index, acq=False, cal=('nna',))
-    _lag4 = ('' if W4.index[0] == W25.index[0] else
-             f'本图左端是 {mlab(W4.index[0])}、比其余各图晚一格：年化增速 = 当月有机 NNA × 12 ÷ '
+    _lag4n = (W4.index[0] - W25.index[0]).n
+    # 这一句在页面上出现两处（Exhibit 4 卡片 + 页尾「窗口」那一条），所以只写一遍。
+    # 两处各写各的，就是下一次「只改了一处」的入口 —— 上一版正是那样烂掉的。
+    # 收尾处那道停机检查会拿 payload 自己的两条 x 轴把这段字面**重建**一遍，
+    # 逐字对不上就不出页（手写端点、手写期数都会当场被抓）。
+    _LAG4 = ('' if _lag4n <= 0 else
+             f'左端是 {mlab(W4.index[0])}，比主窗口起点 {mlab(W25.index[0])} 晚 {_lag4n} 期')
+    _lag4 = ('' if not _LAG4 else
+             f'本图{_LAG4}：年化增速 = 当月有机 NNA × 12 ÷ '
              f'<b>上月末</b>资产，而 {mlab(df.index[0])} 是序列第一个月、没有上月，'
              f'那一格在数据里不存在（不补零、不前向填充）。')
     ex.append(bar(4, 'organic_growth_ex', 'Annualised organic growth rate',
@@ -1056,13 +1067,20 @@ def main():
     #       0.62 x 带宽：13 期半栏是 21.9px，125 期即便通栏也只剩 5.3px，而段内标签
     #       size=6.6 的「1,077」宽约 18px —— charts.js 的 thinLabels 会把四分之三抽掉，
     #       换来的是一张读不出数值的堆叠墙。
-    #   (3) ⚠ 这里原先写的是「全站同类图一致：cboe Exhibit 5 / cme Exhibit 4 也是 13 期」。
-    #       **那条举证 2026-08-19 已被推翻**：同一轮里 cboe Exhibit 5 与 cme Exhibit 4
-    #       都放宽到了 127 期，本图现在是全站唯一一张既非数据边界、又保持近端窗口的
-    #       stacked_dual（hood Ex17=13、ibkr Ex8=14 都是数据边界，图注里写明了）。
-    #       站得住的差别不是「大家都这么分」，而是**能不能牺牲段内数值**：cboe Ex5 与
-    #       cme Ex4 在 payload 里都带 `full: true`（通栏 + xstep 抽 x 轴刻度），读的是
-    #       堆叠形状；本图是半栏、段内那两个 $bn 数值是它存在的唯一理由（见 (2)）。
+    #   (3) ⚠ 这条举证被改坏过两次，两次都是同一个毛病：**拿别页的读数当论据**。
+    #       第一版写「全站同类图一致：cboe Exhibit 5 / cme Exhibit 4 也是 13 期」——
+    #       2026-08-19 那一轮它们都放宽了，举证当场作废；第二版把「13」换成了另一组
+    #       写死的数（cboe/cme「127 期」、hood Ex17「13」、ibkr Ex8「14」），那只是
+    #       把过期时间往后推 —— 那三个数一个按月走、一个按季走，下个月照样对不上。
+    #       更要紧的是：**跨页根本没有一致的做法可援引**。2026-08-19 实扫 data/*.js
+    #       的 stacked_dual：cme / exchanges-eu / exchanges-na / guc / ase 长轴且不标
+    #       段内数值，而 cboe Exhibit 5 同样是长轴通栏、`stacks[].label` 照标（它正是
+    #       assets/charts.js 里那段压字注释举的例子）。所以「别人都怎么做」这条论据
+    #       本身就是假的，写第三版也一样会被推翻 —— 这里不再写它。
+    #       **本图短窗口的理由只剩 (2)，而 (2) 是本页自己量出来的**（段宽由
+    #       mrwin.band_px 按引擎的量边距算式复算，不引用任何别页的读数）：段内那两个
+    #       $bn 数值是本图存在的唯一理由，全窗口下它们放不进段宽。要看跨页现状就现扫
+    #       data/*.js 比 `full` 与 `stacks[].label`，别把当天的读数抄回这里。
     #       **失效条件写在这里**：哪天本图改成通栏、或不再要求段内可读数值，(2) 与 (3)
     #       同时失效，应当一并放宽到 WIN_FROM。
     # 页尾「窗口」那一条已对读者写明这个分法，这里再给读者一个到长历史图的指路。
@@ -1590,7 +1608,9 @@ def main():
     if _ens != list(range(2, 2 + len(_ens))):
         raise SystemExit(f'Exhibit 编号不连续: {_ens}')
     table = {
-        'n': _ens[-1] + 1, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）',
+        # 标题里的月数跟着 trows 现算：T13 哪天改了，标题不会留在原地说假话。
+        'n': _ens[-1] + 1,
+        'title': f'近 {len(trows)} 个月月度指标核对表（官方原始单位，未换算）',
         'idx': '月份', 'cols': tcols, 'rows': trows,
     }
 
@@ -1891,10 +1911,17 @@ def main():
             '窗口停在近两年等于把回补的历史藏起来。序列若比这个起点晚，就用序列自己的起点'
             '（<b>只往右让、不往左借</b>），与 <code>build/single.py</code> 的 '
             '<code>WIN_FROM</code>、cboe / cme / hkex / msci 各页同一个口径。'
-            f'Exhibit 4 的左端比其余各图晚一格（{mlab(W4.index[0])}）：年化增速要用上月末资产，'
+            # ⚠ 原文是「比其余各图晚一格」—— 同一段话下面就写着堆叠图 / 滚存桥 / 季度图
+            #   用的是近端窗口，它们的左端比 Exhibit 4 晚九年多。参照系换成主窗口起点，
+            #   差几期由 _lag4n 现算（与 Exhibit 4 卡片上那一句同一个变量）。
+            f'Exhibit 4 的{_LAG4}：年化增速要用上月末资产，'
             '序列第一个月算不出来，那一格在数据里不存在，不补零也不前向填充。'
-            f'堆叠图与滚存桥仍用 {WIN_S} 个月、季度图用 {WIN_Q} 个季度 —— '
+            f'堆叠图与滚存桥仍用 {WIN_S} 个月、季度图<b>上限</b> {WIN_Q} 个季度 —— '
             '它们回答的是「最近一年发生了什么」，拉到十年只会把有意义的柱压成一堵墙。'
+            # ⚠ 这里原先只写「季度图用 14 个季度」，而 Exhibit 14 的桥检验还要剔掉
+            # 未满 3 个月的季度、实际比上限短一张 —— 一个数替两张图说话就会有一张对不上。
+            f'本期 Exhibit 11 画 {len(qw)} 季；Exhibit 14 还要剔掉未满 3 个月的季度，'
+            f'画 {len(qs)} 季（哪几季被剔、为什么，写在该图图注里）。'
             '窗口一律从数据最新月倒推，不依赖构建当天的日期。'
             '断点线也随窗口现算：滚出窗口就不画，同时这段说明里的编号清单也跟着少一张，'
             '不会留下「图注说画了、图上却没有」的死文案。'
@@ -1932,7 +1959,8 @@ def main():
             f'(2) 逐柱数值标签在 {len(W25)} 根柱下必然互相压住，引擎按实测 bbox 抽稀'
             '（最新一期永远保留），被抽掉的数值同样在「表格」视图里一个不少 —— '
             '窗口拉长之后抽稀比例大幅上升，逐月读数请一律走「表格」按钮而不是柱顶标签。',
-            f'<b>核对表。</b>末尾 Exhibit {table["n"]} 是官方原始单位、未做任何换算的近 13 个月明细，'
+            f'<b>核对表。</b>末尾 Exhibit {table["n"]} 是官方原始单位、'
+            f'未做任何换算的近 {len(trows)} 个月明细，'
             '用来与 LPL 新闻稿逐条对账。每张图右上角的「表格」按钮同样给出该图的源数值。',
         ],
         'footer': ('数据与算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
@@ -1944,6 +1972,34 @@ def main():
     src_day = source_day(LATEST)
     if src_day:
         payload['source_date'] = src_day
+
+    # ── 停机兜底：Exhibit 4「比主窗口起点晚 N 期」这句话必须与 payload 对得上 ──
+    # 这一族错误（图注里的断言被同一页的另一张图当场证伪）在本页与 hood 上已经修了
+    # 三轮，每一轮修的人都以为自己写对了。所以判据写在这里，而不是靠人再读一遍：
+    #   · 句子里印的两个端点，要能在渲染完的 payload 里原样查到；
+    #   · 差额要等于两张图 x 轴长度之差；
+    #   · 「比其余各图」这个参照系是**假的**（下一张图就是反例），出现在任何正文里就停机。
+    _texts = [e.get('note', '') for e in payload['exhibits']] + list(payload['notes'])
+    _e4 = next(e for e in payload['exhibits'] if e['n'] == 4)
+    _e2 = next(e for e in payload['exhibits'] if e['n'] == 2)   # 跟着主窗口走的那一族
+    _bad = [f'「比其余各图」是假的参照系，正文里还有 {sum("比其余各图" in t for t in _texts)} 处'
+            ] if any('比其余各图' in t for t in _texts) else []
+    _said = [t for t in _texts if '主窗口起点' in t]
+    # 拿 payload 自己的两条 x 轴把那句话**重建**一遍，再回正文里逐字查 ——
+    # 只比对变量不够：把句子里的 Feb-16 手写成 Jan-16，变量比对照样全过，
+    # 读者读到的却是假的。重建串必须一字不差地出现在两处。
+    _frag = (f'左端是 {_e4["xlabels"][0]}，比主窗口起点 {_e2["xlabels"][0]} 晚 '
+             f'{len(_e2["xlabels"]) - len(_e4["xlabels"])} 期')
+    if _lag4n > 0:
+        if len(_said) != 2:
+            _bad.append(f'说这句话的地方有 {len(_said)} 处 —— 该是 2 处：'
+                        'Exhibit 4 图注 + 页尾「窗口」那一条')
+        if any(_frag not in t for t in _said):
+            _bad.append(f'正文里那句话与 payload 重建出来的对不上，应逐字是「{_frag}」')
+    elif _said:
+        _bad.append('Exhibit 4 今天没有比主窗口起点晚，正文却还在说它晚')
+    if _bad:
+        raise SystemExit('Exhibit 4 左端那句话与 payload 对不上：' + '；'.join(_bad))
 
     path = os.path.join(ROOT, 'data', 'lpla.js')
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。

@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """日月光投控 ASEH（3711.TW / NYSE: ASX）月度营收页配置 —— 共用底座 `mrbase`。
 
-放置位置：`build/mrspecs/ase.py`；薄壳 `build/ase.py`（不留薄壳，`monthly_run.py`
-的 `builder()` 会继续走 `build/single.py` + `build/specs/ase.py`，两套图列分叉）。
+放置位置：`build/mrspecs/ase.py`；薄壳 `build/ase.py`。
+（薄壳非留不可：`monthly_run.py` 的 `builder()` 先找 `build/<t>.py`。
+  ⚠️ 上一版这里写「不留薄壳会继续走 `build/single.py` + `build/specs/ase.py`」——
+  那条退路本轮已经不存在了：`build/specs/ase.py` 在 4b0f201 里被删除，
+  没有薄壳的后果是 `builder()` 退到 `single.py` 却找不到 spec，不是「两套图列分叉」。）
 
 ⚠️ **slug 是 `ase`。`asx` 在本仓已经是 ASX Limited（澳交所）**，日月光的 NYSE ADR
    恰好也叫 ASX —— 写串会同时污染两张页，而且是静默污染：图照出、数全错。
@@ -83,7 +86,8 @@
          capital expenditures are denominated in U.S. dollars."，并明写
         "against the NT dollar, our functional currency"。
     ⇒ ASEH 与 TSMC 是**同一种结构**：功能货币新台币、多数营收以美元计价。
-      `build/specs/ase.py` 里那句「那不是以美元计价的销售」本轮**不继承**。
+      已删除的旧配置 `build/specs/ase.py`（只在 git 历史里）那句
+      「那不是以美元计价的销售」本轮**不继承**。
     ⇒ `fx.usd_share_note` 用上面两句 20-F 原文的**定性版本**：20-F 说的是
       "the majority"，没有数字，**不许自己编一个「约七成」式的百分比**
       （底座 `validate()` 对 `src` 只硬性要求 URL，编不编数字它拦不住，靠这里自律）。
@@ -289,6 +293,38 @@ import csv
 import os
 
 from . import _facts
+
+
+# ── 「本仓几家里唯一有官方外币实绩列」这句话现算 ─────────────────────────────
+# 它是一句跨文件的普查断言：家数会变、别家哪天也落一列官方美元数，句子就成了假话，
+# 而没有任何东西会报错。判据就是同目录下谁的 spec 挂了 `fx.fgn_col`（= 直接读一列
+# 官方外币实绩，不做折算）。**读文本、不 import** —— import 会连带跑同级模块的
+# 构建期计算，那份代价与副作用不该由这一句话来承担。
+def _fgn_peers():
+    here = os.path.dirname(os.path.abspath(__file__))
+    fam, hit = [], []
+    for fn in sorted(os.listdir(here)):
+        if not fn.endswith('.py') or fn.startswith('_'):
+            continue
+        fam.append(fn[:-3])
+        with open(os.path.join(here, fn), encoding='utf-8') as fh:
+            if "'fgn_col'" in fh.read():
+                hit.append(fn[:-3])
+    return fam, hit
+
+
+_MR_FAM, _MR_FGN = _fgn_peers()
+if 'ase' not in _MR_FGN:
+    raise SystemExit('本 spec 自己就该挂 fx.fgn_col，现在扫不到 —— '
+                     '页上那句「有官方外币实绩列」会指着一个不存在的字段说话')
+_FGN_OTHERS = [t for t in _MR_FGN if t != 'ase']
+_FGN_TXT = ('<b>「以新台币入账、却另外自印官方美元实绩」的公司：'
+            + (f'本仓共用这套图列的 {len(_MR_FAM)} 家里只有 ASEH 一家'
+               if not _FGN_OTHERS else
+               f'本仓共用这套图列的 {len(_MR_FAM)} 家里有 {len(_MR_FGN)} 家 —— '
+               + '、'.join(f'<code>{t}</code>' for t in _MR_FGN)
+               + '，ASEH 是其中之一')
+            + '。</b>')
 
 # build/ 在 sys.path 上（mrbase.load_spec 会 insert HERE）⇒ yoy 直接 import。
 # 同比口径的唯一实现是 build/yoy.py，本文件一行 pct_change(12) 都不写。
@@ -1020,8 +1056,7 @@ _FX_RATE_NOTE = (
     '<b>原文没有给百分比</b>（只说 "the majority"），本页也就不编一个。')
 
 _USD_FILED_NOTE = (
-    '<b>ASEH 是本仓七家里唯一「以新台币入账、却另外自印官方美元实绩」的一家，'
-    '本轮已落库并上图。</b>'
+    f'{_FGN_TXT}本轮已落库并上图。'
     '（<u>不是</u>「唯一有官方美元数」：世芯-KY 的功能货币本身就是美元，'
     '它那页的美元栏是计量本身、新台币栏才是官方折算 —— 那是另一种形态，'
     '两栏由公司申报的换算汇率绑定；本家是两次<b>互不绑定</b>的披露。）'

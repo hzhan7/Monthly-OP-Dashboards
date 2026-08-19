@@ -7,14 +7,19 @@
     为什么有汇率线却没有美元营收腿、为什么没有指引桥 → build/mrspecs/mtk.py
 
 ━━ 这个壳是「图列归属」的落地，不是一层转发 ━━━━━━━━━━━━━━━━━━━━━━━━
-`monthly_run.py:389` 的 `builder(t)` 按**文件在不在**解析生成器：先找 `build/<t>.py`，
+`monthly_run.py` 的 `builder(t)`（按函数名 grep，不写行号：行号一改动就漂成假话）按**文件在不在**解析生成器：先找 `build/<t>.py`，
 再找下划线版，最后才退到 `build/single.py` + `build/specs/<t>.py`。
 本文件一落地，`data/mtk.js` 就归本底座，每月 cron 也走这条路 —— 底座的
 `owned_elsewhere()` 认得本壳里的 `mrbase` 字样，因此不再拦写 `data/`。
 
-⚠️ `build/specs/mtk.py` 仍在仓库里，但**已经不再被调用**（本壳优先级高于它）。
-   留着它是为了保留旧图列的口径记录，不是为了继续生成页面；要清理请单独一轮做。
-   两份文件对同一页并存期间，**改口径请改 `build/mrspecs/mtk.py`**。
+⚠️ `build/specs/mtk.py` **已经不在仓库里**：它在 4b0f201（新增本壳的同一个提交）
+   里连同另外五家一起被删除。改口径一律改 `build/mrspecs/mtk.py`，没有第二份配置。
+   要看旧图列的口径记录只能回那个提交之前的历史
+   （`git log --diff-filter=D -- build/specs/mtk.py` 一查便知），
+   别再照这段去 `build/specs/` 里找文件。
+   顺带一条机制更正：`owned_elsewhere()` 之所以不拦本页的写入，**首要原因是
+   `build/specs/mtk.py` 已经不存在**（它先看这个文件在不在），壳里的 `mrbase` 字样
+   只是两份文件并存时才用得上的第二道判据。
    ⚠️ 那份旧配置里「2018-01 是 IFRS 15 准则边界」那句话本轮已被证伪
    （FY2018 转换附注原文：IFRS 15 has **no impact** on the Company's revenue
    recognition from sale of goods），新配置不再沿用，别再从它那里抄。

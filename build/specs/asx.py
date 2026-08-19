@@ -82,8 +82,11 @@ soft-404）；2020-06 那一期起改指 DAM，从此一直在。
 两处口径若有出入，以 pools.py 那条为准。
 
 ━━ 有意不上页面的列，以及理由 ━━
-· trading_days_cash / trading_days_futures / trading_days_eto —— 三套分母（2026-04 实测
-  分别是 19 / 20 / 19），ADV 已经除过了；上页面只会诱导别人拿错的那套去反推月总量。
+· trading_days_cash / trading_days_futures / trading_days_eto —— 三套分母（有多少个月
+  三者不全相同、最近一次是哪个月，由 `_tradingday_split()` 现算并印在图注上；这里
+  **不再抄一个月份当例子** —— 上一版抄的是「2026-04 实测 19 / 20 / 19」，而 CSV 里
+  2026-04 三列都是 20，举的例子恰好是三者相等的一个月），ADV 已经除过了；
+  上页面只会诱导别人拿错的那套去反推月总量。
 · contracts_futures_total / contracts_options_on_futures_total /
   contracts_futures_and_options_total / contracts_single_stock_options_total /
   contracts_index_options_total —— 月总量，= ADV × 对应交易日，与 adv_* 重复。
@@ -94,6 +97,7 @@ soft-404）；2020-06 那一期起改指 DAM，从此一直在。
 """
 
 import csv
+import math
 import os
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -423,11 +427,80 @@ def _sfe_span():
     return ms[0], ms[-1], len(ms), ragged
 
 
+_TD_COLS = ('trading_days_cash', 'trading_days_futures', 'trading_days_eto')
+
+
+def _tradingday_split():
+    """三套交易日分母有几个月互不相同，外加**最近一个真的不相同的月**与那三个数。
+
+    ⚠ 这条注 2026-08-19 之前写死成「2026-04 实测分别是 19 / 20 / 19」，而
+    series/asx.csv 里 2026-04 三列都是 20 —— 举的例子恰恰是三者**相等**的一个月，
+    正好把「三套分母不一样」这句话自己拆了。举例只能现举：随便钉死一个月份，
+    官方重述一次或者窗口一动，例子与结论就分家，而没有任何检查会报警。
+
+    返回 (可比月数, 三列互不全等的月数, 举例月, (三个读数))；算不出返回 (None,)*4。
+    """
+    n = diff = 0
+    ex_m, ex_v = None, None
+    for r in _rows():
+        vs = [_num(r, c) for c in _TD_COLS]
+        if any(v is None for v in vs):
+            continue
+        n += 1
+        if len(set(vs)) > 1:
+            diff += 1
+            ex_m, ex_v = r['month'], vs          # 留最后一个 ⇒ 最近的那个月
+    return (n, diff, ex_m, ex_v) if n else (None,) * 4
+
+
+def _latest_pair(a, b):
+    """最近一个 a、b 两列都有值的月：(月, a, b)；算不出返回 (None, None, None)。"""
+    for r in reversed(_rows()):
+        x, y = _num(r, a), _num(r, b)
+        if x is not None and y is not None:
+            return r['month'], x, y
+    return (None,) * 3
+
+
+def _range(col, nd=0):
+    """一列的 (最小值, 最大值, 有值月数)，端点已按 nd 位小数**外扩**取整。
+
+    下界向下取、上界向上取：印出来的是一对**边界**，四舍五入会把区间收窄，
+    让某个真实读数落在自己声明的区间之外（enx 那边的「0.03–0.22」就是这么假的）。
+    当前这两列在源数据里都是整数，nd=0 时外扩取整是恒等的 —— 这道保险是给
+    「官方哪天开始发小数」准备的：那天到了，句子仍然自动成立。
+    算不出返回 (None, None, 0)。
+    """
+    v = [x for x in (_num(r, col) for r in _rows()) if x is not None]
+    if not v:
+        return None, None, 0
+    f = 10.0 ** nd
+    return math.floor(min(v) * f + 1e-9) / f, math.ceil(max(v) * f - 1e-9) / f, len(v)
+
+
+def _count_before(col, month):
+    """col 在 month **之前**有几个有值的月，以及那一段的首末月。
+
+    「VIX 左边那 45 个月来自正文要点」那句话的算术底：45 与起点月必须同源，
+    否则起点一现算、45 一写死，同一句话里两个数就会互相打架。
+    """
+    ms = [r['month'] for r in _rows()
+          if _num(r, col) is not None and r['month'] < month]
+    return (len(ms), ms[0], ms[-1]) if ms else (0, None, None)
+
+
 _PTN, _PTMED, _PTMAX, _PTONM = _per_trade_check()
 _FY0, _FY1, _FYL, _FYA, _FYB = _fy_probe()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
 _MSG_STEP = _msg_precision_step()
 _SFE0, _SFE1, _SFEN, _SFERAG = _sfe_span()
+_TDN, _TDDIFF, _TDM, _TDV = _tradingday_split()
+_OTCM, _OTCC, _OTCO = _latest_pair('otc_notional_cleared_audbn',
+                                   'otc_open_notional_audbn')
+_DEMIN, _DEMAX, _DEN = _range('delisted_entities')
+_DMMIN, _DMMAX, _DMN = _range('mktcap_delisted_audmn')
+#: VIX 那一列在 MAR 把它排进现货表（2019-10）之前有多少个月只印在正文要点里。
+_VIXN, _VIX0, _VIX1 = _count_before('vix_asx200_avg', '2019-10')
 
 
 _NOTE_SFE = (
@@ -552,8 +625,8 @@ SPEC = {
                'ASX Market Announcements Office); format after Goldman Sachs GIR'),
 
     # 头条：现货与期货各一条。两者同出一份 MAR、同一天发布，
-    # 自 series 首月起逐月无洞（2026-08 回补到 2016-01 后实测 127/127，
-    # 「无洞」这个断言由 build/verify_pages.py 每次构建复核，这里不再抄写月数），
+    # 自 series 首月起逐月无洞（「无洞」这个断言由 build/verify_pages.py 每次构建复核；
+    # 月数这里**一个都不抄** —— 它每个月加一，抄下来的那份先烂），
     # 且 ASX 是本仓最快的一家之一
     # （次月第 3–8 个日历日，众数第 5–6 日；2026-07 数据于 2026-08-06 发布）。
     'headline': [
@@ -819,8 +892,11 @@ SPEC = {
     'notes': [
         'OTC 利率衍生品清算名义额是**双边计数**（官方脚注 "Cleared notional value is '
         'double sided"）。与 CME / LCH 的口径不同，跨家比较前必须先统一，'
-        '否则 ASX 会被系统性放大一倍。实测 2026-07：当月清算 A$635.5bn、'
-        '月末未平仓 A$4,872.7bn。',
+        '否则 ASX 会被系统性放大一倍。'
+        # 读数取「两列都有值的最新一个月」现算 —— 写死一个月份，下个月这句话
+        # 报的就不再是最新一期，而页头的抬头行照常往前走。
+        + ((f'实测 {_OTCM}：当月清算 A${_OTCC:,.1f}bn、月末未平仓 A${_OTCO:,.1f}bn。')
+           if _OTCM else ''),
 
         '上市融资在 2023-10 换了口径：旧口径是 IPO 实际募资额，新口径是新上市实体的'
         '挂牌市值，两者差着一个数量级（官方 FY26 新闻稿同时给出 IPO capital raised '
@@ -830,7 +906,11 @@ SPEC = {
         '两个断点的月份都是从 series/asx.csv 里新口径列的首月读出来的，没有写死。',
 
         '「退市与净增」那一组的 delisted_entities 与 mktcap_delisted_audmn '
-        '**在源数据里就是负值**（实测区间分别是 −40…−4 家、−22,533…−20 A$mn），'
+        '**在源数据里就是负值**'
+        + ((f'（现算区间分别是 {_DEMIN:,.0f}…{_DEMAX:,.0f} 家、'
+            f'{_DMMIN:,.0f}…{_DMMAX:,.0f} A$mn）')
+           if _DEMIN is not None and _DMMIN is not None else '')
+        + '，'
         '是「从总数中减去」的记号，不是数据错误。'
         '⇒ 这一组不能用强制零基线的图型（bars_labeled 会把负柱画到画布外，'
         '见 docs/CHART_KINDS.md §3.3）。',
@@ -853,24 +933,36 @@ SPEC = {
         '存量（月末未平仓名义额、托管市值、保证金、实体数）配月末汇率。',
 
         '未上页面的月频列：trading_days_cash / trading_days_futures / trading_days_eto'
-        '（三套分母，2026-04 实测分别是 19 / 20 / 19）、'
-        '以及五条 contracts_*_total 月总量列（= ADV × 对应交易日，与 adv_* 重复）。',
+        + ((f'（三套分母，{_TDN} 个月里有 {_TDDIFF} 个月三者不全相同；'
+            f'最近一次是 {_TDM}，三列分别 '
+            + ' / '.join('%.0f' % v for v in _TDV) + '）')
+           if _TDM else '（三套分母，别拿其中一套去反推另一套的月总量）')
+        + '、以及五条 contracts_*_total 月总量列（= ADV × 对应交易日，与 adv_* 重复）。',
 
         # ⚠️ 另有两条随 CSV 现算的图注（「起点不齐的列」与「界内空格」）在 SPEC
         #    组装完之后追加，见文件末尾 —— 它们要先知道本页到底上了哪些列。
 
-        '<b>VIX 那张图左边 45 个月的数来自官方正文要点，不是表行 —— 同一个数，'
+        # ⚠ 「45 个月」与它前面那个起点月必须同源：起点是现算的（回补一次就左移），
+        #   月数原先是写死的 —— 一左移，同一句话里两个数就自己打架。
+        #   「26 期两者同时存在」那半句更糟：括号里枚举的 2019-10 / 2019-11 /
+        #   2024-09…2026-07 只有 25 期，与 26 对不上；而且末月每个月往前走一格，
+        #   期数却不会跟着变。两处并存与否记在 fetch/asx.py 的闸门里、不在 CSV 里，
+        #   **现算不了** ⇒ 不报期数，只说这条闸门是什么、逐期都在跑。
+        '<b>VIX 那张图左边那一段的数来自官方正文要点，不是表行 —— 同一个数，'
         '两处印刷。</b>ASX 的 MAR 到 <b>2019-10</b> 那一期才把 '
         '<code>S&P/ASX 200 VIX (average daily value)</code> 排进现货表；'
-        '在那之前（' + (_first_present('vix_asx200_avg') or '2016-01') + '…2019-09，'
-        '共 45 个月）这个数只印在正文的波动率要点里'
-        '（"…as measured by the S&P/ASX 200 VIX… was an average of 12.7"）。'
-        '<b>两处从来没有不一致过</b>：26 期两者同时存在（2019-10 / 2019-11 / '
-        '2024-09…2026-07），逐位相同、精度同为 1 位小数 —— 这条实测已经在 '
-        '<code>fetch/asx.py</code> 里固化成闸门，两处哪天对不上就当场拒绝入库。'
-        '所以左边那 45 个月<b>仍然是当期官方公告原值</b>，不是换算、不是派生、'
-        '也不是拿后期报告的重述值倒填。'
-        '（这一列 2026-08 之前从 2019-10 才起 —— 那不是官方没发，是抓取器只认表行。）',
+        + ((f'在那之前（{_VIX0}…{_VIX1}，共 {_VIXN} 个月）')
+           if _VIXN else '在那之前')
+        + '这个数只印在正文的波动率要点里'
+          '（"…as measured by the S&P/ASX 200 VIX… was an average of 12.7"）。'
+          '<b>两处从来没有不一致过</b>：凡是表行与正文同时给出这个数的月份，'
+          '两者逐位相同、精度同为 1 位小数 —— 这条已经在 <code>fetch/asx.py</code> '
+          '里固化成<b>逐期闸门</b>（两处都取到时必须相等，否则当场拒绝入库），'
+          '所以它不是一次抽查的结论，而是每期都在复验的约束。'
+        + ((f'所以左边那 {_VIXN} 个月') if _VIXN else '所以左边那一段')
+        + '<b>仍然是当期官方公告原值</b>，不是换算、不是派生、'
+          '也不是拿后期报告的重述值倒填。'
+          '（这一列 2026-08 之前从 2019-10 才起 —— 那不是官方没发，是抓取器只认表行。）',
 
         '<b>结算报文量在 ' + (_MSG_STEP or '2017-10') + ' 之前只印到 1 位小数。</b>'
         'ASX 的 MAR 从那一期起把 <code>Dominant settlement messages (million)</code> '
@@ -980,7 +1072,9 @@ if _HOLES:
           '<b>值印在纸上，只是挂错了标签</b>，所以 2026-08 起由 '
           '<code>fetch/asx.py:_shifted_blocks()</code> 按签名'
           '（小标题行带值 ＋ <code>Average daily contracts</code> 整行为空；'
-          '实测 127 期全段扫描只命中这一处）把值搬回它本该挂的标签，'
+          # 「只此一处」的判据是拿 fetch 去扫全部 PDF，不是扫 series/asx.csv，
+          # 所以现算不了 ⇒ 写成带日期的一次性实测，别让它冒充一个会自己更新的数。
+          '2026-08 实测：截至 2026-07 的全段扫描只命中这一处）把值搬回它本该挂的标签，'
           '再拿官方同表印的合计当<b>准入闸门</b>验过才入库：'
           '8,901,810 + 124,649 = 9,026,459、494,545 + 6,925 = 501,470，两条残差都是 0。'
           '<b>入库的 124,649 与 6,925 是官方原值，不是恒等式反推值</b> —— '

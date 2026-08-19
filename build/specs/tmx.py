@@ -5,8 +5,10 @@
 声明「series/tmx.csv 的哪些列上页面」。不算数、不画图、不碰公共代码。
 整份文件可以直接删掉，别的页一行都不受影响。
 
-━━ 本页最容易犯的错：把三段起点不同的历史当成一段 ━━
-series/tmx.csv 里躺着**三段互相独立的官方序列**，起点差 13~24 年、每月到货也差几天
+━━ 本页最容易犯的错：把几段起点不同的历史当成一段 ━━
+series/tmx.csv 里躺着**几段互相独立的官方序列**（几段就是下面列了几条 —— 上一版这里
+写「三段」而下面列了四条，页尾那条 notes 也跟着说了同一句假话；页尾那句现在由
+`_seg_zh()` 数 CSV 现算，这里就不再写数字了），起点差得很远、每月到货也差几天
 （下面每个起点本文件都用 `_first_present()` 从 CSV 现算，一个都不写死）：
 
     Montréal Exchange 衍生品（mx_*）        2002-01 起   m-x.ca 月度 xlsx
@@ -98,7 +100,9 @@ mx_oi_bax_contracts 最后一个非零月是 2024-05（86,729 张），此后逐
 并在「口径与方法说明」里点名，而**该列仍留在末尾核对表里**）。
 所以本文件按常规声明这一列即可，不要在这里摘列：摘了核对表也会跟着少一列，
 而「官方报的就是 0」与「本页没有这个指标」是两回事。
-· trading_days_rates / trading_days_equity —— 两套分母（每年 9 月、11 月两者不等），
+· trading_days_rates / trading_days_equity —— 两套分母（不等的月份分布由
+  `_tday_mismatch_zh()` 现算：实测集中在 11 月，9/10/12 月零星几次 —— 别写成
+  「每年 9 月、11 月」，那是 2026-08-19 复核抓到的假话），
   ADV 官方直接给，本页不做除法。
 """
 
@@ -148,6 +152,50 @@ def _span_zh(col):
     return f'{ms[0]} → {ms[-1]}，实测 {len(ms)} 个月'
 
 
+def _seg_zh(segs):
+    """「本页有 N 段起点不同的历史」整段 —— 段数、名单、覆盖、谁最早，全部现算。
+
+    ⚠️ 2026-08-19 复核抓到两处写死的假话，都在同一句里：
+      · 「本页有**三段**起点不同的历史」，紧接着自己列了**四段**；
+      · 「只有 MX 那条回得到 2002 年」，而同一句列出的月末指数点位是 2001-12，
+        比 MX 还早一个月。
+    ⚠️ 2026-08-19（复核的复核）再收一次口：上一版把**段数**改成了现算，
+    但紧跟着的那份名单仍是 notes 里逐行写死的 `_span_zh(...)`。两者不同源 ——
+    某一列哪天在 CSV 里空了，段数会自己减一，而名单照旧列四条，
+    页面上又变成「三段」配四行。所以名单也从同一个 `segs` 生成：
+    **段数就是这份名单的长度**，两半再也拆不开。
+
+    段名后面那半句（「零断档」之类）跟着 segs 一起给，缺列时整条一起消失。
+    """
+    got = []
+    for zh, col, extra in segs:
+        ms = [r['month'] for r in _rows() if col in r and r[col].strip()]
+        if ms:
+            got.append((ms[0], zh, f'{zh} {ms[0]} → {ms[-1]}，实测 {len(ms)} 个月{extra}'))
+    if not got:
+        return ('本页有几段起点不同的历史，别把它们当成一段：'
+                '（本次未能从 series/tmx.csv 读出任何一段的起点）')
+    got.sort()
+    n_zh = '一二三四五六七八九十'[len(got) - 1] if len(got) <= 10 else str(len(got))
+    head = f'本页有<b>{n_zh}段起点不同的历史</b>，别把它们当成一段：'
+    body = '；'.join(g[2] for g in got) + '。'
+
+    # 「回得最早」的那一档：把与最早那段相差一年以内的都算进去。
+    # 别按自然年切 —— 2001-12 与 2002-01 差一个月，按年份切会说成「只有一段回得到 2001」，
+    # 读者拿着同一句话里列出的 MX（2002-01）就能反驳。
+    def _mi(m):
+        return int(m[:4]) * 12 + int(m[5:7])
+
+    early = [f'{zh}（{m} 起）' for m, zh, _t in got if _mi(m) - _mi(got[0][0]) <= 12]
+    late = got[-1]
+    tail = ('任何「TMX 从 20xx 年以来如何」的说法都要按列限定 —— '
+            f'回得最早的是{"、".join(early)}'
+            + ('（相差不到一年，其余各段都晚得多）' if len(early) > 1 else '')
+            + (f'，最晚的一段（{late[1]}）要到 {late[0]} 才起步。'
+               if len(got) > 1 else '。'))
+    return head + body + tail
+
+
 def _lm(col):
     """`_last()` 的月份，缺失时给一句占位 —— 图注不许因为缺一列就在 import 期炸掉。"""
     return _last(col)[0] or '（最新月未知）'
@@ -180,6 +228,37 @@ def _last(col):
             except ValueError:
                 pass
     return hit if hit else (None, None)
+
+
+def _tday_mismatch_zh():
+    """两条交易日列在哪些月份不等 —— 逐月现算，别写「每年 9 月、11 月」。
+
+    2026-08-19 复核：那句话是假的 —— 实测两列都有值的月份里只有个位数百分比的月份不等，
+    集中在 11 月（近乎每年），9 月只是零星几次，另外 10 月与 12 月各有过一次。
+    「每年 9 月、11 月」既漏了 10/12 月，又把 9 月说成年年发生。
+    这里改成现算：月份分布哪天变了，这句话自己跟着变。算不出返回空串，
+    调用方退回不带数字的说法。**这段 docstring 里一个计数都不写** ——
+    上一版在这里写「296 个月里 29 个月」，而实测是 295（自己算的函数印的也是 295），
+    注释与函数当场对不上。要看当期数就 import 本模块打印 `_tday_mismatch_zh()`。
+    """
+    a, b = 'trading_days_rates', 'trading_days_equity'
+    both = diff = 0
+    by_mo = {}
+    for r in _rows():
+        x, y = (r.get(a) or '').strip(), (r.get(b) or '').strip()
+        if not x or not y:
+            continue
+        both += 1
+        if x != y:
+            diff += 1
+            by_mo[r['month'][5:7]] = by_mo.get(r['month'][5:7], 0) + 1
+    if not both:
+        return ''
+    if not diff:
+        return f'实测 {both} 个两列都有值的月份逐月相等'
+    order = sorted(by_mo.items(), key=lambda kv: (-kv[1], kv[0]))
+    det = '、'.join(f'{int(mo)} 月 {k} 次' for mo, k in order)
+    return f'实测 {both} 个两列都有值的月份里 {diff} 个月两者不等（{det}）'
 
 
 def _zero_tail(col):
@@ -412,6 +491,14 @@ _IDX = _index_split()
 _3F = _three_factor()
 _BWM, _BWC, _BWX, _BWR = _bench_wedge()
 _VP = _venue_price()
+_TDAY_MISMATCH = _tday_mismatch_zh()
+# 段名、列、以及跟在覆盖后面的那半句附注 —— 名单与段数从这一份现算，不许在 notes 里
+# 另写一份（上一版就是段数现算、名单写死，某列一空两半立刻对不上）。
+_SEG = _seg_zh(
+    (('MX 衍生品', 'mx_adv_contracts', '（零断档）'),
+     ('月末指数点位', 'tsx_composite_close', ''),
+     ('加拿大现货成交', 'tsx_value_cad', ''),
+     ('Alpha-X & Alpha DRK', 'alphax_drk_volume_shares', '')))
 
 
 def _pp(x):
@@ -552,10 +639,21 @@ _NOTE_TTM_SPOT = (
 )
 
 
-# 断点标签**必须短**：它竖排画在断点线上，而断点线全长只有 ~254px，正中间还钉着
-# 柱值标签（上段 ~112px、下段 ~133px）。原来那句「CDOR 停用，短端利率合约由 BAX 迁至
-# CORRA（CRA）」竖排 180.5px，哪一段都塞不下，引擎只能靠 z 序兜底保住数字可读，
-# 几何重叠仍在（tools/visual_qa.py 实测 8 条 🟡 全出自这一句）。
+# 断点标签**必须短**：它竖排画在断点线上，而断点线的全长就是绘图区高度
+# （charts.js：`y1 = M.t`、`y2 = M.t + ph`，标签再按 `fitVertical(bel, ph - 6, 7)` 收缩），
+# 正中间还钉着柱值标签，上下两段各只剩其中一截。
+# ⚠️ **这里不写 px 数**，写一次错一次，已经错过两轮：
+#   · 上上版写「断点线全长只有 ~254px」—— 那是 FS 还等于 1 那会儿量的；
+#   · 上一版改成「Exhibit 18/19/20 约 260px、Exhibit 6 约 235px」—— 260 那半对，
+#     235 那半**是错的**：它按 `H = 268 + round(26×(FS−1))` 算，可 Exhibit 6 是
+#     lines_endlabels、spec 侧给了 `height = LINE_H_ENDLABEL`（build/single.py），
+#     `H = opt.height + …`，ph 实际在 327px 上下，比另外三张还高。
+# 要点是几何而不是某个数：`ph = H − M.t − M.b`，其中 H 随 `opt.height` 与字号 FS
+# （assets/charts.js 的 FS_MIN/FS_MAX）变、M.t 随「有没有截轴」在 fscale(14) 与
+# fscale(30) 之间跳。哪张图剩多少，照那三个式子现算，别抄一个数下来。
+# 原来那句「CDOR 停用，短端利率合约由 BAX 迁至 CORRA（CRA）」竖排下来哪一段都塞不下，
+# 引擎只能靠 z 序兜底保住数字可读，几何重叠仍在
+# （改短之前 tools/visual_qa.py 实测的 🟡 全出自这一句）。
 # ⇒ 标签的职责是**标记位置**，不是讲故事：缩到 10 个汉字以内，来龙去脉留给页尾 notes。
 _BAX_ZH = 'BAX→CORRA 迁移'
 _ALPHAX_ZH = 'TMX 合计口径扩容'
@@ -885,13 +983,11 @@ SPEC = {
     ],
 
     'notes': [
-        '本页有**三段起点不同的历史**，别把它们当成一段：'
-        f'MX 衍生品 {_span_zh("mx_adv_contracts")}（零断档）；'
-        f'月末指数点位 {_span_zh("tsx_composite_close")}；'
-        f'加拿大现货成交 {_span_zh("tsx_value_cad")}；'
-        f'Alpha-X & Alpha DRK {_span_zh("alphax_drk_volume_shares")}。'
-        '任何「TMX 从 20xx 年以来如何」的说法都要按列限定 —— 只有 MX 那条回得到 2002 年。'
-        '⚠️ 三段各有各的地板，而且都是**源的地板**不是本页的取舍：'
+        _SEG
+        # ⚠️ 下面只列**查过来路**的那几段，所以主语写「下面这几段」而不是「各段」——
+        # 上一版把它写成「各段各有各的地板」，而列出来的只有三条（月末指数点位那一段
+        # 没查过），一句全称断言被紧挨着的名单当场证伪。加一段就把它的地板补进来。
+        + '⚠️ 下面这几段的地板都是**源的地板**、不是本页的取舍：'
         'MX 的 m-x.ca 月度 xlsx 到 2002-01 为止（2001-12 及更早干净 404）；'
         '现货到 2015-01 为止（CIRO 官方页面写明 2007–2014 的报表需人工索取）；'
         'Alpha-X & Alpha DRK 到 2023-11 为止（TMX 与 CIRO 两个互相独立的源'
@@ -929,8 +1025,9 @@ SPEC = {
         '归零」或「凭空长出一个新产品」两个都不对的结论。断点月份由 series/tmx.csv '
         '里 BAX 转 0 的那一月读出，没有写死。'
         '图上那条红线的标签只写「BAX→CORRA 迁移」——**标签的职责是标记位置**，'
-        '来龙去脉在这一条里；标签写长了会竖排压住柱值数字（断点线全长只有 254px，'
-        '中间还钉着柱值标签）。这条线**只画在短端利率那六列的图上**：'
+        '来龙去脉在这一条里；标签写长了会竖排压住图上的读数'
+        '（断点线的全长就是绘图区高度，柱图那几张正中间还钉着柱值标签）。'
+        '这条线<b>只画在短端利率那 ' + str(len(_BAX_COLS)) + ' 列的图上</b>：'
         '它是产品替换不是集团口径变化，MX 合计跨这个月是连续的（BAX 掉多少 CRA 接多少），'
         '画到指数点位、现货成交这些图上就是错的。',
 
@@ -968,6 +1065,7 @@ SPEC = {
         f'{_zero_tail("mx_adv_index_options_contracts")[0] or "（未知）"}，此后连续 '
         f'{_zero_tail("mx_adv_index_options_contracts")[1]} 个月全为 0 的死列）、'
         'trading_days_rates 与 trading_days_equity'
-        '（两套分母，每年 9 月与 11 月两者不等；ADV 官方直接给，本页不做除法）。',
+        + ('（两套分母，' + (_TDAY_MISMATCH or '两者并非逐月相等')
+           + '；ADV 官方直接给，本页不做除法）。'),
     ],
 }

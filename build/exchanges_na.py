@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """北美交易所竞争页（ICE/NYSE · Cboe · MIAX · Nasdaq，TMX/BOX 做对照）—— 写出 data/exchanges-na.js。
 
-这一页与 build/exchanges.py（CME/Cboe/HKEX 横截面）解决的不是同一个问题。那一页只能问
-「谁在跑赢」，因为它的三家没有公约分母，比较只能靠指数化与同比。**本页有分母。**
+这一页与 build/exchanges12.py（12 家总览横截面）解决的不是同一个问题。那一页只能问
+「谁在跑赢」，因为 12 家没有公约分母，比较只能靠定基名义额的指数化与同比。**本页有分母。**
+（⚠ 原文这里引的是 build/exchanges.py —— 那个文件与 /exchanges/ 那一页在
+ e3c6f81「删除 /exchanges/ 三家横截面页」里已经删掉了，全仓不存在这个文件。）
 全仓十二家交易所里，只有北美这两个池能拿到**官方发布的行业总量**：
 
   · 美股现货：`series/ice.csv` 的 `adv_tapeA/B/C_consolidated_mnsh`
@@ -51,9 +53,12 @@
 常数无关，见 Exhibit 10 的实测校验。
 
 ━━ 发布门槛 ━━
-四家的月度披露都快：2026-07 那一期 ICE / Cboe / MIAX / Nasdaq **同为 2026-08-05 发布**
-（见 series/source_dates.csv），即月末后第 5 天。所以本页门槛取四家的共同最新月，
-不会被慢成员拖住。成员没齐就打印原因并以**退出码 0** 正常结束（与 exchanges.py 同规矩）。
+本页门槛取两个池头条序列的共同最新月（`LATEST = min(p.end for p in POOLS)`）。
+各家哪天发布由 `series/source_dates.csv` 决定，**这里不复述、也不替它下结论**：
+那是逐期变的观测（2026-08-19 实跑：2026-07 那一期四家同为 2026-08-05 发布），
+页面正文那句由 `PUB_TXT` 现算 —— 连「发布得快不快」这种判断也不写死在文案里，
+只印实测的天数差（见 `_lag_txt()`）。
+成员没齐就打印原因并以**退出码 0** 正常结束（实现见本文件的 `skip()`）。
 
 数据源（只读 series/*.csv）：
   series/ice.csv          ICE 月度 metrics：行业分母 + NYSE Group 撮合量 + ICE 自报份额
@@ -191,11 +196,41 @@ for _k, _d in RAW.items():
     if _d is None:
         skip(f'缺 series/{_k}.csv')
 
-# 美股交易日历：ICE 与 Nasdaq 各自披露一份，重叠月里只有 2015-08 一个月不同
-# （⚠ 重叠月数不写在这里：它每月 +1；原注的「186 个重叠月」2026-08-19 实跑已是 187）。
-# MIAX 那份与 ICE 全等。全页统一用 ICE 那一列当唯一日历 ——
-# 两份日历混用会让「同一个月的 ADV」按不同分母算出两个值，而差异小到没人会发现。
+# 美股交易日历：ICE 与 Nasdaq 各自披露一份，MIAX 再一份。全页统一用 ICE 那一列当唯一日历
+# —— 两份日历混用会让「同一个月的 ADV」按不同分母算出两个值，而差异小到没人会发现。
+# ⚠ **差异有多大不写死在这里，也不写死在页面上**：重叠月数每月 +1，「哪几个月不同」
+#   也会随回补变。2026-08-19 的实跑值是 ICE vs Nasdaq 187 个重叠月、只有 2015-08 一个月
+#   不同（原注与原页面正文写的是「186 个重叠月」，那是上一期的值，页面上已经与同页别处
+#   现算出来的 187 打架）。所以下面把它算出来，页面正文只引用 CAL_* 这几个量。
 DAYS = RAW['ice']['trading_days_us_equities']
+
+
+def _cal_cmp(src, col):
+    """ICE 的 trading_days_us_equities vs 另一家的日历列 → (重叠月数, 不同的月份标签)。
+
+    只比「两边都有值」的月份：缺月是没有观测，不是「不同」。
+    """
+    d = RAW.get(src)
+    if d is None or col not in d.columns:
+        return 0, []
+    a, b = DAYS.dropna(), d[col].dropna()
+    ov = a.index.intersection(b.index)
+    return len(ov), [mlab(p) for p in ov if float(a[p]) != float(b[p])]
+
+
+def _cal_txt(n, diff):
+    """把 (重叠月数, 不同的月份) 说成一句话 —— 月数与个数都不写死。"""
+    if not n:
+        return '本轮没有重叠月，无法比对'
+    if not diff:
+        return f'{n} 个重叠月<b>逐月相同</b>'
+    if len(diff) == 1:
+        return f'{n} 个重叠月里只有 {diff[0]} 一个月不同'
+    return f'{n} 个重叠月里有 {len(diff)} 个月不同（{"、".join(diff)}）'
+
+
+CAL_NDQ_N, CAL_NDQ_DIFF = _cal_cmp('ndaq', 'trading_days_us_equities')
+CAL_MIAX_N, CAL_MIAX_DIFF = _cal_cmp('miax', 'trading_days_options')
 
 # ── 季度表（BOX 对照 + Nasdaq 自报市占锚点）──
 BOXQ = pd.read_csv(os.path.join(SERIES, 'tmx_box_q.csv')) \
@@ -307,6 +342,24 @@ if all(c in _nd.columns for c in _vcols):
     _nd['__ndaq_venues__'] = _nd[_vcols].sum(axis=1, min_count=len(_vcols)) / 1e6
 else:
     skip('series/ndaq.csv 缺盘口分列')
+
+# ── IR 报表列 vs nasdaqtrader 三盘口分列：交叉核对的月数与最大落差一律现算 ────────
+# ⚠ **「重叠月」不能按「两列都有值」数**：series/ndaq.csv 里 IR 那一列在早期月份本身
+#   就是拿同一份 xlsx 回补的（逐位相同），把回补月算进去，「两个源对得上」就退化成
+#   一个恒等式，核对不到任何东西。判据 = 两列**不逐位相同**的月份 —— 那才是两边各自
+#   独立给了数的月份。
+# ⚠ 数字一个都不写死：页面原文写「18 个重叠月里相对差 ≤0.011%」（抄自
+#   docs/verify/ndaq.md 的 2026-06 快照），2026-08-19 实跑已是 19 个独立月、
+#   最大 0.290%（2026-07 那一格），页面上那句话两个数都已经不成立。
+_ir_ms = _nd['vol_us_cash_matched_mnsh']
+_vn_ms = _nd['__ndaq_venues__']
+_nd_indep = [p for p in _ir_ms.dropna().index.intersection(_vn_ms.dropna().index)
+             if float(_vn_ms[p]) and float(_ir_ms[p]) != float(_vn_ms[p])]
+NDQ_XCHK_N = len(_nd_indep)
+_nd_rel = {p: abs(float(_ir_ms[p]) / float(_vn_ms[p]) - 1) for p in _nd_indep}
+NDQ_XCHK_FROM = mlab(min(_nd_indep)) if _nd_indep else None
+NDQ_XCHK_WORST = max(_nd_rel, key=_nd_rel.get) if _nd_indep else None
+NDQ_XCHK_REL = _nd_rel[NDQ_XCHK_WORST] * 100 if _nd_indep else float('nan')
 
 
 class Pool(object):
@@ -723,7 +776,10 @@ LONG_IDX = pd.period_range(max(RAW['ice'].index[0], pd.Period('2011-01', 'M')), 
 XL_LONG = [mlab(p) for p in LONG_IDX]
 
 # ── 类别轴（x 是公司名而不是月份）一律水平排 ──
-# 引擎对 ≤20 个类目的 x 标签默认 45°（charts.js:521），并只给底部留 XB = 36px。
+# 引擎对 ≤20 个类目的 x 标签默认 45°，并只给底部留 XB = 36px
+# （assets/charts.js，搜 `var rot = ex.xrot` 与紧跟其后的 `var XB = fscale`
+#  —— ⚠ 这里原先写的是「charts.js:521 / :522」，2026-08-19 实跑那两行分别在
+#  738 / 741；行号会随引擎改动漂走，所以一律用可 grep 的标识符定位，不写行号）。
 # 45° + anchor='end' 的几何是：文字**从锚点往左下方铺开**，向下伸出 0.707 × 文字宽度，
 # 锚点自己在 M.t+ph+9，于是文字宽超过 (36−9)/0.707 ≈ 38px 就伸到 SVG 画布外面去。
 # 实测（1:1 截图 + getBoundingClientRect）：「NYSE Group」49px ⇒ 越界 8px、
@@ -986,7 +1042,10 @@ def delta_bars(pool):
     **不用 `diverging_bars`**（正负分色本来正合适）：那个 kind 的图例与表格列名在
     assets/charts.js 里写死成 COST 的业务文案 —— 图例固定印
     「Reported > Core（油汇顺风）」/「Reported < Core（油汇拖累）」，表格视图列名固定是
-    「Reported − Core」，`ex.legend` 被忽略（charts.js:1437 / 1522-1523）。
+    「Reported − Core」，`ex.legend` 被忽略（assets/charts.js 里搜字符串
+    `'Reported − Core'` 与 `'Reported > Core（油汇顺风）'` —— 不写行号：原注写的
+    「charts.js:1437 / 1522-1523」两处都已经不是这段代码，2026-08-19 实跑在 2067 与
+    2170-2171，行号必漂，字符串不漂）。
     引擎 14 页共用不能改，所以这里改用只放一个 group 的 `grouped_bars`：
     图例名与表格列名都能自定义，纵轴 y0 = min(0, mn×1.15) 照样容纳负柱。
     代价是**正负同色** —— 但本图按变化降序排，正负分界一眼就在，损失有限。
@@ -1466,17 +1525,21 @@ def quarterly_share_lines(pool):
                  '只认三个月齐全的季度，缺月的季度留空让线断开 —— '
                  f'因此最后一季是 {xl[-1]}，而不是只有一个月的 {mlab(LATEST)}'
                  f'（{mlab(LATEST)} 的读数见 Exhibit 1 汇总表）。'
-                 '<b>分母与全页一致</b>：'
+                 # ⚠ 原文是「分母与全页一致：…，与本页**其余各图**（6 / 10）用的是同一条」。
+                 #   「其余各图」是全称，括号里却只点了两三张：同一个官方分母在期权池还用在
+                 #   份额变动 / 归因桥 / BOX 锚点上，现货池还用在份额变动 / 归因桥 / 自校验
+                 #   残差 / 热力矩阵 / MIAX Pearl 上。那串图号是作者脑子里的枚举、写死在
+                 #   §placeholder§ 里，不是现扫出来的 —— 加一张派生图它就又变假。
+                 #   本文件构建期没有「这张图的分母是谁」这条元数据，(A) 现算做不到；
+                 #   而这句交叉引用是纯导航，删了读者一个真信息都不损失（分母是什么，
+                 #   紧接着的这一句自己就写明了）⇒ 收窄成只讲本图。
+                 '<b>分母是官方发布的行业总量，不是池内成员之和</b>：'
                  + ('ICE 逐月披露的全美股票/ETF 期权行业 ADV'
-                    '（<code>adv_us_equity_options_industry_kcontracts</code>）'
+                    '（<code>adv_us_equity_options_industry_kcontracts</code>）。'
                     if pool.pid == 'opt' else
                     'ICE 的 <code>adv_tapeA/B/C_consolidated_mnsh</code> 三条相加'
-                    '（含场外 TRF 内化）')
-                 + '，与本页其余各图'
-                 + ('（§opt_se§ / §opt_long§）' if pool.pid == 'opt'
-                    else '（§cash_stack§ / §cash_se§ / §cash_long§）')
-                 + '用的是同一条。'
-                 '<b>各成员起点不同，前段留空不补</b>：' + txt + '。'
+                    '（含场外 TRF 内化）。')
+                 + '<b>各成员起点不同，前段留空不补</b>：' + txt + '。'
                  '窗口<b>没有</b>砍到最晚那家的起点 —— 真分母是官方发的，每家可以各自独立除，'
                  '这正是本页有真分母的好处。'
                  + ('<b>MIAX 的深历史是拼接的</b>：2015-04 → 2024-12 取 miaxglobal.com 的 '
@@ -1538,8 +1601,10 @@ if _small_set:
     _sm_ser = {m.key: _cash_share_long[m.key].reindex(_sm_idx) for m in _small_set}
     _sm_hi = max(float(_sm_ser[m.key].dropna().max()) for m in _small_set)
     _sm_lo = min(float(_sm_ser[m.key].dropna().min()) for m in _small_set)
-    # 纵向分辨率的修前修后：两张图都走引擎的 zero_base 分支（charts.js:663
-    # `y1 = max × 1.16`、`y0 = 0`），所以「这几条占图高多少」是能算的，不用去量像素。
+    # 纵向分辨率的修前修后：两张图都走引擎的 zero_base 分支（assets/charts.js 里搜
+    # `if (ex.zero_base)`：`y1 = mx * 1.16`、`y0 = 0`；原注写的 charts.js:663 早已不是
+    # 这段代码，2026-08-19 实跑在 925 与 937 —— 行号会漂，标识符不会），
+    # 所以「这几条占图高多少」是能算的，不用去量像素。
     _sm_before = (_sm_hi - _sm_lo) / (_cash_top * 1.16) * 100
     _sm_after = (_sm_hi - _sm_lo) / (_sm_hi * 1.16) * 100
     _sm_names = '、'.join(m.disp for m in _small_set)
@@ -1625,6 +1690,75 @@ _ndaq_txt = ('、'.join(f'{q} 官方 {o:.1f}% vs 自算 {c:.1f}%' for q, o, c, _
 # MIAX 在 4 年期权窗口里的份额变动 —— 口径接缝的影响要挂在这个数上说，所以先算出来
 _MIAX_WIN_D = float(WIN_OPT.df['miax_s'].iloc[-1] - WIN_OPT.df['miax_s'].iloc[0])
 
+# ── 断点线到底画了几条：现扫 ex，不靠记忆断言 ────────────────────────────────
+# ⚠ 原文这条口径说明的开头是「<b>没有口径断点，全页也确实一条断点线都没画。</b>……
+#   故 payload 里没有任何 <code>break_at</code>」。**同一份 payload 当场证伪**：
+#   §opt_q§ / §cash_q§ 两张季度长历史图各带 break_at=[12, 28] 两条红色形式数断点线
+#   （PROFORMA 那两条），而**本页上一条口径说明自己就写着「两张图上各有两条红色形式数
+#   断点线」** —— 两条 note 正面打架，读者往下滚一屏就能抓到。
+#   真正成立的是收窄之后的那句：**两个池各自的共同窗口内**没有断点。所以这里现扫。
+def _brk_labels(e):
+    """break_label 在引擎里既可以是一条字符串、也可以是一串 —— 两种都吃。"""
+    lb = e.get('break_label') or []
+    return [lb] if isinstance(lb, str) else list(lb)
+
+
+_BRK = [(e['n'], _brk_labels(e)) for e in ex if e.get('break_at')]
+_BRK_N = sum(len(e.get('break_at') or []) for e in ex)
+
+
+# ── 四家这一期的官方发布日：现读台账，不写死 ──────────────────────────────────
+# ⚠ 两代坑，都在这十行里：
+#   ① 原文写死「发布日是同一天（月末后第 5 天）」——「5」是关于某一期的观测，下一期就假。
+#   ② 上一轮改成现算，却拿 `Timestamp.day`（**日期的号数**）当「月末后第几天」印。
+#      两者只在发布日恰好落在 LATEST 的**次月**时才相等；哪家拖到再下个月、或改成月末前
+#      预告，页面就会自动印出一个假的天数 —— 现算不等于说得起，判据必须是天数差本身。
+#   现在一律走 (发布日 − LATEST 月末).days，正/零/负三种都有说法。
+#   ③ 名单也不写死：谁的发布日决定本页，就是两个池的头条序列**真正读过的那几个 CSV**
+#      （Member.src 就是 series/<src>.csv 的 basename，也是 source_dates.csv 的 ticker）。
+#      加一个新成员而忘了给它登记显示名 ⇒ 下面那道断言当场停机，不会让页面漏说一家。
+_SD_DISP = {'ice': 'ICE', 'cboe': 'Cboe', 'miax': 'MIAX', 'ndaq': 'Nasdaq'}
+_SD_SRCS = []                                       # 按成员出现顺序去重，句子按这个序印
+for _m in OPT_MEMBERS + [OPT_DENOM] + CASH_MEMBERS + [CASH_DENOM]:
+    if _m.src not in _SD_SRCS:
+        _SD_SRCS.append(_m.src)
+_sd_undeclared = [s for s in _SD_SRCS if s not in _SD_DISP]
+if _sd_undeclared:
+    raise SystemExit(
+        f'发布门槛：这几个源没有登记显示名 {_sd_undeclared} —— '
+        f'页面那句「…登记的发布日…」会漏点它们的名，把它们加进 _SD_DISP 再跑。')
+
+_sd = pd.read_csv(os.path.join(SERIES, 'source_dates.csv'), dtype=str)
+_sd = _sd[(_sd['month'] == str(LATEST)) & _sd['ticker'].isin(_SD_SRCS)]
+_sd_map = {t: d for t, d in zip(_sd['ticker'], _sd['source_date'])
+           if isinstance(d, str) and d.strip()}
+_sd_days = sorted(set(_sd_map.values()))
+_MEND = LATEST.end_time.normalize()
+
+
+def _lag_txt(ds):
+    """发布日相对 LATEST **月末**的天数。不许用 Timestamp.day 冒充这个数。"""
+    n = int((pd.Timestamp(ds) - _MEND).days)
+    return f'月末后第 {n} 天' if n > 0 else ('月末当天' if n == 0 else f'月末前 {-n} 天')
+
+
+# 点名的家也现算：台账里少登记一家，句子就不点它的名，不替它作保。
+_SD_NAMED = '、'.join(_SD_DISP[s] for s in _SD_SRCS if s in _sd_map)
+_LEDGER = '<code>series/source_dates.csv</code>'
+if not _sd_map:
+    PUB_TXT = f'本页这几家在 {_LEDGER} 里都还没有登记发布日'
+elif len(_sd_days) == 1:
+    PUB_TXT = (f'{_SD_NAMED} 在 {_LEDGER} 里登记的发布日是同一天'
+               f'（{_sd_days[0]}，{_lag_txt(_sd_days[0])}）')
+else:
+    PUB_TXT = (f'{_SD_NAMED} 在 {_LEDGER} 里登记的发布日落在 '
+               f'{_sd_days[0]}（{_lag_txt(_sd_days[0])}）至 {_sd_days[-1]}'
+               f'（{_lag_txt(_sd_days[-1])}），相差 '
+               f'{(pd.Timestamp(_sd_days[-1]) - pd.Timestamp(_sd_days[0])).days} 天')
+# 构建期断言：句子里点到的名字数必须等于台账里真拿到发布日的家数，对不上就停机。
+if _sd_map and len([x for x in _SD_NAMED.split('、') if x]) != len(_sd_map):
+    raise SystemExit(f'发布日句子点名「{_SD_NAMED}」，但台账里拿到发布日的是 {sorted(_sd_map)}')
+
 NOTES = [
     f'<b>本页只回答一个问题：谁真的拿到了份额。</b>全仓十二家交易所里，'
     f'只有北美这两个池能拿到<b>官方发布的行业分母</b> —— 期权用 ICE 的 '
@@ -1676,10 +1810,11 @@ NOTES = [
      f'BOX（TMX 控股）见 §box§：{BOX_HIT}/{BOX_N} 个季度与 TMX 自报整数一致。'
      if A_NDAQ else '<b>锚点 C 不可用</b>：series/ndaq_q.csv 缺季度市占列。'),
 
-    f'<b>发布门槛：四家的共同最新月 {mlab(LATEST)}。</b>北美四家披露都快 —— '
-    f'{mlab(LATEST)} 那一期 ICE / Cboe / MIAX / Nasdaq 在 series/source_dates.csv 里'
-    '登记的发布日是同一天（月末后第 5 天），所以本页不存在「被慢成员拖住」的问题，'
-    '也不需要像 CME/Cboe/HKEX 那页那样在抬头里点名短板。'
+    # ⚠ 这里原先还接着三句 —— 「北美四家披露都快」「所以本页不存在被慢成员拖住的问题」
+    #   「抬头里也不点名短板」。三句都不是现算的：前两句在 PUB_TXT 落进 elif/else 分支
+    #   （发布日分散、或台账没登记）时照印不误，第三句是对抬头的人肉断言。删掉，
+    #   读者拿到的是台账实测的发布日与下面那句 AHEAD 判定，一个真信息都不少。
+    f'<b>发布门槛：共同最新月 {mlab(LATEST)}。</b>{mlab(LATEST)} 那一期，{PUB_TXT}。'
     + ('本期确有成员跑在前面，其更新月份<b>不在本页任何一张图、任何一行表里</b>：'
        + '、'.join(f'{k}（已到 {mlab(m)}）' for k, m in AHEAD) + '。'
        if AHEAD else '本期四家的最新月一致，无人跑在前面。')
@@ -1697,9 +1832,11 @@ NOTES = [
         f'{w.zh} —— ' + '、'.join(m.disp for m in w.dropped)
         for w in (WIN_CASH, WIN_OPT) if w.dropped) + '。'
        if any(w.dropped for w in (WIN_CASH, WIN_OPT)) else '本轮两个池的成员在期初都齐全。')
-    + '<b>期权池因此没有月度堆叠带</b> —— 19 个月的带既看不出趋势，'
-      '又与现货那条 68 个月的带不可并读；它的长历史份额在 §opt_long§（月度）与 '
-      '§opt_q§（季度）上各有一张。'
+    # ⚠ 这两个月数与上面那句「共同窗口…（N 个月）」说的是同两个窗口，
+    #   一律走 len(p.idx)：两处写死过 19 / 68，每个月 +1，隔一期就会与上面自相矛盾。
+    + f'<b>期权池因此没有月度堆叠带</b> —— {len(POOL_OPT.idx)} 个月的带既看不出趋势，'
+    + f'又与现货那条 {len(POOL_CASH.idx)} 个月的带不可并读；它的长历史份额在 '
+      '§opt_long§（月度）与 §opt_q§（季度）上各有一张。'
       '<b>月度长历史图（§opt_long§ / §cash_long§）只画有深度的成员</b>，'
       '而不是把短序列拉成一小截塞进十五年的月度轴里；'
       '<b>季度长历史图（§opt_q§ / §cash_q§）反过来，四家全画、短的那几家前段留空断线</b> —— '
@@ -1801,14 +1938,22 @@ NOTES = [
         + (f'（缺月回落 <code>{m.alt}</code>）' if m.alt else '')
         for p in POOLS for m in p.members)
     + '。美股交易日数全页统一取 ICE 的 <code>trading_days_us_equities</code>：'
-      'ICE 与 Nasdaq 各自披露一份日历，实测 186 个重叠月里只有 2015-08 一个月不同，'
-      'MIAX 那份与 ICE 全等 —— 但两份混用会让同一个月的 ADV 出现两个值，'
-      '差异小到不会有人发现，所以只认一份。'
+    + f'ICE 与 Nasdaq 各自披露一份日历，实测 {_cal_txt(CAL_NDQ_N, CAL_NDQ_DIFF)}；'
+    + f'MIAX 的 <code>trading_days_options</code> 与 ICE 那一列 '
+    + f'{_cal_txt(CAL_MIAX_N, CAL_MIAX_DIFF)} —— 但两份混用会让同一个月的 ADV 出现两个值，'
+    + '差异小到不会有人发现，所以只认一份。'
       '本页两个池全部以美元计价，<code>series/fx.csv</code> 不参与任何计算。',
 
-    '<b>没有口径断点，全页也确实一条断点线都没画。</b>两个池在各自的共同窗口内'
-    '都没有并购并表或口径重分类，故 payload 里没有任何 <code>break_at</code>。'
-    '<b>期权池的月度共同窗口</b>（19 个月）只用 MIAX 的 IR 报表口径，不拼接。'
+    '<b>断点线画在哪几张图上。</b><b>两个池各自的共同窗口内</b>没有并购并表或口径'
+    f'重分类，所以窗口内那几张图（Exhibit {X("cash_stack")} 的月度堆叠带与同月窗口'
+    '那几张）一条断点线都没有。'
+    + (f'但把跨度拉到十五年之后就有了：本轮 payload 里带 <code>break_at</code> 的是 '
+       + '、'.join(f'Exhibit {n}' for n, _lb in _BRK)
+       + f'，共 {_BRK_N} 条红色竖虚线 —— '
+       + '；'.join(sorted({lb for _n, lbs in _BRK for lb in lbs}))
+       + '（形式数断点，来龙去脉见上面「季度长历史份额」那一条）。'
+       if _BRK else '本轮 payload 里没有任何 <code>break_at</code>。')
+    + f'<b>期权池的月度共同窗口</b>（{len(POOL_OPT.idx)} 个月）只用 MIAX 的 IR 报表口径，不拼接。'
     f'但 <b>{WIN_YEARS} 年同月窗口与两张长历史图必须拼接</b>：'
     f'{mlab(WIN_OPT.start)} 那一头 IR 报表根本不存在，只有官网 API。'
     '两个源的落差是本文件实测的，不是引用：'
@@ -1822,16 +1967,26 @@ NOTES = [
     '现货池的 MIAX 只用官网 API 一个源（2020-12 起连续），'
     f'与 IR 报表那列整数在 {A_MIAX["api_n"]} 个重叠月里最大差 '
     f'{A_MIAX["api_maxabs"]:.2f} 百万股/日 —— 纯粹是报表取整，不是口径差。'
-    'Nasdaq 现货则做了一次<b>同口径拼接</b>：2025-01 起用 IR 报表的当月总量，'
-    '更早的月份用 nasdaqtrader 市占 xlsx 的三个盘口相加，'
-    '两者在 18 个重叠月里相对差 ≤0.011%（两条都是 Nasdaq 官方，不是不同口径）。',
+    'Nasdaq 现货则做了一次<b>同口径拼接</b>：<code>series/ndaq.csv</code> 里那一列'
+    '以 IR 报表的当月总量为准，更早的月份用 nasdaqtrader 市占 xlsx 的三个盘口相加回补。'
+    + (f'两个源<b>各自独立给数</b>的月份自 {NDQ_XCHK_FROM} 起共 {NDQ_XCHK_N} 个，'
+       f'相对差 ≤<b>{NDQ_XCHK_REL:.3f}%</b>（最大的一格是 {mlab(NDQ_XCHK_WORST)}）；'
+       '其余月份两列逐位相同 —— 那是回补，不构成独立核对，所以不计入。'
+       '两条都是 Nasdaq 官方，不是不同口径。'
+       if NDQ_XCHK_N else '本轮两列逐月相同，没有可用于独立核对的月份。'),
 
-    '<b>与 build/exchanges.py（CME / Cboe / HKEX）那页的分工。</b>那页没有公约分母，'
-    '只能用指数化与同比回答「谁在跑赢」；本页有官方分母，回答的是「谁真的拿到了份额」，'
-    '而且份额是零和的（§cash_delta§ / §opt_delta§ 的柱之和恒为 0）。'
-    '两页唯一重叠的成员是 Cboe，且看的是它完全不同的两块业务'
-    '（那页看美股期权总量与指数期权占比，本页看它的 multiply-listed 期权与美股现货撮合份额）。'
-    '本页不改动那页的任何逻辑，也不共用它的数据结构。',
+    # ⚠⚠ 这里原先有一条「与别的页的分工」，**已删，不要再加回来**。它翻过三次车：
+    #   一版指着 build/exchanges.py —— 那个文件在 e3c6f81 里连页带文件删了；
+    #   二版改指 12 家总览页，写「两页唯一重叠的成员是 Cboe」，被那页的成员表证伪；
+    #   三版又写「那页看的是各家全部登记产品」「两页看的不是同一块业务」，两句都是假的：
+    #     exchanges12 自己那页第一条口径说明就写着「不是它的全部业务」并逐条列了没进腿的列；
+    #     而它的 ndaq 三条腿是 US_CASH_EQUITY_SHARE、miax 四条腿是 US_MULTILIST_EQ_OPT，
+    #     恰恰就是本页这两个池。
+    #   根子不在谁粗心：**本文件在构建期读不到那一页的内容**，所以任何关于那一页的断言
+    #   都只能靠人肉维护，而人肉维护的断言在这一条上已经连错三轮。规矩因此收死 ——
+    #   这一条不写现算不出来的东西，也就等于不写。
+    #   删掉不损失真信息：官方行业分母与「真份额 vs 成员之和占比」的区别在 NOTES 第 1 条，
+    #   份额零和写在 §cash_delta§ / §opt_delta§ 两张图自己的图注里（「N 根柱之和恒为 0」）。
 ]
 
 # ────────────────────────────── 11. 抬头与 payload ──────────────────────────────

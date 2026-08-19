@@ -21,9 +21,12 @@
 不放，每月 cron 会用 `build/single.py` 把 `data/ase.js` 覆盖回老图列
 （decomp / ttm_yoy / seasonality），「同一页两套图列」当月就会发生。
 
-`build/specs/ase.py` **留在原地不动**：`mrbase.owned_elsewhere()` 的判据是
-「specs/ 里有没有这个文件」加「壳里有没有 mrbase」，本壳存在即归本底座管；
-那份老 spec 里的抓取口径注释与 `fetch/ase.py` 是配套的，删它是另一件事。
+⚠️ `build/specs/ase.py` **已经不在仓库里**（上一版这里写的是「留在原地不动」，
+本轮 `git log --diff-filter=D -- build/specs/ase.py` 证伪）：它在 4b0f201
+—— 就是新增本壳的那个提交 —— 里连同另外五家一起被删除。
+所以 `mrbase.owned_elsewhere()` 现在放行本页的首要原因是**那个文件不存在**
+（它先看 `specs/<t>.py` 在不在），「壳里有没有 mrbase」只是两份并存时的第二道判据。
+那份老 spec 里与 `fetch/ase.py` 配套的抓取口径注释也随之只存在于历史提交里。
 """
 import sys
 

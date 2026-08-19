@@ -60,9 +60,14 @@ Client Cash as a Percentage of Client Assets（自 2014-06 起每期都印）。
 就画出假线并抛异常；`lines` 走 `doSmooth=false` 的那一支，null 是断笔、末点标签走
 `lastFinite`，可以带前导 null。所以：
 
-  · 各线**起点相同**（Ex9 / Ex13：LPL 与 IBKR 都从 2016-01 起）→ 保留 `lines_endlabels`；
-  · 各线**起点不同**（Ex4 / Ex5 / Ex7 / Ex8 / Ex10 / Ex12）→ 换成 `lines` + `end_label`，
-    短的那家前段留 null、线从它自己的首月起画。
+  · 各线**起点相同** → 可以留 `lines_endlabels`；
+  · 各线**起点不同** → 换成 `lines` + `end_label`，短的那家前段留 null、
+    线从它自己的首月起画。
+
+⚠ 这里**不列图号**。上一版列过（「起点相同：Ex9 / Ex13」「起点不同：Ex4 / Ex5 / …」），
+而 Schwab 一接进客户现金那两张，Ex9 / Ex13 当场从上一档掉到下一档，清单原地作废 ——
+分档是 `plan()` 按当月数据判的，判决只存在于 payload 的 `kind` 上，任何一份手抄的
+清单都只是它某一个月的快照。要看现在谁是谁，读 payload，不要读这段注释。
 
 **不为了迁就短的那条去砍长的那条**：Schwab 的月末融资余额只有 2025-01 起，若照旧按
 「各线都有值的连续末段」取窗口，IBKR 那条 2016-01 起的 125 个月就被砍成 17 个月 ——
@@ -302,6 +307,102 @@ def _hood_darts_until():
 
 
 HOOD_DARTS_UNTIL = _hood_darts_until()
+
+
+# ── 跨页引用：另一页某张图的编号 / 次轴口径，一律从那一页**已生成的 payload** 现读 ──
+# 写死跨页编号已经错过一次（2026-08-19 抓到）：ibkr 页把原 Exhibit 14 并进 Ex5、其后
+# 各图顺次前移一号，本页三处「IBKR 单页 Exhibit 18」就从那条 Total client DARTs 曲线
+# 指到了那一页的 13 行核对表上 —— 读者跳过去看到的既没有 2025-01 断点线、也没有
+# cleared / non-cleared 拆分。别人页上的编号是**那一页的排版产物**，不是数据，
+# 任何写死都只是把过期时间往后推；本页的编号早已由 _seq 现算，跨页那半边也该一样。
+# 能这么读是因为 monthly_run.py 的 build_cross() 排在 TICKERS 之后：本页构建时
+# data/<page>.js 一定是本轮刚生成的。读不到 / 匹配不上就返回 None，调用处退回
+# 不带编号的说法 —— 护栏不该成为本页停更的新理由（同 _sync_lpla / _hood_darts_until）。
+_PAGE_CACHE = {}
+
+
+def _page(page):
+    """另一页的 payload dict（读 data/<page>.js，只读不写），读不到返回 {}。"""
+    if page not in _PAGE_CACHE:
+        got = {}
+        fp = os.path.join(ROOT, 'data', f'{page}.js')
+        if os.path.exists(fp):
+            try:
+                txt = open(fp, encoding='utf-8').read()
+                got = json.loads(txt[txt.index('{'):txt.rindex('}') + 1])
+            except (ValueError, OSError):
+                got = {}
+        _PAGE_CACHE[page] = got if isinstance(got, dict) else {}
+    return _PAGE_CACHE[page]
+
+
+def _xpage(page, needle):
+    """另一页上标题含 needle 的那张图，返回 exhibit dict（含 'n'）；没有则 None。
+
+    按**标题**认图而不是按编号：标题是那张图画的东西（改了标题就是换了张图，
+    引用本来也该跟着改），编号只是它今天排在第几位。
+    """
+    # 两条都要防：
+    #  · 热力矩阵常与同名的时序图重名（各单票页的「年化有机增长率」就有两张：柱图 +
+    #    月 x 年矩阵）—— 排掉它，否则唯一性永远不成立、整句静默消失；
+    #  · 同一个词组会出现在**别的图**的 GS 式长标题里（ibkr 的 Exhibit 17 标题里就
+    #    嵌着 "implied cleared DARTs"），所以先按**标题开头**认，认不到再退回子串。
+    live = [e for e in _page(page).get('exhibits', [])
+            if e.get('kind') not in ('heat_matrix',)]
+    nd = needle.lower()
+    for pick in (lambda t: t.startswith(nd), lambda t: nd in t):
+        hit = [e for e in live if pick(str(e.get('title') or '').lower())]
+        if len(hit) == 1:
+            return hit[0]
+        if hit:
+            break
+    return None
+
+
+def _xnum(page, needle):
+    """另一页上那张图的 Exhibit 编号（int），认不出来返回 None。"""
+    e = _xpage(page, needle)
+    return e.get('n') if e else None
+
+
+def _xref(page_label, nums, fallback):
+    """「见 <page_label> Exhibit a/b」——编号有几个印几个，一个都没有就印 fallback。"""
+    got = [str(n) for n in nums if n]
+    return f'{page_label} Exhibit {"/".join(got)}' if got else fallback
+
+
+def _x2_caliber(page, needle):
+    """另一页上那张图的**次轴**口径：(编号, 'roll' | 'mono' | 'none', 次轴原标签)。
+
+    判据是那一页 payload 里 `ylab2` 的原文（滚动口径全站一律写成 "12M roll"），
+    没有 `ylab2` 就是**根本没有次轴** —— 这两种情况必须分开：本页从前把它们一起
+    当成「次轴是滚动口径」写死了一句，而 /schw/ 两样都不是。认不出图返回 (None, …)。
+    """
+    e = _xpage(page, needle)
+    if e is None:
+        return None, 'unknown', ''
+    y2 = str(e.get('ylab2') or '')
+    if not y2:
+        return e.get('n'), 'none', ''
+    return e.get('n'), ('roll' if re.search('roll|滚动', y2, re.I) else 'mono'), y2
+
+
+def _roll_axes(page):
+    """另一页上「同比 + 滚动」的坐标轴都挂在哪几张图上（编号，升序）。
+
+    判据是 payload 里 `ylab` / `ylab2` 的原文（滚动口径全站一律写 "12M roll(ing)"）——
+    两个字段都要看：lpla / hood 把它放在次轴标签里，ibkr 有一张是主轴。
+    这是本页唯一能对「那几页到底改了没有」下判断的证据；写死一句「各单票页都改了」
+    会被 /schw/ 当场证伪（那一页本轮反而把滚动口径取消了）。
+    """
+    out = []
+    for e in _page(page).get('exhibits', []):
+        for k in ('ylab', 'ylab2'):
+            v = str(e.get(k) or '')
+            if re.search('roll|滚动', v, re.I) and re.search('y/y|yoy|同比', v, re.I):
+                out.append(e.get('n'))
+                break
+    return sorted(n for n in out if n)
 
 
 def _hit(idx, events):
@@ -682,6 +783,56 @@ def plan(items):
     return pd.period_range(lo, LATEST, freq='M'), ('lines_endlabels' if dense else 'lines'), dense
 
 
+KIND_MIX = '@@KINDMIX@@'          # win_note 里的占位符，建完 ex 之后由下面这个函数换掉
+
+
+def _fill_kind_mix(exhibits):
+    """把 win_note 留下的 KIND_MIX 占位符换成**现数出来**的图型清单。
+
+    ⚠ 这里原先有一道自称「硬拦残留」的检查：先 replace、再扫残留、扫到就 raise。
+    replace 在前，残留恒为空，那个 raise **永远不可能触发** —— 一道只提供安全感的
+    死代码。而它宣称要防的两条漏法它一条都拦不住：占位符落在 exhibits 之外
+    （summary / notes / table / brief），或某张图在本函数跑完之后才 append。
+    所以现在分成两头，各拦各的：
+      · 这里只断言「至少有一张图真的用到了它」—— 一张都没用到，说明 win_note 已经
+        不放这个占位符了，这段回填连同它生成的那句话都该跟着删，而不是静默空转；
+      · 真正的兜底在写盘前扫**整个 payload 的序列化文本**（_assert_no_placeholder），
+        exhibits 之外、以及本函数之后追加的图，都在那一关上。
+    """
+    dense = sorted(e['n'] for e in exhibits if e.get('kind') == 'lines_endlabels')
+    txt = (f'（本页 {len(exhibits)} 张图里用后者的只有 Exhibit {_join_n(dense)}）' if dense
+           else f'（本页 {len(exhibits)} 张图里现在一张都没有用后者的）')
+    hit = [e['n'] for e in exhibits if KIND_MIX in (e.get('note') or '')]
+    if not hit:
+        raise SystemExit('KIND_MIX 占位符没有任何图用到 —— 这段回填已是死代码，'
+                         '要么 win_note 忘了放占位符，要么那句话该连同本函数一起删。')
+    for e in exhibits:
+        if KIND_MIX in (e.get('note') or ''):
+            e['note'] = e['note'].replace(KIND_MIX, txt)
+
+
+#: 占位符的形状：@@NAME@@（本页）与 ⟨nav:…⟩（cme 那套，将来移植过来时同样接得住）。
+#: 判据是**形状**不是名单 —— 按名单扫，下一个人新加的占位符不在名单里就又漏出去了。
+_PLACEHOLDER_RE = re.compile(r'@@[A-Z0-9_]+@@|⟨nav:[^⟩]*⟩')
+
+
+def _assert_no_placeholder(obj):
+    """写盘前扫整个 payload 的序列化文本，任何没回填的占位符一律停机。
+
+    占位符是空头支票：回填不到时页面照常出，只是图注里多出一串乱码，
+    verify_pages / payload_guard / visual_qa 没有一处认得它 —— 典型的「不出声的失败」。
+    这一关放在序列化之后，所以 exhibits / notes / summary / table / brief / footer
+    一视同仁，谁也躲不过去。
+    """
+    left = sorted(set(_PLACEHOLDER_RE.findall(json.dumps(obj, ensure_ascii=False))))
+    if left:
+        raise SystemExit(f'payload 里还留着没回填的占位符 {left} —— 不许写盘。')
+
+
+def _join_n(ns):
+    return '、'.join(str(n) for n in ns)
+
+
 def win_note(idx, kind, late, nser=0):
     """窗口与图型的说明。左端为什么在这里、谁的线前段是空的，逐条现算。"""
     s = (f'<b>窗口 {mlab(idx[0])}–{mlab(idx[-1])}（{len(idx)} 个月）= 本图各条线合起来'
@@ -702,10 +853,16 @@ def win_note(idx, kind, late, nser=0):
                   f'即全轴 {len(idx)} 期里的第 {(full_at - idx[0]).n + 1} 期）—— '
                   '左段的「谁高谁低」不成立，那里根本没有可比的对象。')
     if kind == 'lines':
-        s += ('本图型是 <code>lines</code>（折线断笔 + 末点标数值）而不是本页多数图用的 '
-              '<code>lines_endlabels</code>：后者属平滑图型，整条数组交给 Catmull-Rom 插值、'
-              '两端无条件取首末值标数字，序列里有一个 null 就画出假线并抛异常。'
-              '要保住起点不同的线，只能换图型 —— 换回去就得把长的那条砍到短的那条的起点。')
+        # 「本页多数图用 lines_endlabels」这句写死的量词本轮当场作废：Ex9 / Ex13 接进
+        # Schwab 之后也转成了 lines，全页 16 张图里只剩 1 张用 lines_endlabels ——
+        # 也就是说每张 lines 图的图注都在拿一句被同一页证伪的话解释自己。占位符在
+        # 全部 exhibit 建完之后由 _fill_kind_mix() 换成现算的清单（那时才数得出来），
+        # 没换掉就硬失败，不让占位符流到页面上。
+        s += ('本图型是 <code>lines</code>（折线断笔 + 末点标数值）而不是 '
+              '<code>lines_endlabels</code>' + KIND_MIX
+              + '：后者属平滑图型，整条数组交给 Catmull-Rom 插值、'
+                '两端无条件取首末值标数字，序列里有一个 null 就画出假线并抛异常。'
+                '要保住起点不同的线，只能换图型 —— 换回去就得把长的那条砍到短的那条的起点。')
     return s
 
 
@@ -754,6 +911,72 @@ def stock_pair(cname, idx):
             'cur_m': float(a.iloc[-1]), 'cur_r': float(b.iloc[-1])}
 
 
+def org_split_txt(idx, main_t, peer_ts):
+    """为什么把某一家的有机增速单独拆一张图：各家区间 + 同轴会挤成什么样，全部现算。
+
+    ⚠ 这一段是本页两句假话的旧址，而且两句都是被**同一页自己印出来的数字**证伪的：
+      · Exhibit N_ORG_HOOD 的图注写「Robinhood 这条线在 6–64% 之间，与 Schwab / LPL
+        的 4.8% / 4.3% 差一个量级」—— 拿一条线的**整段区间**去比另两家的**当期单点
+        读数**，量纲本来就不对等；而它自带的下限 6.3% 只有 4.8% 的 1.3 倍，
+        离「一个量级」差得远。
+      · 页尾写「与它们同轴会把 Schwab 与 LPL 压成贴零的一条带」—— 真按三条共用的那根轴
+        算，LPL 那条带占了四成轴高、上沿落在四成多的位置，那不叫「贴零」。
+    所以两处合并成这一份现算：先对齐到同一批月份取各家区间，再按共用轴（各家 min–max
+    的并集）算出每条带各占多少轴高。轴一变句子跟着变，页面上也不再有第二份要人肉同步的
+    说法。返回 (区间句, 挤压句)，挤压句以「。」开头，接得上前一句。
+    """
+    a = df.get(f'{main_t}_org')
+    if a is None or main_t not in HAS:
+        return '', ''
+    keep = [p for p in idx if np.isfinite(a.loc[p])]
+    if not keep:
+        return '', ''
+    rng, cov = {}, {}
+    for t in [main_t] + list(peer_ts):
+        s = df.get(f'{t}_org')
+        if s is None or t not in HAS:
+            continue
+        k = [p for p in keep if np.isfinite(s.loc[p])]
+        if k:
+            v = s.loc[k].astype(float)
+            rng[t] = (float(v.min()), float(v.max()))
+            cov[t] = len(k)                 # 这一家在这批月份里实际有几个月有值
+    if main_t not in rng:
+        return '', ''
+    peers = [t for t in peer_ts if t in rng]
+    # 月份数写出来，缺月的那一家单独标注 —— 不标的话「同期」三个字会在某一家出现缺口
+    # 的那个月悄悄变成半真：区间是在更少的月份上取的，读者却以为三家同一批。
+    short = lambda t: '' if cov[t] == len(keep) else f'（其中 {cov[t]} 个月有值）'
+    txt = (f'{NAME[main_t]} 这条线在同一批月份（{mlab(keep[0])}–{mlab(keep[-1])}，'
+           f'{len(keep)} 个月）上走在 '
+           f'{rng[main_t][0]:.0f}% 到 {rng[main_t][1]:.0f}% 之间')
+    alo = min(v[0] for v in rng.values())
+    ahi = max(v[1] for v in rng.values())
+    if not peers or ahi - alo <= 0:
+        return txt, ''
+    txt += ('，同期 '
+            + '、'.join(f'{NAME[t]} {rng[t][0]:.0f}% 到 {rng[t][1]:.0f}%{short(t)}' for t in peers))
+    sq = (f'。这几条画在同一根轴上，轴要从 {alo:.0f}% 拉到 {ahi:.0f}%：'
+          + '、'.join(f'{NAME[t]} 整条带只剩轴高的 '
+                      f'{(rng[t][1] - rng[t][0]) / (ahi - alo) * 100:.0f}%'
+                      f'（上沿落在 {(rng[t][1] - alo) / (ahi - alo) * 100:.0f}% 处）'
+                      for t in peers)
+          + ' —— 形状读不出来了，这才是拆图的理由')
+    return txt, sq
+
+
+def _xref_items(chart_items, inc):
+    """把一张图的 `sr()` 入参 + 它**实际入图**的公司名，变成 org_*_note 要的 (名, ticker)。
+
+    图注里凡是「本图这几家在别处如何如何」的句子，名单只能从这张图自己推 ——
+    手写一份平行的名单，就是上一轮 Exhibit N_ORG 漏掉 Robinhood 的那种错的模具：
+    图上加一条线、注释里的名单不会跟，而且没有任何东西会报错。
+    `inc` 里是 sr() 现算出来的**入图**公司名（未入图的另有 firms_note 交代），
+    顺序按 chart_items，与图例顺序一致。
+    """
+    return [(NAME[t], t) for t, _c, _l in chart_items if t in HAS and NAME[t] in inc]
+
+
 def org_caliber_note(items, idx):
     """有机增速图的口径说明：画的是**单月年化**水平值，滚动口径的读数在这里给出。
 
@@ -776,14 +999,76 @@ def org_caliber_note(items, idx):
                     f'相邻月最大跳变 {jump(A):.1f}pp vs {jump(B):.1f}pp）')
     if not rows:
         return ''
-    return ('<b>口径：本图画的是「当月净流入 x 12」的<u>单月</u>年化增速</b>，'
-            '与各单票页柱子的口径一致（GS LPLA 的流量口径规矩）。'
+    # 这里原来还有半句「与各单票页柱子的口径一致」——「各单票页」又是一句没人现算的
+    # 全称断言（本页成员里 /ibkr/ 根本没有这张图，将来谁加一张别的口径也不会有东西报错）。
+    # 整句删掉而不是改写：紧跟着的 org_xref_txt() 本来就把每一页逐页点名、把轴标签
+    # 原样引出来，删了读者一个字的真信息都不损失，却少了一句要人肉维护的断言。
+    return ('<b>口径：本图画的是「当月净流入 x 12」的<u>单月</u>年化增速</b>'
+            '（GS LPLA 的流量口径规矩）。'
             '它把一个月的流量乘 12，所以本身是条噪声很大的线；'
             '真要读趋势请看<b>滚动 12 个月有机增速</b>（滚动 12 个月净流入 ÷ 12 个月前的'
             '月末资产 —— 注意这是分子分母各自滚动再相除，不是把 12 个月的比率平均，'
             '后者对比率没有意义）。两种口径的当期读数与波动逐家并排：'
             + '；'.join(rows)
-            + '。各单票页 Exhibit 3/4 的<b>次轴</b>画的正是滚动口径的同比。')
+            + '。' + org_xref_txt(items))
+
+
+# 单票页上「年化有机增长率」那张图的标题，全站一致；按标题认图，不按编号。
+ORG_CHART_TITLE = 'Annualised organic growth rate'
+
+
+#: org_xref_txt() 每调用一次登记一条 (问了谁, 点到名的, 页面在但认不出图的)。
+#: 抬头与枚举同源，所以句子永远自洽；会静默变假的只剩「有人被丢出句子」，那一条在
+#: 下面 _ORGX_MISS 处停机。
+ORGX_LOG: list = []
+
+
+def org_xref_txt(items):
+    """点名的这几家在**它们各自单票页**上同名那张图的编号与次轴口径，逐家现读那一页。
+
+    ⚠ 这半句翻过两次车，两次都是「抬头的外延比枚举宽」：
+      1. 从前写死成「各单票页 Exhibit 3/4 的<b>次轴</b>画的正是滚动口径的同比」，
+         编号与口径两样都错 —— /schw/ 的 Exhibit 3 是季度柱图（`qtr_bar`）没有次轴，
+         它那张年化有机增长率的次轴印的是「pp y/y (单月)」。
+      2. 改成逐家现读之后，抬头仍留着「**各单票页**同名那张图的次轴并不都是同一种
+         口径」，而 items 只有**本图画了的**那几家：Exhibit N_ORG 因此只枚举了
+         Schwab + LPL，漏掉同样挂滚动次轴的 Robinhood，被同一页往下滚两屏的
+         notes（一模一样的抬头、枚举了三家）当场证伪。
+
+    所以抬头**不再声称任何比 items 更宽的范围**：它就是把点到名的那几家原样念出来，
+    名单与下面的枚举从同一份 buckets 生成 —— 少一家多一家在结构上不可能发生。
+    真正还能静默出错的只剩一种：某一家在自己那页上认不出这张图，被丢出句子而
+    页面照常出。那一条不在这里兜，在模块尾部按「那一页在不在」分档停机。
+    """
+    buckets = {'roll': [], 'mono': [], 'none': []}
+    named, missing = [], []
+    for name, t in items:
+        n, cal, y2 = _x2_caliber(t, ORG_CHART_TITLE)
+        if cal not in buckets:                      # 'unknown' —— 那一页上认不出这张图
+            missing.append((name, t))
+            continue
+        buckets[cal].append(f'{name} 单页 Exhibit {n}' if n else f'{name} 单页同名那张图')
+        if y2:
+            buckets[cal][-1] += f'（次轴「{y2}」）'
+        named.append(name)
+    ORGX_LOG.append((tuple(nm for nm, _t in items), tuple(named), tuple(missing)))
+    if not named:
+        return ''
+    parts = []
+    if buckets['roll']:
+        parts.append('画滚动口径同比的是 ' + '、'.join(buckets['roll']))
+    if buckets['mono']:
+        parts.append('仍是单月口径的是 ' + '、'.join(buckets['mono']))
+    if buckets['none']:
+        parts.append('没有次轴的是 ' + '、'.join(buckets['none']))
+    for _nm, _t in items:
+        XREF_LOG.append((f'{_t}:{ORG_CHART_TITLE}', _xnum(_t, ORG_CHART_TITLE)))
+    # 抬头点名 = named（下面枚举到的那几家），不多不少；「并不都是同一种口径」只在
+    # buckets 真的分出两档以上时才说，那时它按构造为真。
+    return ('、'.join(named) + ' 在单票页上同名那张图的<b>次轴</b>'
+            + ('并不都是同一种口径，跨页核数前先看清是哪一种：' if len(parts) > 1
+               else '口径（现读那一页的轴标签）：')
+            + '；'.join(parts) + '。')
 
 
 def stock_caliber_note(items, idx, lead=''):
@@ -945,7 +1230,8 @@ def chg(a, b, mode, d, kind):
 
 
 def pctile_cell(s):
-    """3Y %ile 单元格。判据与全部 14 个生成器共用 build/pctile.py，本页不自己写。
+    """3Y %ile 单元格。判据与全站共用 build/pctile.py，本页不自己写（数「几个生成器」
+    这种量随建页数漂，写在图注里迟早过期 —— 只说共用哪一份）。
 
     旧实现是「36 个月里 ≥90% 月环比不降就留空」的代理判据，拦不住「上下波动但分位
     常年钉 100」的行（Schwab margin balances、IBKR client credits、Robinhood margin
@@ -962,7 +1248,7 @@ def _ser(s):
 # ── implied cleared DARTs 对披露总量的覆盖率：现算，不写死 ─────────────────
 # 从前这里写死「约为本图数值的 85%」。那个 85% 是按旧的 17 个月窗口（Jan-25 起）调出来
 # 的，窗口放宽到 125 个月之后它在区间里是 85%–93%；而这句话本身还点名要读者去对照
-# IBKR 单页 Exhibit 4/18 —— 那一页的图注是**现算**的，印的正是「85%–93%（中位 89%）」。
+# IBKR 单页那两张 DARTs 图 —— 那一页的图注是**现算**的，印的正是「85%–93%（中位 89%）」。
 # 于是两页对同一个量给出两种说法。推导式与 build/ibkr.py 的 cleared_all 逐字相同
 # （年化人均 cleared DART ÷ 252 × 期初期末账户均值），序列也取 IBKR 的完整历史
 # （RAW 未截到共同最新月），这样两页的区间恒等，不会因为本页截断而再次分叉。
@@ -984,6 +1270,18 @@ CLEARED_TXT_SUM = (
     f'约为此值的 {float(_cv.loc[LATEST]):.0f}%（{mlab(LATEST)} 当期读数；'
     f'全区间 {CLEARED_COV[0]:.0f}%–{CLEARED_COV[2]:.0f}%，中位 {CLEARED_COV[1]:.0f}%）'
     if CLEARED_COV and LATEST in _cv.index else '低于此值')
+
+# 这两张图在 IBKR 单页上的编号：现读那一页的 payload，按标题认图（见 _xnum 上方）。
+# 认不出来时整句退回不带编号的说法 —— 指错号比不给号更糟：读者会照着跳过去，
+# 看到一张画的根本不是这件事的图，而且不会怀疑是引用错了。
+IBKR_EX_CLEARED = _xnum('ibkr', 'Implied cleared DARTs')     # 推导的 cleared DARTs
+IBKR_EX_TOTAL = _xnum('ibkr', 'Total client DARTs')          # 公司披露的总量 + 断点线
+IBKR_XREF_BOTH = _xref('IBKR 单页', (IBKR_EX_CLEARED, IBKR_EX_TOTAL),
+                       'IBKR 单页那两张 DARTs 图（推导的 cleared DARTs 与披露总量）')
+IBKR_XREF_TOTAL = _xref('IBKR 单页', (IBKR_EX_TOTAL,),
+                        'IBKR 单页那张披露总量的图')
+XREF_LOG = [('ibkr:implied cleared DARTs', IBKR_EX_CLEARED),
+            ('ibkr:total client DARTs', IBKR_EX_TOTAL)]
 
 
 SUM_ROWS = [
@@ -1043,15 +1341,16 @@ summary = {
              'LPL 既不披露融资余额也不披露交易笔数、'
              'IBKR 不披露净新增资产（只披露净新增账户），故这些行只有披露该项的公司。'
              'Schwab client cash 是月报里 Transactional Sweep Cash 与 Total Money Market '
-             'Funds 两条月末余额之和（两条分量自 2025-01 起才有，见页脚）；'
+             f'Funds 两条月末余额之和（两条分量自 '
+             f'{mlab(_first("schw_cash")) if _first("schw_cash") else "—"} 起才有，见页脚）；'
              'IBKR client credits 不含货基，与另两家的水平值有系统性差异。'
              '比率类指标（年化有机增速、账户增速）的差异用 pp/bp，不用百分比变化；'
              'Robinhood DATs 官方单位为 mn，此处 x1,000 换成 k 与另两家同轴（核对表仍保留 mn 原始单位）。'
              'IBKR 那行是公司披露的 <b>Total Client DARTs</b>（含通过 IBKR 执行但不在 IBKR 清算的客户），'
              '与 Schwab / Robinhood 的客户总成交笔数同口径；公司另披露的 Cleared Avg. DART per Account '
-             f'推导出的 cleared DARTs {CLEARED_TXT_SUM}，见 IBKR 单页 Exhibit 4/18，两者不要混读。'
+             f'推导出的 cleared DARTs {CLEARED_TXT_SUM}，见 {IBKR_XREF_BOTH}，两者不要混读。'
              '3Y %ile = 当月读数在最近 36 个月里高于多少个百分比的观测。'
-             '判据同全站（<code>build/pctile.py</code>，14 个生成器共用一份）：'
+             '判据同全站（<code>build/pctile.py</code>，各页共用一份，本页不自己写）：'
              '把该行的分位在<b>近 24 个月里逐月回放</b>，若 ≥70% 的月份都钉在端点（100 或 0），'
              '这一列对这一行就没有区分度，留空。'
              + (f'本轮留空的是：{"、".join(PCT_BLANK)} —— 这几行的分位近两年几乎恒为 100，'
@@ -1339,17 +1638,25 @@ ex.append({
              + brk_note(_i5, SCHW_NNA_BRK + LPL_NNA_CAL_BRK,
                         tail='两家的剔除规则本来就各自不同，断点各标各的那条线'
                              '自己前后不可比的那个位置，不是说同图另一家也变了。')
-             + org_caliber_note([('Schwab', 'schw'), ('LPL', 'lpla')], _i5)
+             # 名单从**本图自己入图的那几家**推出来（inc5 由 sr() 现算），不手写。
+             # 手写的那份正是上一轮埋雷的地方：图注抬头说的是一个范围，作者手里的
+             # 枚举是另一个范围，中间没有任何东西对得上号。
+             + org_caliber_note(_xref_items(_IT5, inc5), _i5)
              + win_note(_i5, _k5, late5, len(s5))
              + '年化有机增速要用<b>上月末</b>资产做分母，所以每条线比它自己的资产序列'
                '晚一个月起画 —— 序列首月没有上月，那一格在定义上就不存在，不补。' + GATE),
 })
 
 # ── Exhibit N_ORG_HOOD：年化有机增速（Robinhood，另一个量级）──
+# 「为什么拆图」这句话在本页出现两次（本图图注 + 页尾 notes），所以只算一次、两处共用 ——
+# 上一轮两处各写各的，图注写「差一个量级」、页尾写「压成贴零的一条带」，两句互相不认识，
+# 也都跟同一页现算出来的区间对不上。
+_SPL_RNG = _SPL_SQ = ''
 if N_ORG_HOOD:
     _IT6H = [('hood', 'hood_org', 'Robinhood net deposits')]
     _i6h, _k6h, _d6h = plan(_IT6H)
     s6h, inc6h, exc6h, late6h = sr(_IT6H, _i6h, _d6h)
+    _SPL_RNG, _SPL_SQ = org_split_txt(_i6h, 'hood', ('schw', 'lpla'))
     ex.append({
         'n': N_ORG_HOOD, 'kind': _k6h, 'fmt': 'pct1', 'yfmt': 'pct0',
         'xlabels': xls(_i6h),
@@ -1359,17 +1666,14 @@ if N_ORG_HOOD:
         'series': s6h,
         **brks(_i6h, HOOD_ND_BRK),
         'note': ('口径与 Exhibit ' + str(N_ORG) + ' 完全相同（当月净流入 x 12 ÷ 上月末客户资产），'
-                 '<b>只是纵轴不同</b>：Robinhood 这条线在 '
-                 f'{min(v for v in s6h[0]["values"] if v is not None):.0f}–'
-                 f'{max(v for v in s6h[0]["values"] if v is not None):.0f}% 之间，'
-                 f'与 Schwab / LPL 的 {_v0("schw_org", 1)}% / {_v0("lpla_org", 1)}% 差一个量级，'
-                 '同轴画会把那两条压成一条贴零的带（这正是拆图的原因）。'
-                 '两张图的百分比可以直接比大小，但<b>不要把两张图的线形叠着看</b>。'
+                 '<b>只是纵轴不同</b>'
+                 + (f'：{_SPL_RNG}{_SPL_SQ}。' if _SPL_RNG else '。')
+                 + '两张图的百分比可以直接比大小，但<b>不要把两张图的线形叠着看</b>。'
                  'net deposits 是客户净转入（含现金与证券转入），与 Schwab 的 core NNA、'
                  'LPL 的 organic NNA 是同一个经济含义，但三家的剔除规则各自不同。'
                  + brk_note(_i6h, HOOD_ND_BRK,
                             tail='并入的流量不是有机获客，断点右侧与左侧不可直读。')
-                 + org_caliber_note([('Robinhood', 'hood')], _i6h)
+                 + org_caliber_note(_xref_items(_IT6H, inc6h), _i6h)
                  + win_note(_i6h, _k6h, late6h, len(s6h))
                  + f'左端 {mlab(_i6h[0])} 是 Robinhood 月度披露首月 '
                    f'{mlab(_first("hood_assets"))} 的下一个月（年化增速要用上月末资产做分母），'
@@ -1437,7 +1741,8 @@ ex.append({
                 f'{mlab(_schw_mgn0.index[0])} 为止，更早的月份公司就没有印过'
                 '（见 <code>fetch/schw.py</code> 的 <code>_DATS_MARGIN_FROM</code>）。'
                 '<b>本图不因此把另外两条一起砍掉</b> —— 从前的判法是「取各线都有值的连续末段」，'
-                '那会让 IBKR 这条 2016-01 起的线只剩十几个月，'
+                f'那会让 IBKR 这条 {mlab(_first("ibkr_margin"))} 起的线'
+                f'只剩 {len(_schw_mgn0)} 个月，'
                 '等于把一家的披露缺口转嫁成另一家的历史损失。' if len(_schw_mgn0) else '')
              + win_note(_i7, _k7, late7, len(s7)) + GATE),
 })
@@ -1532,6 +1837,11 @@ s9, inc9, exc9, late9 = sr(_IT9, _i9, _d9)
 _hd_seg = [p_ for p_ in _i9
            if HOOD_DARTS_UNTIL is not None and p_ <= HOOD_DARTS_UNTIL
            and 'hood_dats' in df.columns and np.isfinite(df['hood_dats'].loc[p_])]
+# 这条提示在 Robinhood 单页上挂在哪张图：同样按标题现读那一页的 payload，不写死编号。
+_HOOD_EX_DATS = _xnum('hood', 'Daily average trades by asset class')
+HOOD_XREF_DATS = _xref('Robinhood 单页', (_HOOD_EX_DATS,),
+                       'Robinhood 单页那张按资产类别拆的日均交易图')
+XREF_LOG.append(('hood:DATs by asset class', _HOOD_EX_DATS))
 _HOOD_DATS_CAL = (
     f'<b>口径提示（Robinhood 那条线内部）：</b>{mlab(HOOD_DARTS_UNTIL)} 及更早'
     f'（本图窗口内共 {len(_hd_seg)} 个月，{mlab(_hd_seg[0])}–{mlab(_hd_seg[-1])}）'
@@ -1539,7 +1849,7 @@ _HOOD_DATS_CAL = (
     '不含不产生收入的交易），之后才是 DATs。公司 2026-07 的 Q2\'26 Earnings Supplement '
     '才把这一节改名并重述历史，而重述只回溯到 Jan-25（equity 由 2.6 改成 3.3）—— '
     'Dec-24 及更早两种口径逐月逐位相同，所以两段接得上，但左段严格说是窄口径。'
-    '同一提示挂在 Robinhood 单页 Exhibit 11 与该页页尾；本页的月份直接从 '
+    f'同一提示挂在 {HOOD_XREF_DATS} 与该页页尾；本页的月份直接从 '
     '<code>build/hood.py</code> 的 <code>DARTS_UNTIL</code> 读，两页不会各写各的。'
     if _hd_seg else '')
 ex.append({
@@ -1556,20 +1866,21 @@ ex.append({
              '所以水平值只能当量级读，方向与拐点才是可比的信息。'
              '<b>这里取总量是为了与另两家的客户总成交笔数可比</b> —— IBKR 另按 '
              'Cleared Avg. DART per Account 推导过一条更窄的 implied cleared DARTs'
-             f'（见 IBKR 单页 Exhibit 4/18），{CLEARED_TXT}，两条线不要混读；'
+             f'（见 {IBKR_XREF_BOTH}），{CLEARED_TXT}，两条线不要混读；'
              '「cleared」修饰的是账户（IBKR 自清算的账户），不是订单。'
              + _HOOD_DATS_CAL
              + (f'<b>Schwab 那条只有 {mlab(df["schw_dats"].dropna().index[0])} 起</b>：'
                 'DATs 与月末融资余额是同一批新增列，自 2026-01 的月报才开始披露、'
                 '那一期的 13 个月滚动表只回溯到这里，更早的月份公司没有印过。'
-                '同 Exhibit ' + str(N_MGN) + '，不为它砍掉 IBKR 那条 2016-01 起的线。'
+                + f'同 Exhibit {N_MGN}，不为它砍掉 IBKR 那条 '
+                  f'{mlab(_first("ibkr_dats"))} 起的线。'
                 if has('schw_dats') else '')
              # 首页把「IBKR 2025-01 DARTs 口径变更」列为断点示例，本图却不画 —— 不解释
              # 就是又一处「两页说法不一致」。理由要写在图上，不是留给读者猜。
              # ⚠ 原来这里还有第二条理由「本图窗口正好从 Jan-25 起、断点落在第一期」，
              #   窗口放宽之后那句话当场变成假话（现在左边有九年可比的部分），已删。
              #   剩下的第一条理由本身就足够，而且它与窗口无关。
-             + '<b>关于 IBKR 单页那条 2025-01 断点：</b>它标在 IBKR 单页 Exhibit 18 上，'
+             + f'<b>关于 IBKR 单页那条 2025-01 断点：</b>它标在 {IBKR_XREF_TOTAL} 上，'
              '指的是 cleared / non-cleared 这个<b>拆分比例</b>在 2025 年跳了一档'
              '（该页原文：疑似口径 / 分类变更，未经公司确认），而本图画的是'
              '<b>披露总量</b>那条线 —— 总量本身没有换口径，所以本图不画这条线，改在这里写明。'
@@ -1631,6 +1942,21 @@ ex.append({
 _IT11 = [('schw', 'schw_mgn_pct', 'Schwab'),
          ('ibkr', 'ibkr_mgn_pct', 'IBKR'),
          ('hood', 'hood_mgn_pct', 'Robinhood')]
+# 「分母（客户资产）三家都比分子长」是句写死的全称断言，本页自己的数就否掉它：
+# 只有 Schwab 的分母真的更长（Sep-13 vs Jan-25），IBKR 与 Robinhood 的分子分母**同月**
+# 开始（都是各自序列的首月）。结论（卡起点的是分子）没错，错的是给出的理由 ——
+# 所以这里逐家现算两边的首月，比较的措辞也由数据挑，不写死。
+_MGN_ND = [(lg, _first(f'{_t}_assets'), _first(f'{_t}_margin')) for _t, _cn, lg in _IT11
+           if _t in HAS and _first(f'{_t}_margin') is not None]
+_MGN_LATE_DEN = [lg for lg, _a, _m in _MGN_ND if _a is None or _a > _m]
+_MGN_PCT_START_TXT = (
+    ('逐家比过分子（融资余额）与分母（客户资产）各自的首月：'
+     + '；'.join(f'{lg} 分母 {mlab(a) if a else "—"} / 分子 {mlab(m)}'
+                 for lg, a, m in _MGN_ND)
+     + ('，没有一家的分母晚于分子，所以卡住起点的一律是分子。'
+        if not _MGN_LATE_DEN else
+        f'，其中 {"、".join(_MGN_LATE_DEN)} 反过来是分母更晚，那几条由分母卡住起点。'))
+    if _MGN_ND else '')
 _i11, _k11, _d11 = plan(_IT11)
 s11, inc11, exc11, late11 = sr(_IT11, _i11, _d11)
 ex.append({
@@ -1646,11 +1972,8 @@ ex.append({
              '且 Schwab 的分子含 short credits，'
              '所以水平值有系统性偏差，趋势与相对位次才是要看的。'
              '<b>比率的可得区间是分子分母的交集</b>：本图三条线各自从「该家融资余额与'
-             '客户资产都已披露」的那个月起画 —— 分母（客户资产）三家都比分子长，'
-             f'所以卡住起点的一律是分子（Schwab '
-             f'{mlab(_schw_mgn0.index[0]) if len(_schw_mgn0) else "—"}、'
-             f'Robinhood {mlab(_first("hood_margin")) if _first("hood_margin") else "—"}、'
-             f'IBKR {mlab(_first("ibkr_margin")) if _first("ibkr_margin") else "—"}）。'
+             '客户资产都已披露」的那个月起画 —— '
+             + _MGN_PCT_START_TXT
              + win_note(_i11, _k11, late11, len(s11)) + GATE),
 })
 
@@ -1702,11 +2025,15 @@ ex.append({
 })
 
 # ── Exhibit N_HEAT：各家客户资产 y/y 的 月 x 年 热力矩阵（编号见 N_HEAT）──
+HEAT_YEARS = 7                   # 热力矩阵的行数上限：**排版**上限（7 x 12 的格子）
+
+
 def heat(n, t, title, extra=''):
     s = df[f'{t}_yoy'].dropna()
     if not len(s):
         return None
-    yrs = sorted({p.year for p in s.index})[-7:]
+    all_yrs = sorted({p.year for p in s.index})
+    yrs = all_yrs[-HEAT_YEARS:]
     matrix = []
     for y in yrs:
         row = []
@@ -1723,6 +2050,22 @@ def heat(n, t, title, extra=''):
                  '格内是<b>单月同比</b>（本月末 ÷ 去年同月末 − 1）—— 热力矩阵不换成滚动口径'
                  '是刻意的：逐格的月度波动与季节形状就是这张图的题眼，平滑掉等于把它'
                  '唯一的信息抹掉。'
+                 # 行数是**排版**上限截出来的，必须逐表说清 —— 本页四张矩阵里三张被截、
+                 # 一张没被截，而没被截的那张图注里写着「行数少于另外三家」。只写那一句、
+                 # 不写这一句，读者会把三张被截的表读成「这三家的数据就是从那一年开始的」，
+                 # 也就是把排版边界当成了数据边界（本页页尾反复点名的那种错）。
+                 + (f'<b>本表只画最近 {len(yrs)} 年（{yrs[0]}–{yrs[-1]}）</b>：'
+                    f'这条序列的单月同比自 {mlab(s.index[0])} 起就有、横跨 {len(all_yrs)} 个年份，'
+                    f'更早的 {len(all_yrs) - len(yrs)} 年被热力矩阵 {HEAT_YEARS} 年的行数上限'
+                    '截掉了 —— 那是<b>排版上限，不是数据边界</b>（见页尾「窗口」一节）。'
+                    # ⚠ 这里原来还写着「本页仅有的两个写死窗口之一」。那是句数数的全称
+                    # 断言，被同一页当场否掉：页尾自己就写着汇总表 3Y %ile 回放近 24 个月、
+                    # 判据窗口 36 个月，同样是写死的。数总数这件事没人算得动，也没有任何
+                    # 东西会在它变假时报错 —— 整个括号里的计数删掉，只留一个指路，
+                    # 读者要的信息（这是排版上限）上一句已经给足了。
+                    if len(all_yrs) > len(yrs) else
+                    f'<b>本表把这条序列的单月同比全部 {len(all_yrs)} 个年份都画上了</b>'
+                    f'（热力矩阵的行数上限是 {HEAT_YEARS} 年，这条没到）。')
                  + extra + GATE),
     }
 
@@ -1741,8 +2084,7 @@ for _t, _title, _extra in [
     ('hood', 'Robinhood platform assets y/y — 单月同比 (%)',
      f'Robinhood 的月度披露自 {mlab(_HOOD_F)} 起（举证见 Exhibit {N_REB23} 的图注），'
      f'y/y 要满 12 个月才有分母，所以最早一格是 '
-     f'{mlab(df["hood_yoy"].dropna().index[0]) if has("hood_yoy") else "—"}，'
-     '矩阵行数少于另外三家。'),
+     f'{mlab(df["hood_yoy"].dropna().index[0]) if has("hood_yoy") else "—"}。'),
 ]:
     if _t not in N_HEAT:
         continue
@@ -1752,6 +2094,8 @@ for _t, _title, _extra in [
 
 # 编号是图注的骨架：断一个号，「见 Exhibit N」就集体指错，而这种错人眼扫不出来。
 # 这一条是**结构**不变量（只随成员与序列有无变化，不随窗口滚动），所以在这里硬拦。
+_fill_kind_mix(ex)
+
 _NS = [1] + [e['n'] for e in ex] + [N_TABLE]
 if _NS != list(range(1, len(_NS) + 1)):
     raise SystemExit(f'Exhibit 编号不连续：{_NS} —— 有图被跳过而编号没跟着回收')
@@ -1792,7 +2136,11 @@ if LP_RANK_TXT:
 
 
 # ────────────────────────────── 核对表 ──────────────────────────────
-T13 = df.iloc[-13:]
+#: 核对表的窗口：跨公司逐月对数用，长了没人看。这是本页少数几个**写死**的窗口之一，
+#: 所以只许在这里写死一次 —— 表标题与页尾「窗口」那一节都从这个名字取，
+#: 从前它在三个地方各抄了一遍 13，改一处另两处不会跟。
+TBL_MONTHS = 13
+T13 = df.iloc[-TBL_MONTHS:]
 
 
 def tcell(v, d=1):
@@ -1816,7 +2164,8 @@ TCOLS = [c for c in TCOLS if c[0] in HAS and c[3] in df.columns and has(c[3])]
 
 table = {
     'n': N_TABLE,
-    'title': f'近 13 个月跨公司核对表（各家官方原始单位，未换算，统一截至 {mlab(LATEST)}）',
+    'title': (f'近 {TBL_MONTHS} 个月跨公司核对表'
+              f'（各家官方原始单位，未换算，统一截至 {mlab(LATEST)}）'),
     'idx': '月份',
     'cols': [[c[1], c[2]] for c in TCOLS],
     'rows': [dict({'xl': mlab(p)},
@@ -1836,25 +2185,105 @@ def _exl(ns):
 # 「本页各图的左端」从建好的 payload 现读。写死「本页一律从 2016-01 起」这类**全称断言**
 # 是本轮抓到的一类错：左端既然逐图现算，各图就必然不齐（本轮 Jun-14 / Sep-14 / Feb-16 /
 # Jan-16 / Jan-17 / Jan-21 / Feb-21 七个），而抬头那句话一个字没跟。
+#
+# ⚠ 但「现算」只算了**一半**就照样出假话：上一版 `if not _e.get('xlabels'): continue`
+# 把四张热力矩阵整个跳过了，而句子的抬头写的是「本页**各图**的左端一共 7 个」——
+# 页面上明明有 16 张图，句子只点了 12 张，另外四张自己的图注还写着「本表只画最近
+# 7 年（2020–2026）」。所以这里改成**穷举分档**：按月推进的走 xlabels，按年推进的
+# （热力矩阵，一行一年）走 rows，两档加起来必须正好等于 len(ex)，对不上就停机 ——
+# 将来谁加了第三种时间轴，是构建失败，不是页面上多一句没人发现的假话。
 _LEFT: dict = {}
+_LEFT_ROWS: dict = {}
 for _e in ex:
-    if not _e.get('xlabels'):
-        continue
-    _LEFT.setdefault(
-        pd.Period(datetime.datetime.strptime(_e['xlabels'][0], '%b-%y'), 'M'), []
-    ).append(_e['n'])
+    if _e.get('xlabels'):
+        _LEFT.setdefault(
+            pd.Period(datetime.datetime.strptime(_e['xlabels'][0], '%b-%y'), 'M'), []
+        ).append(_e['n'])
+    elif _e.get('rows'):
+        _LEFT_ROWS.setdefault((str(_e['rows'][0]), str(_e['rows'][-1])), []).append(_e['n'])
+_LEFT_N = sum(len(_ns) for _ns in _LEFT.values())
+_ROWS_N = sum(len(_ns) for _ns in _LEFT_ROWS.values())
+if _LEFT_N + _ROWS_N != len(ex):
+    raise SystemExit(
+        f'页尾「窗口」那一节要逐图交代左端，但本页 {len(ex)} 张图里只有 {_LEFT_N} 张有 '
+        f'xlabels、{_ROWS_N} 张有 rows，剩下的 '
+        f'{sorted({e["n"] for e in ex} - {n for v in _LEFT.values() for n in v} - {n for v in _LEFT_ROWS.values() for n in v})} '
+        f'两档都不属于 —— 那句话会把它们漏在外面。先给这一档写好措辞再放行。')
+# 页尾那句「行数上限写在它们各自的图注里」是个全称断言，所以在这里坐实：每一张矩阵的
+# 图注都必须真的写着那个上限，写漏一张就停机。heat() 今天两个分支都写了 —— 但那是今天，
+# 这道断言是替下一个改 heat() 的人记着的。
+_HEAT_NO_CAP = sorted(_e['n'] for _e in ex if _e.get('kind') == 'heat_matrix'
+                      and f'{HEAT_YEARS} 年' not in (_e.get('note') or ''))
+if _HEAT_NO_CAP:
+    raise SystemExit(f'页尾说热力矩阵的行数上限写在各自的图注里，但 Exhibit {_HEAT_NO_CAP} '
+                     f'的图注里找不到「{HEAT_YEARS} 年」—— 要么补上，要么改掉页尾那句话。')
+
+# GATE 那句「本页所有图统一截到共同最新月 X」印在每一张图的图注末尾（本轮 16 遍），
+# 是本页最大的一句全称断言，却一直没有任何东西看着它。今天为真，但为真是**巧合的
+# 副产品**：谁给某张图单独换一个右端（或让矩阵多画一格），16 处会一起变成假话而
+# 页面照常出。所以这里逐图核右端 —— 按月推进的看 xlabels 末项，按年推进的看最后一行
+# 有没有格子越过共同最新月的那个月。
+#
+# ⚠ 这个循环里的临时变量**不许叫 `_v`**：本文件在「口径与方法说明」开头把 `_v` 绑给了
+# 取当期读数的 _v0，在这里覆盖掉它，下面 headline 那几行就报 'NoneType' is not callable
+# （同一个坑上面 _org_now 那段已经踩过一次，注释还在）。
+_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+_PAST_GATE = []
+for _ge in ex:
+    if _ge.get('xlabels'):
+        if _ge['xlabels'][-1] != mlab(LATEST):
+            _PAST_GATE.append((_ge['n'], _ge['xlabels'][-1]))
+    elif _ge.get('matrix'):
+        _gyr = int(_ge['rows'][-1])
+        for _gj, _gcell in enumerate(_ge['matrix'][-1]):
+            if _gcell is not None and (_gyr, _gj + 1) > (LATEST.year, LATEST.month):
+                _PAST_GATE.append((_ge['n'], f'{_MON[_gj]}-{_gyr}'))
+if _PAST_GATE:
+    raise SystemExit(f'每张图的图注末尾都印着「本页所有图统一截到共同最新月 {mlab(LATEST)}」，'
+                     f'但这几处越过去了：{_PAST_GATE} —— 那句话现在是假的。')
 _LEFT_MIN, _LEFT_MAX = (min(_LEFT), max(_LEFT)) if _LEFT else (LATEST, LATEST)
 _LEFT_TXT = '；'.join(f'{mlab(_p)} → Exhibit {_exl(sorted(_ns))}'
                       for _p, _ns in sorted(_LEFT.items()))
+_LEFT_ROWS_TXT = '；'.join(
+    f'{_a}–{_b} → Exhibit {_exl(sorted(_ns))}' if _a != _b else
+    f'{_a} → Exhibit {_exl(sorted(_ns))}'
+    for (_a, _b), _ns in sorted(_LEFT_ROWS.items()))
 
 # 「Schwab 那条线前段是空的」出现在哪几张图上 —— 同样现读，不手写编号。
 # 本轮 Exhibit N_CASH 新增了一条 2025-01 起的 Schwab 客户现金线，手写的那个三图清单
 # 当场就少一张；而 Exhibit N_CASHPCT 的 Schwab 反而是全图最长的一条（Jun-14 起），
 # 手写清单也分不出这个差别。
-_SCHW_LATE = sorted({_e['n'] for _e in ex
-                     for _s in _e.get('series', [])
-                     if _s['name'].startswith('Schwab') and _s.get('values')
-                     and _s['values'][0] is None})
+#
+# ⚠ 只按「首值是 null」扫是**不够**的：那样扫出来的清单里混着 Exhibit N_ORG 的
+# Schwab core NNA —— 它的前段也空，但空的理由完全不同（core NNA 是 2018 年初才进
+# 官方滚动表的，见 fetch/schw.py 的 _CORE_NNA_FROM），而这段话讲的是「2026-01 那期
+# 一次新增的同一批列」。一句「Schwab 那条线在 Exhibit … 上只占右端 17 格」套到
+# core NNA 那张图上当场就假（它占 112 格）。所以按**首个有值月**分档：等于新增列
+# 那批的起点才进这句话，其余的另说，每一档的格数逐图现算、不套用别人的窗口长度。
+_SCHW_BATCH0 = _schw_mgn0.index[0] if len(_schw_mgn0) else None
+
+
+def _schw_gaps():
+    """→ (新增列那批, 其余), 每档是 [(图号, 该图上 Schwab 占的格数, 首个有值月), …]。"""
+    batch, other = [], []
+    for _e in ex:
+        for _s in _e.get('series') or []:
+            vs = _s.get('values') or []
+            if not _s['name'].startswith('Schwab') or not vs or vs[0] is not None:
+                continue
+            fin = [i for i, v in enumerate(vs) if v is not None]
+            if not fin:
+                continue
+            p0 = _e['xlabels'][fin[0]]
+            row = (_e['n'], len(vs) - fin[0], p0)
+            (batch if _SCHW_BATCH0 is not None and p0 == mlab(_SCHW_BATCH0)
+             else other).append(row)
+    return batch, other
+
+
+_SCHW_BATCH, _SCHW_OTHER = _schw_gaps()
+_SCHW_LATE = sorted(n for n, _c, _p in _SCHW_BATCH)
+_SCHW_CELLS = sorted({c for _n, c, _p in _SCHW_BATCH})
 
 
 # 「本页哪些图上真的有红色竖虚线」一律从建好的 payload 现读，不手写编号 ——
@@ -1865,6 +2294,12 @@ _NO_BRK = sorted({e['n'] for e in ex
 _SCHW_DRAWN = drawn_for(ex, SCHW_NNA_BRK)
 _HOOD_DRAWN = sorted(set(drawn_for(ex, HOOD_ND_BRK)) | set(drawn_for(ex, HOOD_CUST_BRK))
                      | set(drawn_for(ex, HOOD_TPA_BRK)))
+# 「它的年化净流入常年是另外两家的四到十倍」是句写死的量词，实测站不住：对齐到同一批
+# 月份之后，倍数对 Schwab 从负数到三位数、对 LPL 从 0.5 倍到二十几倍，落在「四到十倍」
+# 里的月份不到一半。改现算之后又踩了第二个坑：数字换成真的了，紧跟着的那句结论
+# （「与它们同轴会把 Schwab 与 LPL 压成贴零的一条带」）原样留着，于是用真数字给一句
+# 假话背书 —— LPL 那条带在共用轴上占了四成轴高。现在整段（区间 + 挤压）由
+# org_split_txt() 一处算出，图注与页尾共用同一份，见那个函数的 docstring。
 _HEAT_NS = sorted(N_HEAT.values())
 _others = [t for t in RAW if LATEST_EACH[t] != LATEST]
 
@@ -1892,13 +2327,31 @@ for _t in ('schw', 'lpla', 'hood'):
     if _og2:
         _ORG_ROWS.append(f'{NAME[_t]} 单月年化 {_og2[0]:.1f}% / 滚动 12 个月 {_og2[1]:.1f}%'
                          f'（差 {abs(_og2[0] - _og2[1]):.1f}pp）')
+#: 哪几个成员在**它自己的单票页**上真有这张同名的图 —— 现扫，不写死。
+#: 这里从前写死成 ('schw', 'lpla', 'hood')：今天恰好对（/ibkr/ 没有这张图），但哪天
+#: /ibkr/ 也加一张，页尾这句就会少点一家，而且没有任何东西会报错。名单一现算，
+#: org_xref_txt 的抬头（它只念自己点到的名）就跟着自动补齐。
+_ORG_XREF_TS = [_t for _t, *_ in MEMBERS if _t in HAS and _xnum(_t, ORG_CHART_TITLE)]
 ORG_MIX_TXT = (
     f'<b>有机增速图（Exhibit {N_ORG}'
     + (f' / {N_ORG_HOOD}' if N_ORG_HOOD else '')
-    + '）画的是<u>单月</u>年化水平值</b>（当月净流入 x 12 ÷ 上月末资产），'
-    '与各单票页柱子的口径一致；而各单票页那几张图的<b>次轴</b>画的是滚动口径的同比 —— '
-    '同一个指标在本页与单票页上以两种口径出现，所以这里把当期读数并排现算印出：'
+    + '）画的是<u>单月</u>年化水平值</b>（当月净流入 x 12 ÷ 上月末资产）；'
+    + org_xref_txt([(NAME[_t], _t) for _t in _ORG_XREF_TS])
+    + '同一个指标在本页与单票页上可能以两种口径出现，所以这里把当期读数并排现算印出：'
     + '；'.join(_ORG_ROWS) + '。' if _ORG_ROWS else '')
+
+# ── 护栏：org_xref_txt 点了名却在那一页上认不出图的，会被**静默丢出句子** ──────
+# 抬头与枚举同源，所以句子仍然自洽 —— 恰恰因此没人看得出少了一家，典型的「不出声的
+# 失败」。分两档处理，与本文件既有的跨页引用约定一致（见 _page 上方那段）：
+#   · 那一页的 data/<page>.js 根本不存在（还没构建）→ 退让，不停机；护栏不该成为
+#     本页停更的新理由，monthly_run 会在那一页就绪后重跑。
+#   · 那一页在、却认不出标题为 ORG_CHART_TITLE 的图 → 这是真断了（改标题 / 删图 /
+#     重名），停机，不许把一句少一家的话印出去。
+_ORGX_MISS = sorted({_nm for _a, _n, _m in ORGX_LOG for _nm, _t in _m if _page(_t)})
+if _ORGX_MISS:
+    raise SystemExit(
+        f'org_xref_txt：{_ORGX_MISS} 的单票页在，却认不出标题为「{ORG_CHART_TITLE}」的图 —— '
+        f'这几家会被静默丢出图注，页面照常出而读者少看一家。先修那一页的标题或本页的引用。')
 # ── 页尾口径说明里「为什么不换滚动口径」那一段的实测，现算 ──────────────────
 # 从前这里是一句写死的散文：「最硬的一条在 Exhibit N_ACCT：IBKR 账户数换成 12 个月
 # 均值同比之后，逐月标准差反而变大」。窗口从 25 个月放宽到全历史之后那句话翻了面
@@ -1932,6 +2385,22 @@ else:
         '所以本页保留点对点的理由只剩上面那条结构性的 —— 「实测更稳」这半句已经不成立，'
         '不要再拿它当论据。')
 
+# ── 「各单票页本轮都把流量类同比改成了滚动口径」—— 这句写死的全称断言被 /schw/ 当场
+#    证伪：那一页 notes 自己写着 12 个月滚动口径「已取消」，它现在一条滚动轴都没有。
+#    改成逐页现读那一页 payload 的轴标签（_roll_axes 的判据），有就点名、没有就照实说。
+#    本页自己那半句（「本页一张都没改」）留着 —— 那一条本页自己就能验，不必跨页。
+_MEMBER_ROLL = [(NAME[_t], _t, _roll_axes(_t)) for _t in sorted(RAW)]
+_MR_HAS = [f'/{_t}/ Exhibit {_exl(_ns)}' for _nm, _t, _ns in _MEMBER_ROLL if _ns]
+_MR_NOT = [f'/{_t}/' for _nm, _t, _ns in _MEMBER_ROLL if not _ns]
+_MEMBER_ROLL_TXT = (
+    ('各单票页把<b>流量</b>类图的同比改成「12 个月滚动合计同比」的'
+     + ('<u>并非全部</u>' if _MR_NOT and _MR_HAS else '')
+     + '（逐页现读那几页 payload 的轴标签）：'
+     + ('挂着滚动口径同比轴的是 ' + '；'.join(_MR_HAS) + '。' if _MR_HAS
+        else '本轮一页都没有。')
+     + ('、'.join(_MR_NOT) + ' 一张都没有。' if _MR_NOT else ''))
+    if _MEMBER_ROLL else '')
+
 notes = [
     f'<b>发布门槛：共同最新月，不是各家自己的最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，'
     f'由成员中最慢的 {LAG} 决定。'
@@ -1957,11 +2426,9 @@ notes = [
     'IBKR 的 client credits 并排都会错；<b>三家的长历史重定基图</b> —— 它的月度披露最早只到 '
     f'{mlab(_HOOD_F) if _HOOD_F else "2021-01"}，够不到另外三家共同的 {mlab(B18)} 基期，'
     f'另出一张四家同基期（{mlab(B23)}）的图（Exhibit {N_REB23}）。'
-    + (f'<b>有机增速也单独占一张（Exhibit {N_ORG_HOOD}）</b>：它的年化净流入常年是另外两家的'
-       '四到十倍，与它们同轴会把 Schwab 与 LPL 压成贴零的一条带（原来就是这样，'
-       'headline 写的「Schwab / LPL 各几个点」在图上根本读不出来）。'
+    + (f'<b>有机增速也单独占一张（Exhibit {N_ORG_HOOD}）</b>：{_SPL_RNG}{_SPL_SQ}。'
        '同一单位不等于同一量纲，拆图不是回避比较 —— 两张图的纵轴单位相同，'
-       '数值可以直接比大小，只是不要把线形叠着看。' if N_ORG_HOOD else ''),
+       '数值可以直接比大小，只是不要把线形叠着看。' if N_ORG_HOOD and _SPL_RNG else ''),
 
     '<b>「可比」不等于「相同」，各图注已逐条标出差异。</b>客户资产的三种叫法'
     '（client assets / client equity / platform assets）都是「客户放在这家平台上的资产」，'
@@ -1980,12 +2447,12 @@ notes = [
     '四舍五入之后正好是零的负数一律回正 —— 不印「-0bp」「-0.0%」这种带负号的零。',
 
     # ── 同比口径：本页只有一种，但必须说清楚为什么与各单票页不同 ──
-    f'<b>⚠ 同比口径：本页画同比的图<u>全部</u>用点对点（单月）口径，与各单票页不同，'
-    f'原因逐图实测过。</b>本页画同比的是 Exhibit {N_YOY}（客户资产 y/y）、'
+    f'<b>⚠ 同比口径：本页画同比的图<u>全部</u>用点对点（单月）口径，'
+    f'原因逐图实测过（与各单票页一不一样逐页现读，见下）。</b>本页画同比的是 Exhibit {N_YOY}（客户资产 y/y）、'
     f'Exhibit {N_ACCT}（账户 / 客户数 y/y）与 Exhibit {_exl(_HEAT_NS)} 四张热力矩阵，'
     '<b>它们画的都是存量序列</b>（客户资产 / 客户权益 / 平台资产 / 账户存量）。'
-    '各单票页（/schw/、/hood/、/lpla/、/ibkr/）本轮把<b>流量</b>类图的同比改成了'
-    '「12 个月滚动合计同比」，本页一张都没改 —— 不是漏了，是本页根本没有画流量同比的图'
+    + _MEMBER_ROLL_TXT
+    + '本页一张都没改 —— 不是漏了，是本页根本没有画流量同比的图'
     '（净流入在本页是以<b>年化有机增速</b>的形式出现的，那是水平值不是同比）。'
     '<b>这里要更正一句本站从前的说法</b>：「存量不能做滚动，所以只能点对点」是<b>错的</b> —— '
     'Σ12/Σ12′ 里的除数约掉，12 个月滚动合计比恒等于 12 个月滚动<b>均值</b>比，'
@@ -2046,9 +2513,16 @@ notes = [
     '<b>缺的月份不补、不连。</b>Schwab 的月末融资余额、DATs、月末 sweep cash 与月末货基'
     '是 2026-01 那期月报<b>一次新增的同一批列</b>'
     f'（那一期的 13 个月滚动表回溯至 {mlab(_schw_mgn0.index[0]) if len(_schw_mgn0) else "2025-01"}，'
-    f'更早的月份公司没有印过），所以 Schwab 那条线在 Exhibit {_exl(_SCHW_LATE)} 上'
-    f'只占右端 {len(_i7) - (len(_i7) - len(_schw_mgn0)) if len(_schw_mgn0) else 0} 格，左段是空的；'
-    f'Robinhood 同理，它的月度披露自 {mlab(_HOOD_F) if _HOOD_F else "2021-01"} 起 —— '
+    f'更早的月份公司没有印过），'
+    + (f'所以 Schwab 那条线在 Exhibit {_exl(_SCHW_LATE)} 上'
+       f'只占右端 {"、".join(str(c) for c in _SCHW_CELLS)} 格，左段是空的；'
+       if _SCHW_BATCH else '')
+    + (f'<b>别的图上 Schwab 那条线前段也空，但不是同一个理由</b>：'
+       + '；'.join(f'Exhibit {n}（{p} 起、{c} 格）' for n, c, p in sorted(_SCHW_OTHER))
+       + '卡在它那一列自己的披露起点上（core NNA 是 2018 年初才进官方滚动表的），'
+         '与这批新增列无关。'
+       if _SCHW_OTHER else '')
+    + f'Robinhood 同理，它的月度披露自 {mlab(_HOOD_F) if _HOOD_F else "2021-01"} 起 —— '
     '那是没有披露，不是余额为零。所有非有限值一律写 <code>null</code>，图与表都断开，不画假点。'
     f'<b>这几张图从前是把另外几条一起砍到 Schwab 的起点</b>（窗口 {len(_schw_mgn0)} 个月），'
     '本轮改掉了：一家的披露缺口不该变成另一家的历史损失。'
@@ -2070,10 +2544,16 @@ notes = [
     + '本站没有对数轴，量级差太远的序列一律拆图而不是压缩坐标。',
 
     f'<b>窗口：逐图现算，既不是「近 N 个月」，也没有统一的起点。</b>'
-    f'本页各图的左端一共 {len(_LEFT)} 个，最早 {mlab(_LEFT_MIN)}、最晚 {mlab(_LEFT_MAX)}：'
-    f'{_LEFT_TXT}。原先所有近期多线图都写死 25 个月'
+    f'本页 {len(ex)} 张图里有 {_LEFT_N} 张按月推进，它们的左端一共 {len(_LEFT)} 个，'
+    f'最早 {mlab(_LEFT_MIN)}、最晚 {mlab(_LEFT_MAX)}：{_LEFT_TXT}'
+    # 剩下那几张按年推进的（热力矩阵，一行一年）从前整个漏在这句话外面，而抬头写的是
+    # 「本页各图」—— 现在两档穷举，加起来对不上 len(ex) 就在上面停机。
+    + (f'；另 {_ROWS_N} 张按年推进（热力矩阵，一行一年，行数上限写在它们各自的图注里）：'
+       f'{_LEFT_ROWS_TXT}' if _ROWS_N else '')
+    + '。原先所有近期多线图都写死 25 个月'
     '（照搬原 deck 的 <code>win=25</code>），而各家序列早已回补到 2016-01（IBKR / LPL）与 '
-    f'2013-09（Schwab）—— 回补了却只画近两年，等于回补给谁看。现在左端一律由数据现算：'
+    f'2013-09（Schwab）—— 回补了却只画近两年，等于回补给谁看。'
+    f'现在按月推进的那 {_LEFT_N} 张，左端由数据现算：'
     '<b>本图各条线里最早那条的首个有值月</b>，右端是共同最新月；'
     '所以「本页一律从某年起」这种话本页不会说，也说不出来。'
     '各线起点不齐时（Schwab 的融资余额 / DATs 只有 2025-01 起、Robinhood 只有 '
@@ -2081,12 +2561,17 @@ notes = [
     '<b>不为迁就短的那条去砍长的那条</b>，改用能吃 null 的 <code>lines</code> 图型、'
     '短的那条前段留空 —— 这一点在横截面页尤其要紧：把两条起点差好几年的线对齐到图的左缘，'
     '读者会把它们读成同期对比。'
-    f'仍然写死的只有两个窗口：核对表 13 个月（跨公司逐月对数用）与热力矩阵最多 7 年。'
+    # ⚠ 这里原来写「仍然写死的只有两个窗口」，是句数数的全称断言，而且被**同一段**
+    # 往下三句话当场否掉（3Y %ile 回放近 24 个月，同样是写死的），本轮还被复制到了三张
+    # 热力矩阵的图注上。现在不数总数，只把这两处点名：多一处少一处都不会让它变假。
+    f'核对表（{TBL_MONTHS} 个月，跨公司逐月对数用）与热力矩阵（最多 {HEAT_YEARS} 年）'
+    f'这两处的窗口是写死的 —— 后者会把够得着更早年份的那几张矩阵截短，'
+    f'被截短的那几张在自己的图注里写明截掉了几年（那是排版上限，不是数据边界）。'
     '通栏与 x 标签抽稀由 <code>build/mrwin.py</code> 的 <code>layout_all()</code> 按 '
     '<code>assets/charts.js</code> 的量边距算式复算，不是目测，各图图注里附了实测的每期像素数。'
     '所有数值与格式化都在 Python 侧完成，页面不做任何计算 —— '
     '同一个数字在两个语言里各算一遍，迟早会出现图上与表里对不上而没人发现。'
-    '汇总表的 3Y %ile 也一样：判据在 <code>build/pctile.py</code>，全站 14 个生成器共用一份 '
+    '汇总表的 3Y %ile 也一样：判据在 <code>build/pctile.py</code>，全站共用一份 '
     '（回放近 24 个月，≥70% 的月份钉在端点就留空）。'
     '本页曾用「≥90% 的月环比不降」这个代理判据，结果同一条 LPL total client assets 在 '
     '/lpla/ 被判成噪音留空、在本页却印成绿色 100 —— 判据是口径，口径只能有一处定义。',
@@ -2144,7 +2629,10 @@ def compose_brief(df, latest):
         在一条十几个月的序列上「停在峰值」与在 125 个月上「峰值停在 2017 年」根本不是
         同一件事。单票页没有这个问题，所以这句话别家写不出来。
         （窗口 2026-08-19 放宽到各条线自己的起点之后，这个长短差在图上直接看得见了：
-        Exhibit 8 / 10 / 12 里 Schwab 那条只占右端十几格，另两条铺满全轴。）
+        余额 / 交易类的几张图上 Schwab 那条只占右端十几格，另两条铺满全轴。
+        **这里同样不列图号** —— 上一版写死「Exhibit 8 / 10 / 12」，本轮客户现金那张
+        也多了一条 Schwab 短线，三图清单当场少一张；现在这份清单由页尾说明按
+        `_schw_gaps()` 现数，源码里不再抄第二份。）
       · **LPL 的名次要按还原口径报**：as-reported 的客户资产 y/y 含 Atria 与
         Commonwealth 两次整体并表，剔掉滚动 12 个月的 Acquired NNA（`acq_roll12()`）
         之后名次会掉，句子里必带「（还原口径）」（R5）。这条约定对**任何**以 LPL 客户
@@ -2439,13 +2927,20 @@ def main():
     out_dir = os.path.join(ROOT, 'data')
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'wealth.js')
-    # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
+    # 写出前先扫占位符（回填不到就停机，见 _assert_no_placeholder），
+    # 再过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在后者里面。
+    _assert_no_placeholder(payload)
     payload_guard.write_dash(path, payload, 'wealth')
     print(f'共同最新月 {LATEST}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）'
           f' | 各家: ' + ', '.join(f'{t}→{LATEST_EACH[t]}' for t in sorted(RAW))
           + (f' | 未就绪: {[t for t, _ in skipped]}' if skipped else ''))
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张图）'
           f' + Exhibit {table["n"]} 核对表')
+    # 跨页引用是**不出声的失败**的重灾区：认不出图时整句会退回不带编号的说法，页面照常
+    # 出，谁也不会发现引用没了。所以每轮把解析结果打出来，认不出的那几条前面加 ⚠。
+    print('跨页引用（按标题现读那一页的 payload）：'
+          + '；'.join(('' if n else '⚠ 认不出 ') + f'{lab}={n}'
+                      for lab, n in dict(XREF_LOG).items()))
     print(f'写出 data/wealth.js  ({os.path.getsize(path) / 1024:.1f} KB)')
     print(headline)
 

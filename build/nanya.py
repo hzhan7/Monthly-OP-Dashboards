@@ -9,16 +9,21 @@
     口径、为什么不截轴                 → build/mrspecs/nanya.py
 
 ━━ 这个壳是「图列归属」的落地，不是一层转发 ━━━━━━━━━━━━━━━━━━━━━━━━
-`monthly_run.py:389` 的 `builder(t)` 按**文件在不在**解析生成器：先找 `build/<t>.py`，
+`monthly_run.py` 的 `builder(t)`（按函数名 grep，不写行号：行号一改动就漂成假话）按**文件在不在**解析生成器：先找 `build/<t>.py`，
 再找下划线版，最后才退到 `build/single.py` + `build/specs/<t>.py`。
 本文件一落地，`data/nanya.js` 就归本底座，每月 cron 也走这条路 —— 底座的
 `owned_elsewhere()` 认得本壳里的 `mrbase` 字样，因此不再拦写 `data/`。
 
-⚠️ `build/specs/nanya.py` 仍在仓库里，但**已经不再被调用**（本壳优先级高于它）。
-   与 mtk / ase / alchip 三家本轮的落法一致：留着它是为了保留旧图列的口径记录，
-   不是为了继续生成页面；要清理请单独一轮做（`build/make_shells12.py` 会扫
-   `build/specs/` 枚举单公司页，删文件是另一件事的连锁，不该顺手做）。
-   两份文件对同一页并存期间，**改口径请改 `build/mrspecs/nanya.py`**。
+⚠️ `build/specs/nanya.py` **已经不在仓库里**：它在 4b0f201（新增本壳的同一个提交）
+   里连同另外五家一起被删除。改口径一律改 `build/mrspecs/nanya.py`，没有第二份配置。
+   （`build/make_shells12.py` 现在扫 `specs/` 与 `mrspecs/` 两个目录的并集，
+   所以本页仍被枚举到，删掉旧 spec 没有让它掉出名单。）
+   要看旧图列的口径记录只能回那个提交之前的历史
+   （`git log --diff-filter=D -- build/specs/nanya.py` 一查便知），
+   别再照这段去 `build/specs/` 里找文件。
+   顺带一条机制更正：`owned_elsewhere()` 之所以不拦本页的写入，**首要原因是
+   `build/specs/nanya.py` 已经不存在**（它先看这个文件在不在），壳里的 `mrbase` 字样
+   只是两份文件并存时才用得上的第二道判据。
 
 ⚠️ 那份旧配置里有两条本轮已被证伪、别再从它那里抄的说法：
    ① 「断点在 2013-09，比较基期被重述、水平值没有」—— 位置与性质都不对。

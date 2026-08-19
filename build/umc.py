@@ -7,14 +7,19 @@
     为什么有汇率线、却没有美元营收腿   → build/mrspecs/umc.py
 
 ━━ 这个壳是「图列归属」的落地，不是一层转发 ━━━━━━━━━━━━━━━━━━━━━━━━
-`monthly_run.py:389` 的 `builder(t)` 按**文件在不在**解析生成器：先找 `build/<t>.py`，
+`monthly_run.py` 的 `builder(t)`（按函数名 grep，不写行号：行号一改动就漂成假话）按**文件在不在**解析生成器：先找 `build/<t>.py`，
 再找下划线版，最后才退到 `build/single.py` + `build/specs/<t>.py`。
 本文件一落地，`data/umc.js` 就归本底座，每月 cron 也走这条路 —— 底座的
 `owned_elsewhere()` 认得本壳里的 `mrbase` 字样，因此不再拦写 `data/`。
 
-⚠️ `build/specs/umc.py` 仍在仓库里，但**已经不再被调用**（本壳优先级高于它）。
-   留着它是为了保留旧图列的口径记录，不是为了继续生成页面；要清理请单独一轮做。
-   两份文件对同一页并存期间，**改口径请改 `build/mrspecs/umc.py`**。
+⚠️ `build/specs/umc.py` **已经不在仓库里**：它在 4b0f201（新增本壳的同一个提交）
+   里连同另外五家一起被删除。改口径一律改 `build/mrspecs/umc.py`，没有第二份配置。
+   要看旧图列的口径记录只能回那个提交之前的历史
+   （`git log --diff-filter=D -- build/specs/umc.py` 一查便知），
+   别再照这段去 `build/specs/` 里找文件。
+   顺带一条机制更正：`owned_elsewhere()` 之所以不拦本页的写入，**首要原因是
+   `build/specs/umc.py` 已经不存在**（它先看这个文件在不在），壳里的 `mrbase` 字样
+   只是两份文件并存时才用得上的第二道判据。
 
 ━━ 与旧图列（build/single.py + build/specs/umc.py）相比，换来什么、丢了什么 ━━
 换来：Ex1 汇总表（月营收 / 3MMA / QTD / YTD / 占 TTM 比重 + 3Y 分位列）、

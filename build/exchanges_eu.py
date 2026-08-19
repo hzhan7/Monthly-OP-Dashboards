@@ -241,7 +241,10 @@ MIN_COMMON = 36          # 共同历史短于 36 个月不发（同比 + 年度�
 MIN_QUARTERS = 12        # 季度长历史图至少要这么多个完整季，否则这张图不画
 HEAT_MONTHS = 24         # y/y 矩阵的列数
 YOY_YEARS = 4            # 同比同月份额图的年份数（grouped_bars 上限 4 组，第 5 组开始撞色）
-LINE_H_ENDLABEL = 360    # 开 end_label 的长历史线图的最小高度（理由见 build/exchanges.py 同名常量）
+# 开 end_label 的长历史线图的最小高度。理由见 docs/CHART_KINDS.md §3.9（绘图区 <308px 时
+# 末点标签会收成一摞贴右上角，读数安到别的线上）。⚠ 原注写的是「见 build/exchanges.py 同名
+# 常量」—— 那个文件在 e3c6f81「删除 /exchanges/ 三家横截面页」里已经删了，全仓不存在。
+LINE_H_ENDLABEL = 360
 TBL_MONTHS = 13
 
 
@@ -502,6 +505,31 @@ DAYS_SAME = sum(1 for p in _both if float(DAYS_EU[p]) == float(_dd_db1[p]))
 DAYS_N = len(_both)
 if DAYS_EU.dropna().shape[0] != len(IDX):
     skip('Euronext 的 trading_days_cash 在共同窗口内有缺月，占比与季度聚合都算不出来')
+
+# ── Deutsche Börse 宽口径列到底有多长：现算，页面正文两处引用它 ─────────────────
+# ⚠ 页面原先两处都写死「198 个月历史」（宽/窄口径对照那张图的图注与 NOTES 第 3 条）。
+#   （原注在这里写的是「Exhibit 6 图注」—— 点错了图：Exhibit 6 是定基名义额指数化那张，
+#     它的图注里一个「个月历史」都没有。图号本来就不该写进注释，改成按内容指认。）
+#   这一列自 2010-01 起逐月连续、**每个月 +1**，2026-08-19 实跑已经是 199 —— 也就是说
+#   页面今天就在说一件假事，而同文件 docstring 里那句现算出来的话写的正是 199。
+#   月数一律不写在文案里，统一走 DB1_WIDE_N / DB1_WIDE_FROM。
+_DB1_WIDE = RAW['db1']['turnover_cash_total_eurbn'].dropna()
+DB1_WIDE_N = int(len(_DB1_WIDE))
+DB1_WIDE_FROM = mlab(_DB1_WIDE.index.min()) if DB1_WIDE_N else '—'
+# ── 停机兜底：DB1_WIDE_N 必须是「真有数的月份数」，不能悄悄变成「跨度」──────────
+# NOTES 第 3 条把这个数与窄口径的月数**并排比较**（「只有它有 N 个月历史，而窄口径列
+# 只有 M 个月有数」）。上一轮翻车正是因为那两个数不是同一种量：宽口径给的是逐月连续的
+# 观测数，窄口径给的却是**首末月之间的跨度**（122），而窄口径真有数的只有 62 个月。
+# 宽口径这一列今天逐月连续，所以 dropna 长度 == 跨度，两个数才可比。哪天它也开始缺月，
+# 这句比较就不再成立 —— 与其让页面继续印一句读者会读错的话，不如当场停机。
+if DB1_WIDE_N:
+    _wide_span = len(pd.period_range(_DB1_WIDE.index.min(), _DB1_WIDE.index.max(), freq='M'))
+    if DB1_WIDE_N != _wide_span:
+        raise SystemExit(
+            f'宽口径 turnover_cash_total_eurbn 出现缺月：有数 {DB1_WIDE_N} 个月、'
+            f'跨度 {_wide_span} 个月（{mlab(_DB1_WIDE.index.min())}–'
+            f'{mlab(_DB1_WIDE.index.max())}）。NOTES 第 3 条拿它与窄口径的「有数月数」'
+            f'并排比较，前提就是这一列逐月连续 —— 先改写那句话，再跑。')
 
 MONTHLY_EUR = pd.DataFrame({k: ADV[k] * DAYS_EU for k in KEYS}, columns=KEYS)  # €bn/月
 # Deutsche Börse 的月度总额是官方原生列，不必反推 —— 直接用它，精度更高。
@@ -1044,7 +1072,13 @@ if HAS_VP:
         VP_WHY.append(f'完整自然年只有 {len(VP_YEARS)} 个，可算同比的年份 {len(VP_GY)} 个，'
                       '不足 5 个，年度分解不画')
 
-# ── 这两张图的图号：全文件唯一一处，正文与 ex.append 都从这里取 ──────────────────
+# ── 这两张图的图号：**会进 payload 的那一份**只有这一处，正文与 ex.append 都从这里取 ──
+# ⚠ 「唯一一处」这四个字要说得起：上一轮写下它的时候，NOTES 颜色那一条里还留着两个裸的
+#   「15 的两段」「16 的柱」，当场就被 grep 推翻（今天渲染对，是因为 HAS_VP=True 时
+#   15/16 恰好是真号）。两处已改成从 VP_N_DEC / VP_N_TRD 取。**判据（可复跑）**：
+#     grep -n "'1[56] \|Exhibit 1[56]" build/exchanges_eu.py
+#   命中的行必须**全部**是 `#` 开头的注释（分节标题那种，给读代码的人定位，不进 payload）；
+#   只要有一行是字符串字面量，「唯一一处」就已经是假话。
 # ⚠ Exhibit 15 / 16 是**有条件生成**的（Euronext 那一对列没过判据就整块不画），
 #   而核对表的表号是 `ex[-1]['n'] + 1` 跟着最后一张图走 —— 一停画，**核对表就顺推
 #   占用 15 号**。此时正文里任何写死的「Exhibit 15」都会指到核对表上。
@@ -1690,7 +1724,8 @@ if HAS_NAR_WIN:
                  f'它们散落在 {mlab(W_NAR[0])} 至 {mlab(W_NAR[-1])} 这 {len(W_NAR)} 个月里'
                  f'（{_NAR_GAP_TXT}）。横轴按月逐格铺开、缺月断笔，'
                  f'<b>不是</b>把有数的月并排画在一起（那会让相隔数年的两点看着像相邻月）。'
-                 '所以本页用的是有 198 个月历史的宽口径（含 ETP / 结构化产品 / 债券 / 基金）。'
+                 f'所以本页用的是有 {DB1_WIDE_N} 个月历史（{DB1_WIDE_FROM} 起）的宽口径'
+                 f'（含 ETP / 结构化产品 / 债券 / 基金）。'
                  f'代价实测：这 {len(_NAR_OK)} 个重叠月里宽 ÷ 窄 = '
                  f'<b>{SCOPE_MIN:.2f}–{SCOPE_MAX:.2f} 倍</b>（中位 {SCOPE_MED:.2f}）；'
                  f'折成池内占比，Deutsche Börse 被<b>高估 {SH_GAP_MIN:.1f}–{SH_GAP_MAX:.1f}pp</b>'
@@ -1934,6 +1969,49 @@ table = {
 _ahead_txt = ('；'.join(f'{d} 自身已更新至 {mlab(m)}' for d, m in AHEAD)
               if AHEAD else '本期三家的最新月恰好一致，无人跑在前面')
 
+
+# ── 色名复用：NDAQ_C 与 CUR_FX_C 是同一个色名，冲不冲突要**现扫 ex**，不能凭记忆枚举 ──
+# ⚠ 原文写的是「Nasdaq 只在 Exhibit 9 / 10 出现，汇率对照线只在 Exhibit 7 / 8 / 11 / 12
+#   出现」。前半句今天为真，后半句本页自己就证伪：同一个色名还用在同月柱的年份色、
+#   「剔除 Athens 备注列」、窄口径列上，而**紧接着的下一句自己就写着「增速线用它」**。
+#   真正要保证的只有一件事 —— 同一张图里它不能既是 Nasdaq 又是别的东西。所以现扫。
+def _color_hits(o, c, out=None):
+    """递归扫一个 exhibit，返回用到色名 c 的序列名（拿不到名字的记 '—'）。
+
+    不假设 payload 的键名：bar / line / series / stacks / groups 各 kind 不一样，
+    写死键名就等于又立一个会过期的枚举。
+    """
+    out = [] if out is None else out
+    if isinstance(o, dict):
+        if o.get('color') == c:
+            out.append(o.get('name') or '—')
+        for v in o.values():
+            _color_hits(v, c, out)
+    elif isinstance(o, list):
+        for v in o:
+            _color_hits(v, c, out)
+    return out
+
+
+_SHARED_C = [(e['n'], _color_hits(e, CUR_FX_C)) for e in ex]
+_SHARED_C = [(n, nm) for n, nm in _SHARED_C if nm]
+
+
+def _is_nd(nm):
+    return any('Nasdaq' in x for x in nm)
+
+
+# ── 哪几张图真的画了红色竖虚线：现扫 ex ─────────────────────────────────────
+# ⚠ 原文写死「Exhibit 2 / 3 / 6 / 14（以及 15 / 16）都画了红色竖虚线」——
+#   2026-08-19 实跑，带 break_at 的其实是 2 / 3 / 6 / 11 / 14 / 15 / 16：**漏了 Exhibit 11**
+#   （它画的是 Nov-25 并表 Athens 那一条）。读者照着这张清单去数线，会发现多出一张。
+#   各图窗口不同 ⇒ 落进窗口的断点条数也不同，所以连条数一起现算。
+_BRK_EX = [(e['n'], len(e.get('break_at') or [])) for e in ex if e.get('break_at')]
+
+_SHARED_ND = [n for n, nm in _SHARED_C if _is_nd(nm)]
+_SHARED_CLASH = [n for n, nm in _SHARED_C
+                 if _is_nd(nm) and any('Nasdaq' not in x for x in nm)]
+
 NOTES = [
     f'<b>发布门槛：共同最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，即三家现货成交额序列里'
     f'最慢那家的最新月。本期短板是 <b>{"、".join(LAG)}</b>；{_ahead_txt}。'
@@ -1971,8 +2049,20 @@ NOTES = [
     'Cboe Europe（<code>adv_eu_equities_adnv_eurbn</code>：泛欧股票、单边计）逐字同口径；'
     'Deutsche Börse 用的是 <code>turnover_cash_total_eurbn</code>'
     '（Xetra + Börse Frankfurt 场内，含 ETP / 结构化产品 / 债券 / 基金）。'
-    '选它是因为只有它有 198 个月历史，而与另两家逐字同口径的窄口径列'
-    + (f'只有 {len(W_NAR)} 个月（{mlab(W_NAR[0])} 起）' if HAS_NAR_WIN else '历史极短')
+    f'选它是因为只有它有 {DB1_WIDE_N} 个月历史（{DB1_WIDE_FROM} 起），'
+    '而与另两家逐字同口径的窄口径列'
+    # ⚠ 这半句原先是 f'只有 {len(W_NAR)} 个月（{mlab(W_NAR[0])} 起）'。数是现算的，
+    #   但**算的不是同一种东西**：len(W_NAR) 是首末月之间的格子数（跨度），
+    #   而并排比较的 DB1_WIDE_N 是逐月连续的真实观测数。窄口径列中间有整段空洞，
+    #   跨度里真有数的只有 len(_NAR_OK) 个 —— 同页 Exhibit 12 的图注写的正是这个数。
+    #   两个不同种类的数放进同一个比较句，读者会以为窄口径有跨度那么多月的数据。
+    #   ⇒ 主数改成 _NAR_OK（有数的月），跨度作为附注跟在后面，两者都现算。
+    #   「中间整段缺」这半句也不写死：缺口补齐了它就该自己消失，判据是 len 之差。
+    + ((f'只有 {len(_NAR_OK)} 个月有数（散落在 {mlab(W_NAR[0])}–{mlab(W_NAR[-1])} '
+        f'这 {len(W_NAR)} 个月里，中间缺 {len(W_NAR) - len(_NAR_OK)} 个月）'
+        if len(_NAR_OK) < len(W_NAR) else
+        f'只有 {len(_NAR_OK)} 个月（{mlab(W_NAR[0])}–{mlab(W_NAR[-1])} 逐月连续）')
+       if HAS_NAR_WIN else '历史极短')
     + '，用窄口径本页的长历史份额图就没有了。'
     + (f'代价已实测并画在 Exhibit 12：宽 ÷ 窄 = {SCOPE_MIN:.2f}–{SCOPE_MAX:.2f} 倍，'
        f'折成池内占比 Deutsche Börse 被高估 {SH_GAP_MIN:.1f}–{SH_GAP_MAX:.1f}pp。'
@@ -2075,9 +2165,10 @@ NOTES = [
     '<b>口径断点：图上留痕，能还原的还原，月份不写死在代码里。</b>'
     + (f'Euronext 现货列在本页窗口内有 {len(ENX_BRK)} 个并表断点'
        f'（{"、".join(f"{mlab(p)} {t}" for p, t in zip(ENX_BRK, ENX_BRK_TXT))}），'
-       'Exhibit 2 / 3 / 6 / 14'
-       + (f'（以及 Euronext 自己那两张 {VP_N_DEC} / {VP_N_TRD}）' if HAS_VP else '')
-       + '都画了红色竖虚线，语义是「从这一期起与左侧不可比」。'
+       '画了红色竖虚线的是 '
+       + '、'.join(f'Exhibit {n}（{c} 条）' for n, c in _BRK_EX)
+       + '，语义是「从这一期起与左侧不可比」；条数不等是因为各图的横轴窗口不一样，'
+       '只有落进窗口的断点才画得出来。'
        '⚠ 对 <b>Exhibit 14</b> 要额外当心：滚动 12 个月再回看 12 个月，'
        '一次断点会污染<b>连续 24 个读数</b>（单月同比只污染 12 个）—— '
        '红线右侧两年内的同比一律不能当自然增长读。'
@@ -2107,14 +2198,29 @@ NOTES = [
     + f'；本池合计 = {TOTAL_C}；Nasdaq 北欧 = {NDAQ_C}；当期汇率对照线 = {CUR_FX_C}。'
       '引擎的数据色只有 NAVY / BLUE / MBLUE / GRAY / GREEN / GOLD 六个'
       '（RED 是断点专用，不做数据色）。'
-      f'{NDAQ_C} 与 {CUR_FX_C} 是同一个色名，但两者从不同图共存：'
-      'Nasdaq 只在 Exhibit 9 / 10 出现，汇率对照线只在 Exhibit 7 / 8 / 11 / 12 出现。'
-      '这是权衡后的结果，写在这里备查。'
+      f'Nasdaq 北欧与当期汇率对照线<b>共用 {CUR_FX_C} 这一个色名</b>，跨图复用。'
+    + f'现扫本轮 payload，用到它的是：'
+    + '；'.join(f'Exhibit {n}（{"、".join(nm)}）' for n, nm in _SHARED_C)
+    + '。'
+    + (f'Nasdaq 北欧那条线只出现在 '
+       + '、'.join(f'Exhibit {n}' for n in _SHARED_ND) + '。'
+       if _SHARED_ND else '本轮没有画 Nasdaq 北欧。')
+    + ('<b>没有任何一张图里它同时是 Nasdaq 和别的序列</b>，'
+       '所以在单张图内部读者不会把两者认混 —— 这就是复用色名的全部前提，'
+       '判据现算，不靠记忆枚举图号。'
+       if not _SHARED_CLASH else
+       '⚠ ' + '、'.join(f'Exhibit {n}' for n in _SHARED_CLASH)
+       + ' 里这个色名同时承担了两种含义，必须改色。')
+    # ⚠ 这两句原先写的是裸的「15 的两段」「16 的柱」，不从 VP_N_DEC / VP_N_TRD 取；
+    #   HAS_VP=True 时刚好是真号，所以渲染看不出问题，但只要在 15 号之前插一张图，
+    #   正文与 ex.append 会跟着常量顺推、唯独这两句留在原地 —— 那正是本文件上面那条
+    #   「图号全文件唯一一处」注释保证不会发生的事。改成从常量取，让那条注释成立。
     + (f'⚠ {EX_VP2} 是<b>单成员图</b>（只有 Euronext），成员色在那里不承担辨识职能：'
-       f'15 的两段用 {COLOR["enx"]}（成交笔数）与 BLUE（每笔均值）—— 同一色系一深一浅，'
-       f'表示它们是同一个恒等式的两半，不是两个成员；'
-       f'16 的柱沿用 Euronext 的 {COLOR["enx"]}，增速线用 {CUR_FX_C}（本页的辅助线色），'
-       f'与 Nasdaq 不同图，不冲突。' if HAS_VP else ''),
+       f'{VP_N_DEC} 的两段用 {COLOR["enx"]}（成交笔数）与 BLUE（每笔均值）'
+       f'—— 同一色系一深一浅，表示它们是同一个恒等式的两半，不是两个成员；'
+       f'{VP_N_TRD} 的柱沿用 Euronext 的 {COLOR["enx"]}，'
+       f'增速线用 {CUR_FX_C}（本页的辅助线色），与 Nasdaq 不同图，不冲突。'
+       if HAS_VP else ''),
 
     f'<b>核对表（Exhibit {table["n"]}）用各家官方披露的原始计量单位与币种，一个换算都不做。</b>'
     '这张表存在的唯一理由是让人拿它与官方新闻稿逐位对账：'

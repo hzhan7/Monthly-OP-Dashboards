@@ -468,8 +468,12 @@ biy4 = [r6(BIY[at(m)]) for m in m4]
 advy4 = [r6(ADVY[at(m)]) for m in m4]
 if any(v is None for v in biy4 + advy4):
     raise SystemExit('Exhibit 4 的窗口内存在缺失月，lines_endlabels 不接受缺口')
-# 本图是全页唯一把 ADV 同比画成时间序列的图，断点必须也画在这里：
-# 窗口内 Dec-25 及其后的每个 ADV 同比读数都是「剔除 event 的当月 ÷ 含 event 的去年同月」。
+# ⚠️ 别给这张图安「全页唯一…」的名头：本页不止一处把 ADV 同比画成时间序列，
+# 写「唯一」当场被同一页证伪，而且下一张图加进来时也没有东西会报错。
+# 本图的特点是**数据来源**：画的是公司**直接披露**的 ADV 同比百分比，
+# 不是拿两个 ADV 水平值现除出来的（两者只在四舍五入之内相等）。
+# 断点凡是画到 ADV 同比的图都要画：窗口内 Dec-25 及其后的每个 ADV 同比读数都是
+# 「剔除 event 的当月 ÷ 含 event 的去年同月」。
 b4 = brk_idx(m4)
 n4_mixed = len(m4) - b4 if b4 is not None else 0
 
@@ -643,6 +647,35 @@ EXHIBITS = [ex2, ex3, ex4, ex5, ex6, ex7]
 # 要读到最终结果，否则又是一处「图注声称的与图上画的对不上」。
 axisfmt.fix_all(EXHIBITS)
 
+# ── 同比口径按图归类：登记在代码里，漏一张就停机 ────────────────────────────
+# 页尾那条要点名「哪几张是单月同比、哪几张不是」。上一版是手写图号 +「唯一的例外是
+# Exhibit 5」，加一张季度图就多一句假话，而没有任何东西会报错。
+# 判据分两层：季度与否由 kind 现算（qtr_bar 就是季度柱），其余每一张必须在
+# YOY_KIND 里登记到底带不带同比 —— 漏登记当场 raise。
+YOY_KIND = {
+    2: 'm',      # 次轴 y/y
+    3: 'm',      # 次轴 y/y
+    4: 'm',      # 两条披露 y/y
+    5: 'q',      # 季度柱，次轴是 3 个月比 3 个月
+    6: '-',      # 年内路径，图上没有同比
+    7: 'm',      # 同比热力矩阵
+}
+_yk_all, _ex_all = sorted(YOY_KIND), sorted(e['n'] for e in EXHIBITS)
+if _yk_all != _ex_all:
+    raise SystemExit(f'YOY_KIND 与本页实际的 exhibit 对不上：登记 {_yk_all}、'
+                     f'实际 {_ex_all}。页尾同比口径那条要按它点名图号，'
+                     f'对不上就会印出假话 —— 先给新图登记口径再发。')
+# 登记的「季度」必须与图自己的 kind 对得上，两处打架时以图为准并停机：
+_qtr_by_kind = {e['n'] for e in EXHIBITS if e.get('kind') == 'qtr_bar'}
+_qtr_by_reg = {n for n, v in YOY_KIND.items() if v == 'q'}
+if _qtr_by_kind != _qtr_by_reg:
+    raise SystemExit(f'YOY_KIND 登记的季度图 {sorted(_qtr_by_reg)} 与 kind=qtr_bar 的 '
+                     f'{sorted(_qtr_by_kind)} 对不上')
+MON_YOY_EX = [n for n in sorted(YOY_KIND) if YOY_KIND[n] == 'm']
+QTR_YOY_EX = [n for n in sorted(YOY_KIND) if YOY_KIND[n] == 'q']
+_mon_txt = '、'.join(f'Exhibit {n}' for n in MON_YOY_EX)
+_qtr_txt = '、'.join(f'Exhibit {n}' for n in QTR_YOY_EX)
+
 # 图注里「哪几张画了断点线」不许手写：断点滚出某张图的窗口时（或某张图换了窗口长度），
 # 手写的编号就变成一句假话。这里从真正写进 payload 的 break_at 反查。
 BRK_DRAWN = [e['n'] for e in EXHIBITS if e.get('break_at') is not None]
@@ -808,12 +841,13 @@ NOTES = [
      + ('本页当前没有双轴图触发这两种情况。' if not (AX_DIP or AX_FALLBACK) else '')),
     ('<b>核对表保持官方原始单位</b>：ADV 为 mn 张/日、两条 y/y 为百分比，均未换算；'
      '指数那一列是本页推导值，已在表头标注，拿它去核对官方文件会对不上。'),
-    (f'<b>同比口径：本页每一处都是单月同比</b>（当月 ÷ 去年同月 − 1），'
-     f'没有一张图用 {Y.TTM_WIN} 个月滚动合计同比 —— 页顶 brief 引用的同比、'
-     f'Exhibit 2（ADV 右轴）、'
-     f'Exhibit 3（指数右轴）、Exhibit 4（两条披露 y/y）、Exhibit 5（季度，3 个月比 3 个月）、'
-     f'Exhibit 7（热力矩阵）与汇总表、核对表的 y/y 列全部同口径，'
-     f'所以本页任意两处的同比读数可以直接互相对读。'
+    (f'<b>同比口径：本页的同比分两种，别混着读</b>（名单由代码逐图归类算出）：'
+     f'<b>单月同比</b>（当月 ÷ 去年同月 − 1）用在页顶 brief 引用的同比、{_mon_txt}、'
+     f'汇总表与核对表的 y/y 列上，这几处的读数可以直接互相对读；'
+     + (f'<b>{_qtr_txt} 不是</b>：它是季度柱，右轴那条是 <b>3 个月比 3 个月</b>，'
+        f'拿它去和上面那几处逐格对读会错位，只能读它自己的走势。'
+        if QTR_YOY_EX else '本页本轮没有季度口径的同比。')
+     + f'两种都不是滚动：<b>没有一张图用 {Y.TTM_WIN} 个月滚动合计同比</b>。'
      f'<b>偏离 CONTRACT.md §6 默认（流量用 {Y.TTM_WIN} 个月滚动）的理由逐条如下，'
      f'都不是「日均量不能加总」</b>（同比是比值，分子分母同权，交易日在比值里直接约掉）：'
      f'(1) <b>Exhibit 2</b> —— 序列自 {mlab(MONTHS[0])} 起共 {len(MONTHS)} 个月，'
@@ -888,8 +922,9 @@ def compose_brief(months, adv_raw, advy_raw, biy_raw, derived_raw):
 
     ═══ 与本页 2026-08 同比口径改造的关系（移植时的口径适配）═══
     远端写这一段时 Exhibit 2 / 3 的标题还没有「单月」标注；本地已按 CONTRACT §6
-    在两图标题写明「单月同比 / single-month y/y」，并在页尾口径说明里逐处点名
-    「本页每一处都是单月同比」（偏离默认口径的理由是数据长度，见那条说明）。
+    在两图标题写明「单月同比 / single-month y/y」，并在页尾口径说明里把每张图归到
+    「单月同比」或「季度（3 个月比 3 个月）」两类之一 —— 那份名单由 `YOY_KIND`
+    现算，不在散文里写死（偏离默认口径的理由是数据长度，见那条说明）。
     适配照 cboe / ibkr 的先例：brief 里凡引用同比读数，措辞一律带「单月」标签，
     与两图标题、页尾点名逐字对得上；页尾点名的名单里也补上了 brief。
     与 ibkr 不同，本页**没有**滚动口径的读数可并排印 —— 序列长度画不出那条线

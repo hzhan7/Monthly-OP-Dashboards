@@ -28,10 +28,13 @@
 恒等式不是口号：本页 `main()` 把「单腿成员的名义额同比 − 张数同比」逐月算一遍，
 最大偏差打在自检行上（应当是浮点舍入量级）。
 
-**本页所有池的 share 档次都是 `pool`**（分母 = 本池成员之和），一个都不是 `'true'`。
-全仓只有北美两池 + fn_monopoly 有官方行业分母，那三个都在别的页。
+**本页没有一个池是 `share='true'`** —— 全仓只有北美两池 + fn_monopoly 有官方行业分母，
+那三个都在别的页。⚠️ 但**不许**把这句话收紧成「本页所有池的 share 档次都是 `pool`」：
+本页在场的池里还有 `share='none'` 的一档（连池内占比都不画，页尾另有一整条在讲），
+写成「都是 pool」会被同一页当场证伪。⚠️ 这里也**不许抄一份档次名单**：
+逐档有几个、分别是谁，由 `_share_tier_txt()` 现读 `POOL_STATE` 算出，散文里一个都不写死。
 ⇒ **本页不出现「市场份额」这个说法**；页面上凡出现这四个字都是在否定它。
-每一张占比图的图注都点名分母是哪几家，且逐字带上该池自己的 `share_caveat`。
+**画占比的**那几张图，图注逐张点名分母是哪几家，且逐字带上该池自己的 `share_caveat`。
 
 ━━━━━━━━━━━━━ 三、两处必须落到图注上的口径缩水 ━━━━━━━━━━━━━
 1. **能源池的 ICE 只含 Brent 原油（期货 + 期权），不是 ICE 的全部能源。**
@@ -113,7 +116,11 @@ MIN_POOLS = 3            # 全页可画的池少于这个数就不发（一两�
 MAX_POOL_LAG = 2         # 某池的最新月比最快的池落后超过这么多个月 → 该池出局，
 #                          不让一个停更的池把整页的共同最新月拖回去
 HEAT_MONTHS = 24         # y/y 动量矩阵的列数
-LINE_H_ENDLABEL = 360    # 开 end_label 的长历史线图的最小高度（理由见 build/exchanges.py 同名常量）
+LINE_H_ENDLABEL = 360    # 开 end_label 的长历史线图的最小高度。
+                         # ⚠️ 原注写「理由见 build/exchanges.py 同名常量」——
+                         # **本仓没有 build/exchanges.py 这个文件**（本轮 grep 实测）。
+                         # 判据在 docs/CHART_KINDS.md §3.9；同名常量的现存副本在
+                         # build/exchanges_eu.py（exchanges_apac.py 里叫 LINE_H）。
 TBL_MONTHS = 13
 CAT_ROT = 0              # 类别轴（x 是池名 / 公司名）一律不旋转
 
@@ -1030,7 +1037,45 @@ for st in POOL_STATE:
 for p, w in POOL_SKIPPED:
     _drop_lines.append(f'<code>{p["id"]}</code>（{p["zh"]}，整池不画）— {w}')
 
+# ── 「本页共 N 个池、其中 M 个是标的轴」这句话的分项必须与总数对得上 ──────────
+# 上一版的分子分母取自两个不同的集合：总数取 PAGE_POOLS（本页挂了几个池），
+# 分项却取 POOL_STATE（本轮画得出来的池）。一旦有池因缺基期常数出局，页上就会印出
+# 「共 8 个，其中 7 个是标的轴、1 个是 function」这种加不起来的算术，而没有任何东西报错。
+# 这里统一都从 PAGE_POOLS 数，并且当场验加总。
+_AX_PRODUCT = [_p for _p in PAGE_POOLS if _p['axis'] == 'product']
+_AX_OTHER = [_p for _p in PAGE_POOLS if _p['axis'] != 'product']
+# 那句话还许诺「没画出来的在下面逐个点了名」——兑现它的是 POOL_SKIPPED。
+# 池被丢掉却没进 POOL_SKIPPED 时，读者面前就是一个没人交代的差额：这里当场停机。
+_unaccounted = ({_p['id'] for _p in PAGE_POOLS}
+                - {_st['p']['id'] for _st in POOL_STATE}
+                - {_p['id'] for _p, _w in POOL_SKIPPED})
+if _unaccounted:
+    raise SystemExit(
+        f'这些池既没画出来、也没记进 POOL_SKIPPED：{sorted(_unaccounted)}。'
+        f'页尾会宣称「其余的下面逐个点了名」，而它们一个字都不会出现。')
+
 _co_pairs = [(st, m) for st in POOL_STATE for m, _ in st['growth']]
+
+# ── 「本页的池都是哪一档 share」这句话必须现算 ────────────────────────────────
+# 旧文案写死成「本页所有池的 share 档次都是 pool」，而同一页的页尾另有一整条注在讲
+# 「share=none 的池：连池内占比都不画」，指的就是 fn_index_aum —— 两条注当场打架。
+# 判据就在 POOL_STATE 里，逐池现读。
+def _share_tier_txt():
+    tiers = {}
+    for st in POOL_STATE:
+        tiers.setdefault(st['p']['share'], []).append(pshort(st['p']))
+    if set(tiers) == {'pool'}:
+        return (f'<b>本页在场的 {len(POOL_STATE)} 个池全是 <code>share=pool</code>'
+                f'（分母 = 本池成员之和），一个都不是 <code>true</code>。</b>')
+    order = [t for t in ('true', 'pool', 'none') if t in tiers]
+    body = '；'.join(f'<code>{t}</code> {len(tiers[t])} 个（{"、".join(tiers[t])}）'
+                     for t in order)
+    return (f'<b>本页在场的 {len(POOL_STATE)} 个池里没有一个是 <code>share=true</code>'
+            f'（官方行业分母）。</b>逐档现算：{body}。'
+            + ('<b>其中 <code>none</code> 那一档连「池内占比」都不画</b>，'
+               '下面另有一条专讲。'
+               if 'none' in tiers else ''))
+
 
 NOTES = [
     f'<b>发布门槛：各池的共同最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，'
@@ -1048,15 +1093,18 @@ NOTES = [
     '<b>本页画哪些池，由 <code>build/pools.py</code> 的 <code>page</code> 字段决定，'
     '本文件不另抄一份名单。</b>'
     f'本轮 <code>page={TICKER}</code> 的池共 {len(PAGE_POOLS)} 个，'
-    f'其中 {sum(1 for s in POOL_STATE if s["p"]["axis"] == "product")} 个是标的轴'
+    f'其中 {len(_AX_PRODUCT)} 个是标的轴'
     f'（<code>axis=product</code>：同一类标的、不同法域）'
-    + (f'，{sum(1 for s in POOL_STATE if s["p"]["axis"] != "product")} 个是'
-       + '、'.join(sorted({f'<code>axis={s["p"]["axis"]}</code>（{s["p"]["zh"]}）'
-                          for s in POOL_STATE if s['p']['axis'] != 'product'}))
+    + (f'，{len(_AX_OTHER)} 个是'
+       + '、'.join(sorted({f'<code>axis={_p["axis"]}</code>（{_p["zh"]}）'
+                          for _p in _AX_OTHER}))
        + ' —— 后者不是标的轴，是 pools.py 把它挂在本页的；它在本页只占一张图，'
          '不进任何跨池对比'
-       if any(s['p']['axis'] != 'product' for s in POOL_STATE) else '')
-    + '。抄一份名单的后果很具体：pools.py 哪天把某个池挪走或改名，本页仍然照旧画，'
+       if _AX_OTHER else '')
+    + f'。这 {len(PAGE_POOLS)} 个里本轮实际画出来的是 {len(POOL_STATE)} 个'
+    + ('，其余的在下面「缺基期常数」那条里逐个点了名。' if len(POOL_STATE) < len(PAGE_POOLS)
+       else '，一个都没落下。')
+    + '抄一份名单的后果很具体：pools.py 哪天把某个池挪走或改名，本页仍然照旧画，'
       '而两处不一致在页面上完全看不出来 —— 只是多了或少了一段。',
 
     '<b>主口径是定基名义额，不是张数。</b>' + BASE_UNIT_TXT
@@ -1070,13 +1118,14 @@ NOTES = [
        '多腿成员不在这项自检里 —— 各腿的常数不同，合计的增长率本来就不等于任一原列的增长率。'
        if IDENT_ROWS else '本轮没有可做恒等式自检的单腿成员。'),
 
-    '<b>本页所有池的 share 档次都是 <code>pool</code>，一个都不是 <code>true</code>。</b>'
+    _share_tier_txt()
     + NO_MKT_SHARE
     + '全仓只有北美现货、北美多重挂牌期权与「垄断 vs 竞争」三个池有官方披露的行业分母，'
       '而那三个都靠 ICE 一家带进来，都不在本页。'
       '⇒ 分母一旦有了（某个产品类真的出现了官方行业总量），本页的占比图可以原地换分母，'
-      '图型一张都不用改。逐池的分母成员名单印在每一张占比图的图注里，'
-      '并且是由代码从 <code>build/pools.py</code> 现读出来的，不写死在文案里。',
+      '图型一张都不用改。<b>画占比的</b>那几张图，分母成员名单逐张印在图注里，'
+      '并且是由代码从 <code>build/pools.py</code> 现读出来的，不写死在文案里'
+      '（<code>share=none</code> 的池没有这一段，因为它压根没有分母）。',
 
     '<b>缺基期常数的成员一律留空，不用近似值填。</b>'
     + (('本轮不呈现的有：' + '；'.join(_drop_lines) + '。') if _drop_lines
@@ -1185,6 +1234,33 @@ _MEMBER_TICKERS = sorted({m['csv'][:-4] for s in POOL_STATE
 SOURCE_DATE = load_source_dates().latest_of(
     SERIES, _MEMBER_TICKERS, {t: LATEST for t in _MEMBER_TICKERS})
 
+# ── 「本页所有图表一律截到此月」这句话的现算判据 ─────────────────────────────
+# 这是一句无条件的全称断言，而页上凡有一张画历史片段的图（右端停在过去某个月），
+# 它当场就是假的，且没有任何东西会报错。所以逐张现读右端，例外由代码给出。
+# 判据覆盖三种时间右端：xlabels（时序图）、heat_matrix 的 cols、以及默认长轴。
+def _right_lab(e):
+    if e.get('kind') == 'heat_matrix':
+        c = e.get('cols') or []
+        return str(c[-1]) if c else None
+    xl = e.get('xlabels') or (XL_LONG if e.get('x') == 'long' else None)
+    return str(xl[-1]) if xl else None
+
+
+def _is_mlab(lab):
+    return (lab is not None and len(lab) == 6 and lab[3] == '-'
+            and lab[:3] in MONTHS)
+
+
+_CUR_LAB = mlab(LATEST)
+_TRUNC_EXC = [(e['n'], _right_lab(e)) for e in ex
+              if _is_mlab(_right_lab(e)) and _right_lab(e) != _CUR_LAB]
+_exc_txt = '、'.join(f'Exhibit {n}（止于 {lab}）' for n, lab in _TRUNC_EXC)
+TRUNC_TXT = ('本页凡是带时间右端的图一律截到此月' if not _TRUNC_EXC else
+             '本页带时间右端的图截到此月，'
+             + (f'只有 {_exc_txt}例外' if len(_TRUNC_EXC) == 1
+                else f'例外是 {_exc_txt} 这 {len(_TRUNC_EXC)} 张')
+             + '（画的是已经结束的历史片段）')
+
 payload = {
     'ticker': TICKER,
     'tracker': f'Product-Axis Cross-Section — {len(POOL_STATE)} product pools, '
@@ -1223,7 +1299,7 @@ payload = {
     'notes': NOTES,
     'footer': (f'标的轴横截面 · {" / ".join(s["p"]["zh"] for s in POOL_STATE)} · '
                f'<b>发布门槛：各池共同最新月 {mlab(LATEST)}</b>，'
-               f'本期短板 {"、".join(_short_pools)} —— 本页所有图表一律截到此月 · '
+               f'本期短板 {"、".join(_short_pools)} —— {TRUNC_TXT} · '
                f'<b>主口径 = 定基名义额（张数 × 乘数 × 锁死的 {mlab(BASE_P)} 基期价格，'
                f'汇率同锁基期）</b>，增长率与张数增长率恒等 · '
                '<b>所有占比的分母 = 本池可呈现成员之和，不是这一类标的的行业总量；'

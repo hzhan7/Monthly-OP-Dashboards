@@ -119,6 +119,7 @@ LCH 的月末未平仓 / 月末存量（6 列）。它们一律单独成图、�
 
 import csv
 import os
+import re
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CSV = os.path.join(_ROOT, 'series', 'lseg.csv')
@@ -299,19 +300,75 @@ def _series(col):
         return None
 
 
-# 底座给一列画出来的窗口：最后 25 个月（build/single.py WIN_LONG），
-# **右端是该列自己最后一个有值的月**（`ex_single` 用 `self.last_month(c)`），
-# 不是本页数据月 —— 慢腿的图右端比头条早两三周，用错窗口报出来的实测是图外的事。
-_WIN_LONG = 25
+def _win_from():
+    """底座钉死的窗口左端 —— 现读 `build/single.py` 的 `WIN_FROM`，本文件不存第二份。
+
+    2026-08-18 底座把 `WIN_LONG = 25`（最后 25 个月）换成了 `WIN_FROM = '2016-01'`，
+    而本文件里那份复制品没跟着改：于是标题与页注上「本序列近 25 个月实测…」
+    是拿一段**图上没有画**的窗口量出来的数，而同一张图的横轴写着 Jan-16–Jul-26。
+    读者往下滚到页注第 13 条还会读到「本页窗口从最近 25 期拉到 2016-01 起之后」——
+    同一页自己把自己证伪。写死一次就会这样过期一次，所以这里改成现读。
+
+    为什么不 `import single`：本文件正是被 single.py 在 import 期加载的，反过来把
+    整个底座再执行一遍（numpy / pandas / mrwin / payload_guard 全跟着跑）只为拿一个
+    字符串常量，代价与风险都不划算。读不到就返回 None，`_drawn_window` 退回
+    「不裁左端」= 整条 CSV —— 那是本页的现状（series/lseg.csv 首月就是 2016-01），
+    不会凭空造出一段图上没有的窗口。
+    """
+    try:
+        with open(os.path.join(_ROOT, 'build', 'single.py'), encoding='utf-8') as fh:
+            for line in fh:
+                m = re.match(r"WIN_FROM\s*=\s*'(\d{4}-\d{2})'", line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+_WIN_FROM = _win_from()
 
 
 def _drawn_window(col):
+    """底座给这一列画出来的那段横轴（`Page.win_long()` 的复算）。
+
+    左端 = max(CSV 首月, `WIN_FROM`)，只往右让不往左借；
+    **右端是该列自己最后一个有值的月**（`ex_single` 用 `self.last_month(c)`），
+    不是本页数据月 —— 慢腿的图右端比头条早两三周，用错窗口报出来的实测是图外的事。
+    """
     idx = [r['month'] for r in _ROWS]
     got = [r['month'] for r in _ROWS if _num(r, col) is not None]
     if not got:
         return None
     i = idx.index(got[-1])
-    return idx[max(0, i - _WIN_LONG + 1): i + 1]
+    lo = 0
+    if _WIN_FROM:
+        while lo < i and idx[lo] < _WIN_FROM:
+            lo += 1
+    return idx[lo:i + 1]
+
+
+def _win_zh(col):
+    """图上那段窗口的人话 —— 「2016-01–2026-07 共 127 个月」。
+
+    不写「近 N 个月」：窗口左端是钉死的 `WIN_FROM` 不是滚动近端，
+    底座 `Page.win_zh()` 出于同一个理由也不那么写。
+    """
+    win = _drawn_window(col)
+    if not win:
+        return '图上窗口'
+    return '%s–%s 共 %d 个月' % (win[0], win[-1], len(win))
+
+
+def _win_left():
+    """全页共用的窗口左端 = max(CSV 首月, WIN_FROM)。读不到 CSV 就退回 WIN_FROM。"""
+    first = _ROWS[0]['month'] if _ROWS else None
+    if first and _WIN_FROM:
+        return max(first, _WIN_FROM)
+    return first or _WIN_FROM or '序列首月'
+
+
+_WIN_LEFT = _win_left()
 
 
 # ── 近零基数列：判据与实现都在 build/yoy.py，本文件只报结果 ────────────────
@@ -320,14 +377,14 @@ def _drawn_window(col):
 # 底座对多列桶画 lines（只有水平值、没有次轴同比），于是那条会跳到几百个百分点的
 # 同比线根本不会被画出来。下面这个函数只负责把「哪几列」现算出来写进图注。
 #
-# ⚠️ 2026-08-07 修正：`win` 必须给**图上真正画出来的那 25 个月**，原先漏了这个参数。
+# ⚠️ 2026-08-07 修正：`win` 必须给**图上真正画出来的那段窗口**，原先漏了这个参数。
 # `yoy.near_zero_base` 的 docstring 明写：「有几个月不可读」只能数图上画出来的那些月 ——
 # 一条 2010 年近零、现在早已正常的序列，拿全历史计数就会永远背着这个标签，那是制造噪声。
-# 漏参数的实际后果（本页实测）：Tradeweb 互换/掉期期权 <1Y、美国投资级·全电子、
-# 美国高收益·全电子三列被判成近零基数（它们的近零月全在 2017–2019，窗口内占比 0.0%），
-# 而主板新上市家数（合计）反过来被漏掉（全历史 7.2% < 1/12，窗口内 16.0%）。
-# 页注据此对着 Tradeweb <1Y ADV 本月「604 vs 391 → +54.4%」喊「这是分母的故事」，
-# 那是一句实打实的假话。改后命中 8 条，全部落在一级市场那条腿上。
+# ⚠️ 2026-08-19 再修一次：`_drawn_window` 当时把「图上画出来的」写死成最后 25 个月，
+# 而底座早已改成 `WIN_FROM`。窗口一改命中集合就跟着改（本轮实测有列进、有列出）——
+# 这正说明「命中哪几列」不能写死在任何地方：它是窗口的函数，窗口是底座的常量。
+# 命中几条、是哪几条一律由 `_near_zero_cols()` 现算，本注释与页注都不写死；
+# 想看当期名单就 import 本模块打印 `_NEAR_ZERO`，页注里那条报的是同一个对象。
 def _near_zero_cols(cols):
     yoy = _yoy()
     if yoy is None:
@@ -401,8 +458,12 @@ def _mom_drawn(col, ratio=False):
             scale = float(np.nanmedian(np.abs(s.values.astype(float))))
             if np.isfinite(scale) and scale:
                 y = y.mask(s.shift(yoy.LAG).abs() < yoy.NEAR_ZERO_BASE_FRAC * scale)
-        # 底座画的窗口是最后 25 个月（build/single.py WIN_LONG），只数窗内。
-        return bool(np.isfinite(y.values.astype(float)[-25:]).any())
+        # 只数**图上那段窗口**内（`_drawn_window`，左端 = WIN_FROM）：窗外算得出
+        # 同比也没人看得见，而窗内一个点都没有时底座会退成 bars_labeled。
+        win = _drawn_window(col)
+        if win:
+            y = y.reindex(win)
+        return bool(np.isfinite(y.values.astype(float)).any())
     except Exception:
         return True
 
@@ -424,7 +485,7 @@ def _mom_evidence(col, ratio=False):
 
       · `kind` 必须与图上那条金线一致。比率列走 RATIO（百分点差），其余走 FLOW（%）。
         写错的代价是报出来的标准差与读者看到的线不是一回事。
-      · `win` 必须是**图上真正画出来的那 25 个月**（`_drawn_window`），不是全历史。
+      · `win` 必须是**图上真正画出来的那段窗口**（`_drawn_window`），不是全历史。
         `yoy.caliber_diff` 的 docstring 明写：全历史算出来的「符号相反的月份占比」
         会逼近 100%（任何一条几十年的序列总找得到一个相反的月），那个数没有信息量；
         而且慢腿的图右端比本页数据月早两三周，用错窗口报的是图外的事。
@@ -455,26 +516,36 @@ def _ev_short(col, ratio=False, ttm_meaningless=False):
     if not d:
         return ''
     win = d.get('_win') or []
-    span = ('近 %d 个月' % len(win)) if win else '窗口内'
+    # 不写「近 N 个月」：窗口左端是钉死的 WIN_FROM，不是滚动近端窗口
+    # （底座 `Page.win_zh()` 出于同一个理由也不那么写）。
+    span = ('%s–%s 共 %d 个月' % (win[0], win[-1], len(win))) if win else '图上窗口'
     sm, st = _fin(d.get('std_mom')), _fin(d.get('std_ttm'))
     if ratio:
-        return ('；本序列%s实测单月同比逐月标准差 %.1fpp，滚动口径对比率非法、没有可比数'
-                % (span, sm)) if sm is not None else ''
+        return ('；本序列在图上这段窗口（%s）实测单月同比逐月标准差 %.1fpp，'
+                '滚动口径对比率非法、没有可比数' % (span, sm)) if sm is not None else ''
     if ttm_meaningless:
-        return ('；本序列%s实测单月同比逐月标准差 %.1fpp，滚动口径不报数：'
-                '把 12 个月的换算率加起来不指代任何量' % (span, sm)) if sm is not None else ''
+        return ('；本序列在图上这段窗口（%s）实测单月同比逐月标准差 %.1fpp，'
+                '滚动口径不报数：把 12 个月的换算率加起来不指代任何量'
+                % (span, sm)) if sm is not None else ''
     floor = getattr(_yoy(), 'MIN_DIAG_MONTHS', 12)
     if (d.get('n') or 0) < floor:
         return ('；本序列实测两种口径都有值的月份只有 %d 个（< %d），量不出差异'
                 % (d.get('n') or 0, floor))
     if sm is None or st is None:
         return ''
-    return ('；本序列%s实测单月同比逐月标准差 %.1fpp、12 个月滚动 %.1fpp，符号相反 %d 个月'
+    return ('；本序列在图上这段窗口（%s）实测单月同比逐月标准差 %.1fpp、'
+            '12 个月滚动 %.1fpp，符号相反 %d 个月'
             % (span, sm, st, d.get('opposite_n') or 0))
 
 
 def _ev_long(col, ratio=False, ttm_meaningless=False):
-    """页尾口径说明里那一整段实测 —— 与 Exhibit 59/60 图注里底座那段同一套统计量。
+    """页尾口径说明里那一整段实测 —— 与末尾三张 `ttm_yoy` 图注里底座那段同源。
+
+    「同源」到什么程度要说准：同一条序列、同样先取两种口径的**交集**再比、同一段
+    窗口（本页 CSV 首月就是 `WIN_FROM`，所以底座那段的全序列 = 图上那段窗口）。
+    **差别在相邻月跳变这一项**：底座报的是最大值（`np.nanmax`），这里报的是中位数
+    （`caliber_diff` 的 `medjump_*`）。别写成「同一套统计量」——两个数不一样。
+    图号不写死：`ttm_yoy` 那几张排在页尾，加一组图就会整体后移。
 
     为什么落在页尾而不是图注：`gs_bar` 的 `note` 整段由 build/single.py 的
     `ex_single()` 拼装，spec 侧一个字都插不进去（`COL_KEYS` 与 `groups` 的允许键里
@@ -528,7 +599,8 @@ def _mom_tag(col, why, ratio=False, ttm_meaningless=False):
     第 2 条要求「标题里写明单月」**并且**「在图注说明为什么这里该用单月」。
     后半句本该落在图注里，但单列桶画出来的 `gs_bar`，其 `note` 整段由
     build/single.py 的 `ex_single()` 拼装，spec 侧一个字都插不进去 ——
-    `COL_KEYS` 与 `groups` 的允许键里都没有 note 这一项（build/single.py:103、757）。
+    `COL_KEYS` 与 `groups` 的允许键里都没有 note 这一项（见 build/single.py 里
+    `COL_KEYS` 的定义与 `_check_keys()` 的调用处）。
     所以理由跟着声明一起写进组名：组名会原样印进图标题，是这张图上**唯一**
     由本文件控制的字符串。页尾 `_NOTE_MOM_WHY` 再把同一批理由逐图列一遍。
 
@@ -553,10 +625,10 @@ def _mom_tag(col, why, ratio=False, ttm_meaningless=False):
 
 
 def _median_drawn(col):
-    """该列在**图上那 25 个月**里的中位数。页注要报的量级对比取这个数，不写死。
+    """该列在**图上那段窗口**里的中位数。页注要报的量级对比取这个数，不写死。
 
-    用画出来的窗口而不是全历史：拿来说事的是「这两条线放同一根轴上会不会把小的压平」，
-    那是读者眼前这 25 个月的事，不是 2017 年的事。
+    用画出来的窗口（`_drawn_window`）而不是全历史：拿来说事的是「这两条线放同一根
+    轴上会不会把小的压平」，那是读者眼前这张图的事 —— 窗口一改，这个数必须跟着改。
     """
     win = set(_drawn_window(col) or [])
     v = sorted(x for x in (_num(r, col) for r in _ROWS if r.get('month') in win)
@@ -568,13 +640,17 @@ def _median_drawn(col):
 
 
 def _scale_gap_txt(col_a, col_b):
-    """「近 25 个月中位 A vs B，差 N 倍」—— 两列量级差多少，现算。"""
+    """「图上这段窗口（…）中位 A vs B，差 N 倍」—— 两列量级差多少，现算。
+
+    窗口取 `col_a` 的（同组同单位、右端同一个月），一并印出来 ——
+    「中位数」离开窗口就没有定义，只报数字不报窗口正是上一版过期的原因。
+    """
     a, b = _median_drawn(col_a), _median_drawn(col_b)
     if not a or not b:
         return '两列的中位量级读不到（缺 CSV）'
     hi, lo = (a, b) if abs(a) >= abs(b) else (b, a)
-    return ('近 %d 个月中位 %s vs %s，差 %.1f 倍'
-            % (_WIN_LONG, ('%.1f' % a), ('%.1f' % b), abs(hi) / abs(lo)))
+    return ('图上这段窗口（%s）中位 %s vs %s，差 %.1f 倍'
+            % (_win_zh(col_a), ('%.1f' % a), ('%.1f' % b), abs(hi) / abs(lo)))
 
 
 def _n_obs(col):
@@ -586,6 +662,19 @@ def _n_obs(col):
 
 # 滚动同比的第一个点要 24 期（12 期滚动合计 + 再往前 12 期），**连成线**要 25 期。
 _TTM_FIRST, _TTM_LINE = 24, 25
+
+
+def _repo_sides_n_zh():
+    """RepoClear 两列清算边数各有几期 —— 现算。
+
+    写死成「12 期」会在官方那个滚动窗口一变长就成假话，而这句话正是用来解释
+    「为什么这两张退成了 bars_labeled」的，说错等于给读者一个不成立的理由。
+    """
+    ns = [n for n in (_n_obs('repoclear_ltd_cleared_trade_sides_count'),
+                      _n_obs('repoclear_sa_cleared_trade_sides_count')) if n]
+    if not ns:
+        return '（期数读不到）'
+    return f'{ns[0]} 期' if len(set(ns)) == 1 else '、'.join(f'{n} 期' for n in ns)
 
 
 def _short_hist_why(col):
@@ -666,7 +755,8 @@ GROUPS = [
 
     # ⚠️ 这三列的 fmt 是 `f0`（不带千分位）而不是隔壁几组的 `f0c`，**这是几何不是口味**。
     # 这一桶画成 `lines_endlabels`，左端数值标签 anchor=end 落在 `M.l − 10 − tickW`
-    # （charts.js:1450），而纵轴标题是竖排画在 `fscale(13)` 上的 —— 两者之间只剩
+    # （charts.js 里 `lines_endlabels` 端点标签那段的 `var lx = M.l - 10 - (tickW || 26)`），
+    # 而纵轴标题是竖排画在 `fscale(13)` 上的 —— 两者之间只剩
     # 一条固定宽度的走廊。窗口拉到 2016-01（127 期）之后左端标签变成 2016-01 的
     # 七位数日均笔数，带千分位是 9 个字符，正好把这条走廊吃穿：实测（Chrome 151，
     # 浅色）1280px 视口下压住轴标题「trades/day」56.4px²、768px 下 58.3px²，两端点
@@ -680,12 +770,12 @@ GROUPS = [
     # 为什么不是别的办法：
     #   · 小数位不能动 —— 这三列本来就是整数笔数，`f0c` 与 `f0` 的位数完全相同，
     #     换的只有分隔符；末尾核对表走 `single.fmt_val()`，那一份**无论 fmt 是
-    #     f0 还是 f0c 都补千分位**（见 single.py:253 的 docstring），所以核对表
+    #     f0 还是 f0c 都补千分位**（见 `single.fmt_val()` 的 docstring），所以核对表
     #     与汇总表逐字节不变，仍是「1,270,124」。变的只有图上标签与图内表格视图。
     #   · 不能靠 `build/chartscale.py` 的显示缩放（隔壁 Ex 6「（千）」/ Ex 8「（百万）」
     #     就是它做的）：它的预算模型按 FS=1 算，本图标签 35.6px < 预算 39.5px，判「不需要」，
     #     而真实渲染的通栏字号 FS=1.70 把标签放大到 60.5px、走廊却只跟着放大一部分
-    #     （charts.js:1450 那个 `− 10` 是写死的、不随 FS 长）。那是底座的口子，不在本页改。
+    #     （上面那行 `M.l - 10` 里的 `− 10` 是写死的、不随 FS 长）。那是底座的口子，不在本页改。
     #   · 不能改 `unit` 让轴标题短一点：竖排文字的**横向**占位是字高、与字数无关
     #     （实测本页 'trades/day' 与 '% of UK lit order book' 的横向墨迹都是 9.6px）；
     #     而两个端点标签正好一上一下夹住轴标题的中心，缩短它只会让它更居中，救不了。
@@ -859,17 +949,28 @@ GROUPS = [
 
     # ⚠️ 2026-08-07 拆成两组，理由是**口径**不是排版。原来是「美国国债 / 按揭 /
     # 欧洲国债」一组 + 「其他政府债」单列一组，而单列成桶 ⇒ 底座画 gs_bar ⇒
-    # 次轴写死是**单月**同比。其他政府债有 115 期、滚动口径完全算得出来，
-    # 按 CONTRACT §6.1 第 1 条默认就该用滚动；第 2 条又要求用单月必须给出**口径上的**
-    # 理由，而它给不出（不是比率、历史不短、命题也不是「一个月之内会怎样」）——
+    # 次轴写死是**单月**同比。其他政府债的期数（`_n_obs`，现算）足够，滚动口径完全
+    # 算得出来，按 CONTRACT §6.1 第 1 条默认就该用滚动；第 2 条又要求用单月必须给出
+    # **口径上的**理由，而它给不出（不是比率、历史不短、命题也不是「一个月之内会怎样」）——
     # 原先标题上写的「留单月供逐月核对」是**用途**理由，不在第 2 条允许的两类里。
     # 与其在标题上硬编一个站不住的理由，不如让它不再单列成桶（同 Main Market /
-    # AIM 增发笔数那一组的处置）：欧洲国债与其他政府债同单位（USD bn/day）、
-    # 近 25 个月中位 58.4 vs 11.4（差 5.1 倍，远在本文件「差 20 倍才拆组」之内），
-    # 并成一个桶后底座改画 lines —— 只有水平值、没有次轴同比。
+    # AIM 增发笔数那一组的处置）：欧洲国债与其他政府债同单位（USD bn/day）、量级差
+    # 远在本文件「差 20 倍才拆组」之内；并成一个桶后底座改画 lines ——
+    # 只有水平值、没有次轴同比。
     # 于是这一页上不再出现一条无法辩护的单月同比线，而滚动口径那张（页尾 ttm_yoy）
     # 仍然在，趋势判断看它。
-    # 美国国债 / 按揭（近 25 个月中位各 240.2）与它们差 21 倍，所以留在自己那一组。
+    # 美国国债 / 按揭与其他政府债的量级差超过 20 倍，所以留在自己那一组。
+    # ⚠️ **这里一个中位数都不写**：拆组判据是「两列中位差 20 倍」，而中位数只在窗口里
+    # 有定义，窗口一改（2026-08-18 就从「最近 25 期」改成 WIN_FROM 起）四个数全变一遍
+    # —— 上一版与上上一版分别写死过 58.4 / 11.4 / 240.2 / 240.2 与 31.6 / 4.7 /
+    # 119.4 / 178.9 两套，都过期了，而注释过期没有任何东西会报错。
+    # 要复算就跑一次现算的那份（页面上印的也是它）：
+    #   python3 -c "import importlib.util as u; s=u.spec_from_file_location('m','build/specs/lseg.py'); \
+    #               m=u.module_from_spec(s); s.loader.exec_module(m); \
+    #               print(m._scale_gap_txt('tradeweb_adv_eu_govt_bonds_usd_bn', \
+    #                                      'tradeweb_adv_other_govt_bonds_usd_bn')); \
+    #               print(m._median_drawn('tradeweb_adv_us_govt_bonds_usd_bn'), \
+    #                     m._median_drawn('tradeweb_adv_mortgages_usd_bn'))"
     {'zh': 'Tradeweb 利率现金分项 ADV·美国国债与按揭', 'cols': [
         {'col': 'tradeweb_adv_us_govt_bonds_usd_bn', 'zh': 'Tradeweb 美国国债 ADV',
          'unit': 'USD bn/day', 'fmt': 'f1'},
@@ -1468,9 +1569,13 @@ def _near_zero_note():
                                                                     NEAR_ZERO_MARK)
         + '判据与实现都在 <code>build/yoy.py</code> 的 <code>near_zero_base()</code>：'
         '基期绝对值小于本序列|值|中位数 15% 的月份算「近零基数月」，'
-        '<b>在图上画出来的那 25 个月里</b>占比 ≥ 1/12 → 整条序列别画同比。'
-        '（窗口这一步很要紧：拿全历史计数会让一条 2018 年近零、现在早已正常的序列'
-        '永远背着这个标签 —— 本页上一版正是漏了它，把三条 Tradeweb 列错标成近零基数。）'
+        '<b>在图上画出来的那段窗口里</b>（左端 = 底座钉死的 <code>WIN_FROM</code>，'
+        '本页 ' + _WIN_LEFT + '；右端 = 该列自己最后一个有值的月）'
+        '占比 ≥ 1/12 → 整条序列别画同比。'
+        '（窗口这一步很要紧，而且它<b>跟着图窗走</b>：图窗一变，'
+        '哪些近零月「读者看得见」就跟着变，这份名单也跟着变 —— '
+        '那不是判据变了，是画出来的月份变了。拿全历史计数则相反：'
+        '一条早年近零、如今早已正常的序列会永远背着这个标记。）'
         '本页 import 期实测命中 <b>' + str(len(_NEAR_ZERO)) + '</b> 条：'
         + (names or '（无）') + '。'
         '<b>图上怎么落实</b>：靠<b>排版</b>而不是开关 —— 把它们放进 2–5 列同单位的组，'
@@ -1556,6 +1661,44 @@ _NOTE_TTM_OTHER_GOVT = (
 )
 
 
+# ── 「水平值 + 12 个月滚动同比」那几张（底座 kind='ttm_yoy'，一律排在页尾）──────
+# **必须定义在这里、而不是写在 SPEC 里**：页尾 `_NOTE_MOM_WHY` 要说「与页尾那几张
+# 图注里底座那段同源」，而「那几张」是几张只能现数这个列表 —— 上一版在页注里写死
+# 「三张」（再上一版写死「Exhibit 59 / 60」，当时页面上其实有 58/59/60 三张，
+# 漏了一张）。列表长度是这一页唯一说得准的判据，所以把定义提到用它的地方之前。
+#
+# 三条 level 列的口径各自在 note 里交代；两条 monthly_total 的都不给
+# weight_col / total_col（理由见 _NOTE_NO_DECOMP_TRADEWEB：给了就会撞上 1e-6 的
+# 对账阈值而整页硬失败）。`lse_orderbook_value_gbp_m` 在 groups 里是三条线之一、
+# 不是单桶 gs_bar，所以那张滚动图不会与任何一张单月同比图重复。
+_TTM_YOY = [
+    {'zh': 'Tradeweb 全公司成交额',
+     'granularity': 'monthly_total',
+     'level': {'col': 'tradeweb_volume_total_usd_tn', 'zh': '当月成交额',
+               'unit': 'USD tn/month', 'fmt': 'f1'},
+     'note': _NOTE_TTM_TRADEWEB},
+
+    {'zh': 'LSE 主板订单簿成交额',
+     'granularity': 'monthly_total',
+     'level': {'col': 'lse_orderbook_value_gbp_m', 'zh': '当月成交额',
+               'unit': 'GBP mn/month', 'fmt': 'f0c'},
+     'note': _NOTE_TTM_ORDERBOOK},
+
+    # 它在 groups 里是**单列桶** ⇒ 底座画 gs_bar ⇒ 次轴写死是单月同比，
+    # 而这一列的期数（见 _NOTE_TTM_OTHER_GOVT，现算）足够，滚动口径完全算得出来：
+    # 按 §6.1 第 1 条默认就该用滚动，第 2 条又要求用单月必须给出口径上的理由 ——
+    # 它给不出。既然 spec 侧改不了 gs_bar 次轴的口径，就在这里把默认口径补出来。
+    # granularity 写 'daily_avg'（这一列是 ADV），**不给 weight_col**：
+    # CONTRACT §6.3 明写日均序列不要乘回交易日；何况 Tradeweb 那列加权天数是
+    # **集团级**的、不是这一个分项的，拿它还原会引进一个方向未知的偏差。
+    {'zh': 'Tradeweb 其他政府债 ADV',
+     'granularity': 'daily_avg',
+     'level': {'col': 'tradeweb_adv_other_govt_bonds_usd_bn', 'zh': '当月日均成交额',
+               'unit': 'USD bn/day', 'fmt': 'f1'},
+     'note': _NOTE_TTM_OTHER_GOVT},
+]
+
+
 # ── 三条「底座生成、spec 改不到」的抵消说明 ────────────────────────────────
 # 这三条讲的都是同一类事：页面上某句话由 build/single.py 拼装，本轮不允许改底座，
 # 于是只能在这里把它更正过来。写法上一律**指名道姓说清楚是哪一句、为什么改不到**，
@@ -1604,63 +1747,78 @@ def _slow_truth_note():
     )
 
 
-# ── 最后一根柱的数值贴着右轴刻度：现算，且明说本轮为什么不修 ────────────────
+# ── 单列柱图两端那根柱的数值贴着轴刻度：只讲症状与成因，**不在页面上点名单** ──────
 # 这条与 _NOTE_AXIS_SCALE 是同一类东西（几何缺口，spec 侧修不了），所以挨着放。
 #
-# 症状：三张**单列**柱图（gs_bar）的最后一根柱，柱顶数值标签的右半边伸进右轴刻度
-# 那一列，与恰好同高的那根刻度叠在一起。
-# 成因（照 assets/charts.js 复算，2026-08-19 用 tools/visual_qa.py 的墨迹口径实测过）：
-#   柱顶标签居中钉在 Xc(n−1) = M.l + pw − band/2，右轴刻度画在 M.l + pw + fscale(6)，
-#   ⇒ 标签总宽的预算 = 2 × (fscale(6) + band/2)。
-#   窗口从 25 期拉到 2016-01（127 期）之后 band 掉了五分之四：
-#   1280px 通栏 band 7.33px ⇒ 预算 27.7px；768px 单栏 band 4.46px ⇒ 预算 22.8px。
-#   而本月三个末值实测宽 34.4 / 30.4 / 30.4px（字号 12.15–13.6px，引擎的 FS 随卡片宽
-#   放大字号但 band 不跟着长），故各越界 5.8 / 3.8 / 3.8px（768px 口径）。
-# 为什么不砍一位小数（spec 侧唯一能让标签变窄的杠杆）——**两条独立的理由**：
-#   ① 砍完仍然压。实测（把 payload 的 fmt 临时换成 pct0 / f2 / f1 再量）：
-#      768px 下「66%」「1.17」「23.1」仍分别越界 0.80 / 0.40 / 0.40px，
-#      只是重叠面积掉到 visual_qa 的 8px² 门限以下 —— 那是把告警藏起来，不是把字分开。
-#   ② 小数位是列的 `fmt`，会连**末尾核对表**一起砍，而这三列的 fmt 恰好就是
-#      源表自己的精度：series/lseg.csv 里份额存 1 位（65.9）、加权天数存 2 位（23.06），
-#      砍了核对表就再也对不上官方披露那一格。换算率源表存 4 位、页面已经按 f3 收到
-#      3 位，再砍是第二次丢精度。
+# 症状：单列柱图画在两端的那根柱，柱顶数值标签的一半伸进轴刻度那一列，
+# 与恰好同高的那根刻度叠在一起（末柱压右轴、首柱压左轴）。
+#
+# ⚠️ **为什么这里不写「涉及哪几张」** —— 不是懒，是本文件算不准，任何名单都只能靠人肉维护：
+#   · 权威判据是构建期 `chartscale.audit()` 打印的 ⚠️ 行，而 audit 量的是
+#     `chartscale.fix_all()` **显示缩放跑完之后**的标签；缩放倍数按「列 ↔ 图」二部图的
+#     **连通分量**定，是整页范围的计算，本文件（只看得见自己这一列）复现不了。
+#   · 实测过这条路走不通：在本文件里用 `mrwin.layout()` + `mrwin.label_clash()`
+#     逐列复算（与 audit 同一把尺子 `chartscale._budget`），2026-08-19 得到 5 张 gs_bar，
+#     比构建期实报的 4 张多出「主板/AIM 总市值」那一张 —— 它在真实 payload 里被缩放成
+#     「（千）」之后标签就够短了。同一把尺子、不同的输入，名单就分叉。
+#   · 历史上这份名单已经过期两次（上一版写「三张」漏了 Turquoise 泛欧成交份额；
+#     再上一版写死的是另外三张）。写死一次就会过期一次，而页面不会因此报错。
+#   ⇒ 当期究竟命中哪几张，跑 `python3 build/single.py lseg` 看 ⚠️ 行 —— 那份名单
+#     跟着数据走。页面上只讲「看见这个不是渲染出错」，那句话与图号无关，不会过期。
+#
+# 成因（照 assets/charts.js 复算）：柱顶标签居中钉在 Xc(i) 上，轴刻度画在绘图区边缘
+# 外侧 fscale(6) 处 ⇒ 标签总宽的预算 = band + 12 − 2 × LAB_GAP（`chartscale._budget`）。
+# 期数越多 band 越窄，而标签字号只随卡片宽度走、不随 band 缩，于是预算先被吃穿。
+#
+# 为什么不动小数位：spec 侧能把标签变短的杠杆都是「把数写短」这一类 —— 砍 `fmt` 的
+# 小数位，或者给列加 `scale` 换个量级。两条都会连**末尾核对表**一起改掉，而这几列的
+# fmt 恰好就是源表自己的精度（series/lseg.csv 里份额存 1 位、加权交易日数存 2 位），
+# 核对表的用途正是与官方披露逐格对账，动了就对不上那一格。
+# （上一版页面上还写着第二条理由「砍完仍然压，只是掉到检测门限以下」—— 那句话是对
+#  **旧的那份三列名单**在 768px 下量的，名单换过之后没有人重量过；而按构建期那把尺子
+#  复算，pct1→pct0 / f3→f2 / f2→f1 之后那几张都回到了预算之内。
+#  一句没复算过的实测不留在页面上。）
 # 真正的修法在共用引擎：charts.js 已经为「次轴末点读数 vs 右轴刻度」写了一段
-# 「刻度让位」（:1810 起，撞上就把那根刻度删掉），只是没把柱顶数值标签也算进
+# 「刻度让位」（`dropClashingTicks`，撞上就把那根刻度删掉），只是没把柱顶数值标签也算进
 # priorityLabs。本轮不改共用件，所以这条缺口留在页面上，写出来免得读者当成渲染出错。
-def _last_bar_label_note():
-    trio = (('lse_lit_uk_share_pct', 'pct1', 'LSE 英国 Lit 订单簿份额'),
-            ('gbp_eur_rate', 'f3', '月报自印 GBP/EUR 换算率'),
-            ('tradeweb_trading_days_blended', 'f2', 'Tradeweb 加权交易日数'))
-    head = ('<b>三张单列柱图最后一根柱的柱顶数值，与右轴刻度贴在一起。'
-            '这不是渲染出错，也不是两个数粘成了一个 —— 左边那个是这根柱的值，'
-            '右边那个是右轴的刻度，两个都是对的。</b>')
+def _src_dec_zh():
+    """「series/lseg.csv 里份额存 1 位、加权交易日数存 2 位」—— 位数现数 CSV，不写死。
+
+    这是「不能砍小数位」那条理由的**依据**：说源表存几位，就得真去数源表存几位。
+    数的是该列所有取值里小数位最多的那个（官方会把 65.0 印成 65，看单个值会数少）。
+    """
     bits = []
-    for col, fmt, zh in trio:
-        s = _series(col)
-        if s is None:
-            continue
-        s = s.dropna()
-        if s.empty:
-            continue
-        v = _fmt_like(float(s.iloc[-1]), fmt) + ('%' if fmt.startswith('pct') else '')
-        bits.append(f'{_esc(zh)}（{s.index[-1]} 的「{v}」）')
-    who = ('涉及' + '、'.join(bits) + '三张。') if len(bits) == 3 else ''
-    return (head + who +
-            '成因是几何：柱顶数值居中钉在自己那根柱上，最后一根柱的柱心离绘图区右缘'
-            '只有半格宽，而右轴刻度就画在右缘外侧一点点。本页窗口从最近 25 期拉到 '
-            '2016-01 起之后，同样的卡片宽度上要塞进四五倍多的柱，一格柱窄了几倍，'
-            '标签的字号却不跟着缩（<code>assets/charts.js</code> 的字号只随卡片宽度走），'
-            '于是标签的右半边伸出了绘图区。窄屏（单栏）比宽屏更明显，同一个原因。'
-            '<b>本轮没有把它压下去，理由有两条，都是实测过的：</b>'
-            '① spec 侧唯一能让标签变窄的杠杆是砍掉一位小数，而把这三个数各砍一位再量一遍，'
-            '窄屏下仍然压在刻度上，只是重叠面积小到检测门限以下 —— 那是把告警藏起来，'
-            '不是把字分开；② 小数位是列的 <code>fmt</code>，砍了会连末尾核对表一起砍，'
-            '而这三列的位数恰好就是源表自己的精度（份额 1 位、加权天数 2 位），'
-            '核对表的用途正是与官方披露逐格对账，不能为了图上少 4px 重叠去动它。'
-            '<b>真正的修法在共用引擎</b>：<code>charts.js</code> 已经为次轴末点读数写了'
-            '「撞上就让刻度让位」的逻辑，只是没把柱顶数值也算进去；'
-            '本轮不改共用件，所以这条缺口仍在页面上。'
-            '读数有疑问时走右上角「表格」或页尾核对表，那两处不受排版影响。')
+    for col, zh in (('lse_lit_uk_share_pct', '份额'),
+                    ('tradeweb_trading_days_blended', '加权交易日数')):
+        d = 0
+        for r in _ROWS:
+            v = (r.get(col) or '').strip()
+            if '.' in v:
+                d = max(d, len(v.split('.', 1)[1]))
+        bits.append('%s存 %d 位' % (zh, d))
+    return '<code>series/lseg.csv</code> 里' + '、'.join(bits) if bits else '见 CSV'
+
+
+def _last_bar_label_note():
+    return (
+        '<b>单列柱图<u>两端</u>那根柱的柱顶数值，会与轴刻度贴在一起。'
+        '这不是渲染出错，也不是两个数粘成了一个 —— 一个是这根柱的值，'
+        '另一个是轴刻度，两个都是对的。</b>'
+        '成因是几何：柱顶数值居中钉在自己那根柱上，而两端那根柱的柱心离绘图区边缘'
+        '只有半格宽，轴刻度就画在边缘外侧一点点（末柱对右轴、首柱对左轴，'
+        '同一个算式的两头）。一张图上塞的期数越多，一格柱越窄，'
+        '而标签的字号只随卡片宽度走、不跟着 band 缩'
+        '（<code>assets/charts.js</code>），于是标签有一半伸出了绘图区；'
+        '窄屏（单栏）比宽屏更明显，同一个原因。'
+        '<b>本轮没有把它压下去</b>：spec 侧能把标签变短的杠杆都是「把数写短」这一类 ——'
+        '砍列的 <code>fmt</code> 小数位，或者给列加 <code>scale</code> 换个量级；'
+        '两条都会连<b>末尾核对表</b>一起改掉。而本页这类柱图的位数往往就是源表自己的精度'
+        '（' + _src_dec_zh() + '），'
+        '核对表的用途正是与官方披露逐格对账，动了就对不上那一格。'
+        '<b>真正的修法在共用引擎</b>：<code>charts.js</code> 已经为次轴末点读数写了'
+        '「撞上就让刻度让位」的逻辑（<code>dropClashingTicks</code>），'
+        '只是没把柱顶数值也算进去；本轮不改共用件，所以这条缺口仍在页面上。'
+        '读数有疑问时走右上角「表格」或页尾核对表，那两处不受排版影响。')
 
 
 _NOTE_LAST_BAR_LABEL = _last_bar_label_note()
@@ -1690,6 +1848,40 @@ _NOTE_AXIS_SCALE = (
     '汇总表与末尾核对表不受缩放影响，仍是官方原始量级。'
 )
 
+def _ttm_count_zh():
+    """「页尾 N 张『水平值与 12 个月滚动同比』」—— 张数现数 `_TTM_YOY`，不写死。
+
+    上一版写死「三张」，再上一版写死「Exhibit 59 / 60」而页面上其实有三张 ——
+    同一句话已经错过两轮。这里改成数列表：加一条 ttm_yoy 这句话自己跟着变。
+    """
+    n = len(_TTM_YOY)
+    if n == 2:                       # 量词前用「两」不用「二」
+        return '两张'
+    return ('%s张' % '一二三四五六七八九十'[n - 1]) if 1 <= n <= 10 else ('%d 张' % n)
+
+
+def _win_same_zh():
+    """「底座那段与图上那段是不是同一段窗口」—— 现判，不假设。
+
+    底座的 `ttm_yoy` 图注量的是**整条序列**（`self.df.index` 全长），本文件的
+    `_ev_long()` 量的是 `_drawn_window()`（左端 = max(CSV 首月, WIN_FROM)）。
+    两者相等**只在 CSV 首月不早于 WIN_FROM 时成立** —— 今天成立（两者都是 2016-01），
+    但 series/lseg.csv 哪天补进更早的历史就不成立了，而页面不会因此报错。
+    所以这里按 CSV 现判，两种情况各写各的话。
+    """
+    first = _ROWS[0]['month'] if _ROWS else None
+    if not first or not _WIN_FROM:
+        return '（窗口是否同一段本次判不了：读不到 CSV 首月或底座的 WIN_FROM。）'
+    if first >= _WIN_FROM:
+        return ('窗口也是同一段 —— 本页 CSV 首月（' + first + '）不早于底座钉死的 '
+                '<code>WIN_FROM</code>（' + _WIN_FROM + '），'
+                '所以底座量的整条序列与图上画出来的那段重合。')
+    return ('<b>窗口不同</b> —— 本页 CSV 首月（' + first + '）早于底座钉死的 '
+            '<code>WIN_FROM</code>（' + _WIN_FROM + '），底座量的是整条序列、'
+            '下面量的只是图上画出来的那段（左端 ' + _WIN_LEFT + '），'
+            '两侧的数因此不该互相印证。')
+
+
 def _mom_why_note():
     """页尾那条「用了单月同比的图，逐张写明理由 + 本序列实测」。
 
@@ -1710,24 +1902,30 @@ def _mom_why_note():
         '允许键里都没有 note 这一项）。所以理由与一句话实测写进<b>标题</b>'
         '（组名会原样印进图标题），完整实测段落列在下面。'
         '<b>这是妥协不是等价物：要让实测段真的落进每张图自己的图注，必须改底座。</b>'
-        '实测口径与 Exhibit 59 / 60 图注里底座那段完全一致 —— 同一套统计量、'
-        '同样先取两种口径的交集再比、窗口都是图上真正画出来的那 25 个月。'
+        '实测口径与页尾' + _ttm_count_zh() + '「水平值与 12 个月滚动同比」'
+        '图注里底座那段<b>同源但不全同</b>：'
+        '同一条序列、同样先取两种口径的<b>交集</b>再比；' + _win_same_zh() +
+        '<b>还有一处差别在相邻月跳变这一项</b> —— 底座报的是最大值，下面报的是中位数，'
+        '两个数不该互相印证。'
 
-        '① <b>两张头条同比图</b>（Tradeweb 月成交额 / Tradeweb ADV 的「：同比」）'
+        '① <b>两张头条同比图</b>（Tradeweb 月成交额 / Tradeweb ADV 的「：单月同比」）'
         '画的是<b>单月同比</b>。用途是逐月核对当月读数，与页顶数据条、汇总表 y/y 列同口径；'
         '同一列的默认滚动口径本页也有 —— 页尾「Tradeweb 全公司成交额：水平值与 12 个月'
         '滚动同比」那张，趋势判断看它。'
         '月成交额：' + _ev_long('tradeweb_volume_total_usd_tn') +
         'ADV：' + _ev_long('tradeweb_adv_total_usd_bn') +
-        '<b>⚠️ 已知缺口（本轮没修）：这两张的标题只写「：同比」、没写 §6.1 第 2 条'
-        '要求的「单月」，它们自己的图注也没有上面这两段实测。</b>'
-        '标题与图注都由 <code>build/single.py</code> 的 <code>ex_yoy()</code> 写死'
-        '（<code>title = f\'{c["zh"]}：同比\'</code>），而头条列在 spec 里只有 '
-        'col / zh / unit / fmt 四个允许键 —— 把「单月」塞进 <code>zh</code> 能改到标题，'
-        '但同一个 <code>zh</code> 还会印到页顶数据条、汇总表行标签、末尾核对表表头，'
-        '以及 Exhibit 2/3（全历史）与两张季节性图的标题上，那五处写「单月」全是错的。'
+        '<b>⚠️ 剩下的缺口（本轮没修）：这两张<u>标题里已经写了「单月」</u>'
+        '（底座 <code>build/single.py</code> 的 <code>ex_yoy()</code> 现在写的是 '
+        '<code>title = f\'{c["zh"]}：单月同比\'</code>），'
+        '§6.1 第 2 条的前半句已经满足；缺的是后半句 —— 它们自己的图注里没有上面这两段'
+        '实测。</b>那段图注同样由 <code>ex_yoy()</code> 拼装、spec 侧插不进字，'
+        '而头条列在 spec 里只有 col / zh / unit / fmt 四个允许键：'
+        '往 <code>zh</code> 里塞字能改到标题，但同一个 <code>zh</code> 还会印到'
+        '页顶数据条、汇总表行标签、末尾核对表表头，以及同一列自己的'
+        '「全历史与近 3 年分位带」与「与同月常态比」两张图的标题上 ——'
+        '那几处画的都不是同比，不该带口径词。'
         '所以本轮<b>不改</b>，缺口留在这里明写：要补必须动 <code>ex_yoy()</code>。'
-        '在补上之前，这两张图的口径以本条与页尾的口径说明为准。'
+        '在补上之前，这两张图的实测以本条为准。'
 
         '② <b>两张成交份额</b>（LSE 英国 Lit、Turquoise 泛欧）：比率不做滚动合计也不做'
         '滚动均值（§6.1 第 5 条），单月的<b>百分点差</b>是它唯一合法的口径 ——'
@@ -1769,7 +1967,8 @@ def _mom_why_note():
         '原先各自单列成柱图、因而被迫画单月同比，而它们给不出口径上的理由 ——'
         '上一轮已把两列并成同单位的一张折线图，页面上不再出现那两条线。'
 
-        '⑧ <b>LCH RepoClear 的两列清算边数</b>目前只有 12 期，底座算不出任何一个月的同比，'
+        '⑧ <b>LCH RepoClear 的两列清算边数</b>目前只有 ' + _repo_sides_n_zh() + '，'
+        '底座算不出任何一个月的同比，'
         '<code>gs_bar</code> 自己退成了不带次轴的 <code>bars_labeled</code>，'
         '所以它们的组名里<b>没有</b>「次轴：单月同比」那句声明 ——'
         '声明由 <code>_mom_drawn()</code> 按数据现判，不写死，避免在页面上印一句假话。'
@@ -1788,7 +1987,7 @@ SPEC = {
     'title':  '伦敦证券交易所集团（LSEG）月度经营指标',
     'csv':    'lseg.csv',
     # ⚠️ `ccy` 不是「集团财报的记账本币」，是**印在副标题与第 1 条 notes 上的那句话**
-    # （底座的模板是「本币 {ccy}」，见 build/single.py:2143 与 :2173）。
+    # （底座的模板是「本币 {ccy}」，见 build/single.py 里 subtitle 与 notes 第 1 条的拼装处）。
     # 原先这里写 'GBP'，于是副标题印「本币 GBP」而紧挨着的头条数据条印
     # 「67.5 USD tn/month」「2,928 USD bn/day」—— 页面自己跟自己打架，
     # 第 1 条 notes 还跟着写死「本页只按本币标注」。
@@ -1837,37 +2036,8 @@ SPEC = {
     }],
 
     # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
-    # 两条腿各一张：Tradeweb（快腿、头条）与 LSE 订单簿（慢腿、伦敦现货旗舰）。
-    # 两条 level 列都是**当月合计**口径，所以两张图都不给 weight_col / total_col
-    # （理由见 _NOTE_NO_DECOMP_TRADEWEB：给了就会撞上 1e-6 的对账阈值而整页硬失败）。
-    # `lse_orderbook_value_gbp_m` 在 groups 里是三条线之一、不是单桶 gs_bar，
-    # 所以这张滚动图不会与任何一张单月同比图重复。
-    'ttm_yoy': [
-        {'zh': 'Tradeweb 全公司成交额',
-         'granularity': 'monthly_total',
-         'level': {'col': 'tradeweb_volume_total_usd_tn', 'zh': '当月成交额',
-                   'unit': 'USD tn/month', 'fmt': 'f1'},
-         'note': _NOTE_TTM_TRADEWEB},
-
-        {'zh': 'LSE 主板订单簿成交额',
-         'granularity': 'monthly_total',
-         'level': {'col': 'lse_orderbook_value_gbp_m', 'zh': '当月成交额',
-                   'unit': 'GBP mn/month', 'fmt': 'f0c'},
-         'note': _NOTE_TTM_ORDERBOOK},
-
-        # 本轮新增。它在 groups 里是**单列桶** ⇒ 底座画 gs_bar ⇒ 次轴写死是单月同比，
-        # 而这一列有 115 期、滚动口径完全算得出来：按 §6.1 第 1 条默认就该用滚动，
-        # 第 2 条又要求用单月必须给出口径上的理由 —— 它给不出。既然 spec 侧改不了
-        # gs_bar 次轴的口径，就在这里把默认口径补出来，两张图由底座在页尾各自点名。
-        # granularity 写 'daily_avg'（这一列是 ADV），**不给 weight_col**：
-        # CONTRACT §6.3 明写日均序列不要乘回交易日；何况 Tradeweb 那列加权天数是
-        # **集团级**的、不是这一个分项的，拿它还原会引进一个方向未知的偏差。
-        {'zh': 'Tradeweb 其他政府债 ADV',
-         'granularity': 'daily_avg',
-         'level': {'col': 'tradeweb_adv_other_govt_bonds_usd_bn', 'zh': '当月日均成交额',
-                   'unit': 'USD bn/day', 'fmt': 'f1'},
-         'note': _NOTE_TTM_OTHER_GOVT},
-    ],
+    # 名单与条数见 `_TTM_YOY`（定义在上面，页注要报「页尾有几张」时现数它，不写死）。
+    'ttm_yoy': _TTM_YOY,
 
     # notes 的顺序就是页面上的顺序，而底座会先塞 9 条自己的（数据源 / 数据月 / 慢腿 /
     # 存量与流量 / 图型规则 / 同比口径 / 汇总表 / 显示缩放 / 核对表），本文件这几条接在后面。

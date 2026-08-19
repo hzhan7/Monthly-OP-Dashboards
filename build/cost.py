@@ -24,6 +24,7 @@ CSV 列义：_r = reported（报告口径）, _a = adjusted（核心口径，剔
 import datetime
 import json
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -466,6 +467,43 @@ def main():
     ex = []
     capped = []          # 真正截了轴的 exhibit 编号，「口径与方法说明」那一条据此生成
 
+    # ── Ex2 图注要回答「本页 comp 图是不是同一个左端」——这句话上一轮写成了
+    # 「（全页 comp 图同一起点）」，判据却只是 `HIST_START == WIN_START` 这两个常量相等。
+    # 常量相等 ≠ 图相等：Exhibit 10 的电商 comp 这一轮放宽到 Sep-17（两条腿的数据下限），
+    # 那句括注当场变成假话。改成现算 —— 把本页每一条 comp 序列的首值都扫一遍，
+    # 谁够不到这个左端就点谁的名（点**列名**不点图号：列名在 CSV 里，改图序也不会失效）。
+    #
+    # ⚠️ 第二次改：上一版写的是「8 条在 2016-01 就有值；另 2 条要更晚才开始」。
+    # 「在 2016-01 就有值」是真的，但读起来像「2016-01 是它们的第一个月」—— 实际那 8 条
+    # 自 Dec-15 就有值，Exhibit 2 画 127 格是把 Dec-15 那一格真实数据切掉了，页面上
+    # 一句话都没有。改成按**首值月份**分组逐条列，是切是缺一眼看得出来。
+    COMP_COLS = ['tc_a', 'tc_r', 'us_a', 'us_r', 'ca_a', 'ca_r', 'oi_a', 'oi_r', 'ec_a', 'ec_r']
+    _w0 = pd.Period(WIN_START, 'M')
+    # COMP_REACH 只挂在 Exhibit 2 上，而 Exhibit 2 的左端是 HIST_START（不是 win() 的
+    # WIN_START）。两个常量今天同值，但拿 WIN_START 去描述 Exhibit 2 的左端就是又一处
+    # 「常量相等 ≠ 图相等」——按这张图自己真正用的那个常量说。
+    _h0 = pd.Period(HIST_START, 'M')
+    _comp_first = {c: df[c].dropna().index[0] for c in COMP_COLS if len(df[c].dropna())}
+    _comp_by = {}
+    for _c, _p in sorted(_comp_first.items(), key=lambda t: (t[1], t[0])):
+        _comp_by.setdefault(_p, []).append(_c)
+    COMP_REACH = (
+        (f'本页 {len(COMP_COLS)} 条 comp 序列的第一个值<b>不在同一个月</b>：'
+         if len(_comp_by) > 1 else
+         f'本页 {len(COMP_COLS)} 条 comp 序列的第一个值本期落在同一个月：')
+        + '；'.join(f'{mlab(p)} 起的有 ' + '、'.join(f'<code>{c}</code>' for c in cs)
+                    for p, cs in _comp_by.items())
+        + f'。本图窗口左端锁在 {HIST_START}：'
+        + (f'比它早的那几个月（'
+           + '、'.join(f'{mlab(p)}' for p in _comp_by if p < _h0)
+           + '）有值也不画'
+           if any(p < _h0 for p in _comp_by) else '没有哪条序列比它更早')
+        + (f'，比它晚才开始的那几条（'
+           + '、'.join(f'<code>{c}</code> 自 {mlab(p)}'
+                       for p, cs in _comp_by.items() if p > _h0 for c in cs)
+           + '）画出来的图相应更短。'
+           if any(p > _h0 for p in _comp_by) else '，也没有哪条比它更晚。'))
+
     # Ex 2 —— 头条图：核心 comp 柱 + 报告口径线（同一 % 轴），全历史窗口
     # full: True → 渲染器把它排到汇总表下方的通栏区（127 根柱塞进半栏每根不到 3px）
     ex.append(bar_line_ex(2, 'tc_a', 'tc_r', 'COST Core Comp vs Reported Comp, y/y',
@@ -473,8 +511,10 @@ def main():
                           start=HIST_START, xstep=6, full=True, cap=True,
                           src_extra='Core Comp = global SSS, ex. gas & FX；本图窗口自 '
                                     f'{HIST_START} 起'
-                                    + ('（全页 comp 图同一起点）。' if HIST_START == WIN_START
-                                       else f'（其余 comp 图自 {WIN_START} 起）。')))
+                                    + ('（与 win() 的默认左端 WIN_START 同值）。'
+                                       if HIST_START == WIN_START
+                                       else f'（win() 的默认左端 WIN_START 是 {WIN_START}）。')
+                                    + COMP_REACH))
 
     # Ex 3 —— 全公司 stacks
     ex.append(stack_ex(3, 'tc_a', 'COST Core Comp Growth Trends'))
@@ -511,12 +551,37 @@ def main():
                                     '含新开/关闭仓库与口径残差，不是公司披露值。'))
 
     # Ex 6 —— 汽油与汇率影响（报告 − 核心）分地区，避免正负相消
+    # 「两股力常互相抵消」这句话原来配了一个写死的例子（2022-05：US +6.8 / Other Intl −7.5）。
+    # 数字今天仍对得上，但那是把一次实测钉进文案：CSV 一重述它就悄悄变成假话，
+    # 而没有任何检查会响。所以例子改成现算。
+    #
+    # ⚠️ 第二次改：上一版现算的判据是「两侧符号相反、|US|+|OI| 合计张口最大」，选出
+    # Oct-22（US +3.1 对 OI −13.3）—— 13.3 里只被抵掉 3.1，读者看到的是「两股力量级
+    # 悬殊」，正好不是这句话要论证的「互相抵消」。数字没错，是**论据与论点脱节**。
+    # 判据换成直接量「这个月被对冲掉了多少个百分点」= min(|US|, |OI|)，取它最大的月份，
+    # 句子里报的也正是这个量 —— 判据、数字、论点是同一件事。
+    _us_w, _oi_w = d['us_r'] - d['us_a'], d['oi_r'] - d['oi_a']
+    _opp = (_us_w * _oi_w < 0) & _us_w.notna() & _oi_w.notna()
+    _wedge_eg = ''
+    if _opp.any():
+        _cancel = pd.concat([_us_w[_opp].abs(), _oi_w[_opp].abs()], axis=1).min(axis=1)
+        _pk = _cancel.idxmax()
+        _wedge_eg = (f'合并成一根柱时两股力常互相抵消 —— 图窗内 US 与 Other Int\'l '
+                     f'抵消得最多的一个月是 '
+                     f'{mlab(_pk)}：US {_us_w[_pk]:+.1f} 对 Other Int\'l {_oi_w[_pk]:+.1f}，'
+                     f'<b>这两条</b>相加只剩 {_us_w[_pk] + _oi_w[_pk]:+.1f}pp，'
+                     f'{_cancel[_pk]:.1f}pp 在它们之间对冲掉了'
+                     f'（{int(_opp.sum())} 个月两侧符号相反）。'
+                     # ⚠️ 别写「合成一根柱只剩 X」：那会被读成把**本图三条腿**合起来的
+                     # 那根柱，而 Canada 也在里面（本期 Jun-22 全公司 wedge 是 +5.1，
+                     # 不是 US+OI 的 +1.1）。只说被点名的这两条。
+                     )
     ex.append({
         'n': 6, 'kind': 'lines', 'title': 'Gas & FX Wedge by Region (reported - core), pp',
         'yfmt': 'pp0', 'xlabels': [mlab(p) for p in d.index], 'xstep': 3, 'zero_line': True,
         'src_extra': '用公司自己披露的分地区 reported 与 core 之差做的近似归因：'
                      '美国项主要是汽油价格，国际项主要是汇率折算——不是公司拆分。'
-                     '合并成一根柱时两股力常互相抵消（如 2022-05：US +6.8 对 Other Intl −7.5）。',
+                     + _wedge_eg,
         'series': [{'name': 'US', 'color': 'NAVY', 'values': L(d['us_r'] - d['us_a'])},
                    {'name': 'Canada', 'color': 'MBLUE', 'values': L(d['ca_r'] - d['ca_a'])},
                    {'name': "Other Int'l", 'color': 'BLUE', 'values': L(d['oi_r'] - d['oi_a'])},
@@ -565,9 +630,14 @@ def main():
               f'{int(df["ec_a"].notna().sum())} 个月，逐月无缺，全部画上'
               f'（最左 {(_a0 - _r0).n} 格只有 Reported 那条线：核心口径晚 {(_a0 - _r0).n} '
               f'个月才开始披露，柱在那里留空、不补 0）。'
-              # 不写「本页其余 comp 图一律自 2016-01 起」—— 那是全称断言，加一张图就可能变假话。
-              # 只说本页窗口左端这个**口径**（WIN_START），它是本文件里的常量、当场引。
-              f'本页时序图的窗口左端统一取 {WIN_START}，这张够不到那里是<b>数据下限</b>。'
+              # ⚠️ 2026-08-19（第二次改）：原文「本页其余 comp 图一律自 2016-01 起」是全称，
+              # 上一轮改成「本页时序图的窗口左端**统一取** 2016-01」—— 换了个说法，还是假的：
+              # 同一页的 Exhibit 13（Warehouse Count）起于 Dec-15，比 2016-01 还早一个月
+              # （它走 first_valid_index()，不过 win()），读者往下滚三张图就看得到。
+              # 现在只说一件本文件当场能验的事：win() 的默认左端是哪个常量、本图取的是哪个值。
+              # 「本页所有图」这种外延不归这句话管，页尾说明第 3 条那边现读 payload 逐张列。
+              f'本图的左端是 max(win() 的默认左端 {WIN_START}，两条腿里最早的那个首值)'
+              f' = {mlab(ECOMM_FROM)}；够不到 {WIN_START} 是<b>数据下限</b>，不是截断。'
               f'代价说在明处：窗口里含 COVID 低基数那一段（{mlab(_hi_p)} 峰值 {_hi:+.1f}%），'
               f'纵轴被它撑开，近两年那段个位数波动在图上是一条窄带 —— '
               f'要逐月读近端请看 Exhibit 1 汇总表与页尾核对表。'
@@ -640,6 +710,13 @@ def main():
     wh_src = ('未披露月份：' + ' / '.join(wh_gaps) +
               f'（共 {len(wh_gaps)} 处），线在这些位置断开，不做插值补点。'
               ) if wh_gaps else '全窗口逐月均有披露，线上没有断点。'
+    # 本图画的是**全历史**，左端由 first_valid_index() 定，不过 win() —— 所以它可能
+    # （今天就是）比本页那个窗口常量还早。这件事必须写在图上，否则页尾任何一句
+    # 「本页图自 WIN_START 起」都会被这张图当场证伪，而读者只看得到矛盾、看不到原因。
+    wh_src += (f'本图画全历史（{mlab(wh.index[0])} → {mlab(wh.index[-1])}，{len(wh)} 格），'
+               f'左端取该列第一个有值的月份、不走 <code>win()</code> 的 {WIN_START} 左端'
+               + (f'，因此比它早 {(pd.Period(WIN_START, "M") - wh.index[0]).n} 个月。'
+                  if wh.index[0] < pd.Period(WIN_START, 'M') else '。'))
     ex.append({
         'n': 13, 'kind': 'lines', 'title': 'Warehouse Count', 'yfmt': 'int',
         'xlabels': [mlab(p) for p in wh.index], 'xstep': 6,
@@ -946,14 +1023,24 @@ def main():
         return any(str(f).startswith(('pct', 'pp')) for f in fs if f)
 
     _LVL_ONLY_EX = [str(e['n']) for e in ex if not _is_pct_axis(e)]
+    # ⚠️ 原文是「除 Exhibit {水平值那几张} 之外，本页**每一张图上的每一条线**、以及
+    # 汇总表与核对表里的每一条 comp 与净销售额同比，**都是** Costco 新闻稿里的披露值」。
+    # 排除项是现算的，可被断言的那一类却比判据宽：判据只问「纵轴是不是百分比」，
+    # 而百分比轴上还有一批**由披露值加减出来的**线 —— 多年叠加（相邻年份的披露 comp
+    # 相加）、油汇楔子（reported − core，Exhibit 6 自己的图注就写着「不是公司拆分」）、
+    # 非 comp 贡献（净销售额 y/y − 报告 comp）。它们都不是「新闻稿里的披露值」。
+    # 这句话真正要说的是「我们从不拿水平值自己算同比」，所以把外延收到那句上，
+    # 并把来源分成「披露值本身」与「披露值之间的加减」两类 —— 一个数只能是这两者之一。
     WEEK_CAL_NOTE = (
-        '<b>同比口径：本页画的增速<u>没有一个</u>是我们自己算的</b>（CONTRACT.md §6 的'
-        f'「单月 vs {Y.TTM_WIN} 个月滚动」之争在这里不适用）。'
-        f'除 Exhibit {"／".join(_LVL_ONLY_EX)}（画的是水平值：净销售额绝对额与仓库数）'
-        f'之外，本页每一张图上的每一条线、以及汇总表与核对表里的每一条 comp 与'
-        f'净销售额同比，都是 Costco 新闻稿里的<b>披露值</b>'
+        '<b>同比口径：本页<u>图上</u>的同比没有一个是我们拿水平值自己算出来的</b>'
+        f'（CONTRACT.md §6 的「单月 vs {Y.TTM_WIN} 个月滚动」之争在这里不适用）。'
+        '图上的同比只有两种来源：一是 Costco 新闻稿里的<b>披露值</b>本身'
         f'（CSV 里的 {len(_disc_cols)} 列：<code>' + '</code> <code>'.join(_disc_cols)
-        + '</code>），公司按<b>可比周</b>口径报出，基期是同样周数的上年错位窗口。'
+        + '</code>），二是这些披露值之间的<b>加减</b>（例如多年叠加与油汇楔子；'
+        '算式写在用到它的那张图的图注里）。两类都不含我们拿绝对额自算的跨年增速。'
+        f'本页画水平值、纵轴不是百分比的是 Exhibit {"／".join(_LVL_ONLY_EX)}'
+        '（现读 payload 的纵轴格式器，不写死图号）。'
+        '披露值由公司按<b>可比周</b>口径报出，基期是同样周数的上年错位窗口。'
         '我们既没有那个基期的水平值，也就无从把它改写成滚动口径 —— '
         f'唯一能加总的水平值序列只有 <code>net_sales_bn</code>，'
         f'而它的 {Y.TTM_WIN} 个月滚动合计同比是<b>另一个指标</b>'
@@ -964,9 +1051,7 @@ def main():
         '句内标「单月可比周口径」，与汇总表 y/y 列同口径、可逐格对上，没有一个自算的'
         '跨年增速；段内现算的只有环比与位置类推导量（净销售额的表面环比与周均折算、'
         '楔子的宽窄、历史排名）—— 环比不是同比，不在本条口径之列，周均拆分补的正是'
-        '汇总表 m/m 留空那一格背后的算术。'
-        '（哪几张画的是水平值由 payload 现读 —— 看每张图的纵轴格式器是不是百分比，'
-        '不是手写编号：手写的编号在图序变动后就是一句假话。）')
+        '汇总表 m/m 留空那一格背后的算术。')
     cap_note_txt = (
         '<b>截轴</b>（' + ' / '.join(f'Exhibit {n}' for n in capped) + '）：'
         '2021 年 COVID 低基数尖峰把近 12 个月压成窄带，故对 y 轴设上界。'
@@ -975,15 +1060,96 @@ def main():
         '<strong>超界的点一个都不删</strong>，柱端加断口符号、点画成红色空心圈，'
         '真实值以红色竖排数字标在图上，并在各图图注里逐条列出「哪个月、哪条序列、多少」。'
     ) if capped else '<b>截轴</b>：本期数据没有需要截轴的离群月，各图 y 轴均按数据自适应。'
+
+    # ── 「本页各图从哪个月起画」：现读已装配的 exhibits，一个全称断言都不写 ──
+    # 这句话在本页写坏过两回：「全页 comp 图同一起点」（Ex10 放宽到 Sep-17 后成假）、
+    # 「本页时序图的窗口左端统一取 2016-01」（Ex13 起于 Dec-15，比它还早）。
+    # 判据本来就在 payload 里：左端就写在每张图的 xlabels[0] 上，数一遍即可。
+    # ⚠️ 2026-08-19（第三次改）：上一版首句写的是「<b>各图的左端并不齐</b>」，随后逐张
+    # 点名 —— 可是判据 `xlabels[0][3:4] == '-'` 把**年桶图**过滤掉了，Exhibit 14
+    # （横轴 2016 → 2026）既不在任何一组里，整条注也没有一句限定语说「这条判据只管
+    # 横轴是月的图」。读者滚到 Exhibit 14 就发现自己不在名单上。
+    # 这一版：判据看**相邻两格差几个月**（差 1 才是月度轴），不是月度轴的当场现算列出来；
+    # 首句的「并不齐」也按现算的左端种类数分支，不写死。
+    _win_lab = mlab(pd.Period(WIN_START, 'M'))
+    _MLAB_RE = re.compile(r'[A-Z][a-z]{2}-\d{2}$')
+    _p_of = lambda a: pd.Period(pd.to_datetime(a, format='%b-%y'), 'M')
+    _CADENCE = {1: '月', 3: '季', 12: '年'}
+
+    def _cadence_of(e):
+        """横轴的推进步长（月数）；标签不是整条月份格式就返回 None（例如年桶图）。"""
+        xl = [str(x) for x in (e.get('xlabels') or [])]
+        if not xl or not all(_MLAB_RE.match(x) for x in xl):
+            return None
+        if len(xl) == 1:
+            return 1
+        ps = [_p_of(x) for x in xl]
+        steps = {(b - a).n for a, b in zip(ps, ps[1:])}
+        if len(steps) != 1 or steps.copy().pop() not in _CADENCE:
+            raise SystemExit(
+                f'Exhibit {e["n"]}：横轴标签是月份格式，但相邻两格的间隔不是同一个数、'
+                f'或不是月／季／年（实测间隔 {sorted(steps)}）—— 页尾「本页月度图…」'
+                f'那一段没法如实描述这张图。先决定它的横轴怎么说，再改这里的判据。')
+        return steps.pop()
+
+    _STEP = {e['n']: _cadence_of(e) for e in ex}
+    _month_ex = [(e['n'], e['xlabels'][0], len(e['xlabels'])) for e in ex
+                 if _STEP.get(e['n']) == 1]
+    _nonmonth = [e['n'] for e in ex if _STEP.get(e['n']) != 1]
+    if len(_month_ex) + len(_nonmonth) != len(ex):
+        raise SystemExit('横轴分组没有覆盖本页每一张图 —— 页尾那段会漏掉几张不说。')
+    _starts = {}
+    for _n, _a, _k in _month_ex:
+        _starts.setdefault(_a, []).append(_n)
+    _late_lab = sorted((a for a in _starts if _p_of(a) > _w0), key=_p_of)
+    _early_lab = sorted((a for a in _starts if _p_of(a) < _w0), key=_p_of)
+    # CSV 比窗口左端更早的那几个月：走 win() 的图把它们切在窗外。这不是「数据下限」，
+    # 是**截断** —— 上一版只解释了左端为什么不同，没有一句说「有真实数据没画」。
+    _cut_m = [p for p in df.index if p < _w0]
+    WINDOW_NOTE = (
+        (f'<b>本页月度图的左端并不齐</b>（本期共 {len(_starts)} 种，现读 payload，'
+         f'不写死图号）：' if len(_starts) > 1 else
+         f'<b>本页月度图的左端本期恰好只有一种</b>（现读 payload，不写死图号）：')
+        + '；'.join(f'自 {a} 起的是 Exhibit ' + ' / '.join(str(n) for n in ns)
+                    for a, ns in _starts.items())
+        + f'。走 <code>win()</code> 的图左端取常量 WIN_START = {_win_lab}'
+        + (f'，本期共 {len(_starts.get(_win_lab, []))} 张落在这里'
+           if _win_lab in _starts else '，但本期没有一张图的左端正好落在这里')
+        + (f'；起点更<b>晚</b>的（{"、".join(_late_lab)}）是那条序列本身晚于这个常量'
+           if _late_lab else '')
+        + (f'；起点更<b>早</b>的（{"、".join(_early_lab)}）是画全历史、用 '
+           f'<code>first_valid_index()</code> 取左端的图，压根不过 <code>win()</code> —— '
+           f'所以本页确实有图画在 {_win_lab} 之前，别把这个常量当成全页的左端'
+           if _early_lab else '')
+        + '。'
+        + (f'<b>{_win_lab} 之前的月份不是没有数，是没画</b>：'
+           f'<code>series/cost.csv</code> 自 {mlab(df.index[0])} 起，'
+           f'早于 WIN_START 的有 {len(_cut_m)} 个月'
+           f'（{"、".join(mlab(p) for p in _cut_m)}），'
+           f'那 {len(_cut_m)} 个月里 CSV 的 {len(need)} 个源列中有 '
+           f'{sum(int(df.loc[_cut_m, c].notna().any()) for c in need)} 列是有值的；'
+           f'走 <code>win()</code> 的图把它们切在窗口外（左端更早的那几张见上）。'
+           if _cut_m else
+           f'<code>series/cost.csv</code> 的第一个月就是 {mlab(df.index[0])}，'
+           f'不早于 WIN_START，本期没有哪一格是被窗口切掉的。')
+        + (f'（这条判据只管横轴<b>逐月推进</b>的图；本页另有 {len(_nonmonth)} 张的横轴'
+           f'不是逐月月份轴：Exhibit '
+           + ' / '.join(str(n) for n in _nonmonth) + '。）'
+           if _nonmonth else ''))
     NOTES = [
+        # ⚠️ 2026-08-19：原文写死「本页解析 2016-01 以来全部新闻稿」（引的是 HIST_START）。
+        # 那是图窗常量，不是抓取范围：series/cost.csv 第一行是 2015-12，Exhibit 13 就画着
+        # 那一格。两句在同一个页面里对不上。范围改成现读 CSV 的第一个月。
         ('<b>数据源（唯一）</b>：Costco 每零售月结束后首个周三盘后在官网 IR'
          '（investor.costco.com）发布的月度销售新闻稿；本页解析 '
-         f'{HIST_START} 以来全部新闻稿，不使用任何第三方（券商）研报数据或观点。'),
+         f'{mlab(df.index[0])} 以来全部新闻稿（{len(df)} 个零售月，至 {mlab(df.index[-1])}），'
+         f'不使用任何第三方（券商）研报数据或观点。'),
         ('<b>4-4-5 零售日历</b>：零售月为 4 周或 5 周（周日截止），4 周与 5 周月份的'
          '净销售额绝对值<strong>不可直接环比</strong>。'),
         ('<b>核心 comp</b> = 公司披露的「剔除汽油价格变动与汇率影响」的可比销售；'
          '报告口径为未调整值。两者之差按地区拆开即 Exhibit 6。'),
         ec_note,
+        WINDOW_NOTE,
         (f'<b>53 周财年</b>造成个别 1 月的周数与上年同月不同（{wk_txt}）。'
          '公司披露的 comp 已按可比周调整；<strong>净销售额同比是公司报告值，'
          '其基期是同样周数的上年错位窗口</strong>，与图上相邻的柱不是同一区间。'

@@ -28,7 +28,9 @@ MGEX，断点左侧不是 MIH 的经营数据 —— breaks 里已经按列绑�
 这一轮已全部换掉；再往里加数字请照办。
 
 ━━ 量价分解（decomp / ttm_yoy）━━
-本页有**两对**成对的股票列，都在 indsum API 段、都覆盖 2020-12..2026-07 共 68 个月零断档：
+本页有**两对**成对的股票列，都在 indsum API 段、覆盖同一段窗口且零断档
+（窗口与月数别在这里写死 —— 每发一期就多一个月；跑 `_eq_cover()` 现算，
+ 页面上印的那一份也走它）：
   Pearl 自家 ：adnv_equities_api_usdbn          ÷ adv_equities_api_mnshares
   全美行业   ：industry_adnv_equities_api_usdbn ÷ industry_adv_equities_api_mnshares
 两对都同源（同一次 indsum 请求的同一个 PEARLEQ / 交易所行）、同粒度（都是当月**日均**）、
@@ -39,12 +41,13 @@ Pearl 在所成交 ⊂ 全美含 TRF ⇒ **子集关系成立**，这是 SINGLE_
 核查全过程与全部实测数字见文件末尾的「量价分解：口径核查实测日志」注释块。
 
 ⚠ 本家做量价分解时最容易出错的三件事：
-  1. **别用 trading_days_options 当 weight_col。**它只有 2025-01 起 19 个月，
-     而 decomp 要的是 2021..2025 五个完整年；weight_col 一旦缺月，Page._years 会把
+  1. **别用 trading_days_options 当 weight_col。**它起步远晚于 decomp 要的五个完整年
+     （覆盖现算见 `_tday_cover_zh()`，别在注释里写死期数）；weight_col 一旦缺月，Page._years 会把
      整年丢掉，实测只剩 1 个完整年、图直接不出（底座打印「完整年度只有 1 个」）。
      ⇒ 本页 granularity='daily_avg' 且**不给** weight_col / *_total_col，
      底座会在图注里印一段 ⚠️ 说明等权相加带偏差 —— 那句话是真的，别去掩盖它。
-  2. **别用点对点端点。**2026-07 是本序列的低位月（Pearl ADV 在 68 个月里排第 21 低），
+  2. **别用点对点端点。**最新月往往落在本序列的低位（写这条时 Pearl ADV 在全部
+     可比月里排第 21 低；名次每期都会变，所以不写死，要看就现算），
      点对点会把结论说反 —— 详见末尾注释块 §E4 的实测对照。
   3. **year_start_month=1 / year_label='start'。**MIAX 的财年就是日历年（10-K 截至 12-31）。
      不要为了让末桶落在 2026-07 改成 8 月制：那会印出一个 MIAX 根本不用的 FY 标签，
@@ -216,12 +219,95 @@ def _px_rel():
     return len(seq), len(prem), (prem[-1] if prem else None), min(xs), max(xs), xs[-1]
 
 
+# 交易日列的段归属：列名后缀 → 段名。表里没有的后缀 = 构建期停机（见 _tday_cols）。
+_TDAY_SEG = {'options': '期权段', 'futures': '期货段',
+             'equities': '股票段', 'equity': '股票段'}
+_TDAY_EQUITY = '股票段'
+
+
+def _tday_cols():
+    """CSV 里所有交易日列 → [(列名, 段名)]，现读表头。**认不出的后缀直接停机。**
+
+    上一版页注写的是「表里<b>唯一</b>的交易日列 trading_days_options」，
+    而同一张 CSV 里还有 trading_days_futures，同一页还画着它（「期货交易日数」那张
+    单列柱图）—— 读者往下滚几张图就当场证伪。
+
+    这一版连「有几条、各属哪一段、有没有股票口径的那一条」都不写死：
+    列名现读表头，段名按后缀查 `_TDAY_SEG`。**查不到就 raise** —— 那正是危险的情况：
+    fetch 侧哪天真把股票段的交易日落成一列，页注上「都不是股票口径」「所以只能等权
+    相加」两句话会同时变成假话，而页面不会报错。停机是唯一会被人看见的信号。
+    （只写死一张**后缀→段名**的查表，不写死列的条数、覆盖或分类结论 ——
+    表里多一条没见过的后缀，构建停，不会静默印出一句过期的话。）
+    """
+    rows = _rows()
+    if not rows:
+        return []
+    out = []
+    for c in rows[0]:
+        if not c.startswith('trading_days'):
+            continue
+        seg = _TDAY_SEG.get(c[len('trading_days_'):])
+        if seg is None:
+            raise ValueError(
+                'series/miax.csv 新增了交易日列 %r，build/specs/miax.py 的 _TDAY_SEG '
+                '不认识它的后缀。页注里「都不是股票口径 ⇒ 只能等权相加」那两句话'
+                '依赖这份分类，先把新列归段（若是股票口径，_TTM_NOTE 整条要重写），'
+                '再重跑构建。' % c)
+        out.append((c, seg))
+    return out
+
+
+def _tday_cover_zh():
+    """「<列名>（期权段，YYYY-MM 起 N 个月）、…」—— 列名、段名、覆盖全部现算。"""
+    bits = []
+    for c, seg in _tday_cols():
+        ms = [r['month'] for r in _rows() if _num(r, c) is not None]
+        if ms:
+            bits.append('<code>%s</code>（%s，%s 起 %d 个月）' % (c, seg, ms[0], len(ms)))
+    return '、'.join(bits)
+
+
+def _tday_equity_zh():
+    """「有没有一条是股票口径 / 是不是都覆盖不到分解窗口」—— 两句都现判。
+
+    这两句正是「所以只能等权相加」那个结论的两条前提。上一版把它们写死成
+    「一条期权段、一条期货段，都不是股票口径」，于是 fetch 侧一旦补上股票段的
+    交易日列，页面会继续印一句已经不成立的理由，而没有任何东西会报错。
+    """
+    cols = _tday_cols()
+    eq = [c for c, seg in cols if seg == _TDAY_EQUITY]
+    # 「覆盖不到分解窗口」= 该列在 _eq_cover() 那段窗口里有缺月。逐列现判。
+    n, first, last, _same = _eq_cover()
+    short = []
+    if first and last:
+        for c, _seg in cols:
+            have = {r['month'] for r in _rows() if _num(r, c) is not None}
+            if any(r['month'] not in have
+                   for r in _rows() if first <= r['month'] <= last):
+                short.append(c)
+    if eq:
+        return ('<b>⚠️ 其中 %s 已经是股票口径</b> —— 本条与下面「只能等权相加」'
+                '的理由已经过期，该改用它做 <code>weight_col</code> 并重写这一段'
+                % '、'.join('<code>%s</code>' % c for c in eq))
+    head = '<b>没有一条是股票口径</b>'
+    if not cols or not first:
+        return head
+    if len(short) == len(cols):
+        return head + '，而且没有一条覆盖得到分解窗口'
+    if short:
+        return head + ('，其中 %s 还覆盖不到分解窗口'
+                       % '、'.join('<code>%s</code>' % c for c in short))
+    return head + '（覆盖倒是够得到分解窗口）'
+
+
 def _tdays():
     """交易日数列的覆盖与离散度 → (有值月数, min, max, 两端相差%, 四列窗口内缺权重的月数)。
 
-    本页股票段没有自己的交易日列；期权段的 trading_days_options 覆盖不到分解窗口，
+    量的是 `trading_days_options`：本页股票段没有自己的交易日列，CSV 里那几条
+    （段归属见 `_tday_cols()`，现读表头）没有一条是股票口径，而且都覆盖不到分解窗口 ——
     填进 weight_col 会让 Page._years 整年丢掉（实测只剩 1 个完整年，图直接不出）。
-    所以这几个数的用途不是「用它加权」，而是**量出等权相加那一步在赌多大的离散度**。
+    所以这几个数的用途不是「用它加权」，而是**量出等权相加那一步在赌多大的离散度**；
+    取期权那条是因为它与股票段同在美股日历上，离散度量级可代表。
     """
     d = {r['month']: _num(r, 'trading_days_options') for r in _rows()}
     v = [x for x in d.values() if x]
@@ -244,6 +330,55 @@ _OV_MIAX_CBOE = _overlap_zh('adv_multilist_options_kcontracts',
 _REC = _ind_recon()
 _PN, _PPREM, _PLAST, _PMIN, _PMAX, _PCUR = _px_rel()
 _TDN, _TDMIN, _TDMAX, _TDSPR, _TDMISS = _tdays()
+_TDCOVER = _tday_cover_zh()
+_TDEQ = _tday_equity_zh()
+
+
+def _cboe_overlap_zh():
+    """Cboe 那边同名 RPC 列的覆盖 → ('126 个月（2016-01–2026-06）', 126)；读不到给 (None, 0)。
+
+    为什么要现算而不是写死：上一版页注写「Cboe 侧长十倍不止」，本文件抬头那条规矩
+    （「正文里凡是『N 个月』一律现算」）当场把它判成假话；上一轮改成
+    「2026-08-19 实测 126 个月」—— 那是把一句会过期的话换成另一句会过期的话，
+    盖个日期戳并不会让它跟着 cboe 每月发的新一期自己变。
+
+    读的是**另一页**的 series/cboe.csv：这句话本来讲的就是那张表，本页的 CSV 里
+    没有这个信息。读不到（文件不在、列名改了）就返回 None，调用方整段不印数字，
+    绝不退回一个写死的旧值。
+    """
+    path = os.path.join(_ROOT, 'series', 'cboe.csv')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            ms = [r['month'] for r in csv.DictReader(fh)
+                  if (r.get('rpc_multilist_options_usd') or '').strip()]
+    except (OSError, KeyError):
+        return None, 0
+    if not ms:
+        return None, 0
+    return '%d 个月（%s–%s）' % (len(ms), ms[0], ms[-1]), len(ms)
+
+
+def _rpc_span_gap_zh():
+    """「Cboe 侧长得多 / 两边差不多长」—— 措辞由两边的期数**现比**决定，不写死。
+
+    判据与句子必须同源：这里先算出两个期数，再由它们决定用哪个说法。
+    上一版写死「长十倍不止」，实测只有 7 倍；再上一版改成写死 126 个月，
+    下个月就少一个月。两种毛病同一个根：措辞与数字都得跟着数据走。
+    """
+    txt, n_cboe = _cboe_overlap_zh()
+    n_miax = len([r for r in _rows()
+                  if _num(r, 'rpc_multilist_options_usd') is not None])
+    if not txt or not n_miax:
+        return ('Cboe 侧那一列有多长本轮读不到 <code>series/cboe.csv</code>，'
+                '这里不给数 —— 请回那张表自己数')
+    how = ('长得多' if n_cboe >= 2 * n_miax else
+           ('略长' if n_cboe > n_miax else '并不更长'))
+    return ('Cboe 侧%s：同名那一列实测 %s，是本页这一列（%d 个月）的 %.1f 倍；'
+            '两边都在长，倍数每期都会变，所以这句话现算不写死'
+            % (how, txt, n_miax, n_cboe / n_miax))
+
+
+_RPC_GAP = _rpc_span_gap_zh()
 
 
 def _fmt_bad(rec):
@@ -307,10 +442,15 @@ _DECOMP_NOTE = (
 # ── 图 B（量的水平值 + 滚动同比）的口径交代 ──────────────────────────────
 _TTM_NOTE = (
     '<b>本页股票段没有自己的交易日列</b>，所以滚动合计是把「日均」按月<b>等权</b>相加。'
-    + (f'表里唯一的交易日列 <code>trading_days_options</code> 只覆盖 {_TDN} 个月，'
+    + (f'表里的交易日列是 {_TDCOVER} —— {_TDEQ}'
+       f'（列名、段名、覆盖与上面这两句结论都由 <code>_tday_cols()</code> / '
+       f'<code>_tday_equity_zh()</code> 现读表头现判，'
+       f'新落一条认不出的交易日列会让构建停机，不会在这里静默印一句过期的话）。'
+       f'拿其中的 <code>trading_days_options</code> 量一下这层离散度有多大'
+       f'（它与股票段同在美股日历上）：只覆盖 {_TDN} 个月，'
        f'本序列有 {_TDMISS} 个月拿不到权重；已覆盖的那些月实测每月 '
        f'{_TDMIN:.0f}–{_TDMAX:.0f} 个交易日、两端相差 {_TDSPR:.0f}% —— '
-       f'等权相加赌的就是这一层离散度。' if _TDN else '')
+       f'等权相加赌的就是这一层离散度。' if _TDN and _TDCOVER else '')
     + '把它填进 <code>weight_col</code> 是<b>行不通</b>的：缺月会让底座把整个年度丢掉'
       '（实测只剩一个完整年，两张图一起不出）。要真正消掉这层偏差，得让 '
       '<code>fetch/miax.py</code> 把 indsum 返回体里的交易日数落成一列。'
@@ -576,10 +716,16 @@ SPEC = {
         '但<b>行业分母差 3.1%~4.5%</b>（API 偏低）—— 所以 industry_adv_options_kcontracts 与 '
         'industry_adv_options_api_kcontracts 是两条不同的线，不要混用、不要互相回补。',
 
-        '<b>多挂牌期权 RPC 是全仓唯一能做单价对照的第二家。</b>MIAX 与 Cboe 的 RPC 定义逐字相同'
-        '（净交易费 ÷ 总成交张数），单位都是千张/日，不需要任何换算。'
+        '<b>多挂牌期权 RPC 在本仓有一个同名同口径的对家：Cboe。</b>'
+        '两边这一列的列名逐字相同（<code>rpc_multilist_options_usd</code>，'
+        '净交易费 ÷ 总成交张数），单位都是<b>美元/张</b>'
+        '（本页「多挂牌期权 RPC（滚动三月均）」那张图的纵轴写的就是 USD/contract '
+        '—— 图号会随分组增删位移，这里按图名点），不需要任何换算。'
+        '⚠️ 别把这句读成「全仓唯一的第二家」：ICE 页上还有一条 NYSE 期权 RPC'
+        '（官方口径 "Options / RATE PER CONTRACT"），那是 NYSE 自己盘口的费率，'
+        '覆盖的产品范围与「多挂牌期权」不是一回事，不能并排当第三个读数用。'
         f'但 MIAX 这边「ADV 与 RPC 同时有值」的窗口只有 {_OV_MIAX_CBOE or "（算不出）"}'
-        '（Cboe 侧长十倍不止），'
+        f'（{_RPC_GAP}），'
         '<b>够 24 个月之前做不了同比与指数化</b>，并排图上必须写明 MIAX 线的起点。',
 
         '<b>industry_adv_equities_mnshares 与 ICE 的三个 tape 合并量是同一个分母。</b>'

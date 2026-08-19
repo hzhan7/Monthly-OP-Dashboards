@@ -8,16 +8,22 @@
     为什么没有汇率腿与指引桥         → build/mrspecs/guc.py
 
 ━━ 这个壳是「图列归属」的落地，不是一层转发 ━━━━━━━━━━━━━━━━━━━━━━━━
-`monthly_run.py:389` 的 `builder(t)` 按**文件在不在**解析生成器：先找 `build/<t>.py`，
+`monthly_run.py` 的 `builder(t)`（按函数名 grep，不写行号：行号一改动就漂成假话）按**文件在不在**解析生成器：先找 `build/<t>.py`，
 再找下划线版，最后才退到 `build/single.py` + `build/specs/<t>.py`。
 本文件一落地，`data/guc.js` 就归本底座，每月 cron 也走这条路 —— 底座的
 `owned_elsewhere()` 认得本壳里的 `mrbase` 字样，因此不再拦写 `data/`。
 
-⚠️ `build/specs/guc.py` 仍在仓库里，但**已经不再被调用**（本壳优先级高于它）。
-   留着它是为了保留旧图列的口径记录（Note 17b 那两个地区占比就转录自它），
-   不是为了继续生成页面；要清理请单独一轮做。
-   两份文件对同一页并存期间，**改口径请改 `build/mrspecs/guc.py`**。
-   （与 tsm / ase / mtk / umc / alchip 五家同一处置。）
+⚠️ `build/specs/guc.py` **已经不在仓库里**：它在 4b0f201（新增本壳的同一个提交）
+   里连同另外五家一起被删除。改口径一律改 `build/mrspecs/guc.py`，没有第二份配置。
+   要看旧图列的口径记录只能回那个提交之前的历史
+   （`git log --diff-filter=D -- build/specs/guc.py` 一查便知），
+   别再照这段去 `build/specs/` 里找文件。
+   顺带一条机制更正：`owned_elsewhere()` 之所以不拦本页的写入，**首要原因是
+   `build/specs/guc.py` 已经不存在**（它先看这个文件在不在），壳里的 `mrbase` 字样
+   只是两份文件并存时才用得上的第二道判据。
+   （Note 17b 那两个地区占比原本记的出处就是这份旧配置 —— `build/mrspecs/guc.py`
+   已把它改记成一手源：GUC 2025 年度合并财务报告附注 17b「收入拆解 → Region」，
+   两个百分比在那里逐位复算过。）
 
 ━━ 与旧图列（build/single.py + build/specs/guc.py）相比，换来什么、丢了什么 ━━
 换来：Ex1 汇总表（月营收 / Turnkey / NRE & Others / 3MMA / QTD / YTD / 占 TTM 比重
@@ -37,11 +43,15 @@
 而官方的 Turnkey / NRE & Others **月度拆分只到 2017-01**（IR 那份 xlsx 的硬边界）。
 于是月营收柱（`gs_bar` + `stacks`）的窗口里出现了 12 个「柱高有值、分段全空」的月份。
 
-**这在引擎里不是「素色柱」，是「没有柱」。** `assets/charts.js:1317-1345` 的分段分支
-只要 `ex.stacks` 非空、该柱没被截轴/斜纹命中就一定走，段值是 null 就 `continue` ——
-12 个月一根 rect 都不画，柱顶那个数值标签却照印，页面上是十二个凭空悬着的数字。
-`build/verify_pages.py:384` 那条「stacks 在 N 个位置有分段缺值」正是拦这个的，
+**这在引擎里不是「素色柱」，是「没有柱」。** `assets/charts.js` 里 `gs_bar` 那段
+「可选的分部堆叠（ex.stacks）」（搜 `var stkg =`）只要 `ex.stacks` 非空、该柱没被
+截轴/斜纹命中就一定走，段值是 null 就 `continue` —— 12 个月一根 rect 都不画，
+柱顶那个数值标签却照印，页面上是十二个凭空悬着的数字。
+`build/verify_pages.py` 那条「stacks 在 N 个位置有分段缺值」（搜这句中文）正是拦这个的，
 本轮实测确实 ERROR。
+⚠️ 这两处**故意不写行号**：上一版写死的两个行号本轮复核时都已经指偏。
+   行号在别人改一行代码时就会静默变成假话，按符号／原句 grep 不会 ——
+   所以这里也不补一组「本轮正确的行号」，那只是把同一个坑往后挪一个月。
 
 **为什么只能在这里修**：
   · 补 0 / 按 2017 的比例摊 / 拿合计当单段 —— 都是造数，`fetch/guc.py` 口径坑 8 已禁；

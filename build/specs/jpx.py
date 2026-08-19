@@ -9,11 +9,14 @@
 ━━ 本页的核心命题：同一个业务，两个口径的十年趋势符号相反 ━━
 JPX 衍生品有两条并行的总量序列，Exhibit 群 G1 把它们画在一起：
 
-    adv_deriv_total_raw_kcontracts   原始张数    2016-06 1572.1 → 2026-06 2365.7   +50.5%
-    adv_deriv_total_lgeq_kcontracts  大合约当量  2016-06  706.3 → 2026-06  522.6   −26.0%
-    raw / lgeq 倍率                              2016-06  2.23x → 2026-06   4.53x
+    adv_deriv_total_raw_kcontracts   原始张数    逐张相加，被 mini / マイクロ 拆细推着涨
+    adv_deriv_total_lgeq_kcontracts  大合约当量  折算回大型合约之后，同期是**跌**的
+    raw / lgeq 倍率                              单调走高 = 迷你化的直接读数
 
-（以上四组数字是本次从 series/jpx.csv 直接算出来的，不是抄侦察稿。）
+（三行的首末月与具体幅度由 `_lgeq_vs_raw()` 在 import 期从 series/jpx.csv 现算，
+图注印的就是它的返回值。**这里不抄一份快照** —— 上一版抄的是「2016-06 → 2026-06：
+1572.1 → 2365.7 +50.5%」，那组数是对的，对的却是 2026-06，而页面数据月已经走到
+2026-07；结论不变、量每月都变，量一写死这段注释就开始报上个月的数。）
 
 倍率单调走高的原因是**迷你化**：日経225mini 是大型合约的 1/10、マイクロ 是 1/100，
 ミニTOPIX、長期国債先物（現金決済型ミニ）、日経225ミニオプション 同样是 1/10。
@@ -22,9 +25,11 @@ JPX 衍生品有两条并行的总量序列，Exhibit 群 G1 把它们画在一�
 **表述纪律（页面上不许写错的一句）**：折算系数（1/10、1/100）来自官方合约规格，
 JPX 自己的 IR 脚注也写明 "figures ... are calculated using factors of 1/10 and 1/100"；
 但**逐月的当量序列是 fetch/jpx.py 折算出来的，JPX 并不逐月发布这一列**。
-它的可信度靠对账：fetch/jpx.py 用 IR 的季度合计校准 ——
-Financial Derivatives IR 印 23 / 24 百万张，本表折算得 23.63 / 24.58；
-Commodity Derivatives IR 印 141 / 349 万张，本表折算得 141.48 / 349.41。
+它的可信度靠对账：fetch/jpx.py 用 IR 的季度合计校准 —— 具体是哪两个季度、
+两侧各是多少，由 `_ir_reconcile()` 现算并印进图注（IR 那一侧是具名季度的一次性抄录，
+本表那一侧每次构建重算，两边整数位对不上就停机）。**这里不抄一份**：
+上一版抄的「23 / 24 百万张、本表折算得 23.63 / 24.58」连季度都没写，
+折算表改错一档它也不会变。
 ⇒ 页面文案一律写「大合约当量（本仓按官方合约规格折算，已对账 JPX IR 季度值）」，
    **不许写「官方发布」**。
 
@@ -142,8 +147,112 @@ def _tradingday_spread():
     return min(v), max(v), (max(v) / min(v) - 1.0) * 100.0
 
 
+def _lgeq_vs_raw():
+    """两条并行序列（原始张数 / 大合约当量）从**首月到最新月**各自走了多远。
+
+    ⚠ 这五个数 2026-08-19 之前写死成「2016-06 → 2026-06：1572.1 → 2365.7（+50.5%）…」。
+    它们全都对 —— 对的是 **2026-06**，而本页那时的数据月已经是 2026-07。
+    「同一个业务两个口径符号相反」这个结论不会变，量却每个月都变；量一写死，
+    页头抬头行往前走一格，这句话就开始报上个月的数。⇒ 端点与幅度一律现算。
+
+    返回 (首月, 末月, 原始首, 原始末, 原始 %, 当量首, 当量末, 当量 %, 首倍率, 末倍率)；
+    算不出返回 (None,)*10。
+    """
+    pts = []
+    for r in _rows():
+        raw = _num(r, 'adv_deriv_total_raw_kcontracts')
+        lge = _num(r, 'adv_deriv_total_lgeq_kcontracts')
+        if raw and lge:
+            pts.append((r['month'], raw, lge))
+    if len(pts) < 2:
+        return (None,) * 10
+    (m0, r0, l0), (m1, r1, l1) = pts[0], pts[-1]
+    return (m0, m1, r0, r1, (r1 / r0 - 1.0) * 100.0,
+            l0, l1, (l1 / l0 - 1.0) * 100.0, r0 / l0, r1 / l1)
+
+
+def _etfreit_share():
+    """最近一个能算的月：(月, ETF/REIT ADT, 合计 ADT, 占比 %)；算不出返回 (None,)*4。"""
+    for r in reversed(_rows()):
+        e, t = _num(r, 'adt_cash_etfreit_jpytn'), _num(r, 'adt_cash_total_jpytn')
+        if e is not None and t:
+            return r['month'], e, t, e / t * 100.0
+    return (None,) * 4
+
+
+def _investors_span():
+    """series/jpx_investors.csv 的 (周数, 最末 week_end)；读不到返回 (None, None)。
+
+    这条注原先写死「实测 136 周至 2026-07-31」—— 那张表每周长一行，
+    写死的数活不过下一次抓取。它不在 series/jpx.csv 里，所以单独读一次。
+    """
+    path = os.path.join(os.path.dirname(_CSV), 'jpx_investors.csv')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            rows = [r for r in csv.DictReader(fh) if (r.get('week_end') or '').strip()]
+    except OSError:
+        return None, None
+    return (len(rows), rows[-1]['week_end']) if rows else (None, None)
+
+
+#: 折算表对账用的**官方 IR 季度值**：{季度: (Financial 百万张, Commodity 万张)}。
+#: 这两侧的数只印在 JPX IR 的季度 PDF 里、不在本仓，所以只能抄；但抄的是**具名季度**
+#: 的一次性事实，不随 CSV 生长。本表那一侧一律现算，见 `_ir_reconcile()`。
+_IR_QTR = (('2025Q2', 24, 349), ('2026Q2', 23, 141))
+
+
+def _ir_reconcile():
+    """把 `_IR_QTR` 那两个季度的当量合计从 CSV 现算出来，并与 IR 印的整数位对账。
+
+    ⚠ 上一版这条注是四个写死的小数（「IR 印 … 本表得 …」），**连是哪两个季度都没写**
+    —— 读者想复核都无从下手。对账值里「本表得」那一半完全是 CSV 算得出来的
+    （本函数复现了它），写死它就是把一份折算表的体检报告冻在纸上：折算系数改错一档、
+    或者官方回补一个月，那几个数会静静地变成假话，而页面照印不误。
+
+    ⇒ 现算 + **对不上就停机**：本表算出来的整数位与 IR 印的那个整数不同，
+      说明折算表或源数据动过，必须有人来看，而不是让页面继续印一份过期的对账。
+
+    返回 [(季度, IR 财务型, 本表财务型, IR 商品, 本表商品), …]；算不出返回 []。
+    """
+    acc = {}
+    for r in _rows():
+        y, m = r['month'].split('-')
+        q = '%sQ%d' % (y, (int(m) - 1) // 3 + 1)
+        d = _num(r, 'deriv_trading_days')
+        t = _num(r, 'adv_deriv_total_lgeq_kcontracts')
+        c = _num(r, 'adv_deriv_cmdty_lgeq_kcontracts')
+        if d is None or t is None or c is None:
+            continue
+        a = acc.setdefault(q, [0.0, 0.0, 0])
+        a[0] += (t - c) * d          # 财务型 = 全品种 − 商品，单位 k 张
+        a[1] += c * d                # 商品，单位 k 张
+        a[2] += 1
+    out = []
+    for q, ir_fin, ir_cmd in _IR_QTR:
+        a = acc.get(q)
+        if not a or a[2] != 3:
+            raise SystemExit(
+                'series/jpx.csv：图注拿 %s 与 JPX IR 的季度值对账，但这个季度在 CSV 里'
+                '凑不齐 3 个月 —— 对账句子失去判据，先改图注再构建'
+                '（build/specs/jpx.py 的 _IR_QTR / _ir_reconcile）' % q)
+        fin, cmd = a[0] / 1000.0, a[1] / 10.0     # → 百万张 / 万张
+        if int(fin) != ir_fin or int(cmd) != ir_cmd:
+            raise SystemExit(
+                'series/jpx.csv：%s 的当量合计现算得 %.2f 百万张 / %.2f 万张，'
+                '与图注引用的 JPX IR 值 %d / %d 对不上 —— 折算表或源数据动过，'
+                '先核对再构建（build/specs/jpx.py 的 _IR_QTR / _ir_reconcile）'
+                % (q, fin, cmd, ir_fin, ir_cmd))
+        out.append((q, ir_fin, fin, ir_cmd, cmd))
+    return out
+
+
 _WM, _WT, _WTX, _WS, _WSX = _wedges()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
+_IRQ = _ir_reconcile()
+(_LRM0, _LRM1, _LRAW0, _LRAW1, _LRAWP,
+ _LLGE0, _LLGE1, _LLGEP, _LMUL0, _LMUL1) = _lgeq_vs_raw()
+_ERM, _ERE, _ERT, _ERP = _etfreit_share()
+_INVN, _INVM = _investors_span()
 
 # ── 图 A（量价分解）的口径交代 ────────────────────────────────────────────
 # 本页最关键的一条判断写在这里：分子分母到底是不是同一批标的。
@@ -432,16 +541,25 @@ SPEC = {
     'notes': [
         '衍生品总量有两条并行序列。**大合约当量**（adv_deriv_*_lgeq_*）把 mini 按 1/10、'
         'マイクロ按 1/100 折算回大型合约；**原始张数**（adv_deriv_*_raw_*）是逐张相加。'
-        '实测 2016-06 → 2026-06：原始张数 1572.1 → 2365.7 千张/日（+50.5%），'
-        '大合约当量 706.3 → 522.6 千张/日（−26.0%）—— 同一个业务，两个口径符号相反。'
-        '倍率同期由 2.23x 升到 4.53x。跨所比较、以及本页任何「JPX 衍生品在增长吗」的判断，'
-        '一律以当量为准。',
+        + ((f'实测 {_LRM0} → {_LRM1}（两列都有值的首月与末月，现算）：'
+            f'原始张数 {_LRAW0:,.1f} → {_LRAW1:,.1f} 千张/日（{_LRAWP:+.1f}%），'
+            f'大合约当量 {_LLGE0:,.1f} → {_LLGE1:,.1f} 千张/日（{_LLGEP:+.1f}%）'
+            f'—— 同一个业务，两个口径符号相反。'
+            f'倍率同期由 {_LMUL0:.2f}x 升到 {_LMUL1:.2f}x。')
+           if _LRM0 else
+           '两条序列在同一段时间里方向相反：原始张数被 mini / マイクロ 的拆细推着涨，'
+           '当量口径把拆细折算回去之后是跌的。')
+        + '跨所比较、以及本页任何「JPX 衍生品在增长吗」的判断，一律以当量为准。',
 
         '**当量序列不是 JPX 发布的**。折算系数来自官方合约规格（JPX IR 脚注亦写明 '
         '"calculated using factors of 1/10 and 1/100"），逐月折算由 fetch/jpx.py 完成，'
-        '并用 IR 的季度合计对账：Financial Derivatives IR 印 23 / 24 百万张、本表得 '
-        '23.63 / 24.58；Commodity Derivatives IR 印 141 / 349 万张、本表得 141.48 / 349.41。'
-        '白金那一档折算系数是 ÷5（标准合约 500g）而不是 ÷10，改折算表等于推翻这组对账。',
+        '并用 IR 的**具名季度**合计对账（IR 那一侧抄自季度 PDF，本表那一侧逐次现算，'
+        '两边整数位对不上就停机）：'
+        + '；'.join(
+            f'<b>{q}</b> Financial Derivatives IR 印 {irf} 百万张、本表得 {fin:.2f}，'
+            f'Commodity Derivatives IR 印 {irc} 万张、本表得 {cmd:.2f}'
+            for q, irf, fin, irc, cmd in _IRQ)
+        + '。白金那一档折算系数是 ÷5（标准合约 500g）而不是 ÷10，改折算表等于推翻这组对账。',
 
         '商品関連（adv_deriv_cmdty_*）在 2020-08 之前是 pro-forma：官方宽表把旧 TOCOM 的历史'
         '一路回填到 1985 年，而 JPX 2019-10 才完成对 TOCOM 的收购、品种 2020-07-27 才迁入 OSE。'
@@ -449,7 +567,9 @@ SPEC = {
         '含商品的合计口径在该断点之前同样受影响。',
 
         '现货 ADT 与月末时价总额的统计范围不同：ADT 含内国株 + 外国株 + ETF + REIT'
-        '（2026-06 实测 ETF/REIT 占 0.719 / 14.084 = 5.1%），时价总额只含上市股票'
+        + ((f'（{_ERM} 现算 ETF/REIT 占 {_ERE:.3f} / {_ERT:.3f} = {_ERP:.1f}%）')
+           if _ERM else '')
+        + '，时价总额只含上市股票'
         '（プライム / スタンダード / グロース / TOKYO PRO）。'
         '两者相除得到的换手率会系统性高估，本页不提供该派生指标。',
 
@@ -464,8 +584,9 @@ SPEC = {
         '先把「日均」还原成「当月合计」（现货侧用 trading_days 与官方合计列，'
         '衍生品名义额那张用 deriv_trading_days），否则各月立会日数不同会配错权重。',
 
-        'series/jpx_investors.csv（投資部門別売買動向，2023-12 起周频、'
-        '实测 136 周至 2026-07-31）本版不上页面：它是周频序列，'
+        'series/jpx_investors.csv（投資部門別売買動向，2023-12 起周频'
+        + ((f'、现算 {_INVN} 周至 {_INVM}') if _INVN else '')
+        + '）本版不上页面：它是周频序列，'
         '而本页契约的 groups 只吃 series/jpx.csv 的月频列。要做应另起一页，'
         '不在这一页里为 JPX 单开分支。',
 

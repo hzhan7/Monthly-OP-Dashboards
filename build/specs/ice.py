@@ -8,8 +8,11 @@
 （侦察稿）冲突时一律听复核稿 —— 侦察稿的 §5「Cloudflare 403」「adv_fx_credit 含信用」
 两条已被复核实测证伪。
 
-列名全部对着 `head -1 series/ice.csv` 逐字核过（55 列，187 个月，2011-01..2026-07，
-CDS 三列 2013-01 起，其余 52 列零空洞）。
+列名全部对着 `head -1 series/ice.csv` 逐字核过。**列数 / 月数 / 起止月 / 哪几列有空洞
+一个都不写在这里** —— 它们每个月都在变，写进注释就是养一句下个月自动过期的话；
+要用就调 `_shape()` / `_cds_start()`（图注印的就是它们的返回值）。
+（上一版这里写着「CDS 三列比其余列晚两年起步，其余各列零空洞」—— 后半句是个全称断言，
+没有任何检查会在它变假时报警，删掉；前半句改由 `_cds_start()` 现算并印进图注。）
 
 ━━ 📌 本页做不了量价分解，而且「收入分解」也不是它的替身 ━━━━━━━━━━━━━━━━
 量价分解的恒等式是 `成交额 ≡ 成交量 × 成交价`。本表**一条成交金额列都没有** ——
@@ -34,6 +37,7 @@ ICE 确实有另一条恒等式 `交易收入 ≡ 成交量 × 每张费率`，�
 """
 
 import csv
+import math
 import os
 
 _CSV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -93,8 +97,310 @@ def _split_vs_total():
     return len(rel), rel[-1], rel[len(rel) // 2]
 
 
+def _rows():
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            return list(csv.DictReader(fh))
+    except OSError:
+        return []
+
+
+def _num(r, col):
+    """CSV 里一格 → float；空格子 / 非数返回 None（不拿 0 冒充缺失）。"""
+    try:
+        v = r[col].strip()
+    except (KeyError, AttributeError):
+        return None
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _shape():
+    """(数据列数, 月数, 首月, 末月)；读不到返回 (None,)*4。
+
+    2026-08-19 现算化：这四个数原先写死成「55 列，187 个月，2011-01..2026-07」，
+    分散在模块 docstring 与四条图注里。**每长一个月就全体过期**，而页头那句
+    「覆盖 Jan-11 – Jul-26（187 个月）」是底座现算的 —— 两处并排印在同一页上，
+    下个月就会一个说 188、一个说 187。所以一个都不留，全部从 CSV 现数。
+    """
+    rows = _rows()
+    if not rows:
+        return (None,) * 4
+    return (len(rows[0]) - 1, len(rows), rows[0]['month'], rows[-1]['month'])
+
+
+#: 允许出现非整数的列的前缀 —— 图注那句「非整数的只有 RPC 与份额这几列」的**判据**。
+_NONINT_OK = ('rpc_', 'share_')
+
+
+def _nonint_census():
+    """(非整数列名 list, 非整数格数)；算不出返回 ([], None)。
+
+    「官方原表就已四舍五入到整千张 / 整百万股，只有 RPC 与份额这些列是非整数」
+    —— 这句话的机器判据。列数与格数都随源表长，不写死。
+
+    ⚠ 上一版这个函数**只数了列数、没有验列名**：图注照样印「非整数的只有 RPC 与
+    份额这 N 列」，而 N 是数出来的、「只有 RPC 与份额」是人写的。哪天官方给某条
+    张数列发了小数，N 会自己变成 14，那句全称断言却会继续印，而且没有任何东西会
+    报错 —— 正是这一轮要消灭的那种句子。所以判据下沉到这里：**名单对不上就停机**。
+    """
+    rows = _rows()
+    if not rows:
+        return [], None
+    cols = [c for c in rows[0] if c != 'month']
+    names, cells = [], 0
+    for c in cols:
+        bad = sum(1 for r in rows
+                  if (v := _num(r, c)) is not None and abs(v - round(v)) > 1e-9)
+        if bad:
+            names.append(c)
+            cells += bad
+    off = [c for c in names if not c.startswith(_NONINT_OK)]
+    if off:
+        raise SystemExit(
+            'series/ice.csv：图注断言「非整数的只有 RPC 与份额那几列」，但 %s '
+            '也有非整数格 —— 断言与数据对不上，先改图注再构建'
+            '（build/specs/ice.py 的 _nonint_census / _NONINT_OK）' % '、'.join(off))
+    return names, cells
+
+
+def _sum_check(children, total, tol=2.0):
+    """(可比月数, 逐格精确相等的月数, 差 ≤tol 的月数)；算不出返回 (None,)*3。
+
+    「分项之和 ≠ 合计，不要当恒等式」那条注的判据。分子分母都会随月份长，
+    所以 85/187 这种写法必须现算 —— 写死的分母下个月就与页头的月数打架。
+    """
+    rows = _rows()
+    if not rows:
+        return (None,) * 3
+    n = ex = near = 0
+    for r in rows:
+        t = _num(r, total)
+        vs = [_num(r, c) for c in children]
+        if t is None or any(v is None for v in vs):
+            continue
+        n += 1
+        d = abs(sum(vs) - t)
+        if d < 1e-9:
+            ex += 1
+        if d <= tol:
+            near += 1
+    return (n, ex, near) if n else (None,) * 3
+
+
+def _tdays_split():
+    """(可比月数, 两套交易日相等的月数, 不等的月数)；算不出返回 (None,)*3。"""
+    rows = _rows()
+    if not rows:
+        return (None,) * 3
+    n = eq = 0
+    for r in rows:
+        a, b = _num(r, 'trading_days_commod'), _num(r, 'trading_days_rates')
+        if a is None or b is None:
+            continue
+        n += 1
+        if a == b:
+            eq += 1
+    return (n, eq, n - eq) if n else (None,) * 3
+
+
+#: 「四家交易所占全美现货多少」那条注要读的另外三家的列。
+#: 只读不写、逐个 try —— 少了任何一家（那一页被删掉了）就退回不含数字的定性版本，
+#: 本页不因为别人的文件不在而炸掉，也不因为别人多发了一个月而说假话。
+_PEERS = (
+    ('cboe.csv', 'adv_us_equities_matched_shares_bn', 1000.0),   # bn 股 → mn 股
+    ('miax.csv', 'adv_equities_mnshares', 1.0),
+)
+_NDAQ = ('ndaq.csv', 'share_us_cash_matched_group')              # 已是 0–1 的份额
+
+
+def _venue_mix():
+    """四家自营撮合量合计占全美合并量的比例 —— 「场外化侵蚀」那条注的算术。
+
+    **取「四家都有值的最新一个月」，现找不写死。**原先这条注把 2026-06 那次实测
+    连同「（四家份额都有值的最新一个月）」这半句一起写死了；等 2026-07 四家都发齐，
+    页面上那句就成了假话 —— 而它自称的判据（「最新一个月」）恰恰是**能现算**的。
+
+    返回 dict(month, total, nyse, nyse_pct, cboe, cboe_pct, ndaq_pct,
+              miax, miax_pct, four_pct, rest_pct)；算不出返回 None。
+    """
+    base = os.path.dirname(_CSV)
+    ice = {r['month']: r for r in _rows()}
+    if not ice:
+        return None
+    peer = {}
+    for fn, col, mult in _PEERS + ((_NDAQ[0], _NDAQ[1], 1.0),):
+        try:
+            with open(os.path.join(base, fn), encoding='utf-8') as fh:
+                peer[fn] = {r['month']: r for r in csv.DictReader(fh)}
+        except OSError:
+            return None
+    for m in sorted(ice, reverse=True):
+        tape = [_num(ice[m], 'adv_tape%s_consolidated_mnsh' % t) for t in 'ABC']
+        nyse = [_num(ice[m], 'adv_nyse_tape%s_matched_mnsh' % t) for t in 'ABC']
+        if any(v is None for v in tape + nyse):
+            continue
+        total = sum(tape)
+        if not total:
+            continue
+        vals = {}
+        for fn, col, mult in _PEERS:
+            r = peer[fn].get(m)
+            v = _num(r, col) if r else None
+            if v is None:
+                break
+            vals[fn] = v * mult
+        else:
+            r = peer[_NDAQ[0]].get(m)
+            nd = _num(r, _NDAQ[1]) if r else None
+            if nd is None:
+                continue
+            cb, mi = vals['cboe.csv'], vals['miax.csv']
+            p = dict(month=m, total=total, nyse=sum(nyse), cboe=cb, miax=mi,
+                     nyse_pct=sum(nyse) / total * 100.0,
+                     cboe_pct=cb / total * 100.0,
+                     ndaq_pct=nd * 100.0,
+                     miax_pct=mi / total * 100.0)
+            p['four_pct'] = p['nyse_pct'] + p['cboe_pct'] + p['ndaq_pct'] + p['miax_pct']
+            p['rest_pct'] = 100.0 - p['four_pct']
+            return p
+    return None
+
+
+def _miax_industry_start():
+    """series/miax.csv 里那条行业 ADV 的首月；读不到返回 None。
+
+    「本页这条现货行业分母回溯得比同仓那条深」这句话的另一半判据 —— 两个起点都
+    现读，谁被回补都不用改这句话。miax 那页被删掉时返回 None，本页退回不比较的说法。
+    """
+    try:
+        with open(os.path.join(os.path.dirname(_CSV), 'miax.csv'), encoding='utf-8') as fh:
+            ms = [r['month'] for r in csv.DictReader(fh)
+                  if _num(r, 'industry_adv_equities_mnshares') is not None]
+    except OSError:
+        return None
+    return ms[0] if ms else None
+
+
+def _miax_crosscheck(k=2):
+    """ICE 三 tape 合并量 vs MIAX 自报行业 ADV，最近 k 个都有值的月。
+
+    返回 [(月, ICE 合并量, MIAX 行业量), …]（新月在前）；算不出返回 []。
+    """
+    base = os.path.dirname(_CSV)
+    try:
+        with open(os.path.join(base, 'miax.csv'), encoding='utf-8') as fh:
+            mi = {r['month']: r for r in csv.DictReader(fh)}
+    except OSError:
+        return []
+    out = []
+    for r in reversed(_rows()):
+        tape = [_num(r, 'adv_tape%s_consolidated_mnsh' % t) for t in 'ABC']
+        m = mi.get(r['month'])
+        v = _num(m, 'industry_adv_equities_mnshares') if m else None
+        if any(t is None for t in tape) or v is None:
+            continue
+        out.append((r['month'], sum(tape), v))
+        if len(out) >= k:
+            break
+    return out
+
+
+def _ceil_to(v, nd):
+    """把 v 向**上**取到 nd 位小数 —— 印「最大不超过 X」时必须这么取。
+
+    四舍五入有一半的概率把上界取**小**，于是页面印出来的那个「最大值」比真正的
+    最大值还小 —— 一句自称现算的话，被它自己现算的那列证伪。上界向上取、
+    下界向下取，印出来的区间才永远含得住实测值。（这里**不举实测数字当例子**：
+    举一个就等于再养一个下个月过期的数。）
+    """
+    f = 10.0 ** nd
+    return math.ceil(v * f - 1e-9) / f
+
+
+_CDS_COLS = ('cds_client_notional_usdbn', 'cds_nonclient_notional_usdbn',
+             'cds_total_notional_usdbn')
+
+
+def _cds_start():
+    """CDS 三列共同的首月，以及它比全表首月晚多少个整年。
+
+    ⚠ 图注原先写死「CDS 三列自 2013-01 起（比其余列晚两年）」。起点是能现算的
+    （官方回补一次就左移），「晚两年」更是两个现算月份的差 —— 一个都不该抄。
+    **三列首月不一致就停机**：那句话说的是「三列」，判据就得管着三列，
+    否则它会在某一列被单独回补之后继续印，而没有任何东西会报错。
+
+    返回 (首月, 晚了几年的中文, 相差月数)；算不出返回 (None, None, None)。
+    """
+    rows = _rows()
+    if not rows:
+        return (None,) * 3
+    firsts = {}
+    for c in _CDS_COLS:
+        ms = [r['month'] for r in rows if _num(r, c) is not None]
+        if ms:
+            firsts[c] = ms[0]
+    if len(firsts) != len(_CDS_COLS):
+        return (None,) * 3
+    if len(set(firsts.values())) != 1:
+        raise SystemExit(
+            'series/ice.csv：图注断言「CDS 三列自同一个月起」，但实际首月是 %s '
+            '—— 断言与数据对不上，先改图注再构建（build/specs/ice.py 的 _cds_start）'
+            % '、'.join('%s=%s' % kv for kv in sorted(firsts.items())))
+    m0 = next(iter(firsts.values()))
+    y0, mo0 = (int(x) for x in rows[0]['month'].split('-'))
+    y1, mo1 = (int(x) for x in m0.split('-'))
+    lag = (y1 - y0) * 12 + (mo1 - mo0)
+    zh = ('%d 年' % (lag // 12)) if lag % 12 == 0 else ('%d 个月' % lag)
+    return m0, zh, lag
+
+
+def _share_selfcheck():
+    """官方给的 NYSE matched 份额 vs 本机自算 —— (可比月数, 最大 pp 差, 中位比值)。
+
+    ⚠ 这两个数原先写死成「误差 <0.15pp」与「中位比值 = 1.000」。两个都是**实测**，
+    两个都会被下一个月的读数顶开，而两个都能现算。算不出返回 (None, None, None)。
+    """
+    diffs, ratios = [], []
+    for r in _rows():
+        s = _num(r, 'share_nyse_us_cash_matched')
+        tape = [_num(r, 'adv_tape%s_consolidated_mnsh' % t) for t in 'ABC']
+        nyse = [_num(r, 'adv_nyse_tape%s_matched_mnsh' % t) for t in 'ABC']
+        if s is None or any(v is None for v in tape + nyse) or not sum(tape):
+            continue
+        own = sum(nyse) / sum(tape)
+        diffs.append(abs(s - own) * 100.0)
+        if own:
+            ratios.append(s / own)
+    if not diffs:
+        return (None,) * 3
+    ratios.sort()
+    n = len(ratios)
+    med = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2.0
+    return len(diffs), max(diffs), med
+
+
 _NMONEY, _NQTY, _NRATE, _NNOT = _column_census()
 _SPLITN, _SPLITMAX, _SPLITMED = _split_vs_total()
+_CDS0, _CDSLAG_ZH, _CDSLAG = _cds_start()
+_SHN, _SHMAXPP, _SHMED = _share_selfcheck()
+_NCOLS, _NMONTHS, _M0, _M1 = _shape()
+_NONINT_COLS, _NONINT_CELLS = _nonint_census()
+_ENN, _ENEX, _ENNEAR = _sum_check(
+    ['adv_brent_kcontracts', 'adv_gasoil_kcontracts', 'adv_otheroil_kcontracts',
+     'adv_natgas_kcontracts', 'adv_power_kcontracts', 'adv_environmentals_kcontracts'],
+    'adv_energy_kcontracts')
+_FIN, _FIEX, _FINEAR = _sum_check(
+    ['adv_stir_kcontracts', 'adv_mltir_kcontracts', 'adv_equity_index_kcontracts',
+     'adv_fx_credit_kcontracts'], 'adv_financials_kcontracts')
+_TDN, _TDEQ, _TDNE = _tdays_split()
+_MIX = _venue_mix()
+_XCHK = _miax_crosscheck()
+_MIAX0 = _miax_industry_start()
 
 _NO_DECOMP_NOTE = (
     '📌 <b>本页不具备量价分解的数据条件。</b>量价分解的恒等式是「成交额 ≡ 成交量 × '
@@ -147,15 +453,18 @@ _NOTE_TTM_CASH = (
 )
 
 # ── 为什么 fmt 这么选 ───────────────────────────────────────────────────────
-# 1) 月度单元格在官方原表里就已经四舍五入到整千张 / 整百万股（10,026 格里只有
-#    2,429 个非整数，且全部落在 RPC 与份额这 13 列上，verify_ice §1.2）。
-#    给月度 ADV 标小数位是假精度 ⇒ 计数类一律 f0c（千分位整数，charts.js:91）。
+# 1) 月度单元格在官方原表里就已经四舍五入到整千张 / 整百万股（非整数格全落在 RPC
+#    与份额那几列上，verify_ice §1.2；具体列数与格数由 `_nonint_census()` 现扫，
+#    图注里印的就是它的返回值，这里不复述一个会过期的快照）。
+#    给月度 ADV 标小数位是假精度 ⇒ 计数类一律 f0c（千分位整数，见 assets/charts.js
+#    的 `FMT.f0c`；**别在这里写行号** —— charts.js 一改就漂）。
 # 2) share_* 五列在 CSV 里是**分数**（0.191 = 19.1%），不是百分数。
-#    charts.js 的 pct1 实现是 `v.toFixed(1) + '%'`（charts.js:94），**不做 ×100**，
+#    charts.js 的 pct1 实现是 `v.toFixed(1) + '%'`（`FMT.pct1`），**不做 ×100**，
 #    直接配 pct1 会把 19.1% 印成「0.2%」—— 图照画、没人报错。
 #    所以这五列一律 `'scale': 100` + pct1。本机用算术验过是分数而不是百分数：
-#    share ÷ (matched ÷ consolidated) 的中位比值 = 1.000（若是百分数会是 100）。
-#    对照：series/miax.csv 的 share_*_pct 存的是百分数（比值 99.9），那边不加 scale。
+#    share ÷ (matched ÷ consolidated) 的中位比值 ≈ 1（若是百分数会是 100）——
+#    具体数由 `_share_selfcheck()` 现算并印在图注上，**这里不复述一个会过期的快照**。
+#    对照：series/miax.csv 的 share_*_pct 存的是百分数（比值两个数量级之差），那边不加 scale。
 # 3) 小数位一律**等于官方发的位数**，不多不少：rpc_*_usd 与 rpc_nyse_equity_options_usd
 #    源表给 2 位（0.05 / 0.04），rpc_nyse_us_cash_usd_per100sh 给 3 位（0.032~0.055），
 #    share_* 给到 0.001 的分数（= 0.1pp）。所以是 f2 / f3 / pct1。
@@ -189,7 +498,7 @@ SPEC = {
               'file hosted on s2.q4cdn.com); format after Goldman Sachs GIR',
 
     # 头条：TOTAL F&O ADV 与 NYSE 现货 handled ADV。
-    # 两条都在同一个 xlsx 里、同一天发布、187 个月零空洞 —— 满足「历史长 / 发布快 / 无空洞」。
+    # 两条都在同一个 xlsx 里、同一天发布、全历史零空洞 —— 满足「历史长 / 发布快 / 无空洞」。
     # 不用 adv_energy 之类分项当头条：分项与合计用不同的交易日归一，
     # 分项之和与合计有 0~0.55% 的系统性差（verify_ice §四.4），当门槛会引入无意义的抖动。
     'headline': [
@@ -200,8 +509,10 @@ SPEC = {
     ],
 
     'groups': [
-        # ── 能源：ICE 的利润中心。六个子项 + TOTAL，六项之和 = TOTAL 只在 85/187 个月
-        #    精确成立（各自四舍五入到整千张），±2 内 187/187 —— 不要当恒等式校验。
+        # ── 能源：ICE 的利润中心。六个子项 + TOTAL，六项之和 = TOTAL 只在一部分月份
+        #    精确成立（各自四舍五入到整千张），±2 内才全中 —— 不要当恒等式校验。
+        #    精确成立的月数由 `_sum_check()` 现算并印进图注（写死的 85/187 每长一个月
+        #    就与页头那句「覆盖 … 个月」打架）。
         {'zh': '能源衍生品 ADV', 'cols': [
             {'col': 'adv_energy_kcontracts',         'zh': '能源合计',   'unit': 'k contracts/day', 'fmt': 'f0c'},
             {'col': 'adv_brent_kcontracts',          'zh': 'Brent 原油', 'unit': 'k contracts/day', 'fmt': 'f0c'},
@@ -272,13 +583,12 @@ SPEC = {
 
         # ── 美股现货：本页最重要的一组。
         #    adv_tape{A,B,C}_consolidated_mnsh 是**全市场**合并成交量（不是 NYSE 自己的），
-        #    是「场外化侵蚀」这条趋势唯一可跟踪的证据。本机实测 2026-06
-        #    （四家份额都有值的最新一个月；2026-07 Nasdaq 在慢腿里还没到）：
-        #      三 tape 合并 23,382 百万股/日
-        #      NYSE matched 4,681 = 20.02%   Cboe 2,185 = 9.35%
-        #      Nasdaq 三盘口 14.77%          MIAX Pearl 192 = 0.82%
-        #      ⇒ 四家合计 44.96%，其余 55.04% 成交在暗池 / 内化商 / TRF。
-        #    这个分母只有 ICE 披露。
+        #    是「场外化侵蚀」这条趋势唯一可跟踪的证据：四家自营撮合量合起来只占全美
+        #    合并量的四成多，其余成交在暗池 / 内化商 / TRF。这个分母只有 ICE 披露。
+        #    ⚠ 具体是哪个月、四家各占多少，由 `_venue_mix()` 在 import 期现找现算
+        #    （判据是「四家都有值的最新一个月」）。这里**不再抄一份快照**：
+        #    上一版把 2026-06 那次实测连同「最新一个月」这半句一起写死，
+        #    等 2026-07 四家发齐，页面上那句自称的判据就当场变成假话。
         {'zh': 'NYSE 美股现货：本所量 vs 全市场分母', 'cols': [
             {'col': 'adv_nyse_us_cash_handled_mnsh', 'zh': 'NYSE Group handled ADV',
              'unit': 'mn shares/day', 'fmt': 'f0c'},
@@ -363,20 +673,34 @@ SPEC = {
     'notes': [
         _NO_DECOMP_NOTE,
 
-        '数据源：ICE 官网 IR 的 Monthly Statistics Tracking 单一 xlsx（4 个 sheet，2011-01 起 187 个月），'
-        '指针由 ir.theice.com 的 ContentAsset JSON feed 给出。全部 55 列取自同一文件、同一发布日。',
+        '数据源：ICE 官网 IR 的 Monthly Statistics Tracking 单一 xlsx（4 个 sheet'
+        + ((f'，{_M0} 起 {_NMONTHS} 个月') if _NMONTHS else '')
+        + '），指针由 ir.theice.com 的 ContentAsset JSON feed 给出。'
+        + ((f'全部 {_NCOLS} 列取自同一文件、同一发布日。')
+           if _NCOLS else '全部数据列取自同一文件、同一发布日。'),
 
         '<b>衍生品 ADV 单位是千张（官方原表 "contracts in 000s"）；OI 单位同样是千张</b> —— '
         '与 series/cme.csv 的 oi_*_contracts（裸张数）差 1000 倍。跨家对比时必须先统一。',
 
-        '<b>月度值在官方原表里就已四舍五入到整千张 / 整百万股</b>，只有 RPC 与份额这 13 列是非整数。'
-        '所以本页所有计数类一律按 0 位小数显示；小基数行（环境权益、FX/USDX）的同比会与官方新闻稿差 1–2pp，'
-        '这是官方自己的取整造成的，不是解析错误。',
+        '<b>月度值在官方原表里就已四舍五入到整千张 / 整百万股</b>，'
+        + ((f'非整数的只有 RPC 与份额这 {len(_NONINT_COLS)} 列'
+            f'（全表 {_NONINT_CELLS:,} 个非整数格全落在它们身上 —— 名单现扫，'
+            f'扫出 <code>rpc_*</code> / <code>share_*</code> 之外的列直接停机）。')
+           if _NONINT_COLS else '非整数的只有 RPC 与份额那几列。')
+        + '所以本页所有计数类一律按 0 位小数显示；小基数行（环境权益、FX/USDX）的同比会与官方新闻稿差 1–2pp，'
+          '这是官方自己的取整造成的，不是解析错误。',
 
-        '<b>分项之和 ≠ 合计，不要当恒等式。</b>TOTAL ENERGY = 六子项之和只在 85/187 个月精确成立（±2 内 187/187）；'
-        'TOTAL FINANCIALS = 四子项之和只在 109/187 个月精确成立。'
-        '另外 adv_commodities + adv_financials 与 adv_futures_options 有 0~0.55% 的系统性差 —— '
-        '合计用「总量÷总交易日」归一，而商品与利率两条交易日在 187 个月里有 118 个月不相等。',
+        '<b>分项之和 ≠ 合计，不要当恒等式。</b>'
+        + ((f'TOTAL ENERGY = 六子项之和只在 {_ENEX}/{_ENN} 个月精确成立'
+            f'（±2 内 {_ENNEAR}/{_ENN}）；') if _ENN else 'TOTAL ENERGY = 六子项之和常常差几张；')
+        + ((f'TOTAL FINANCIALS = 四子项之和只在 {_FIEX}/{_FIN} 个月精确成立。')
+           if _FIN else 'TOTAL FINANCIALS = 四子项之和同理。')
+        + ('另外 adv_commodities + adv_financials 与 adv_futures_options 有'
+           + ((f' 0~{_SPLITMAX:.2f}% ') if _SPLITMAX is not None else '一层')
+           + '的系统性差 —— ')
+        + ((f'合计用「总量÷总交易日」归一，而商品与利率两条交易日在 {_TDN} 个月里有 '
+            f'{_TDNE} 个月不相等。')
+           if _TDN else '合计用「总量÷总交易日」归一，而商品与利率两条交易日常常不相等。'),
 
         '<b>官方没有 TOTAL OI 行。</b>新闻稿里的 "Total OI" 是 oi_commodities + oi_financials 自己加出来的'
         '（已用 2026-06 / 2026-07 两期新闻稿反算验证）。OI 是月末净未平仓（net OI）。',
@@ -387,22 +711,47 @@ SPEC = {
 
         '<b>share_* 五列在官方原表里是 0–1 的小数比率</b>（0.191 = 19.1%），'
         '本页统一乘 100 按百分数显示。这一点用算术核过而不是照抄文档：'
-        'share ÷（matched ÷ consolidated）的中位比值 = 1.000（若源表存的是百分数，该比值会是 100）。'
-        '注意 series/miax.csv 的 share_*_pct 存的是百分数，两家形态相反，跨页取数时别弄混。',
+        'share ÷（matched ÷ consolidated）的中位比值'
+        + ((f' = {_SHMED:.3f}（{_SHN} 个可比月现算；若源表存的是百分数，该比值会是 100）。')
+           if _SHMED is not None else '接近 1（若源表存的是百分数，该比值会是 100）。')
+        + '注意 series/miax.csv 的 share_*_pct 存的是百分数，两家形态相反，跨页取数时别弄混。',
 
         '<b>adv_tapeA/B/C_consolidated_mnsh 是全美合并成交量，不是 NYSE 自己的量</b> —— '
-        '这是本仓唯一一个由交易所自己披露、且回溯到 2011-01 的现货行业分母。'
-        '本机实测 2026-06（四家份额都有值的最新一个月）：三个 tape 合并 23,382 百万股/日，'
-        'NYSE matched 4,681（20.0%）、Cboe 2,185（9.4%）、Nasdaq 三盘口 14.8%、MIAX Pearl 192（0.8%），'
-        '<b>四家合计 44.96%，其余 55.04% 成交在暗池 / 内化商 / TRF</b>。'
-        '「场外化侵蚀」这条趋势只能靠这几列跟踪。',
+        # ⚠ 原文写的是「这是本仓**唯一**一个由交易所自己披露、且回溯到 2011-01 的现货
+        #   行业分母」。「本仓唯一」是跨页的全称断言，而同一页下面那条注自己就点了名：
+        #   MIAX 也披露一条行业 ADV。救它的只有「回溯到 …」这半个限定，而那半个限定
+        #   没有任何检查 —— MIAX 哪天被回补到 2011 年，这句话就假了，且不会有人知道。
+        #   ⇒ 改成拿两条**都在本仓、都能现读**的起点直接比，比出来的话不需要维护。
+        + ((f'同类分母本仓另有一条（<code>series/miax.csv</code> 的行业 ADV，'
+            f'见下一条注），但它自 {_MIAX0} 才起；本页这三列回溯到 {_M0}，'
+            f'两个起点都是现读的。')
+           if (_M0 and _MIAX0) else
+           (f'这是本仓回溯得最深的一条现货行业分母（自 {_M0} 起，现读）。'
+            if _M0 else '这是一条由交易所自己披露的现货行业分母。'))
+        + ((f'本机实测 {_MIX["month"]}（四家份额都有值的最新一个月，逐月现找）：'
+            f'三个 tape 合并 {_MIX["total"]:,.0f} 百万股/日，'
+            f'NYSE matched {_MIX["nyse"]:,.0f}（{_MIX["nyse_pct"]:.1f}%）、'
+            f'Cboe {_MIX["cboe"]:,.0f}（{_MIX["cboe_pct"]:.1f}%）、'
+            f'Nasdaq 三盘口 {_MIX["ndaq_pct"]:.1f}%、'
+            f'MIAX Pearl {_MIX["miax"]:,.0f}（{_MIX["miax_pct"]:.1f}%），'
+            f'<b>四家合计 {_MIX["four_pct"]:.2f}%，其余 {_MIX["rest_pct"]:.2f}% '
+            f'成交在暗池 / 内化商 / TRF</b>。')
+           if _MIX else
+           '四家自营撮合量合起来只占全美合并量的四成多，其余成交在暗池 / 内化商 / TRF'
+           '（本次未能从同仓的 cboe / ndaq / miax 序列复算具体比例）。')
+        + '「场外化侵蚀」这条趋势只能靠这几列跟踪。',
 
-        '<b>ICE 的三 tape 合并量与 MIAX 自己披露的行业 ADV 是两家独立申报、数值几乎逐位相同的两条线</b>：'
-        '实测 2026-06 = 23,382 vs 23,383、2026-07 = 17,437 vs 17,437。'
-        '这既是两边解析正确性的交叉证据，也意味着横截面页上这两列是同一个分母，不要当成两个口径并列。',
+        '<b>ICE 的三 tape 合并量与 MIAX 自己披露的行业 ADV 是两家独立申报、数值几乎逐位相同的两条线</b>'
+        + (('：实测 ' + '、'.join('%s = %s vs %s' % (m, format(a, ',.0f'), format(b, ',.0f'))
+                                 for m, a, b in _XCHK) + '。')
+           if _XCHK else '（本次未能复算具体月份）。')
+        + '这既是两边解析正确性的交叉证据，也意味着横截面页上这两列是同一个分母，不要当成两个口径并列。',
 
         '<b>matched ≠ handled。</b>handled 含路由到别的交易所成交的量，跨家份额一律用 matched。'
-        '官方没有 A+B+C matched 的合计行，只给了 share_nyse_us_cash_matched（与自算一致，误差 <0.15pp）。',
+        '官方没有 A+B+C matched 的合计行，只给了 share_nyse_us_cash_matched'
+        + ((f'（与自算一致：{_SHN} 个可比月里最大差 {_ceil_to(_SHMAXPP, 2):.2f}pp —— '
+            f'现算，且上界向上取整，印出来的数永远含得住实测值）。')
+           if _SHMAXPP is not None else '（与自算一致）。'),
 
         '<b>adv_us_equity_options_industry_kcontracts 是全美股票/ETF 期权行业总量，'
         '经与 Cboe multilist 及 ICE 10-K 交叉验证与「不含指数期权」的口径一致</b> —— '
@@ -421,11 +770,16 @@ SPEC = {
         'Russell 合约 2016-12 规格减半后量、OI、RPC 全部追溯调整。'
         '<b>后果是本仓 CSV 与 ICE 历年季报 / 10-K 原文里的数字可能对不上</b> —— 以当前文件为准。',
 
-        'CDS 三列自 2013-01 起（比其余列晚两年），是当月清算名义总额（单边计），不是日均。'
+        'CDS 三列'
+        + ((f'自 {_CDS0} 起（比全表首月 {_M0} 晚 {_CDSLAG_ZH}；两个月份都现算，'
+            f'三列首月对不上就停机）') if _CDS0 else '起步晚于全表首月')
+        + '，是当月清算名义总额（单边计），不是日均。'
         '历史上出过一次实质重述：2026-06 那期的 2026-01 Non-Client = 291（不平 99），'
         '2026-07 那期改成 391 —— 这是跨 vintage 唯一一处实质改动。',
 
-        '交易日有两列（trading_days_commod / trading_days_rates，187 个月里只有 69 个月相同），'
-        '本页所有序列已是官方算好的 ADV，因此不单独出图；两列的差异是上面「分项之和 ≠ 合计」的成因之一。',
+        '交易日有两列（trading_days_commod / trading_days_rates'
+        + ((f'，{_TDN} 个月里只有 {_TDEQ} 个月相同') if _TDN else '，两列常常不等')
+        + '），本页所有序列已是官方算好的 ADV，因此不单独出图；'
+          '两列的差异是上面「分项之和 ≠ 合计」的成因之一。',
     ],
 }
