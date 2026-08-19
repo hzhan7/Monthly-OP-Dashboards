@@ -922,7 +922,7 @@ POOLS = [
              ],
              'contracts_col': []},
             {'key': 'db1', 'disp': 'Xetra（股票口径）', 'color': 'GOLD', 'csv': 'db1.csv',
-             'start': '2024-12', 'in_share': True,
+             'start': '2016-06', 'in_share': True,
              'chain': [
                  {'col': 'turnover_xetra_equities_eurbn', 'src': 'notional',
                   'unit_scale': BN,
@@ -933,8 +933,14 @@ POOLS = [
              'note': '⚠ 原写的 adv_xetra_adnv_eurbn 在 db1.csv 里**不存在**。真实表里有三列，'
                      '各有各的代价，本池取股票口径那一条：'
                      '(a) turnover_xetra_equities_eurbn —— Xetra 电子盘**股票**月成交额，'
-                     '与 Cboe / Euronext 逐字同口径，但只有 2024-12 起 20 个月；'
-                     '(b) turnover_xetra_eurbn —— 含 ETP 与结构化产品，31 个月；'
+                     '与 Cboe / Euronext 逐字同口径。**2026-08-18 已回补到 2016-06、共 107 个月**'
+                     '（原写「只有 2024-12 起 20 个月」，已过期）；'
+                     '⚠ 但它**中间有 15 格空洞 4 段**（2016-07、2017-06~2018-04、'
+                     '2018-06~07、2019-12 —— 官方那几年不发分场所的分类拆分）。'
+                     '真要把本池接上渲染，**空洞月必须留 null 不能参与占比分母** ——'
+                     '一家缺一格而分母照旧求和，会把另外两家的占比凭空抬高；'
+                     '(b) turnover_xetra_eurbn —— 含 ETP 与结构化产品，'
+                     '**2016-01 起 127 个月、无空洞**（原写 31 个月，已过期）；'
                      '(c) turnover_cash_total_eurbn —— Xetra + Frankfurt 场内、含债券基金，'
                      '198 个月（2010-01 起），docs/verify/verify_db1.md §四的 8.59 €bn/日'
                      '就是这一条。历史深十倍，但口径与另两家不同 ⇒ **不进本池**，'
