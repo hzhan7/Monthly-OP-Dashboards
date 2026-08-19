@@ -1,0 +1,24 @@
+审计于 2026-08-19（session compassionate-poitras-9d6727）。
+
+结论：内容 100% 已被 main 吸收，无一遗漏。仅作存档，**任何情况下不要合并**。
+
+逐格验过的证据：
+· series/axp_trust.csv        127 个月与 main 0 格不同
+· series/axp_trust_full.csv   仅 1 格不同：2021-02 的 n_series_at_that_es
+                              （本分支=7、main=8）——**那一格是本分支错**，
+                              成因是小节标题正则写死 Certificates 而该期
+                              Series 2019-2 写成单数 Certificate，读不到不抛错。
+· 本分支独有的三个函数 main 都有更好的等价物：
+    _merge()        → main 的 _upsert()（多一条「既有行按原始文本逐行照抄」的保证）
+    backfill_trust() + --backfill-trust CLI
+                    → main 把 START_MONTH='2016-01' 焊进 update()，
+                      回补成为常态而不是靠人记得敲命令
+    _month_range()  → 同上，已内化
+
+⚠️ 带毒：本分支基线（8c9f7ff）早于 gs_bar 的 bar_labels 特性入库，
+   所以 `git diff origin/main cb77376 -- assets/charts.js` 会把
+   「main 有、本分支没有」如实报成**删除 bar_labels: false 开关**的反向 hunk。
+   4067 从本分支摘刻度让位 hunk 时已拦下这一条（该 hunk 后以 d23b321 独立落地）。
+   从旧分支摘改动一律逐 hunk 看，不 cherry-pick 整个提交、不整文件覆盖；
+   摘之前先跑 `git log <branch>..origin/main -- <file>`。
+   规矩见 docs/VISUAL_QA_RUNNER.md §5 第 5 条。
