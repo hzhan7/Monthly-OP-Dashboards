@@ -3,6 +3,44 @@
 侦察日期 2026-08-06 ｜ slug `asx` ｜ 本轮只做侦察，未改动 `/Users/hainan/Projects/monthly-op-dashboards` 任何文件
 临时脚本与样本 PDF 全在 `/tmp/exch_recon/scratch/`
 
+> **2026-08-19 追记（本轮回补改掉的 5 处事实 + 1 条新结论）** —— 本文是 **2026-08-06** 的
+> 点位侦察报告，**原文一字未删**；下面几条在 2026-08-18/19 那轮回补里被实发推翻，
+> 各相关小节已就地加追记。
+>
+> ① **「辅源 1（ASX 24 分品种）只有最近 2 期、历史 404、不可回补」—— 全错，而且错在我们这边。**
+>    根因是本仓抓取器 `fetch/asx.py::_SFE_LINK` 把文件名的日期段写死成 8 位数字，
+>    而官方五年换过 **5 代命名**、日期段有 YYMMDD / DDMMYY / DDMMYYYY 三种写法
+>    （2026-02 那期还从 DDMMYY 退回 YYMMDD），主机名 www/www2、协议 http/https 也乱换。
+>    正则只认词干、日期段一个数字都不解释之后，2026-08 逐月实发 2020-06…2026-05 共 **72 期
+>    全部 200 + `application/pdf` + `%PDF-`**，用未改动的 `parse_sfe` 全部解析成功。
+>    `series/asx.csv` 那 8 列今天是 **2020-06 → 2026-07 共 74 个月、零空洞**（2026-08-19 实测）。
+>    ⇒ 不是官方撤了历史，是我们自己拼错了文件名。见 §判定、§辅源列、§历史深度、口径坑 8。
+>
+> ② **真正的天花板是 2020-06，而且它是硬的 —— 判据是「链接指向哪个目录」，不是「多久以前」。**
+>    2019-12…2020-05（以及 2016-09…2019-11）的 MAR 正文印的是老站点路径
+>    `/data/market-reports/…`，该路径今天整体 302 到 `content/asx/404.html`
+>    （**200 + text/html 的 soft-404**，不校验内容就会当成成功）；2016-01…2016-08 的 MAR
+>    正文里根本没有这条链接。⇒ 结论从「只能往后攒」改成「**2020-06 之前补不到**」。
+>
+> ③ **落地的列名与口径都与本文的建议不同，别照着本文找列。** 实际入库的是 8 列
+>    `contracts_spi200_futures` / `oi_spi200_futures` / `contracts_3y_bond_futures` /
+>    `oi_3y_bond_futures` / `contracts_10y_bond_futures` / `oi_10y_bond_futures` /
+>    `contracts_90d_bankbill_futures` / `oi_90d_bankbill_futures`，**是月度总张数，不是 ADV**。
+>    本文 §辅源列 那套 `adv_*_futures_contracts` 命名**一个都没有落地**。
+>
+> ④ **§横截面 利率衍生品那条「回补期只能退用 `adv_futures_contracts` 合计当代理」的建议作废。**
+>    现在有真的分品种序列，用不着代理；而且那个代理口径自身就有漂移（期货合计**含电力与 NZ 品种**，
+>    占比逐年变），本来也不该作为长期方案。
+>
+> ⑤ **§横截面 能源商品那条「电力期货只在辅源 1 里、2026-06 起」的日期同样过期**，
+>    但结论要换个方向改：辅源 1 的窗口已是 2020-06 起，而**本仓一列电力/NZ 都没抽**
+>    （`fetch/asx.py::SFE_SPEC` 只取 AP / YT / XT / IR 四个代码）。
+>    ⇒ 从「建不起历史」改成「**建得起，但本仓没建**」。
+>
+> ⑥ **新结论：数据够用 ≠ 能进池。** 8 列 74 个月零空洞之后，ASX **仍然进不了**
+>    `build/pools.py` 的 `interest_rate` 池，卡点与数据质量无关 —— 见 §横截面·标的池
+>    之后新增的「为什么有了分品种数据，ASX 仍进不了利率池」。
+
 ---
 
 ## 判定
@@ -14,11 +52,20 @@
 | 部分 | 判定 | 理由 |
 |---|---|---|
 | **ASX Group Monthly Activity Report（MAR）全部字段** | **A** | 纯 HTTP GET，裸 `urllib`（连自定义 UA 都不需要）即 200；无 Cloudflare / Akamai / JS 渲染 / 登录墙；官方自家域名 `asx.com.au`；发现逻辑确定；78 期连续无断档，存档可到 2009-12；与年报 / 新闻稿逐项 **0 偏差** 交叉核对通过 |
-| **ASX 24 分品种（SPI 200 / 3yr / 10yr 国债 / 90d Bank Bill）月度 ADV 与 OI** | **C** | 数据存在、格式干净、也是 `asx.com.au` 自家 DAM，但**官方只保留最近 2 期**，历史 404，**无法回补**。只能从 2026-06 起往后逐月攒 |
+| **ASX 24 分品种（SPI 200 / 3yr / 10yr 国债 / 90d Bank Bill）月度 ADV 与 OI** | ~~**C**~~ → **A**（2026-08-19 改判） | 原文：数据存在、格式干净、也是 `asx.com.au` 自家 DAM，但~~**官方只保留最近 2 期**，历史 404，**无法回补**。只能从 2026-06 起往后逐月攒~~ —— **后半句已被实发推翻**，见文首追记 ① ②：实际是 **2020-06 → 2026-07 共 74 个月零空洞**已入库，"只有 2 期"是本仓文件名正则太窄造的假象 |
 
 之所以整体记 B 而不是 A：任务起点线索里点名要的「3年期与10年期国债期货、SPI 200 的 ASX 24 ADV」正好落在那块只有 2 个月窗口的源上。MAR 本身只给 **futures 合计**，不拆品种。除此之外没有别的障碍。
 
 之所以不记 C：现货 ADT、上市公司数、融资额、期货合计 ADV、股票期权 ADV 这五项——也就是横截面页真正要用的东西——全部 A 级可得，且能一路回到 2016 年初。
+
+> **2026-08-19 追记：上面这段「记 B 不记 A」的理由已经不成立。** 承重的那句
+> （分品种源"只有 2 个月窗口"）是假象，见文首追记 ①。今天分品种与 MAR 同为 A 级可取，
+> 只是**窗口不同**：MAR 2016-01 起 127 个月，分品种 2020-06 起 74 个月。
+> **但整体判定仍留 B**，理由换成另外两条实测坑（都写在 `fetch/asx.py` 的口径坑里）：
+> 同名诱饵 ASX Compliance MAR（口径坑 1，中招表现是"上市实体数对、成交全空"且不报错）、
+> 以及分品种链接的 **soft-404 与陈注解**（口径坑 2 / 22 —— 2024-11 与 2024-12 的 PDF
+> 链接注解都指向 9 月那一份，HTTP 层完全合法，只有首页抬头能认出来）。
+> 这两条都属于"能无人值守、但错了不响"，B 仍然是对的档位。
 
 ---
 
@@ -157,11 +204,29 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 |---|---|---|
 | `mktcap_total_audmn` | 辅源 2 | 月末全市场市值 A$mn（**含外国注册**，与年报的 domestic 口径不同） |
 | `index_allords_close` / `index_asx200_close` | 辅源 2 | 月末指数点位 |
-| `adv_spi200_futures_contracts` | 辅源 1 | SPI 200 期货月度总量 ÷ 交易日；**只有 2026-06 起** |
+| `adv_spi200_futures_contracts` | 辅源 1 | SPI 200 期货月度总量 ÷ 交易日；~~**只有 2026-06 起**~~ ← 见下方追记 |
 | `adv_3y_bond_futures_contracts` | 辅源 1 | 3 年期国债期货（代码 YT）；同上 |
 | `adv_10y_bond_futures_contracts` | 辅源 1 | 10 年期国债期货（代码 XT）；同上 |
 | `adv_90d_bankbill_futures_contracts` | 辅源 1 | 90 日银行票据期货（代码 IR）；同上 |
 | `oi_3y_bond_contracts` / `oi_10y_bond_contracts` / `oi_spi200_contracts` | 辅源 1 | 月末未平仓张数；同上 |
+
+> **2026-08-19 追记：上表这 8 行两处都没落地 —— 列名不同、口径也不同。**
+> 实际入库的是下面这 8 列（`fetch/asx.py::SFE_SPEC`，2026-08-19 从 `series/asx.csv` 现算）：
+>
+> | 落地列名 | 段 / 合约代码 | 口径 | 覆盖 |
+> |---|---|---|---|
+> | `contracts_spi200_futures` / `oi_spi200_futures` | `equity indices - futures` / **AP** | 当月总张数 / 月末 OI | 2020-06 → 2026-07（74，0 空洞） |
+> | `contracts_3y_bond_futures` / `oi_3y_bond_futures` | `interest rates - futures` / **YT** | 同上 | 同上 |
+> | `contracts_10y_bond_futures` / `oi_10y_bond_futures` | `interest rates - futures` / **XT** | 同上 | 同上 |
+> | `contracts_90d_bankbill_futures` / `oi_90d_bankbill_futures` | `interest rates - futures` / **IR** | 同上 | 同上 |
+>
+> 两处差异都会咬人：
+> · **是月度总张数，不是 ADV** —— 要 ADV 自己除 `trading_days_futures`（那一列 2016-01 起 127 个月全有）。
+>   本仓 series 只放官方原始披露，派生量在 build 层用 `per_day` 算。
+> · **`oi_90d_bankbill_futures` 上表压根没列**（原文只提了 3 个 OI 列），实际是 4 个品种各有 OI。
+>
+> 另外：**先切 section 再查代码，不能只查代码** —— 同一个 `3 Year Bonds / YT` 在
+> `Interest Rates - Futures` 与 `Interest Rates - Options` 两段各出现一次。
 
 ---
 
@@ -171,7 +236,7 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 |---|---|---|
 | 媒体中心（路径 A） | **2020-02 → 2026-07，78 期** | **0**（逐月核过） |
 | 历史公告存档（路径 B） | **2009-12 → 2026-07，199 期** | 仅 **2010-02** 一期（该期标题写法不同，正则漏掉，人工可补） |
-| 辅源 1 分品种 | **2026-06 → 2026-07（滚动 2 期）** | 更早全部 404，**不可回补** |
+| 辅源 1 分品种 | ~~**2026-06 → 2026-07（滚动 2 期）**~~ → **2020-06 → 2026-07，74 期**（2026-08-19） | ~~更早全部 404，**不可回补**~~ —— 已全部回补，**0 空洞**；真 404 的是 **2020-05 及更早**（老站点 soft-404），见文首追记 ① ② |
 | 辅源 2 市值/指数 | **约 2004 → 2026-06** | 未逐月核 |
 
 **版式代际（决定实际可用起点）** —— 实测切换点精确到月：
@@ -190,7 +255,11 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 > `participants_asx_total` / `participants_asx24_total` **2016-07 才有**（2016-01…06 的 MAR
 > 正文到 SETTLEMENT 段就结束，官方没印）、`capital_initial_raised_audmn` 与
 > `capital_total_raised_incl_other_audmn` **2023-09 之后官方不再印**。
-> 「分品种数据只有 2 个月窗口且不可回补」（下文口径坑 8）**没变**。
+> ~~「分品种数据只有 2 个月窗口且不可回补」（下文口径坑 8）**没变**。~~
+> ⚠ **这一句写下的当天（2026-08-19 晚些时候）就被推翻了**：修掉 `fetch/asx.py::_SFE_LINK`
+> 之后那 8 列已回补到 **2020-06 → 2026-07 共 74 个月、零空洞**。见文首追记 ①，
+> 以及口径坑 8 下方的追记。（留着这句作废的原话是有用的：它说明 2026-08-18 那一轮
+> 只重验了 MAR 主源，**没有去实发分品种链接** —— 光凭上一份文档的断言就写了"没变"。）
 
 ---
 
@@ -243,8 +312,44 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 
 7. **ASX 现货 ≠ 澳洲现货全市场。** Cboe Australia（原 Chi-X）的成交不在 MAR 里。要谈「澳洲市场规模」或 ASX 份额，得另抓 Australian Cash Market Report 周报（`/content/dam/asx/markets/trade-our-cash-market/acmr/{YYYY}/{month}/acmr-weekly-{YYYYMMDD}.pdf`，2021 起、每周一期）。本仓的横截面页若只用 MAR，口径是「ASX 自身经营量」，不是「澳洲市场量」—— 这点要在图注写明。
 
-8. **分品种数据只有 2 个月窗口，且不可回补。** `monthly-futures-markets-report-{DDMMYYYY}.pdf` 实测 `31072026`/`30062026` 200，`31052026` 起全部 404。年报里有 FY 级分品种 5 年表（FY21–FY25），可以做年度对照，但做不出月度序列。
-   ⇒ 若要 3yr/10yr/SPI 200 的月度序列，**只能从 2026-06 起逐月抓、往后攒**，且这份报告在 MAR 正文里给链接，漏抓一个月就永久缺一个月。
+8. ~~**分品种数据只有 2 个月窗口，且不可回补。** `monthly-futures-markets-report-{DDMMYYYY}.pdf` 实测 `31072026`/`30062026` 200，`31052026` 起全部 404。年报里有 FY 级分品种 5 年表（FY21–FY25），可以做年度对照，但做不出月度序列。~~
+   ~~⇒ 若要 3yr/10yr/SPI 200 的月度序列，**只能从 2026-06 起逐月抓、往后攒**，且这份报告在 MAR 正文里给链接，漏抓一个月就永久缺一个月。~~
+
+   > **2026-08-19 追记：整条作废，而且这条坑的诊断本身就是坑。**
+   > 上面那次实测（`31052026` 404）是**拿本文自己拼出来的文件名去请求的**，官方那一期的
+   > 真名是 `290526` —— 404 的是我们编的 URL，不是官方的文件。逐期实测的五代命名：
+   >
+   > ```
+   > 2019-12…2020-01  /data/market-reports/MonthlySfeMarketsReport{YYMMDD}.pdf
+   > 2020-02…2020-05  /data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf
+   > 2020-06          …/unlinked-docs/MonthlyFuturesMarketsReport{YYMMDD}.pdf
+   > 2020-07…2022-02  …/unlinked-docs/finance-reports[/{YYYY}]/monthly-futures-markets-report-{YYMMDD}.pdf
+   > 2022-03 至今     …/unlinked-docs/monthly-futures-markets-report-{日期}.pdf
+   > ```
+   >
+   > 日期段：2025-07 之前 YYMMDD、2025-08…2026-05 改 DDMMYY（**2026-02 那期又写回
+   > YYMMDD 的 `260227`**，所以连"哪一代用哪种"都不成规则）、2026-06 起 DDMMYYYY。
+   > ⇒ 正确做法是**只认文件名词干，日期段一个数字都不解释**，链接一律从 MAR 正文里取。
+   >
+   > 结果：2020-06…2026-05 共 **72 期全部取回并解析成功**，连同原有 2 期共 **74 个月零空洞**。
+   > 两条独立判据（都是官方自己在别处印的同一个数，不是我们算的）：
+   > ① **跨期自证** —— t 期报告的第 2 / 第 6 个数字列就是 t−12 月的当月量 / 月末 OI，
+   >    撞 series 已有行，**495/496 格逐位一致**；唯一那格是官方后期重述
+   >    （2025-03 期把 2024-03 的 YT 当月量印成 5,378,144，当期原印 5,379,506），
+   >    按本仓规矩入库留**当期原值**。
+   > ② **页尾 `Total Exchange` 当月量 ≡ 同月 MAR 的期货合计**，74/74 全等。
+   >
+   > **仍然成立的两点**（别一起丢掉）：
+   > · **2020-06 是硬天花板** —— 更早的 MAR 印的是老站点路径，今天整体 302 到
+   >   200 + text/html 的 **soft-404**（口径坑 2 说的就是它）；2016-01…2016-08 的 MAR
+   >   正文里连这条链接都没有。所以"补不到"这三个字对 2020-05 及更早仍然成立。
+   > · **链接印在 MAR 正文里**（期货段末尾"Volume of futures trading by individual
+   >   contract is available at the following link:"），所以跟着 MAR 走、不用猜文件名 ——
+   >   但**光跟着走还不够**：正文里的 URL 会在 `-` 处换行断开（2020-08…11 四期），
+   >   而 PDF 链接注解 8 期缺失、2 期多带句号、**2024-11 与 2024-12 两期是陈的、都指向
+   >   9 月那一份**。⇒ 正文优先、注解兜底、逐条试，最终由 `parse_sfe()` 的首页抬头校验当判官
+   >   （陈注解取回的是一份完全合法的 9 月报告，字节数 / Content-Type / `%PDF-` 全正常）。
+   >   完整记录见 `fetch/asx.py` 口径坑 22。
 
 9. **竖排水印 `For personal use only` 会污染标签。** pymupdf 把这四个词按 y 坐标并进任意一行的词流，实测把 `Total notional cleared value ($billion)¹` 变成 `For Total notional cleared value ($billion)¹`，前缀锚定的正则直接失配。必须先按词过滤掉 `For|personal|use|only`。
 
@@ -450,12 +555,43 @@ media centre 覆盖: 78 个月; 2020-02 -> 2026-07     断档: []
 
 | 池 | 是否落入 | 该池里可比的字段 | 备注 |
 |---|---|---|---|
-| **利率衍生品** | ✅ | 首选 `adv_3y_bond_futures_contracts` + `adv_10y_bond_futures_contracts` + `adv_90d_bankbill_futures_contracts` ↔ CME `adv_rates_kcontracts`；**但只有 2026-06 起**。回补期只能退用 `adv_futures_contracts` 合计（实测 FY25 利率类占 ASX 期货 ~92%，做趋势代理是可以的，要在图注写明是代理量） | ASX 是**澳元利率曲线的独家场所**，与 CME（美元）、Eurex（欧元）是同一生意的不同货币版本，指数化后放一张图很有信息量 |
-| **股指衍生品** | ✅ | `adv_index_options_contracts`（ETO 指数期权）+ `adv_spi200_futures_contracts`（2026-06 起）↔ CME `adv_equity_kcontracts` / Cboe `adv_index_options_kcontracts` | SPI 200 是澳洲唯一的股指期货基准 |
+| **利率衍生品** | ⚠ 见下方追记 | 首选 ~~`adv_3y_bond_futures_contracts` + `adv_10y_bond_futures_contracts` + `adv_90d_bankbill_futures_contracts`~~ → 落地列名是 `contracts_3y_bond_futures` / `contracts_10y_bond_futures` / `contracts_90d_bankbill_futures`（月总张数）↔ CME `adv_rates_kcontracts`；~~**但只有 2026-06 起**。回补期只能退用 `adv_futures_contracts` 合计（实测 FY25 利率类占 ASX 期货 ~92%，做趋势代理是可以的，要在图注写明是代理量）~~ ← **两句都作废，见下方追记** | ASX 是**澳元利率曲线的独家场所**，与 CME（美元）、Eurex（欧元）是同一生意的不同货币版本，指数化后放一张图很有信息量 |
+| **股指衍生品** | ✅ | `adv_index_options_contracts`（ETO 指数期权）+ ~~`adv_spi200_futures_contracts`（2026-06 起）~~ → `contracts_spi200_futures`（**2020-06 起 74 个月零空洞**，月总张数，2026-08-19）↔ CME `adv_equity_kcontracts` / Cboe `adv_index_options_kcontracts` | SPI 200 是澳洲唯一的股指期货基准。⚠ **推断（本仓尚未立账）**：`equity_index` 池现有 5 家起点最晚的是 jpx 2014-12，ASX 的 2020-06 一进来同样会把窗口收到基期 2019-01 之后 —— 与 `interest_rate` 是同一堵墙（见本节下方追记）。但 `build/pools.py` 的 `equity_index` → `excluded` 里**没有 asx 条目**，所以这是结构推断、不是已记录的决定；真要放 SPI 200 进去得先实测一次 |
 | **单股与 ETF 期权** | ✅ | `adv_single_stock_options_contracts` ↔ Cboe `adv_multilist_options_kcontracts`（注意 Cboe 是**千张**，ASX 是**张**，别忘了 ×1000） | ASX ETO 是澳洲唯一的股票期权市场，量级只有 Cboe 的千分之几，放一张图必须指数化 |
-| **能源商品** | ⚠ 部分 | 分州电力期货（NSW/QLD/VIC/SA base load + $300 cap）与 NZ 电力期货，只在辅源 1 里，**2026-06 起** | ASX 电力期货是澳新电力市场的主力对冲工具，但月度序列建不起历史 |
+| **能源商品** | ⚠ 部分 | 分州电力期货（NSW/QLD/VIC/SA base load + $300 cap）与 NZ 电力期货，只在辅源 1 里，~~**2026-06 起**~~ → 辅源 1 的窗口已是 **2020-06 起 74 期**（2026-08-19） | ~~ASX 电力期货是澳新电力市场的主力对冲工具，但月度序列建不起历史~~ → **建得起，但本仓没建**：`fetch/asx.py::SFE_SPEC` 只取 AP / YT / XT / IR 四个代码，一列电力/NZ 都没抽。要做得先加 SPEC 行再重跑 `--sfe-backfill` |
 | FX | ❌ | — | ASX 无 FX 产品 |
 | 加密 | ❌ | — | ASX 无加密产品（只有几只被动持币 ETF 在现货挂牌，不构成独立业务线） |
+
+> ### 2026-08-19 追记 —— 为什么有了分品种数据，ASX 仍进不了利率池
+>
+> **先把两条作废的建议说清楚：**
+> · ~~「分品种只有 2026-06 起」~~ —— 假象，实际 **2020-06 → 2026-07 共 74 个月零空洞**，见文首追记 ①。
+> · ~~「回补期退用 `adv_futures_contracts` 合计当代理」~~ —— **不要这么做，两个理由**：
+>   ① 现在有**真的分品种序列**，没有任何理由画代理量；
+>   ② 那个代理口径本身就漂 —— `adv_futures_contracts` 是 **ASX 24 全部期货合计**，
+>      里面还有分州电力（NSW/QLD/VIC/SA）与 NZ 电力等品种（见上方能源商品行）。
+>      "FY25 利率类占 ~92%" 是**单年**的比例，不是常数；拿一条口径随年份漂的合计线
+>      去和 CME / Eurex 的纯利率线做指数化对比，斜率差里混着成分变化，读者无从分辨。
+>
+> **然后是真正的拦路虎，它与数据质量无关：起点 2020-06 晚于全仓基期 2019-01。**
+>
+> `build/pools.py` 的池合计按「**任一成员缺值该月即缺**」求交集。现状 4 家
+> （cme / ice / db1 / jpx，约束成员是 jpx 的 2014-12）窗口是 **2014-12–2026-07，140 个月 0 空洞**，
+> 基期 2019-01 那一格合计 = 1,986,926.8。**ASX 一进来，窗口立刻收成 2020-06–2026-07（74 个月），
+> 基期 2019-01 落到窗口之外 ⇒ 基期合计 = nan**，定基指数与「自基期 ±pp」的独占度都算不出来，
+> 页面直接 `skip()` 整页不发。（复刻 `build/exchanges_products.py` 第 407-471 行实测。）
+>
+> ⚠ **走 ICE 那条 `contracts_only`（只进增长图、不进合计）同样躲不开** —— 增长图也是
+> **以 2019-01 = 100 定基**；ICE 能走这条路是因为它 2011-01 就有数。
+>
+> ⚠ 而 **2020-06 是官方存档天花板**（更早那批链接指向已下线的老站点、整体 soft-404，
+> 见口径坑 8 的追记），所以这不是"等下一轮回补"，是"**补不到**"。
+>
+> 另有一处次要且**可解**的口径差：这三列是**月总张数不是 ADV**，真要入池得按 `per_day`
+> 除以 `trading_days_futures`（`pools.py` 的 `per_day` / `div_col` 本来就支持，不是障碍）。
+>
+> ⇒ **完整、且唯一权威的理由写在 `build/pools.py` 的 `interest_rate` → `excluded` 里**
+> （那份注释还记了这条结论自己被改过两次的账）。ASX 的利率量仍计入 `apac_deriv` 的混合口径。
 
 ### 跨家可比性的一句话结论
 

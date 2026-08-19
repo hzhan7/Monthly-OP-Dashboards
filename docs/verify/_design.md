@@ -341,6 +341,22 @@ POOLS = [
     'excluded': [
       ('enx', 'Euronext 没有利率期货。MTS 现券与回购（adv_mts_cash_eurbn / '
               'taadv_mts_repo_eurbn）是**另一层**，禁止进同一张图'),
+      # ⚠ 2026-08-19 追记（本文是 2026-08-06 的设计存档，下面这条原文保留、一字未改）：
+      #    这条 excluded 的**理由已全错，但结论碰巧仍对** —— 现役 build/pools.py 里
+      #    已按新事实重写，读那份、别读这条。
+      #    ① 「只有 2026-06 起 2 个月、不可回补」是本仓抓取器造的假象
+      #       （fetch/asx.py::_SFE_LINK 把文件名日期段写死 8 位，官方五年换过 5 代命名）。
+      #       实际是 2020-06 → 2026-07 共 74 个月、零空洞。
+      #    ② 落地列名是 contracts_3y_bond_futures / contracts_10y_bond_futures /
+      #       contracts_90d_bankbill_futures（**月总张数，不是 ADV**），不是本文写的那套。
+      #    ③ 「用 adv_futures_contracts 合计当代理会漂移」这半句是对的（合计含电力与 NZ），
+      #       但已经用不着了 —— 现在有真的分品种序列。
+      #    ④ 真正拦住 ASX 的是**起点 2020-06 晚于全仓基期 2019-01**：池合计按
+      #       「任一成员缺值该月即缺」求交集，ASX 一进来窗口从 2014-12 收到 2020-06，
+      #       基期那一格变 nan ⇒ 定基指数算不出来、整页 skip()。走 ICE 那条 contracts_only
+      #       也躲不开（增长图同样以 2019-01 = 100 定基）。而 2020-06 是官方存档天花板
+      #       （更早的链接指向已下线老站点、整体 soft-404），补不到。
+      #    完整理由见 build/pools.py 的 interest_rate → excluded 与 docs/verify/asx.md。
       ('asx', '分品种（3y / 10y / 90d bank bill）只有 2026-06 起 2 个月，不可回补。'
               '用 adv_futures_contracts 合计当代理会漂移，只能进 apac_deriv 的混合口径'),
     ],
@@ -1090,7 +1106,7 @@ Ex10 与 Ex12 是这一页的题眼，Ex8/Ex9 是信息量最高的两张。
 | **3** | **Euronext** | A | `eu_cash`(与仓内 Cboe 立即成池) `eu_deriv` `fx_spot_ecn` `ags` `fn_listing` | 与 Cboe 在**欧洲现货**（同币同单位同口径，2026-06 实测 15.52 vs 14.95）与 **FX 即期**（同为 ECN）各成一对，是全仓两处最干净的头对头 | 单个 xlsx 裸奔可取、174 个月零断档。坑：Athex 并表（单股衍生品 2025-11 有 3-6 倍假跳，必须用 legacy 口径）、四条断点竖线 |
 | **4** | **JPX + SGX** | A / B | `apac_cash`(4 家齐) `apac_deriv` `rates` `equity_index` `fx_futures` | 亚太现货池从"只有 HKEX 一家"变成 4 家；JPX 与 HKEX 是全仓最干净的一对现货对照 | JPX 须**新建派生列** `adv_deriv_total_lgeq_kcontracts`（不建则排序翻转：原始张数下 JPX 是 HKEX 的 1.23 倍，当量口径下只有 0.27 倍）；SGX 是 PDF + 会轮换的 GraphQL id（失效时返回 200 + errors，静默失败） |
 | **5** | **DB1 + NDAQ** | B / B | `eu_cash` 补第三家 · `eu_deriv` 加 Eurex（与 ICE 欧洲利率正面对上）· `na_cash`/`na_total_opt` 补 Nasdaq | Eurex 的 `oi_eurex_total_contracts` 2026-06 = 1.37 亿张，**反超 CME 的 1.28 亿** —— 这是真头对头。Nasdaq 把北美现货池的残差从 ~30% 压到 ~15% | DB1 要缝三个源两种节奏、需引入 `xlrd`，且**慢腿列绝不能进 panel**（`exchanges.py:242` 对空洞直接 raise）；~~NDAQ 三条腿只有 19 个月~~（**2026-08-19 已部分证伪**：只有 `vol_us_options_mmcontracts` 与 `vol_nordic_cash_value_usdbn` 还是 19 个月，`vol_nordic_derivs_mmcontracts` 已回到 2013-01 共 163 个月、`vol_us_cash_matched_mnsh` 回到 2010-10 共 190 个月；⚠ `build/pools.py` 里这两条腿的 `start` 仍写着 `'2025-01'`，池子还没吃上这段新历史 —— 这是**待办**，不是本次文档清账能改的），且交易日必须改用 MIAX 的（否则整页门槛被拖后一周） |
-| **6** | **ASX + TMX** | B / B | `apac_cash`/`apac_deriv` 补第 4 家 · `rates` 加加元腿 · `single_stock_etf_opt` 加两家 | 最低。两家都只能贡献混合口径或短序列 | ASX 分品种只有 2 个月且不可回补，历史区间只能给混合期货 ADV（含电力/NZ，比例会漂移）；~~TMX 现货起点 2021-08，比 HKEX 还短 2 年 7 个月~~（**2026-08-18 已证伪**：TMX 现货经 CIRO 回填后是 2015-01 起 139 个月，比 HKEX 的 127 还长；⚠ `build/pools.py` 里 tmx 的 `start` 仍是 `'2021-08'`，待办同上），且 BOX 只有季度 —— **北美期权池永远缺 TMX** 这一条没变 |
+| **6** | **ASX + TMX** | B / B | `apac_cash`/`apac_deriv` 补第 4 家 · `rates` 加加元腿 · `single_stock_etf_opt` 加两家 | 最低。两家都只能贡献混合口径或短序列 | ~~ASX 分品种只有 2 个月且不可回补，历史区间只能给混合期货 ADV（含电力/NZ，比例会漂移）~~（**2026-08-19 已证伪**：那 8 列实际是 **2020-06 起 74 个月、零空洞**，"只有 2 个月"是 `fetch/asx.py::_SFE_LINK` 把文件名日期段写死 8 位造的假象，官方五年换过 5 代命名。⇒ **用不着混合 ADV 代理了**，那条代理路线连同它的漂移问题一起作废。⚠ 但 `rates` 池**仍然进不去**，卡点换成了**起点 2020-06 晚于全仓基期 2019-01** —— 池合计求交集会把窗口收到 2020-06、基期那格变 nan ⇒ 整页 `skip()`；走 `contracts_only` 也躲不开（增长图同样 2019-01 = 100 定基），而 2020-06 是官方存档天花板、补不到。完整理由见 `build/pools.py` 的 `interest_rate` → `excluded`）；~~TMX 现货起点 2021-08，比 HKEX 还短 2 年 7 个月~~（**2026-08-18 已证伪**：TMX 现货经 CIRO 回填后是 2015-01 起 139 个月，比 HKEX 的 127 还长；⚠ `build/pools.py` 里 tmx 的 `start` 仍是 `'2021-08'`，待办同上），且 BOX 只有季度 —— **北美期权池永远缺 TMX** 这一条没变 |
 
 ### 4.1 各池"什么时候才凑得齐成员"
 
