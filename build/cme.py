@@ -87,13 +87,28 @@ EX_HEAT_YOY, EX_HEAT_SHARE = 18, 19
 EX_DECOMP, EX_TTMVOL = 20, 21
 EX_TABLE = 22
 
-WIN_BAR = 13     # gs_bar 类近期图：契约 §5.4「近期图固定 13 个月」
-#: 曲线类图的窗口。2026-08-18 从「近 25 个月」改成「2016-01 起」，全站统一
+#: **末尾核对表**的行数 —— 这是表的窗口，不是任何一张图的窗口。表的用途是拿着它和
+#: 公司披露逐行对，127 行没人对得完，所以它留在 13 个月。
+#: （2026-08-19 之前这个常量叫 WIN_BAR，同时管着九张 gs_bar 与 Exhibit 4 的堆叠柱。）
+WIN_TABLE = 13
+#: 所有**时序图**的窗口左端。2026-08-18 曲线类先从「近 25 个月」改成「2016-01 起」，
+#: 2026-08-19 gs_bar / stacked_dual 类跟上，全站统一
 #: （build/single.py 的 WIN_FROM、build/cboe.py 同名常量、build/msci.py 的 WIN0 都是这一个）。
 #: 本页序列自 2008-01 起，所以这里实际拿到 127 期；序列比它短的家用序列自己的起点。
 #: 变量名保留 WIN_LINE 是因为它还被 `win(col, n)` 当「取末 n 期」的参数用（见下）。
+#:
+#: gs_bar 类原先停在 13 个月，注释写的理由是契约 §5.4「近期图**固定** 13 个月」。
+#: 本页是**有意不照那条办**，而不是把「固定」读成「至少」—— 该条的括注（「够算 y/y
+#: 首末对比与 prior-12mo 均值」）说的是 13 个月为什么够用，没有说更长不行；而本页同一份
+#: series/cme.csv 里 2008-01 起的数一直都在（Exhibit 7 就画着 223 个月），13 个月是
+#: **画的时候截的**，不是数据没有。§5.4 本身该不该改，由 build/CONTRACT.md 的持有者
+#: 裁决（本文件不去数别的页面现在停在几个月 —— 把跨页统计写进本页注释，就是给它
+#: 安一个必然过期的实测数），本文件不动那份契约，
+#: 只在页尾 notes 的「与原 PDF 版的有意差异」条里把冲突写给读者看。
 WIN_FROM = '2016-01'
-WIN_QTR = 14     # 季度柱：照搬原 deck 的 win=14
+#: 2026-08-19：`WIN_QTR = 14`（季度柱照搬原 deck 的 win=14）已删除。Exhibit 8 与
+#: Exhibit 14 都改吃 `Q_FROM`（= WIN_FROM 换算到季度），本页不再有第二个窗口常量 ——
+#: 留一个只在一处用得上的旧窗口常量，下一次放宽时又会漏掉它（这次就漏了）。
 HEAT_YEARS = 10  # 热力矩阵：照搬原 deck 的 n_years=10
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -345,14 +360,16 @@ BR_NOTE = ('Assumption: monthly transaction revenue = contracts traded x average
            f'见 Exhibit {EX_RPC}。'
            + RATE_PERIOD + RATE_STALE)
 
-W13 = df.index[-WIN_BAR:]
+W_TBL = df.index[-WIN_TABLE:]        # 只给末尾核对表用
 _I0 = next((i for i, p in enumerate(df.index)
             if f'{p.year}-{p.month:02d}' >= WIN_FROM), 0)
 W25 = df.index[_I0:]
 WIN_LINE = len(W25)          # 下面 win(col, WIN_LINE) 与图注里的「N 个月」都跟着它走
-XL13 = [mlab(p) for p in W13]
 XL25 = [mlab(p) for p in W25]
 XL_LONG = [mlab(p) for p in df.index]
+# 季度轴的左端：与 WIN_FROM 同一个月份，换算到季度（'2016-01' → 2016Q1）。
+# 写成换算而不是写死 '2016Q1'，是为了 WIN_FROM 哪天再动时季度图跟着一起动。
+Q_FROM = pd.Period(WIN_FROM, freq='M').asfreq('Q')
 
 
 def win(col, n):
@@ -452,7 +469,7 @@ def summary():
 
 
 # ══════════════════════════ 4. Exhibit 2..19 ══════════════════════════
-def yoy_line(col, win_n=WIN_BAR, kind=YOY.FLOW):
+def yoy_line(col, win_n=WIN_LINE, kind=YOY.FLOW):
     """次轴折线的数值。流量走 12 个月滚动合计同比，存量走点对点同比（见 ROLL 那一段）。
 
     引擎不替我们算同比 ——「这一点的同比有没有意义」是口径判断，只能在 Python 侧做。
@@ -462,7 +479,14 @@ def yoy_line(col, win_n=WIN_BAR, kind=YOY.FLOW):
 
 
 def gs_bar(n, col, title, ylab, fmt, legend, note=None, src_extra=None, kind=YOY.FLOW):
-    """← gsx.lvl_bar：浅蓝柱 + **次轴金色 y/y 折线**。窗口 13 个月（契约 §5.4）。
+    """← gsx.lvl_bar：浅蓝柱 + **次轴金色 y/y 折线**。窗口 `WIN_FROM` 起（本页 127 期）。
+
+    2026-08-19 窗口由 13 个月放到 2016-01 起。原来的 13 个月不是数据下限：同一份
+    series/cme.csv 从 2008-01 起就是满的（Exhibit 7 画着 223 个月），13 是**画的时候
+    截的**。契约 §5.4 写的是「近期图**固定** 13 个月」，本页是有意不照它办、不是把
+    「固定」读成「至少」；这处冲突写在页尾 notes 的「与原 PDF 版的有意差异」条里，
+    §5.4 本身该不该改由 build/CONTRACT.md 的持有者裁决。127 期塞不进半栏卡片，
+    通栏与 x 标签抽稀交给 `mrwin.layout_all()` 按 charts.js 的量边距算式判，不在这里拍。
 
     次轴画的是同比而不是 12 个月滚动均线 —— gsx.lvl_bar 的 docstring 写死了这条理由：
     「均线只是把柱子再平滑一遍、不带新信息，同比才回答『相对去年这个月是好是坏』」。
@@ -480,10 +504,12 @@ def gs_bar(n, col, title, ylab, fmt, legend, note=None, src_extra=None, kind=YOY
     roll = (kind == YOY.FLOW)
     ex = {'n': n, 'kind': 'gs_bar', 'title': title, 'fmt': fmt, 'ylab': ylab,
           'ylab2': '% y/y, 12M roll.' if roll else '% y/y, single month',
-          'legend': legend, 'values': L(win(col, WIN_BAR)),
+          # xlabels 必须显式给：不给就退到 payload 的页级默认，而 mrwin.layout_all()
+          # 只对**自带 xlabels** 的 exhibit 判通栏与抽稀，漏给等于这张图不过排版裁决。
+          'legend': legend, 'xlabels': XL25, 'values': L(win(col, WIN_LINE)),
           'yoy': {'name': '12M rolling y/y (RHS)' if roll else 'y/y, single month (RHS)',
                   'color': 'GOLD', 'yfmt': 'pct0',
-                  'values': yoy_line(col, kind=kind)}}
+                  'values': yoy_line(col, win_n=WIN_LINE, kind=kind)}}
     cal = YOY_CAL if roll else STOCK_CAL
     ex['note'] = (note + ' ' + cal) if note else cal
     if src_extra:
@@ -515,7 +541,9 @@ ex.append({
              f'（{days[CUR]:.0f} 天 vs 去年同月 {days[YAG]:.0f} 天）。'
              # 全页只有这一张（外加热力矩阵 EX_HEAT_YOY）保留单月同比。理由不是习惯，
              # 是这张图的命题本身：day-count 效应是**单月现象**，平滑掉它这张图就空了。
-             f'<b>本图是全页唯一保留单月同比的折线图</b>（其余图的次轴已改 12 个月滚动合计同比）：'
+             f'<b>本图是全页唯一保留单月同比的折线图</b>（各 gs_bar 的次轴已改 12 个月滚动'
+             f'合计同比；Exhibit {EX_QTR} 的季度柱是第三种口径 —— 本季 3 个月合计 vs '
+             f'上年同季，见该图图注）：'
              f'这张图的全部命题就是「交易日数差异能在<b>一个月</b>之内把成交量的方向读反」'
              f'（Barclays 调整）。改成滚动口径这张图会自己消失 —— 实测：滚动口径下'
              f'两条线的逐月标准差是 {CALIB["sd_r"]:.1f}pp（按日）vs {DAYCOUNT_STATS["sd_r"]:.1f}pp'
@@ -526,23 +554,95 @@ ex.append({
              f'读这两条线时请记住它们与其余各图的次轴<b>口径不同</b>，不要跨图比高低。'),
 })
 
-_stack13 = {c: win(c, WIN_BAR) for c, _, _ in CLS}
-_share13 = (win('adv_rates_kcontracts', WIN_BAR) + win('adv_equity_kcontracts', WIN_BAR)) \
-    / win('adv_total_kcontracts', WIN_BAR) * 100
+# stacked_dual 属 mrwin.DENSE：右轴那条占比线走 Catmull-Rom，窗口内出现一个 null 就会
+# 被当 0 插值（还不报错）。六个品种列与总 ADV 在 load() 里已经逐列校验过「无缺值」，
+# 2016-01 起的 127 期因此是满的 —— 下面的断言把这件事钉死，日后源文件缺一个月要在
+# 构建期响，而不是在页面上画出一条塌到零的假线。
+_stack = {c: win(c, WIN_LINE) for c, _, _ in CLS}
+_share = (win('adv_rates_kcontracts', WIN_LINE) + win('adv_equity_kcontracts', WIN_LINE)) \
+    / win('adv_total_kcontracts', WIN_LINE) * 100
+_dense_holes = [nm for c, nm, _ in CLS if np.isnan(_stack[c]).any()]
+if _dense_holes or np.isnan(_share).any():
+    raise SystemExit(f'Exhibit {EX_MIX} 是平滑图型，窗口内不许有缺值：{_dense_holes or "占比线"}')
 # 右轴上界取 10 的整数倍：占比线要压在堆叠柱之上，太高会掉进柱子里
-_ymax = float(np.ceil(np.nanmax(_share13) / 10.0) * 10)
-if np.nanmax(_share13) / _ymax > 0.995:
+_ymax = float(np.ceil(np.nanmax(_share) / 10.0) * 10)
+if np.nanmax(_share) / _ymax > 0.995:
     _ymax += 10
+# 六段之和 vs 披露的 Total ADV。窗口拉长后残差月份变多，图注里那句「加总即 Total ADV」
+# 得带上实测残差，否则读者拿柱高去减总量会以为漏了一个品种。三件事必须分开数，
+# 混成一个 `!= 0` 就会同时说错数和说错因（2026-08-19 那版图注写的「61 期差 1–2 千张」
+# 正是这么来的，真值是 48 期）：
+#   ① **浮点噪声不是差异。** 六列 float64 相加再相减，IEEE754 舍入残渣量级 ~1e-12 千张
+#      （= 百万分之几张合约），`!= 0` 会把它算成「差」。判据因此带容差 _MIX_TOL = 0.0005
+#      千张 = 0.5 张合约 —— 比实测噪声（~7e-9 张）大七八个数量级，又只有最小的真实
+#      差异（1 张）的一半，两边都留着足够余量。
+#   ② **「取整到千张」这个因果解释只对整千张的月份成立。** 所以不按残差大小分组，
+#      而是按**源数据本身是不是整千张**分组（_mix_int 现验六列是否全为整数）：
+#      是整数 ⇒ 舍入解释站得住；不是 ⇒ 官方给的就是三位小数，没有取整这回事。
+#   ③ 剩下那组的零头（本页最大的一期差 472 张）另说，不套舍入解释。
+# 三组的期数、量级、最大值一律现算，一个都不写死。
+_mix_resid = (sum(_stack[c] for c, _, _ in CLS) - win('adv_total_kcontracts', WIN_LINE))
+_mix_abs = np.abs(_mix_resid)
+_MIX_TOL = 0.0005                       # 千张；0.5 张合约
+_mix_int = np.array([all(float(_stack[c][i]).is_integer() for c, _, _ in CLS)
+                     for i in range(WIN_LINE)])
+_mix_eq = _mix_abs < _MIX_TOL           # 视同严格相等（含纯浮点噪声）
+_mix_rnd = ~_mix_eq & _mix_int          # 整千张披露 ⇒ 差的是各自取整到千张的舍入
+_mix_sub = ~_mix_eq & ~_mix_int         # 带小数披露 ⇒ 舍入解释不适用
+
+
+def _mix_round_txt():
+    """Exhibit 4 图注里那句残差说明。三组各自成句，缺哪组哪句就不出现。"""
+    if not (_mix_rnd.any() or _mix_sub.any()):
+        return (f'六段之和逐月严格等于披露的 Total ADV（{WIN_LINE} 期，'
+                f'判据带 {_MIX_TOL * 1000:.1f} 张合约的容差，'
+                f'滤掉六列浮点相加的舍入残渣）。')
+    _tot = win('adv_total_kcontracts', WIN_LINE)
+    _noise = _mix_abs[_mix_eq].max() * 1000 if _mix_eq.any() else 0.0
+    out = [f'六段之和与披露的 Total ADV 在 {WIN_LINE} 期里有 {int(_mix_eq.sum())} 期相等'
+           f'（判据带 {_MIX_TOL * 1000:.1f} 张合约的容差 —— 六列 float64 相加的舍入残渣'
+           f'实测最大 {_noise:.0e} 张，直接拿 ≠0 去比会把它当成差异）。']
+    if _mix_rnd.any():
+        _lo, _hi = int(_mix_abs[_mix_rnd].min()), int(_mix_abs[_mix_rnd].max())
+        _pmax = (_mix_abs / _tot * 100)[_mix_rnd].max()
+        out.append(f'另有 {int(_mix_rnd.sum())} 期差 '
+                   f'{_lo if _lo == _hi else f"{_lo}–{_hi}"} 千张'
+                   f'（最大 {_hi} 千张 = 该月总量的 {_pmax:.3f}%）—— 这些月份 CME 六个品种'
+                   f'披露的都是<b>整千张的整数</b>，差的就是各自取整到千张的舍入，'
+                   f'不是漏了品种。')
+    if _mix_sub.any():
+        _j = int(np.where(_mix_sub, _mix_abs, -1.0).argmax())
+        _c = np.round(_mix_abs[_mix_sub] * 1000).astype(int)
+        out.append(f'还有 {int(_mix_sub.sum())} 期差不到 1 千张（逐期 {_c.min():,d}–'
+                   f'{_c.max():,d} 张，最大的一期在 {XL25[_j]}）—— 这几期六个品种披露的是'
+                   f'<b>带三位小数</b>的值、并没有取整到千张，上面那条舍入解释对它们'
+                   f'不成立，零头出在哪一段官方没有交代。')
+    out.append('本页对以上任何一种残差都不做配平，柱高一律是官方原值。')
+    return ''.join(out)
+
+
+_MIX_ROUND = _mix_round_txt()
 ex.append({
-    'n': EX_MIX, 'kind': 'stacked_dual', 'fmt': 'f0c', 'xlabels': XL13,
+    'n': EX_MIX, 'kind': 'stacked_dual', 'fmt': 'f0c', 'xlabels': XL25,
     'title': 'ADV mix by asset class',
     'ylab': 'k contracts / day', 'ylab2': '% rates + equity',
-    'stacks': [{'name': nm, 'color': cl, 'values': L(_stack13[c])} for c, nm, cl in CLS],
+    'stacks': [{'name': nm, 'color': cl, 'values': L(_stack[c])} for c, nm, cl in CLS],
     'line': {'name': '% rates + equity (RHS)', 'color': 'GREEN',
-             'values': L(_share13), 'ymax': _ymax, 'yfmt': 'pct0'},
-    'note': ('六个品种加总即披露的 Total ADV（CME 的品种划分是穷尽且互斥的）。'
+             'values': L(_share), 'ymax': _ymax, 'yfmt': 'pct0'},
+    # 头一句原文是「六个品种加总即披露的 Total ADV」——「即」是严格相等的断言，
+    # 而紧接着的 _MIX_ROUND 就在说有几十期不等，读者滚一眼就抓到自相矛盾。
+    # 改成「口径上穷尽互斥、数值上不处处相等」，把断言让给下面那句实测。
+    'note': ('CME 的六个品种划分是穷尽且互斥的，所以柱高之和在<b>口径上</b>就是披露的 '
+             'Total ADV；但<b>数值上</b>并非逐月严格相等。'
+             + _MIX_ROUND +
              '右轴是利率 + 股指两大品种占总 ADV 的比重 —— 体量与结构同框，'
-             f'总量持平但结构位移一样会改变混合费率（见 Exhibit {EX_RPC}）。'),
+             f'总量持平但结构位移一样会改变混合费率（见 Exhibit {EX_RPC}）。'
+             f'{XL25[0]} 至 {XL25[-1]}（{WIN_LINE} 个月）：右轴占比由 {_share[0]:.1f}% '
+             f'走到 {_share[-1]:.1f}%（{pp(_share[-1] - _share[0])}），'
+             f'窗口内在 {np.nanmin(_share):.1f}–{np.nanmax(_share):.1f}% 之间 —— '
+             f'这个区间在原来的 13 个月窗口里只有 '
+             f'{np.nanmin(_share[-WIN_TABLE:]):.1f}–{np.nanmax(_share[-WIN_TABLE:]):.1f}%，'
+             f'结构位移的幅度要看满窗口才看得出来。'),
 })
 
 _SPLIT_NOTE = (f'原 PDF 把六个品种画在同一根轴上，利率品种的峰值 '
@@ -579,8 +679,16 @@ ex.append({
     'title': 'Full ADV history since 2008', 'ylab': 'mn contracts / day',
     'series': [{'name': 'Total ADV', 'color': 'NAVY', 'values': L(df['adv_mn'].values)}],
     'src_extra': f'Full disclosed history: {mlab(df.index[0])} – {mlab(LATEST)}（{len(df)} 个月）',
+    # ⚠️ 下面这句是**全称断言**（「其余时序图……」），读者滚一张图就能证伪，所以
+    #    不能凭印象写：文件末尾的 _AX_* 那段在构建期把每一张图的左端数一遍，
+    #    对不上就停机。原来那句写的是「一律从 Jan-16 起（127 个月）」，
+    #    而同页 Exhibit 8 当时只有 14 个季度 —— 断言与图、断言与 notes[10] 三方打架。
     'note': ('原 PDF 在末端画了一个红色虚线椭圆圈出最近 3 个月，网页引擎没有对应的注解图元，'
-             f'故未移植；最近 {WIN_BAR} 个月的读数见 Exhibit {EX_ADV} 与末尾核对表。'),
+             f'故未移植。本图是全页唯一画到序列起点 {mlab(df.index[0])} 的图（{len(df)} 个月）；'
+             f'其余时序图的左端一律是 {WIN_FROM} —— 月度刻度的那些是 {XL25[0]} 起的 '
+             f'{WIN_LINE} 个月，Exhibit {EX_QTR} 与 Exhibit {EX_RPC} 是季度刻度，'
+             f'同一个左端换算成 {qlab(Q_FROM)}。'
+             f'逐月读数见 Exhibit {EX_ADV}，最近 {WIN_TABLE} 个月的原始单位读数见末尾核对表。'),
 })
 
 _qs = df['total_vol_mn'].groupby(df.index.asfreq('Q')).agg(['sum', 'count'])
@@ -588,17 +696,32 @@ _qv = _qs['sum'].values
 _qyoy = np.array([(_qv[i] / _qv[i - 4] - 1) * 100 if i >= 4 and _qv[i - 4] else np.nan
                   for i in range(len(_qv))])
 _npart = int(_qs['count'].iloc[-1])
+# 季度柱的左端：与本页其余时序图同一个 WIN_FROM，换算到季度（2016-01 → 2016Q1）。
+# 2026-08-19 之前这里取的是末 WIN_QTR = 14 个季度，判据与 Exhibit 14 那张季度 RPC
+# 一模一样（「照搬原 deck 的窗口」），而那张已经放宽到 Q_FROM —— 同一页对同一种刻度
+# 给两个左端，还在 Exhibit 7 的图注里写了句「其余时序图一律从 Jan-16 起」，
+# 三处互相打架。数据不缺：本页月度序列自 2008-01 起，2016Q1 之后每一季都是 3 个完整月
+# （下面现验，不靠人眼数），所以放宽的是画法而不是数据。
+_qi0 = int(np.flatnonzero(_qs.index >= Q_FROM)[0])
+_qidx = _qs.index[_qi0:]
+_qhole = [str(p) for p, c in zip(_qidx[:-1], _qs['count'].values[_qi0:-1]) if c != 3]
+if _qhole:
+    raise SystemExit(f'Exhibit {EX_QTR}：{qlab(Q_FROM)} 起有未满 3 个月的季度 {_qhole}，'
+                     f'柱高不可比，请先补月度数据再放宽窗口')
 ex.append({
     'n': EX_QTR, 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c',
-    'xlabels': [str(p) for p in _qs.index[-WIN_QTR:]],
+    'xlabels': [str(p) for p in _qidx],
     'title': 'Contracts traded aggregated to quarters', 'ylab': 'mn contracts',
     'ylab2': '% y/y',
-    'values': L(_qv[-WIN_QTR:]),
+    'values': L(_qv[_qi0:]),
     'partial_months': _npart, 'qtr_months': 3,
-    'line': {'name': 'y/y (RHS)', 'color': 'GREEN', 'values': L(_qyoy[-WIN_QTR:]),
+    'line': {'name': 'y/y (RHS)', 'color': 'GREEN', 'values': L(_qyoy[_qi0:]),
              'yfmt': 'pct0'},
     'src_extra': 'Latest bar is quarter-to-date and not comparable to full quarters',
     'note': (f'季度合计 = 该季各月「ADV x 当月交易日」之和，在 Python 侧算好。'
+             f'本图与本页其余时序图同一个左端 {WIN_FROM}，只是刻度是季度不是月'
+             f'（{qlab(_qidx[0])} – {qlab(_qidx[-1])}，共 {len(_qidx)} 个季度；'
+             f'Exhibit {EX_RPC} 的季度 RPC 同此口径）。'
              f'末柱 {_qs.index[-1]} 只含 {_npart} 个月（浅蓝），其右轴 y/y 已被作废 —— '
              '拿未满季去比上年完整季必然砸出一个假坑。'
              # 绿线末端那个读数的标签由引擎固定右移 5px，窄屏下会飘到 QTD 柱上方，
@@ -625,7 +748,19 @@ ex.append(gs_bar(EX_ENERGY, 'adv_energy_kcontracts', 'Energy complex ADV',
 ex.append(gs_bar(EX_REV, 'implied_txn_rev_usdmn', 'Implied transaction revenue', '$mn / month',
                  'usd0', 'Implied transaction revenue', note=BR_NOTE))
 
-_rq = RPC['total'].index[-WIN_QTR:]
+# 本图是**季度**口径（费率一个季度才披露一次），所以它的左端不是「2016-01 这一个月」
+# 而是 2016-01 所在的季度 Q_FROM —— 与 Exhibit 8 的季度柱同一个左端。原先取末 14 个
+# 季度（= 3.5 年，旧常量 WIN_QTR），那是照搬原 deck 的窗口，不是数据下限：
+# series/fee_rates.csv 里 CME 的五条 RPC 都是
+# 2013-Q2 起、53 个季度连续无缺，2016-Q1 起的每一季都在。
+# lines_endlabels 属 mrwin.DENSE，窗口内一个 null 都不能有 —— 下面显式校验，
+# 四条腿里任何一条在 2016-Q1 之后缺一季就在构建期响，不靠人眼看图。
+_rq = RPC['total'].index[RPC['total'].index >= Q_FROM]
+_rpc_gap = {_RPC_ZH_K: [qlab(q) for q in _rq if q not in RPC[_RPC_ZH_K].index]
+            for _RPC_ZH_K in ('rates', 'equity', 'energy', 'metals')}
+_rpc_gap = {k: v for k, v in _rpc_gap.items() if v}
+if _rpc_gap:
+    raise SystemExit(f'Exhibit {EX_RPC} 是平滑图型，{Q_FROM} 起不许缺季：{_rpc_gap}')
 # 四条品种曲线各自的最新可得季度未必与总 RPC 同步（某一季只补了一部分品种时会脱节），
 # 脱节的那条曲线在末端会断开。差异现算，不写死品种名与季度号。
 _RPC_ZH = {'total': '总 RPC', 'rates': '利率', 'equity': '股指', 'energy': '能源',
@@ -649,8 +784,13 @@ ex.append({
     'src_extra': ('RPC differs several-fold across complexes, so a volume mix shift moves blended '
                   'revenue even when total ADV is flat. This is the main uncertainty in the bridge '
                   'above.'),
-    'note': (f'季度值，x 轴标的是各季末月（{mlab(_rq[0].asfreq("M", "end"))} = 1Q{_rq[0].year % 100:02d}，'
-             f'最新为 {qlab(RPC_Q)}）。'
+    'note': (f'季度值，x 轴标的是各季末月（{mlab(_rq[0].asfreq("M", "end"))} = {qlab(_rq[0])}，'
+             f'最新为 {qlab(RPC_Q)}，共 {len(_rq)} 个季度）。本图与本页其余时序图一样从 '
+             f'{WIN_FROM} 起，只是刻度是季度不是月（Exhibit {EX_QTR} 的季度柱同此左端，'
+             f'{len(_qidx)} 个季度'
+             + (f'；本图右端少的那 {len(_qidx) - len(_rq)} 季是费率尚未披露，不是窗口不同'
+                if len(_qidx) > len(_rq) else '')
+             + f'）：费率一季才披露一次，按月铺开只会把同一个数抄三遍。'
              f'{mlab(_rq[-1].asfreq("M", "end"))}：利率 ${RPC["rates"].iloc[-1]:.3f}、'
              f'股指 ${RPC["equity"].iloc[-1]:.3f}、能源 ${RPC["energy"].iloc[-1]:.3f}、'
              f'金属 ${RPC["metals"].iloc[-1]:.3f} —— 图上按 $0.01 显示（原 PDF 为 $0.001），'
@@ -916,8 +1056,14 @@ ex.append({
 # 在同一页上画两次。这里画的是分解图里那个「量」自己的水平值：近 12 个月成交合约数合计。
 # 好处是柱与次轴的金色线**同源**：线上任一点的增速，就是柱子相对 12 根柱之前的涨幅，
 # 读者不需要在两张图之间换算口径。
+# 窗口与其余时序图同一个左端。TTM 合计要 12 个月填窗，本页序列自 2008-01 起，
+# 所以 ttm_vol_mn 从 2008-12 起就有值 —— 2016-01 那一格早就落在有值区里，
+# 这张图不存在「定义性前置期把左端顶开」的问题（cboe 的同名图有，见 build/cboe.py）。
 _tv = df['ttm_vol_mn'].dropna()
-_tw = _tv.index[-WIN_BAR:]
+_tw = _tv.index[_tv.index >= pd.Period(WIN_FROM, freq='M')]
+if len(_tw) != WIN_LINE:
+    raise SystemExit(f'Exhibit {EX_TTMVOL}：TTM 序列在 {WIN_FROM} 起只有 {len(_tw)} 期，'
+                     f'与本页时序窗口的 {WIN_LINE} 期对不上')
 _ttm_yoy = roll_yoy(df['total_vol_mn'])       # ≡ TTM 合计的同比（滚动均值同比与合计同比逐点相等）
 ex.append({
     'n': EX_TTMVOL, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': [mlab(p) for p in _tw],
@@ -952,11 +1098,12 @@ TBL_COLS = [('Total ADV (k)', 'adv', 'adv_total_kcontracts', 3),
             ('Open interest (contracts)', 'oi', 'oi_total_contracts', 0),
             ('Trading days', 'days', 'trading_days', 0)]
 table = {
-    'n': EX_TABLE, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
+    'n': EX_TABLE,
+    'title': f'近 {WIN_TABLE} 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
     'cols': [[h, k] for h, k, _, _ in TBL_COLS],
     'rows': [dict({'xl': mlab(p)},
                   **{k: num(float(df[c][p]), d) for _, k, c, d in TBL_COLS})
-             for p in W13],
+             for p in W_TBL],
 }
 
 # ══════════════════════════ 6. 口径与方法说明 ══════════════════════════
@@ -1053,12 +1200,28 @@ NOTES = [
     '并在断点滚出窗口后让图注文案一起消失，不能只靠图注文字提一句、也不能因为断点滚出窗口就报错停更。',
 
     '<b>与原 PDF 版的有意差异（四处）。</b>'
-    '(a) gs_bar 类近期图的窗口由 25 个月收到 13 个月 —— 契约 §5.4 的规定；次轴那条金色 y/y '
-    '折线画的是同比而不是 12 个月均线（deck 的 docstring：「均线只是把柱子再平滑一遍、'
-    '不带新信息」），这一点与 deck 一致；但<b>口径与 deck 有意不同</b> —— deck 画的是'
-    '<b>单月</b>同比，网页版改画 <b>12 个月滚动合计同比</b>，理由与实测见上面的同比口径条。'
-    f'曲线类（Exhibit {EX_DAYCOUNT}/{EX_MAJORS}/{EX_MINORS}）与长历史图（Exhibit {EX_HIST}）'
-    '的窗口一字未改。'
+    f'(a) <b>所有时序图的左端统一在 {WIN_FROM}（月度刻度 {WIN_LINE} 个月）</b>，'
+    f'不是 deck 的 25 个月。'
+    f'这一条 2026-08-18 先在曲线类（Exhibit {EX_DAYCOUNT}/{EX_MAJORS}/{EX_MINORS}）落地，'
+    f'2026-08-19 gs_bar 与堆叠柱（Exhibit {EX_ADV}/{EX_MIX}/{EX_OI}/{EX_RATES}/{EX_EQUITY}/'
+    f'{EX_ENERGY}/{EX_REV}/{EX_FX}/{EX_METALS}/{EX_AG}/{EX_TTMVOL}）跟上 —— 那批图此前停在 '
+    f'13 个月，写的理由是契约 §5.4「近期图<b>固定</b> 13 个月」。这里说清楚：'
+    f'§5.4 的原文写的是「固定」，本页是<b>有意不照它办</b>，不是把它读成了「至少」——'
+    f'理由是这条规矩的括注（「够算 y/y 首末对比与 prior-12mo 均值」）讲的是为什么 13 个月'
+    f'够用，而不是为什么更长不行，而本页 {mlab(df.index[0])} 起的数据一直都在'
+    f'（Exhibit {EX_HIST} 就画着 {len(df)} 个月），13 个月是画的时候截的、不是数据没有。'
+    f'§5.4 该怎么改由 <code>build/CONTRACT.md</code> 的持有者裁决，本页不动那份文件，'
+    f'只在这里公开这处冲突。'
+    f'季度刻度的两张同一个左端 {qlab(Q_FROM)}：Exhibit {EX_QTR} 的季度柱 {len(_qidx)} 个季度、'
+    f'Exhibit {EX_RPC} 的季度 RPC {len(_rq)} 个季度（RPC 少的那几季是费率尚未披露）。'
+    f'Exhibit {EX_HIST} 画全部 {len(df)} 个月，'
+    f'末尾核对表仍是 {WIN_TABLE} 行（表是拿来逐行核对的，不是时序图）。'
+    f'127 期放不进半栏卡片，哪几张升通栏、x 标签隔几期标一个，由 <code>build/mrwin.py</code> '
+    f'按 <code>assets/charts.js</code> 的量边距算式在构建期算，各图图注里写着实测的 px 数。'
+    '次轴那条金色 y/y 折线画的是同比而不是 12 个月均线（deck 的 docstring：「均线只是把柱子'
+    '再平滑一遍、不带新信息」），这一点与 deck 一致；但<b>口径与 deck 有意不同</b> —— '
+    'deck 画的是<b>单月</b>同比，网页版改画 <b>12 个月滚动合计同比</b>，'
+    '理由与实测见上面的同比口径条。'
     f'(b) deck 的品种曲线图把六个品种画在一根轴上，利率品种的峰值把其余四条压成底部一条带；'
     f'网页版按量级拆成 Exhibit {EX_MAJORS} 与 Exhibit {EX_MINORS} 两张，数据、窗口、配色全同，'
     f'没有删点、没有截轴（详见两图图注）。'
@@ -1175,8 +1338,9 @@ def compose_brief(months, adv, oi, gx, cls):
     i = len(months) - 1
     n = len(months)
     if i < 1:
-        # 四句里有三句以上月为参照。这不是数据缺值而是调用错误（本页窗口本身就要 13 个月：
-        # CUR/PRV/YAG 取的是 LATEST、LATEST-1、LATEST-12），照本仓「失败要响」处理。
+        # 四句里有三句以上月为参照。这不是数据缺值而是调用错误（compose_brief 拿的是
+        # df.index 全序列，CUR/PRV/YAG 取的是 LATEST、LATEST-1、LATEST-12），
+        # 照本仓「失败要响」处理。
         raise SystemExit(f'brief 至少需要 2 个月，收到 {n} 个月')
     # 分位只在名次落在前半段时才印：「第12（前100%）」是真话但没有信息，n 小的时候尤其吵；
     # 后半段退回「第r/n」这个中性写法（已验收的 ibkr.py 样板通篇只报名次，不报分位）。
@@ -1301,6 +1465,41 @@ _share = float(df['rates_share'][CUR])
 # 不给任何对照，是本页最容易被读反的地方。补上 TTM 口径，两个都写、哪个难看都照写。
 _adv_ttm = float(roll_yoy(adv).get(CUR, np.nan))
 
+# ── 全称断言的构建期兜底：「其余时序图的左端一律是 WIN_FROM」──────────────
+# Exhibit 7 的图注与 notes 的「与原 PDF 版的有意差异」条都对**所有**时序图的左端下了
+# 断言。这种句子最容易变成假话：加一张图、漏放宽一张图，句子不会自己跟着改
+# （2026-08-19 那版就是 Exhibit 8 没跟上，图注却已经写了「一律」）。所以在这里逐张数
+# 一遍，对不上直接停机 —— 让「断言」与「事实」只有一个来源。
+# 三类登记，写的是**为什么不适用**，不是为了让它过：
+_AX_QTR_LEFT = {EX_QTR: str(Q_FROM),                        # 季度柱：'2016Q1'
+                EX_RPC: mlab(Q_FROM.asfreq('M', 'end'))}    # 季度 RPC：季末月标 'Mar-16'
+_AX_EXEMPT = {
+    EX_HIST: '全历史图，图注自己声明了它是全页唯一画到序列起点的图',
+    EX_HEAT_YOY: '热力矩阵：年 × 月的格子，没有连续时间轴',
+    EX_HEAT_SHARE: '热力矩阵：年 × 月的格子，没有连续时间轴',
+    EX_DECOMP: '年度分解桥：横轴是完整日历年 + 当年 YTD，不是月份轴',
+}
+_ax_bad = [(e['n'], (e.get('xlabels') or ['(无 xlabels)'])[0])
+           for e in ex
+           if e['n'] not in _AX_EXEMPT and e.get('xlabels')
+           and e['xlabels'][0] != _AX_QTR_LEFT.get(e['n'], XL25[0])]
+if _ax_bad:
+    raise SystemExit(
+        'Exhibit 7 的图注与 notes 断言「其余时序图的左端一律是 '
+        f'{WIN_FROM}」，但这些图对不上：'
+        + '、'.join(f'Exhibit {n} 起于 {lab}' for n, lab in _ax_bad)
+        + '。要么把它们一起放宽，要么把断言改掉并在 _AX_EXEMPT 里登记理由。')
+
+# 同一类兜底：页尾口径条断言「本页没有口径断点，图上也确实一条都没画」。哪天真给某张图
+# 传了 break_at，那句话立刻变成假话 —— 让它在构建期响，而不是等读者看见线再来打脸。
+_brk_drawn = [e['n'] for e in ex if e.get('break_at') is not None]
+if _brk_drawn:
+    raise SystemExit(
+        f'页尾口径条写着「本页没有口径断点」，但 Exhibit '
+        + '、'.join(str(n) for n in _brk_drawn)
+        + ' 画了 break_at。断点是真的就把那一条改写掉（并说明断点是什么、'
+          '为什么现在才出现），不能只加线不改文案。')
+
 # 127 点的图放不进半栏卡片 —— 逐张按 charts.js 的量边距算式判通栏与抽稀。
 mrwin.layout_all(ex)
 
@@ -1327,7 +1526,11 @@ payload = {
     'hub_line': (f'ADV {df["adv_mn"][CUR]:,.1f}mn 张/日，TTM {pct(_adv_ttm)} y/y；'
                  f'单月 {pct(_adv_yy)} y/y、{pct(_adv_mm)} m/m'),
     'source': SRC,
-    'xlabels': XL13,
+    # 页级默认轴 = 时序图的统一窗口（2016-01 起）。每张 exhibit 现在都自带 xlabels，
+    # 这一项只剩兜底作用；但它必须与图的窗口同长，否则日后有人新增一张不写 xlabels 的图，
+    # 就会拿到一根 13 格的轴去画 127 个点（引擎按 xlabels.length 循环，多出来的点画不出来
+    # 却仍参与量程 —— 图被一个看不见的点压扁，不报错）。
+    'xlabels': XL25,
     'xlabels_long': XL_LONG,
     'summary': summary(),
     # 轴刻度小数位与截轴护栏：判据见 build/axisfmt.py（全站唯一实现）。

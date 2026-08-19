@@ -486,9 +486,12 @@ ADV_TOT = ADV.sum(axis=1)
 
 # ── 月长（交易日）与月度成交额：占比一律建在**月度成交额**上，不建在 ADV 上 ──
 # 三家的交易日历**不完全相同**：德国交易所在 12/24、12/31 与圣灵降临节休市，
-# 窗口内有 11 个月 Deutsche Börse 的 trading_days_cash 比 Euronext 少 1–2 天。
+# 窗口内有若干个月 Deutsche Börse 的 trading_days_cash 比 Euronext 少 1–2 天
+# —— **具体几个月不写在这里**，由下面的 `DAYS_N - DAYS_SAME` 现算并印进图注。
+# （此处原注写死「11 个月」，2026-08-19 实跑已是 12/127，与同页 Exhibit 2 图注
+#   现算出来的数字正面矛盾 —— 这就是为什么月数一律不许留在注释里。）
 # ADV = 月成交额 ÷ 各自的交易日 —— 天数少的那家 ADV 被除大，按 ADV 算占比等于
-# 给它凭空加权。实测这条偏差在 2019-12 让 Deutsche Börse 的占比虚高 2.15pp，
+# 给它凭空加权。这条偏差的最大幅度同样现算（`SHARE_ADV_MAXGAP`，落在 12 月），
 # 比这张图想讲的结构性移动还大，而且每年 12 月复发一次，看上去像季节性规律。
 # 所以占比的分子分母全部换成**当月实际成交额**，与季度图（Exhibit 3）同一条链，
 # 月度图与季度图在重叠处因此严格自洽。
@@ -822,17 +825,64 @@ HAS_NDAQ = _nd is not None and NDAQ_MON_COL in _nd.columns
 if HAS_NDAQ:
     NORD_USD = _nd[NDAQ_MON_COL].reindex(IDX)               # 当月合计，US$bn
     NORD_EUR = NORD_USD / EURUSD                            # 当期月均汇率折欧元
-    W_ND = [p for p in IDX if ok(NORD_EUR[p])]
+    _ND_OK = [p for p in IDX if ok(NORD_EUR[p])]
 else:
     NORD_USD = NORD_EUR = pd.Series(np.nan, index=IDX)
-    W_ND = []
-HAS_NDAQ = len(W_ND) >= 6
+    _ND_OK = []
+# ⚠ 与上面的 `_NAR_OK` / `W_NAR` 同一条规矩（build/CONTRACT.md 规矩 3）：
+# **画图的横轴不能用 `_ND_OK`**（有值的那些月），必须是首末之间的**逐月连续**区间。
+# 今天两者恰好相等（这一列 2025-01…2026-07 共 19 个月、无洞），所以本次改动
+# 输出零差异 —— 但它不是恒真的：IR 月报是「上一整年 + 本年 YTD」的滚动窗，
+# 官方哪期漏发一个月，`_ND_OK` 就会出洞，而拿它当横轴的话那个洞**不会有任何症状**，
+# 只会把相隔的两点静静画成相邻两格。这正是本页 Exhibit 12 栽过的那一跤
+# （May-17 与 May-22 画成相邻），修在那里就该一并修在这里。
+# 逐月铺开、缺月留 null：Exhibit 9 是 `lines`，不在 mrwin.DENSE 里，引擎会断笔。
+W_ND = (_IDXL[_IDXL.index(_ND_OK[0]):_IDXL.index(_ND_OK[-1]) + 1] if _ND_OK else [])
+_ND_GAP_TXT = _gap_txt(W_ND, _ND_OK) if W_ND else ''
+HAS_NDAQ = len(_ND_OK) >= 6
 
 if HAS_NDAQ:
-    _rt = pd.Series([float(MONTHLY_EUR['cboe'][p] / NORD_EUR[p]) for p in W_ND], index=W_ND)
+    # 统计量一律走 `_ND_OK`（真有值的月），不走 `W_ND`（画图用的逐月连续横轴）——
+    # 走 W_ND 的话一旦出洞，min/median/max 会整个变成 nan（payload_guard 拦过一次）。
+    _rt = pd.Series([float(MONTHLY_EUR['cboe'][p] / NORD_EUR[p]) for p in _ND_OK],
+                    index=_ND_OK)
     ND_RT_MIN, ND_RT_MED, ND_RT_MAX = float(_rt.min()), float(_rt.median()), float(_rt.max())
 else:
     ND_RT_MIN = ND_RT_MED = ND_RT_MAX = np.nan
+
+# 为什么这张图只有这么短的一段 —— 图上看得见的差异，图注就必须回答，
+# 否则读者只能猜是「懒得补」。这是**源的边界**，不是窗口裁剪：
+# 全部依据在 fetch/ndaq.py 的 A 组说明与「未找到」一节（ND_MEAS_D 那天重新实测过）。
+#
+# ⚠ **对照对象只许写这个池窗口（START/IDX），不许写「本页其余各图」。**
+#   START 是三家现货池的**共同起点**（NOTES 第一条：由 Cboe Europe 的披露起点决定），
+#   它是池窗口常量，**不是全页横轴的通称**。2026-08-19 逐图数过：本页 15 张图里真的
+#   从 Jan-16 起的只有 5 张（Ex2 与 x='long' 的 Ex6/7/8/14）；Ex16 起于 Jan-12
+#   （比 START 还早 4 年）、Ex12 Jun-16、Ex11 Jan-21、Ex13 Aug-24、Ex10 1Q23、
+#   Ex3 1Q16、Ex15 2013、Ex4/5 是分类轴。写「其余各图自 Jan-16 起」读者往下滚一张
+#   就能当场推翻，而这张图注存在的全部理由就是取信于读者。
+#
+# 实测数字一律**带日期落款**（ND_MEAS_D）写成历史陈述，而不是「近 N 个月」，
+# 这样它不会随窗口滚动而变假；116/127 那个分数同理把两端月份写实，不跟着 IDX 走。
+ND_MEAS_D = '2026-08-18'      # fetch/ndaq.py 里这几条实测的日期；那边重测了，这里要跟着改
+ND_WIN_NOTE = (
+    (f'<b>本图只有 {mlab(W_ND[0])} 起的 {len(W_ND)} 个月，而本页主口径那三家的共同窗口'
+     f'自 {mlab(START)} 起、共 {len(IDX)} 个月（见页尾「发布门槛」那一条）；'
+     f'这是源的边界，不是把窗口截短了。</b>'
+     f'Nasdaq 北欧这一列出自 IR「Monthly Reporting Sheet」PDF，该文件<b>恒只含'
+     f'「上一整年 + 本年 YTD」</b>（19–24 个月），且 IR 站不留历史副本'
+     f'（{ND_MEAS_D} 实测：落地页全页只有 1 条 static-file 链接、0 条年份归档链接）。'
+     f'官方更早的北欧月报本身是找得到的，但它给的是<b>欧元</b>的 on-exchange turnover，'
+     f'折不回 IR 那条<b>美元</b>列：{ND_MEAS_D} 实测的 13 个重叠月里，按月均 EUR/USD '
+     f'折算系统性低 0.77%–2.50%，按月末汇率更差，把 First North 加进来又高出一大截 —— '
+     f'IR 那条美元列的确切 scope 与汇率口径没能复原，'
+     f'<b>两截不同口径的线首尾相接就是造一条假历史</b>。'
+     f'另有一路公告正文覆盖 2016-01–2026-07 的 116/127 个月的欧元日均'
+     f'（同为 {ND_MEAS_D} 实测），但只有 2 位有效数字'
+     f'（"3.327bn"），写进真值表是假精度。'
+     + (f'　⚠ 窗口内还有缺口：{_ND_GAP_TXT}（缺月留 null、线断开，不补值）。'
+        if _ND_GAP_TXT and _ND_GAP_TXT != '中间无空洞' else '')
+     + '　') if HAS_NDAQ else '')
 
 # 季度分母对撞：Nasdaq 自报份额反推出来的「欧洲市场」分母 vs Cboe Europe 一家
 HAS_NDQ = (NDQ is not None and NDAQ_Q_VAL in NDQ.columns and NDAQ_Q_SHARE in NDQ.columns)
@@ -928,6 +978,20 @@ if HAS_VP:
     HAS_VP = len(_good) >= 24
     if not HAS_VP:
         VP_WHY.append(f'金额与笔数同时有值的月份只有 {len(_good)} 个，不足 24 个')
+    # ⚠ 假时间轴防线（build/CONTRACT.md 规矩 3）：下面 `VP_MON` 直接由 `_good` 铺成横轴，
+    # 中间一旦有洞，相隔数年的两点会被画成相邻两格 —— 本页 Exhibit 12 栽过这一跤。
+    # 这里**不照 W_NAR 改成「连续轴 + null」**，因为 VP_MON 同时被当作「有值月集合」用：
+    # `HAS_VP_TTM = all(p in set(VP_MON) ...)` 就是拿它判 TTM 那 24 个月齐不齐，
+    # 铺成连续轴会让那个判据恒真、静默放行一个缺月的 TTM。两种语义要分家得连带审十几处，
+    # 而这两列同出 series/enx.csv 一张表、2026-08-19 实测 2012-01…2026-07 共 175 个月无洞。
+    # 所以选另一条：**真出洞就整块停画**，绝不画一条压缩过的假轴。
+    elif (_good[-1] - _good[0]).n + 1 != len(_good):
+        HAS_VP = False
+        VP_WHY.append(
+            f'金额与笔数同时有值的月份不连续（{mlab(_good[0])}–{mlab(_good[-1])} 共 '
+            f'{(_good[-1] - _good[0]).n + 1} 个月里只有 {len(_good)} 个有值：'
+            f'{_gap_txt(pd.period_range(_good[0], _good[-1], freq="M"), _good)}）；'
+            f'把有值月直接当横轴会画出假时间轴，故整块不画')
 
 if HAS_VP:
     VP_MON = pd.PeriodIndex(sorted(_good), freq='M')
@@ -979,6 +1043,20 @@ if HAS_VP:
     if not HAS_VP:
         VP_WHY.append(f'完整自然年只有 {len(VP_YEARS)} 个，可算同比的年份 {len(VP_GY)} 个，'
                       '不足 5 个，年度分解不画')
+
+# ── 这两张图的图号：全文件唯一一处，正文与 ex.append 都从这里取 ──────────────────
+# ⚠ Exhibit 15 / 16 是**有条件生成**的（Euronext 那一对列没过判据就整块不画），
+#   而核对表的表号是 `ex[-1]['n'] + 1` 跟着最后一张图走 —— 一停画，**核对表就顺推
+#   占用 15 号**。此时正文里任何写死的「Exhibit 15」都会指到核对表上。
+#   2026-08-19 用合成缺口（enx.csv 抠掉 2019-03 的金额列）实跑复现过：页面变成
+#   「Exhibit 2-14 + Exhibit 15 核对表」，而 NOTES 同时在说「Exhibit 15 做的是成交额
+#   分解」「因此 Exhibit 15 / 16 未生成」，Exhibit 13 的图注还在指一张不存在的
+#   Exhibit 16。所以：**有图报真号，没图改说名字**，一个错号都不留。
+VP_N_DEC, VP_N_TRD = (15, 16) if HAS_VP else (None, None)
+EX_DEC = f'Exhibit {VP_N_DEC}' if HAS_VP else '成交额分解图'
+EX_TRD = f'Exhibit {VP_N_TRD}' if HAS_VP else '成交笔数图'
+EX_VP2 = (f'Exhibit {VP_N_DEC} / {VP_N_TRD}' if HAS_VP
+          else '成交额分解与成交笔数那两张图')
 
 if HAS_VP:
     VP_VY = pd.Series({y: float(VP_V[[p for p in VP_MON if p.year == y]].sum())
@@ -1477,7 +1555,7 @@ ex.append({
 # ── Exhibit 9：Nasdaq 北欧的绝对值对比（不进份额）──
 if HAS_NDAQ:
     _xl_nd = [mlab(p) for p in W_ND]
-    _nd_now, _cb_now = float(NORD_EUR[W_ND[-1]]), float(MONTHLY_EUR['cboe'][W_ND[-1]])
+    _nd_now, _cb_now = float(NORD_EUR[_ND_OK[-1]]), float(MONTHLY_EUR['cboe'][_ND_OK[-1]])
     ex.append({
         'n': 9, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
         'fmt': 'f0', 'yfmt': 'f0', 'xstep': 2, 'xrot': 90, 'markers': False,
@@ -1491,9 +1569,10 @@ if HAS_NDAQ:
                       'values': L([float(NORD_EUR[p]) for p in W_ND])}],
         'src_extra': ('Monthly totals, not ADV: Nasdaq publishes a month total and does not '
                       'publish Nordic trading days, so a daily average cannot be derived'),
-        'note': ('<b>Nasdaq 北欧只出现在这张图与下一张，绝不进本页任何份额的分子或分母。</b>'
+        'note': (ND_WIN_NOTE +
+                 '<b>Nasdaq 北欧只出现在这张图与下一张，绝不进本页任何份额的分子或分母。</b>'
                  '它的可比性只有一层：绝对值。'
-                 f'{mlab(W_ND[-1])}：Nasdaq 北欧 €{_nd_now:,.0f}bn/月，'
+                 f'{mlab(_ND_OK[-1])}：Nasdaq 北欧 €{_nd_now:,.0f}bn/月，'
                  f'Cboe Europe €{_cb_now:,.0f}bn/月 —— 前者是后者的 '
                  f'<b>1/{_cb_now / _nd_now:.1f}</b>'
                  f'（窗口内该倍数 {ND_RT_MIN:.1f}–{ND_RT_MAX:.1f}，中位 {ND_RT_MED:.1f}）。'
@@ -1651,7 +1730,9 @@ if _hm_flat:
         'src_extra': ('Single-month y/y only. Every other exhibit and the summary table use the '
                       'rolling 12-month-total basis; the two are not comparable'),
         'note': ('⚠ <b>这是本页唯一一处单月同比，它在这里的职能是当反面教材。</b>'
-                 '汇总表、Exhibit 14 与 Exhibit 16 用的都是 <b>12 个月滚动合计同比</b>，'
+                 '汇总表、Exhibit 14'
+                 + (f' 与 {EX_TRD}' if HAS_VP else '')
+                 + ' 用的都是 <b>12 个月滚动合计同比</b>，'
                  '<b>两个口径不可并排读</b> —— 同一个成员同一个月，两者常常连正负号都相反。'
                  + YOY_TXT +
                  '<b>那为什么还留着它、还不换成滚动口径？</b>'
@@ -1714,7 +1795,7 @@ if HAS_VP:
                     '它带来的笔数比金额多，所以那一列的形状里有一块是<b>抬笔数、压每笔均值</b>的'
                     '并表效应，不是 Euronext 自身的结构变化。')
     ex.append({
-        'n': 15, 'kind': 'bridge_bar', 'full': True, 'height': 320,
+        'n': VP_N_DEC, 'kind': 'bridge_bar', 'full': True, 'height': 320,
         'fmt': 'f1', 'label_fmt': 'f1', 'xrot': 0, 'xstep': 1,
         'xlabels': VP_LAB,
         'title': ('Euronext cash turnover growth split into trade count and average trade value '
@@ -1780,7 +1861,7 @@ if HAS_VP:
 # ── Exhibit 16：成交笔数本身 —— 水平值 + 增速 ──
 if HAS_VP:
     ex.append({
-        'n': 16, 'kind': 'bar_line_dual', 'full': True, 'height': 340,
+        'n': VP_N_TRD, 'kind': 'bar_line_dual', 'full': True, 'height': 340,
         'fmt': 'f0', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90,
         'xlabels': VP_XL,
         'title': 'Euronext cash trades: monthly count and rolling 12-month-total growth',
@@ -1800,7 +1881,7 @@ if HAS_VP:
                  '不是柱的逐点同比。'
                  f'⚠ 笔数是<b>买卖双边计</b>，所以柱的<b>绝对水平按交易所自己的口径读</b>，'
                  f'不要拿去与别家的「笔数」比；<b>增速不受这件事影响</b>'
-                 f'（乘常数不变，实测最大差 {VP_SCALE_MAX:.1e}pp，见 Exhibit 15）。'
+                 f'（乘常数不变，实测最大差 {VP_SCALE_MAX:.1e}pp，见 {EX_DEC}）。'
                  f'窗口 {VP_XL[0]} – {VP_XL[-1]}（{len(VP_MON)} 个月，本页最长的一条序列）；'
                  f'滚动同比自 {mlab(VP_MON[0] + 2 * ROLL - 1)} 起才有值（要回看 24 个月），'
                  f'之前如实留空。实测区间 {pct(VP_N_YOY_LO)} – {pct(VP_N_YOY_HI)}。'
@@ -1948,7 +2029,7 @@ NOTES = [
       f'（汇总表那两列），两处都在图注里显式点破了与滚动口径的差别。',
 
     '<b>成交额分解：只有 Euronext 有数据条件，而且它做的不是量价分解。</b>'
-    '⚠ 先摆正名字：Exhibit 15 做的是 <b>成交额 = 成交笔数 × 每笔均值</b>（对数分解），'
+    f'⚠ 先摆正名字：{EX_DEC} 做的是 <b>成交额 = 成交笔数 × 每笔均值</b>（对数分解），'
     '<b>不是「股数 × 均价」</b>。第二项是每笔平均成交额，主要反映<b>订单碎片化程度</b>'
     '（一张单子多大），与市场涨跌只有间接关系 —— 它<b>不是</b>指数收益率、'
     '<b>不是</b>加权平均股价，页面上一处都不叫它「价」。'
@@ -1974,10 +2055,10 @@ NOTES = [
        f'用宽列是因为窄列没有配对的笔数列。'
        f'算法用<b>对数（LMDI）分解</b>：算术那一路的交叉项实测占 ΔV 的中位 {VP_CR_MED:.1f}%、'
        f'最大 {VP_CR_MAX:.0f}%（{VP_CR_AT}），塞进任一侧都是任意分配；'
-       f'两路贡献值最大差 {VP_AL_MAX:.1f}pp，写在 Exhibit 15 图注里。'
+       f'两路贡献值最大差 {VP_AL_MAX:.1f}pp，写在 {EX_DEC} 图注里。'
        f'端点一律 12 个月合计（完整自然年 + 一列 TTM），不用点对点单月。'
        if HAS_VP else
-       f'⚠ Euronext 这一对本轮也<b>没有</b>通过判据，因此 Exhibit 15 / 16 未生成：'
+       f'⚠ Euronext 这一对本轮也<b>没有</b>通过判据，因此{EX_VP2}未生成：'
        + '；'.join(VP_WHY) + '。'),
 
     '<b>汇率：本页几乎用不上它，这一点本身是结论。</b>'
@@ -1995,7 +2076,7 @@ NOTES = [
     + (f'Euronext 现货列在本页窗口内有 {len(ENX_BRK)} 个并表断点'
        f'（{"、".join(f"{mlab(p)} {t}" for p, t in zip(ENX_BRK, ENX_BRK_TXT))}），'
        'Exhibit 2 / 3 / 6 / 14'
-       + ('（以及 Euronext 自己那两张 15 / 16）' if HAS_VP else '')
+       + (f'（以及 Euronext 自己那两张 {VP_N_DEC} / {VP_N_TRD}）' if HAS_VP else '')
        + '都画了红色竖虚线，语义是「从这一期起与左侧不可比」。'
        '⚠ 对 <b>Exhibit 14</b> 要额外当心：滚动 12 个月再回看 12 个月，'
        '一次断点会污染<b>连续 24 个读数</b>（单月同比只污染 12 个）—— '
@@ -2029,7 +2110,7 @@ NOTES = [
       f'{NDAQ_C} 与 {CUR_FX_C} 是同一个色名，但两者从不同图共存：'
       'Nasdaq 只在 Exhibit 9 / 10 出现，汇率对照线只在 Exhibit 7 / 8 / 11 / 12 出现。'
       '这是权衡后的结果，写在这里备查。'
-    + ('⚠ Exhibit 15 / 16 是<b>单成员图</b>（只有 Euronext），成员色在那里不承担辨识职能：'
+    + (f'⚠ {EX_VP2} 是<b>单成员图</b>（只有 Euronext），成员色在那里不承担辨识职能：'
        f'15 的两段用 {COLOR["enx"]}（成交笔数）与 BLUE（每笔均值）—— 同一色系一深一浅，'
        f'表示它们是同一个恒等式的两半，不是两个成员；'
        f'16 的柱沿用 Euronext 的 {COLOR["enx"]}，增速线用 {CUR_FX_C}（本页的辅助线色），'
@@ -2041,7 +2122,7 @@ NOTES = [
     '日均 = 总额 ÷ 交易日；窄口径的 Xetra 股票列也列出来，让人自己复算 Exhibit 12 的比值；'
     'Nasdaq 北欧那列是<b>美元当月合计</b>，配一列 ECB 月均 EUR/USD，'
     '让人自己复算 Exhibit 9 的欧元读数。'
-    + (f'最后两列是 Exhibit 15 / 16 用的那一对（<code>{VP_VAL_COL}</code> 全部现货金额、'
+    + (f'最后两列是 {EX_VP2} 用的那一对（<code>{VP_VAL_COL}</code> 全部现货金额、'
        f'<code>{VP_TRD_COL}</code> 成交笔数），让人自己复算分解的分子分母；'
        f'注意<b>金额单边计、笔数双边计</b>，两者相除得到的每笔均值'
        f'<b>不是</b>可以直接读的水平值（理由见分解那一条）。' if HAS_VP else '')
@@ -2143,8 +2224,10 @@ def main():
               f'占比高估 {SH_GAP_MIN:.2f}–{SH_GAP_MAX:.2f}pp（中位 {SH_GAP_MED:.2f}pp），'
               f'重叠 {len(W_NAR)} 个月')
     if HAS_NDAQ:
+        # 倍数是在 `_ND_OK`（真有值的月）上算的，报的月数就得是它 —— 报 len(W_ND)
+        # 会在横轴出洞那天说「127 个月」而统计量其实只用了 68 个。
         print(f'Nasdaq 北欧 vs Cboe Europe 月度总额倍数 {ND_RT_MIN:.2f}–{ND_RT_MAX:.2f}'
-              f'（中位 {ND_RT_MED:.2f}），{len(W_ND)} 个月')
+              f'（中位 {ND_RT_MED:.2f}），{len(_ND_OK)} 个有值月 / 横轴 {len(W_ND)} 个月')
     if HAS_NDQ:
         print(f'Nasdaq 自报份额隐含分母 vs Cboe 一家 {ND_QR_MIN:.2f}–{ND_QR_MAX:.2f} 倍'
               f'（中位 {ND_QR_MED:.2f}），{len(QN)} 个季；自报份额 {ND_SHARE_LAST:.1f}%')

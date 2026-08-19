@@ -518,13 +518,37 @@ GROUPS = [
          'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
     ]},
 
+    # ⚠ 两条 ADV 列用 f0 而不是全页通用的 f0c，**只为了让开竖排的纵轴标题**，
+    #   不是嫌逗号难看。这一组的两条 ADV 同单位 ⇒ 底座画成一张 lines_endlabels，
+    #   而那个图型的左端标签是 anchor=end 落在 `M.l − 10 − tickW`（assets/charts.js
+    #   的 lines_endlabels 分支，那个 10 写死、不随字号缩放；那段注释早就把「db1 Ex7
+    #   两处」列进「左端标签与竖排标题只差零点几像素」的清单，只是当时还是正的）。
+    #   窗口拉到 2016-01 之后左端那一格是 2016-01，两条线的首值
+    #   1,609,994 / 1,492,079 都是 7 位数，带上两个千分位逗号刚好把标签撑到压住
+    #   竖排的「contracts/day」：
+    #     1280px 视口（画布 1172、FS=1.70）实测 lx = 146.2 − 10 − 59.5(tickW「3500000」)
+    #     = 76.7px，「1,609,994」宽 60.5px ⇒ 左边界 16.2px，而竖排标题的墨迹右界
+    #     ≈ fscale(13) = 22.1px ⇒ 横向压 5.9px（tools/visual_qa.py 报 56.4px²，🟡）。
+    #   去掉两个逗号后标签 52.9px ⇒ 左边界 23.8px，让开 1.7px；768px 视口同理让开
+    #   0.4px。QA 实测 Ex7 的 4 条（两个视口 × 两条线）全部消失、无新增。
+    #
+    #   为什么不是别的修法：① 缩量级（build/chartscale.py）在这张图上**判过不需要**——
+    #   它的 lines_endlabels 预算 `m_l − 10 − tickW − 1.5` = 39.5px 只模型化了
+    #   「被 SVG 左边界切掉」，没有把竖排标题那一列算进去，而最宽标签 35.6px < 39.5px；
+    #   ② 缩短 unit 字符串没用：竖排标题的**墨迹右界只由字号决定**（≈ fscale(13)），
+    #   与字数无关，字数只改它的竖向长度；③ 加宽 M.l 那 30px 是引擎改动，
+    #   会动到全站 80+ 张 lines_endlabels，不在本轮范围（charts.js 里已写明）。
+    #
+    #   代价不落在数字上：核对表与汇总表走 build/single.py 的 `fmt_val()`，那一份
+    #   **一律带千分位**（f0 / f0c 同样印 "514,907"），一位有效数字都没少；少掉逗号的
+    #   只有 SVG 上的标签与卡片内「表格」视图这两处。
     {'zh': 'EURO STOXX 50 期货与期权（FESX / OESX）', 'cols': [
         {'col': 'adv_estoxx50_fut_contracts', 'zh': 'EURO STOXX 50 期货 ADV',
-         'unit': 'contracts/day', 'fmt': 'f0c'},
+         'unit': 'contracts/day', 'fmt': 'f0'},
         {'col': 'oi_estoxx50_fut_contracts', 'zh': 'EURO STOXX 50 期货未平仓',
          'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
         {'col': 'adv_estoxx50_opt_contracts', 'zh': 'EURO STOXX 50 期权 ADV',
-         'unit': 'contracts/day', 'fmt': 'f0c'},
+         'unit': 'contracts/day', 'fmt': 'f0'},
         {'col': 'oi_estoxx50_opt_contracts', 'zh': 'EURO STOXX 50 期权未平仓',
          'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
     ]},
@@ -668,9 +692,11 @@ GROUPS = [
     # （2024-06 单月 +4.2% vs 滚动 −11.6%），360T 外汇则是「用了单月但标题没写明」。
     # 存量那一列（ETF 资产）走点对点同比、本来就合法，所以单独拆出去，
     # 免得口径声明落到一张不适用的图上。
+    # ⚠ 这一列与下面的 adv_360t_fx_eurbn 用 f0 而不是 f1，理由是**几何**，见
+    #   本组下方「三位数 €bn 的单桶柱图为什么不留小数」那段长注释。
     {'zh': '挂钩 STOXX/DAX 的 ETF 资产（存量）', 'cols': [
         {'col': 'aum_stoxx_dax_etf_eurbn', 'zh': '挂钩 STOXX/DAX 的 ETF 资产',
-         'unit': 'EUR bn', 'fmt': 'f1', 'stock': True},
+         'unit': 'EUR bn', 'fmt': 'f0', 'stock': True},
     ]},
 
     {'zh': '授权指数衍生品月成交量（次轴：单月同比）', 'cols': [
@@ -680,8 +706,34 @@ GROUPS = [
 
     {'zh': '360T 外汇 ADV（次轴：单月同比）', 'cols': [
         {'col': 'adv_360t_fx_eurbn', 'zh': '360T 外汇 ADV',
-         'unit': 'EUR bn/day', 'fmt': 'f1'},
+         'unit': 'EUR bn/day', 'fmt': 'f0'},
     ]},
+
+    # ══ 三位数 €bn 的单桶柱图为什么不留小数（aum_stoxx_dax_etf / adv_360t_fx）══════
+    # 两列都是「一桶一列」⇒ 底座画 gs_bar，而 gs_bar 的柱顶数值标签是**居中钉在自己
+    # 那根柱上**的。127 根柱通栏时最后一根柱的中心离右轴只剩半个 band，标签的右半边
+    # 必然伸进右轴刻度那一列：
+    #   1280px 视口（画布 1172、FS=1.70）：M.l = M.r = fscale(56) = 95.2 ⇒ band = 7.73，
+    #   末柱中心在右轴左侧 3.9px，右轴刻度列起于 +fscale(6) = 10.2px
+    #   ⇒ 标签半宽预算 14.1px（宽度上限 28.1px）。
+    #   「191.3」宽 34.0px ⇒ 压住金色刻度「40%」2.9px（visual_qa 报 28.3px²，🟡；
+    #   768px 视口 34.6px²）；「223.5」同宽，压「50%」（11.0px²，🔵）。
+    #   「191」/「224」宽 22.7px ⇒ 让开 2.7px，两个视口 4 条全清、无新增。
+    # 这不是只有 QA 才看得见：`python3 build/single.py db1` 自己就打
+    #   「Exhibit 16 柱顶标签压轴刻度：191.3 宽 20.0px > 预算 17.3px」
+    # （build/chartscale.py 的 audit()，缺陷 F 的生成端判据）。
+    #
+    # 为什么不走 chartscale 的缩量级：它的 `_factor()` 要求最大值缩完 ≥ 1，而
+    # 208.1 / 1000 = 0.21 < 1 ⇒ 返回 None，三位数的列它按设计**修不了**。剩下的唯一
+    # 杠杆就是小数位，而这正是 chartscale 自己在预算吃紧时做的事（`_decimals()`：
+    # 「宁可少一位有效数字，也不要再压回刻度上」）。
+    # 也不能靠拆组绕开：ETF 资产是 stock ⇒ 底座一律单列成图；360T 是全表唯一一条
+    # 'EUR bn/day'，没有同单位的同伴可以凑成折线。
+    #
+    # 代价（实测，别当形容词看）：舍入后相对误差最大 0.60%（ETF 资产）/ 0.78%（360T），
+    # 都出现在 2016 年那批小值上。末尾 13 期核对表里 ETF 资产没有一对相邻月因此撞成
+    # 同一个数；360T 有一对 —— 2026-01（182.71）与 2026-02（182.99）现在都印 183。
+    # 要拿回那一位小数就把 fmt 改回 f1，代价是上面那 4 条压字回来。
 
     # ⚠ 单位是 MWh 不是 TWh。官方工作簿表头写「(in TWh)」是笔误，
     #   单元格里是 MWh，差 10⁶。列名带 _mwh 就是为了每次看到都提醒一次。

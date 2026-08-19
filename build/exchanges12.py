@@ -1302,10 +1302,13 @@ def build_payload(raw, specs, fx, kconst, source_date):
     # ── Exhibit 3：水平值排序（全页唯一的跨所水平值图，只含常数齐备的家）──
     ord3 = sorted(lvl_keys, key=lambda k: -float(lvl[k][CUR]))
     pool_sum = float(sum(float(lvl[k][CUR]) for k in ord3))
-    # 截轴：龙头把其余几家压成一条平线时（本期 CME 是第二名的 15 倍），不截轴等于
+    # 截轴：龙头把其余几家压成一条平线时（当期 CME 就是这种），不截轴等于
     # 只画了一根柱。引擎的截轴**不删点** —— 超界的柱画到界 + 白色断口符号，
     # 真值竖排标在图外（charts.js:919-923）。判据写成规则而不是写死一个数：
     # 只有「第一名 > 第二名 ×3」时才截，截到第二名 ×1.15。
+    # ⚠ 这里原先写着「本期 CME 是第二名的 15 倍」—— 那个数会随月份滚动，
+    #   2026-08-19 实跑已经是 18.6 倍（10,305 ÷ 553.8），下游照抄注释就抄成了假话。
+    #   倍数只在下面 `cap_txt` 里由 v3[0]/v3[1] 现算并印进图注，注释一律不复述它。
     v3 = [float(lvl[k][CUR]) for k in ord3]
     cap3 = v3[1] * 1.15 if len(v3) >= 2 and v3[0] > 3 * v3[1] else None
     cap_txt = ''

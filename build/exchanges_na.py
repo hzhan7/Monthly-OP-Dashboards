@@ -26,7 +26,8 @@
 口径说明），不藏在注释里。
 
 四条独立锚点（全部在本文件里实测，数字由代码算出后填进文案，不写死）：
-  A. ICE 自报份额 vs 本页自算（同一家公司的分子分母）—— 187 个月
+  A. ICE 自报份额 vs 本页自算（同一家公司的分子分母）—— 全窗口逐月
+     （⚠ 月数不写在这里：它每个月 +1。原注写死「187 个月」，那是 2026-07 那期的值。）
   B. MIAX 自报的行业分母 vs ICE 自报的行业分母（两家公司互不相干的独立披露）
   C. Nasdaq 自报的季度美股期权市占 vs 本页用 ICE 分母 + Nasdaq 月度量现算
   D. TMX 自报的 BOX 全美股票期权市占（整数）vs 本页用 ICE 分母现算
@@ -190,8 +191,9 @@ for _k, _d in RAW.items():
     if _d is None:
         skip(f'缺 series/{_k}.csv')
 
-# 美股交易日历：ICE 与 Nasdaq 各自披露一份，实测 186 个重叠月里只有 1 个月不同
-# （2015-08），MIAX 那份与 ICE 全等。全页统一用 ICE 那一列当唯一日历 ——
+# 美股交易日历：ICE 与 Nasdaq 各自披露一份，重叠月里只有 2015-08 一个月不同
+# （⚠ 重叠月数不写在这里：它每月 +1；原注的「186 个重叠月」2026-08-19 实跑已是 187）。
+# MIAX 那份与 ICE 全等。全页统一用 ICE 那一列当唯一日历 ——
 # 两份日历混用会让「同一个月的 ADV」按不同分母算出两个值，而差异小到没人会发现。
 DAYS = RAW['ice']['trading_days_us_equities']
 
@@ -1528,8 +1530,9 @@ for _p in POOLS:
 #     去掉等于宣称本页不报 MIAX 的现货份额。
 # 拆一张、各用各的量程，是「同单位不同量级」唯一不损失信息的做法（docs/VISUAL_QA.md §3.G）。
 if _small_set:
-    # 横轴只取「这几条自己有数」的那一段：套用全页 187 个月的话，线只占右边三分之一，
-    # 左边三分之二是空白 —— 换轴换出来的分辨率又被横轴还回去了。
+    # 横轴只取「这几条自己有数」的那一段：套用全页那条 LONG_IDX（Jan-11 起、逐月递增，
+    # 月数不写死在这里）的话，线只占右边三分之一，左边三分之二是空白
+    # —— 换轴换出来的分辨率又被横轴还回去了。
     _sm_first = min(_cash_share_long[m.key].dropna().index[0] for m in _small_set)
     _sm_idx = [p for p in LONG_IDX if p >= _sm_first]
     _sm_ser = {m.key: _cash_share_long[m.key].reindex(_sm_idx) for m in _small_set}

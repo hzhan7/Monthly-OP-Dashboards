@@ -9,7 +9,11 @@ OneDrive 落盘、`main()`）本仓库用不上，没有搬。
 
 调用方：
   · `fetch/ibkr.py`  —— curl / HIST_URL / PR_URL / parse_hist_page / LABELS
-  · `build/ibkr.py`  —— parse_pr（月度新闻稿的佣金与订单规模）
+  · `build/ibkr.py`  —— parse_pr（月度新闻稿的佣金与订单规模）、
+                        parse_pr_fut_fee（期货费用占比，页尾脚注用）
+
+`parse_pr_fut_fee` 是**本仓后加的**，原 skill 里没有；加在这里而不是 build/ 侧，
+是为了让「新闻稿怎么解析」始终只有一处定义。除它以外本文件仍是逐字复制。
 
 两边都用 `spec_from_file_location` 按路径加载本文件：`fetch/` 与 `build/` 都不在
 sys.path 上（monthly_run.py 用 spec 加载 fetch 模块、用子进程跑 build 脚本），
@@ -127,3 +131,23 @@ def parse_pr(path):
         raise RuntimeError(f'PR parse failed: {path}')
     return (float(mo.group(1)), float(mk.group(1).replace(',', '')), float(mk.group(2)),
             float(mk.group(3)), float(mk.group(4)), float(mk.group(5)), float(mk.group(6)))
+
+
+# 「We estimate exchange, clearing and regulatory fees to be NN% of the futures commissions.」
+# PDF 抽文本时这句被换行拆开（"… to be 54% of the \nfutures commissions."），故 \s+ 跨行。
+FUT_FEE_RE = re.compile(r'fees to be\s+(\d+(?:\.\d+)?)\s*%\s+of the\s+futures commissions', re.I)
+
+
+def parse_pr_fut_fee(path):
+    """新闻稿里「交易所／清算／监管费用占期货佣金」的百分比。命中返回 float，没有返回 None。
+
+    ⚠ **这个比例逐月披露、每月都在动**（本地缓存的十几份稿子跨了好几个百分点），
+    任何地方都不许写死一个常数 —— build/ibkr.py 页尾脚注原先写死的「56%」正是这么
+    与目标月（那期披露的是 54%）对不上的。
+
+    单独成函数、不并进 `parse_pr` 的返回元组：那个元组按位置解包、已有调用方在用；
+    而这一句只喂页尾脚注，缺了不该让整个月度构建挂掉，所以命中失败返回 None 而不 raise。
+    放在本文件是因为**「新闻稿怎么解析」只能有一处定义**（同 parse_pr 的理由）。
+    """
+    m = FUT_FEE_RE.search(fitz.open(path)[0].get_text())
+    return float(m.group(1)) if m else None

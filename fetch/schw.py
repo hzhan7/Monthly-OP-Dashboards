@@ -81,12 +81,21 @@ mtime、下载日、构建日同理，一律不用。
    · 2026-02 那期把 "Net Market Gains (Losses)" 写成 "Net Market (Losses) Gains"（词序颠倒）。
    · sheet 名月报是 'SMART'、2019 年的老文件是 'Smart'、季报是 'ER SMART'。
    所以一律按标签前缀 + 大小写无关匹配。
-3. **两列是 2026-01 那期才新增的**：Client Daily Average Trades (DATs) 和 Margin Balances
-   at month end。同一期把老的 "Average Margin Balances"（月均口径，单位 $mn）删掉了。
+3. **四列是 2026-01 那期才新增的**：Client Daily Average Trades (DATs)、Margin Balances
+   at month end、Transactional Sweep Cash (at month end)、Total Money Market Funds
+   (at month end)。同一期把老的 "Average Margin Balances"（月均口径，单位 $mn）删掉了。
    series/schw_avg_margin.csv 就是那条已停更的老序列，它**永远停在 2025-12**，
    本模块绝不去追加它 —— 追加只会把两种口径（月均 vs 月末）混成一条假序列。
-   新增的两列在 2026-01 期的 13 个月滚动表里回填到了 2025-01，所以 series 里这两列从
+   新增的四列在 2026-01 期的 13 个月滚动表里回填到了 2025-01，所以 series 里这四列从
    2025-01 起才有值，这是数据本身的边界，不是解析漏了。
+7. **「Schwab 不披露客户现金」是句流传过的假话，别再写进任何图注。** 月报的
+   "Selected Balances" 块里逐月印着 Transactional Sweep Cash 与 Total Money Market
+   Funds 两条月末 $bn（脚注 (7) 给了 sweep 的定义），而 "Client Activity" 块下面还有
+   一行 **Client Cash as a Percentage of Client Assets**（脚注 (8)：Schwab One、若干
+   现金等价物、银行存款、第三方银行存款账户与货基余额占客户总资产的比重）——
+   后者自 2014-06 起每期都印。三者互相咬得住：(sweep + MMF) / Total Client Assets
+   逐月复现官方印的那个占比，19 个重叠月最大偏差 0.05pp（就是 0.1pp 印刷精度）。
+   本模块以前抓不到它们，只是因为 COLS 里没写这三行，不是公司没披露。
 4. **core NNA ≠ NNA**。序列取的是 Core Net New Assets（剔除单笔巨额流入/流出 + 表外
    Schwab Bank Retail CD 流量）。2025 年起「巨额」的门槛从 $10bn 提到 $25bn，
    所以 2025 年前后的 core NNA 严格说不完全可比 —— 这是官方口径变更，不是数据错。
@@ -183,7 +192,8 @@ _DATELINE = re.compile(
 
 SERIES = 'schw.csv'
 COLS = ['core_nna_usdbn', 'total_client_assets_usdbn',
-        'new_brokerage_accounts_k', 'dats_k', 'margin_balances_usdbn']
+        'new_brokerage_accounts_k', 'dats_k', 'margin_balances_usdbn',
+        'client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn']
 
 # 标签前缀（小写、去空白后前缀匹配）。用前缀而不是全等，是因为官方在标签尾部挂脚注号，
 # 脚注号每期都在变（"(1,2)" → "(1,2,3)"），全等匹配必挂。
@@ -193,25 +203,41 @@ _LABEL = {
     'new_brokerage_accounts_k': 'new brokerage accounts',
     'dats_k':                   'client daily average trades',
     'margin_balances_usdbn':    'margin balances at month end',
+    # 客户现金三行。前缀要写全 'total money market funds'：同一张表里还有一行
+    # 'Money Market Funds'（净买卖流量，$mn），前缀写短了会取到那一行。
+    'client_cash_pct':          'client cash as a percentage of client assets',
+    'sweep_cash_usdbn':         'transactional sweep cash',
+    'mmf_usdbn':                'total money market funds',
     # 下面两行只用来定单位倍率，不入库
     '_anchor_money':            'total client assets',
     '_anchor_count':            'active brokerage accounts',
 }
-# 金额类 / 计数类分组：决定用哪个锚点行的倍率
-_MONEY = {'core_nna_usdbn', 'total_client_assets_usdbn', 'margin_balances_usdbn'}
+# 金额类 / 计数类 / 比率类分组：决定用哪个锚点行的倍率
+_MONEY = {'core_nna_usdbn', 'total_client_assets_usdbn', 'margin_balances_usdbn',
+          'sweep_cash_usdbn', 'mmf_usdbn'}
 _COUNT = {'new_brokerage_accounts_k', 'dats_k'}
+# 比率类不跟锚点走 —— 它和金额/计数不在同一个单位块里：xlsx 里印的是**分数**
+# （0.101），EDGAR 的 HTML 里印的是**百分点字符串**（'10.1%'）。两边都归一到百分点。
+_RATIO = {'client_cash_pct'}
 
 # 合理量级断言。core NNA 会是负数、也可能接近 0（2019-04 是 -0.3），无法用量级判，
 # 所以它不做独立断言，只跟着锚点倍率走。
 _SANE = {
     'total_client_assets_usdbn': (1_000.0, 100_000.0),    # $1tn – $100tn
     'margin_balances_usdbn':     (1.0, 5_000.0),          # $bn
+    'sweep_cash_usdbn':          (1.0, 5_000.0),          # $bn
+    'mmf_usdbn':                 (1.0, 5_000.0),          # $bn
+    # 百分点。历史区间实测 8.6–13.0，给到 3–30 —— 这个下界同时兼任「分数还是百分点」
+    # 的判据：0.086 这种分数落不进 3–30，倍率只有 100 那一档能过（见 _scale 的 cands）。
+    'client_cash_pct':           (3.0, 30.0),
     'new_brokerage_accounts_k':  (10.0, 100_000.0),       # 千（含 2020-10 那个 14718）
     'dats_k':                    (100.0, 1_000_000.0),    # 千笔/日
     '_anchor_count':             (5_000.0, 500_000.0),    # 千个活跃账户
 }
 
-# DATs 与月末融资余额自 2026-01 期起披露，回填到 2025-01。比这更早的月份这两列本就没有。
+# DATs / 月末融资余额 / 月末 Transactional Sweep Cash / 月末 Total Money Market Funds
+# 这四列自 2026-01 期起披露，那一期的 13 个月滚动表回填到 2025-01。更早的月份本就没有。
+# （客户现金**占比**那一行不在此列 —— 它自 2014-06 起每期都印，见 _CASH_PCT_FROM。）
 _DATS_MARGIN_FROM = (2025, 1)
 # **Core** Net New Assets 这一行是 2018 年初才出现在滚动表里的：实测最早带它的一份是
 # schwab_feb2018_table.XLSX（表窗 2017-02…2018-02），而 2017 年的几份季报附表（q1/q2/q3
@@ -219,6 +245,11 @@ _DATS_MARGIN_FROM = (2025, 1)
 # 两者不是一条序列（2017-06 官方同时给过 37.7 与 22.1），所以**不拼接**：
 # 2017-02 之前 core_nna_usdbn 一律留空，由 build 侧按各自序列起点画图。
 _CORE_NNA_FROM = (2017, 2)
+# 客户现金**占比**这一行的官方起点：2015-07-16 报送的 Jun-2015 月报（8-K EX-99.1）
+# 第一次印它，那张 13 个月滚动表最左是 2014-06。再往前的三期（2015-04-15 / 2015-01-16 /
+# 2014-10-15）实测整张表**没有这一行**，不是解析漏了 —— 三份 HTML 里连
+# "Client Cash as a Percentage" 这个字符串都搜不到。
+_CASH_PCT_FROM = (2014, 6)
 
 # 同一个月同时来自月报和季报时谁说了算：季报是最终版。
 _SOURCE_RANK = {'monthly': 0, 'quarterly': 1}
@@ -389,10 +420,11 @@ def _row_values(ws, prefix: str, cols: dict) -> dict | None:
     return None
 
 
-def _scale(anchor: dict, lo: float, hi: float, what: str) -> float:
-    """用锚点行反推单位倍率。候选只有 1 / 1e-3 / 1e-6 / 1e-9 四档，
+def _scale(anchor: dict, lo: float, hi: float, what: str, cands=None) -> float:
+    """用锚点行反推单位倍率。金额/计数的候选是 1 / 1e-3 / 1e-6 / 1e-9 四档，
+    比率行传 cands=(1.0, 100.0)（分数 vs 百分点）。
     要求**所有**锚点值套上倍率后都落进合理区间，且只有一档满足 —— 有歧义就抛。"""
-    ok = [s for s in (1.0, 1e-3, 1e-6, 1e-9)
+    ok = [s for s in (cands or (1.0, 1e-3, 1e-6, 1e-9))
           if all(lo <= abs(v) * s <= hi for v in anchor.values())]
     if len(ok) != 1:
         raise FetchError(f'{what} 单位倍率判不定（候选 {ok}，样值 {list(anchor.values())[:3]}）')
@@ -416,7 +448,10 @@ def parse_table(path: str, report_ym: tuple[int, int]) -> dict:
     for c in COLS:
         if raw[c] is None:
             continue
-        s = s_money if c in _MONEY else s_count
+        if c in _RATIO:
+            s = _scale(raw[c], *_SANE[c], f'{c}', cands=(1.0, 100.0))
+        else:
+            s = s_money if c in _MONEY else s_count
         for ym, v in raw[c].items():
             x = v * s
             lo_hi = _SANE.get(c)
@@ -430,15 +465,20 @@ def _required(ym: tuple[int, int]) -> list[str]:
     """该月**必须**解析出来的列。缺任何一列 → 抛，绝不写 NaN。
 
     三段披露边界，全部是官方自己的（不是抓取能力的边界）：
-      · 2025-01 起才有 dats_k / margin_balances_usdbn（2026-01 那期月报新增两列并回填）
+      · 2025-01 起才有 dats_k / margin_balances_usdbn / sweep_cash_usdbn / mmf_usdbn
+        （2026-01 那期月报一次新增这四列并回填到 2025-01）
       · 2017-02 起才有 core_nna_usdbn（见 _CORE_NNA_FROM）
+      · 2014-06 起才有 client_cash_pct（见 _CASH_PCT_FROM）
       · 再往前只剩客户总资产与新开经纪账户两列
     """
     out = list(COLS)
     if ym < _DATS_MARGIN_FROM:
-        out = [c for c in out if c not in ('dats_k', 'margin_balances_usdbn')]
+        out = [c for c in out if c not in ('dats_k', 'margin_balances_usdbn',
+                                           'sweep_cash_usdbn', 'mmf_usdbn')]
     if ym < _CORE_NNA_FROM:
         out = [c for c in out if c != 'core_nna_usdbn']
+    if ym < _CASH_PCT_FROM:
+        out = [c for c in out if c != 'client_cash_pct']
     return out
 
 
@@ -584,8 +624,16 @@ def _glue(cells: list) -> list:
 
 
 def _html_num(x: str):
-    """'2,556.7' → 2556.7；'(0.3)' → -0.3；'-'/'' → None。括号是会计负号。"""
+    """'2,556.7' → 2556.7；'(0.3)' → -0.3；'10.1%' → 10.1；'-'/'' → None。
+
+    括号是会计负号。尾部的 '%' 要剥掉：`_glue` 会把独立 <td> 里的百分号粘回数值后面，
+    不剥的话 float() 失败 → 整行返回 None → 「这份文件没有这一行」，与真的没有长得一样
+    （客户现金占比那一行 2013 年至今每期都印，就是这么被静默丢掉的）。
+    百分点与分数的归一交给 _RATIO 那条倍率判定，这里只负责把字符串变成数。
+    """
     t = x.replace(',', '').replace('$', '').strip()
+    if t.endswith('%'):
+        t = t[:-1].strip()
     neg = t.startswith('(') and t.endswith(')')
     if neg:
         t = t[1:-1].strip()
@@ -669,7 +717,10 @@ def parse_edgar_monthly(html: str) -> dict:
         vals = row_of(_LABEL[col])
         if vals is None:
             continue
-        s = s_money if col in _MONEY else s_count
+        if col in _RATIO:
+            s = _scale(vals, *_SANE[col], f'edgar {col}', cands=(1.0, 100.0))
+        else:
+            s = s_money if col in _MONEY else s_count
         for ym, v in vals.items():
             x = v * s
             lo_hi = _SANE.get(col)
@@ -709,7 +760,7 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
             slot = merged.setdefault(m_ym, {})
             for c, v in vals.items():
                 if c in slot:
-                    if abs(slot[c] - v) > 1e-6:
+                    if _differs(c, slot[c], v):
                         RESTATEMENTS.append((m_ym, c, slot[c], v, os.path.basename(path)))
                     if _SOURCE_RANK[kind] <= prev_rank:
                         continue                       # 先写者胜
@@ -736,6 +787,18 @@ def latest_month(cache_dir) -> str | None:
         raise FetchError('源文件解析出来了，但没有任何一个月凑齐必需列')
     y, m = max(ok)
     return f'{y:04d}-{m:02d}'
+
+
+def _differs(col: str, a, b) -> bool:
+    """两个源给同一格的值，**按落盘精度**判是不是真的不一样。
+
+    不用 `abs(a-b) > 1e-6`：那是原精度比较，会在 CSV 里根本体现不出来的地方报警。
+    实例（2026-08-19）：client_cash_pct 的 2019-01，月报 xlsx 里是 0.1174（浮点原值），
+    EDGAR 的 HTML 印的是 "11.7%" —— 两者落盘都是 11.7，CSV 一个字符都不差，
+    原精度比较却每次 --backfill 都吐三行 RESTATEMENTS。这类噪音的代价不是刷屏，
+    是让人学会忽略这张表，于是真的官方重述来的那天也被一起忽略掉。
+    """
+    return _fmt(col, a) != _fmt(col, b)
 
 
 def _fmt(col: str, v) -> str:
@@ -851,7 +914,7 @@ def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
             slot = merged.setdefault(ym, {})
             for c, v in cols.items():
                 if c in slot:
-                    if abs(slot[c] - v) > 1e-6:
+                    if _differs(c, slot[c], v):
                         RESTATEMENTS.append((ym, c, slot[c], v, src))
                     continue
                 slot[c] = v
@@ -967,9 +1030,209 @@ def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
     return added
 
 
+# ═════════════════ 列回填：给**已有的行**补上新增列（--columns）═════════════════
+# 与 backfill() 的分工要说清楚，否则下一个人会把两者混成一个：
+#   · update()           —— 往后走一格，**加行**（新月份）。
+#   · backfill()         —— 往前补历史，**加行**（2013-09…2018-04）。
+#   · backfill_columns() —— **一个行都不加**，只把新增的列填进已经存在的行里。
+#
+# 为什么必须单独有这一条路：前两条都只在「这个月不在 CSV 里」时才写盘，
+# 于是 COLS 里新加一列时，历史行的那一格会**永远**空着 —— 加列的人跑一遍 update()
+# 看见「新增 0 个月」，会以为没事。2026-08-19 加 client_cash_pct 三列时就是这样发现的。
+#
+# 铁律（与另两条一致）：**非空单元格一个字符都不改**；重叠值不符就整次失败。
+_NEW_COLS = ('client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn')
+
+
+def _col_sources(cache_dir: str):
+    """列回填要覆盖 2013-09 至今**每一个月**，所以源的排法和 backfill() 不同。
+
+    月报的 13 个月滚动表意味着「每 12 个月取一份」就够铺满，不必逐月下载：
+      · CDN 月报 schw_may<y>_table.xlsx（y=2019…今年）→ 2018-05 … 最新一期的 5 月
+      · CDN 最近 8 个月 / 3 个季度（_candidates）→ 补上最新一期 5 月之后的月份
+      · CDN 历史附表 _HIST_XLSX → 2015-09 … 2018-12
+      · 再往前只有 SEC EDGAR（见下方 EDGAR 那一段）
+    """
+    y_now = _today_ym()[0]
+    out = []
+    for y in range(2019, y_now + 1):
+        out.append(((y, 5), MONTHLY_URL.format(mon='may', year=y)))
+    for _kind, url, ym in _candidates(back=8):
+        out.append((ym, url))
+    for ym, name in _HIST_XLSX:
+        out.append((ym, CDN + '/excels/' + name))
+    return out
+
+
+def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
+                     dry_run: bool = False, verbose: bool = True) -> dict:
+    """把 cols 里的列补进 series/schw.csv 已有的行。返回 {列: 填了几格}。"""
+    log = (lambda *a: print(*a)) if verbose else (lambda *a: None)
+    path = os.path.join(series_dir, SERIES)
+    with open(path, newline='') as f:
+        rows = list(csv.reader(f))
+    header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+
+    # ── 表头迁移：老表没有这几列，按 COLS 的顺序在每一行末尾补空格 ──
+    old_header = ['month'] + [c for c in COLS if c not in cols]
+    if header == ['month'] + COLS:
+        pass
+    elif header == old_header:
+        log(f'  [迁移] 表头补 {len(cols)} 列：{", ".join(cols)}')
+        header = ['month'] + COLS
+        body = [r + [''] * len(cols) for r in body]
+    else:
+        raise FetchError(f'{SERIES} 列名与预期不符：{header}')
+    want = {r[0] for r in body}
+
+    # ── 采集 ──
+    merged: dict[tuple[int, int], dict] = {}
+    prov: dict[tuple[int, int], str] = {}
+
+    def absorb(got: dict, src: str):
+        for ym, vals in got.items():
+            keep = {c: v for c, v in vals.items() if c in cols}
+            if not keep:
+                continue
+            # 先写者胜（源按「新 → 旧」排，越新的文件越权威），与 _collect 同规矩
+            if ym not in merged:
+                merged[ym], prov[ym] = keep, src
+            else:
+                for c, v in keep.items():
+                    if c not in merged[ym]:
+                        merged[ym][c] = v
+
+    def need() -> set:
+        return {k for k in want
+                if tuple(int(x) for x in k.split('-')) not in merged
+                or 'client_cash_pct' not in merged[tuple(int(x) for x in k.split('-'))]}
+
+    seen = set()
+    for ym, url in _col_sources(cache_dir):
+        name = url.rsplit('/', 1)[-1]
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            fp = _download(url, cache_dir)
+        except FetchError as e:
+            log(f'  [cdn] {name} 取不到：{e}')
+            continue
+        if fp is None:
+            continue
+        try:
+            absorb(parse_table(fp, ym), name)
+        except FetchError as e:
+            log(f'  [cdn] {name} 解析失败：{e}')
+            continue
+        log(f'  [cdn] {name} ok')
+
+    # ── EDGAR：CDN 上 2015-09 之前一份都不剩，只能走 8-K 的 EX-99.1 ──
+    # 按**从新到旧**走，每份只解析到「还缺的月份都齐了」为止就停 —— 全量扫 160 份
+    # 8-K 要几百个请求，而这里真正缺的只有 2013-09…2015-08 那二十来个月。
+    if need():
+        try:
+            fils = sorted(_edgar_8k('2016-06-01'), reverse=True)
+        except Exception as e:
+            log(f'  [edgar] 清单取不到（{type(e).__name__}: {e}）')
+            fils = []
+        for date, acc in fils:
+            if not need():
+                break
+            base = EDGAR_DIR.format(acc=acc.replace('-', ''))
+            try:
+                idx = json.loads(_edgar_get(base + '/index.json'))
+            except Exception:
+                continue
+            _time.sleep(0.15)
+            docs = [it['name'] for it in idx['directory']['item']
+                    if it['name'].lower().endswith(('.htm', '.html'))]
+            for d in docs:
+                try:
+                    html = _edgar_get(f'{base}/{d}').decode('utf-8', 'replace')
+                except Exception:
+                    continue
+                _time.sleep(0.15)
+                got = parse_edgar_monthly(html)
+                if got:
+                    absorb(got, f'EDGAR {acc}/{d}')
+                    log(f'  [edgar] {date} {d} → {min(got)}…{max(got)}')
+                    break
+
+    # ── 对账：已有的非空格子必须逐值相等（重跑幂等；不等说明解析取错了行）──
+    idx_of = {c: 1 + COLS.index(c) for c in cols}
+    clash, checked, filled = [], 0, {c: 0 for c in cols}
+    for r in body:
+        ym = tuple(int(x) for x in r[0].split('-'))
+        vals = merged.get(ym, {})
+        for c in cols:
+            v = vals.get(c)
+            if v is None:
+                continue
+            cur = r[idx_of[c]]
+            if cur != '':
+                checked += 1
+                if cur != _fmt(c, v):
+                    clash.append((r[0], c, cur, _fmt(c, v)))
+                continue
+            r[idx_of[c]] = _fmt(c, v)
+            filled[c] += 1
+    log(f'  [对账] 重叠 {checked} 个 (月,指标)，不符 {len(clash)} 个')
+    if clash:
+        for x in clash[:20]:
+            log('    MISMATCH', x)
+        raise FetchError(f'列回填与仓里现有值有 {len(clash)} 处不符，拒绝写入。')
+
+    # ── 恒等式自检：(sweep + MMF) / 客户资产 应当复现官方自己印的占比 ──
+    # 三个数都是官方同一张表上印的，这一步不是「算出」占比，是**核对**我们把三行
+    # 各自取对了没有。容差 0.07pp：占比印到 0.1pp、两个分量各印到 0.1bn。
+    ia = 1 + COLS.index('total_client_assets_usdbn')
+    bad = []
+    for r in body:
+        sw, mm, pc, ta = (r[idx_of.get('sweep_cash_usdbn', 0)], r[idx_of.get('mmf_usdbn', 0)],
+                          r[idx_of.get('client_cash_pct', 0)], r[ia])
+        if '' in (sw, mm, pc, ta):
+            continue
+        d = abs((float(sw) + float(mm)) / float(ta) * 100 - float(pc))
+        if d > 0.07:
+            bad.append((r[0], round(d, 3)))
+    log(f'  [恒等式] (sweep+MMF)/资产 vs 官方占比：核了 '
+        f'{sum(1 for r in body if r[idx_of.get("sweep_cash_usdbn", 0)] and r[idx_of.get("mmf_usdbn", 0)] and r[idx_of.get("client_cash_pct", 0)])} '
+        f'个月，超差 {len(bad)} 个')
+    if bad:
+        raise FetchError(f'(sweep+MMF)/资产 与官方印的客户现金占比对不上：{bad[:10]}')
+
+    log('  [填充] ' + '、'.join(f'{c} {n} 格' for c, n in filled.items()))
+    miss = sorted(k for k in want
+                  if not body[[r[0] for r in body].index(k)][idx_of['client_cash_pct']])
+    if miss:
+        log(f'  [仍缺] client_cash_pct 有 {len(miss)} 个月没填上：{miss[:6]}…{miss[-3:]}')
+    if dry_run:
+        log('  [dry-run] 不写盘')
+        return filled
+    if not any(filled.values()):
+        return filled
+    body.sort(key=lambda r: r[0])
+    tmp = path + '.tmp'
+    with open(tmp, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(body)
+    os.replace(tmp, path)
+    return filled
+
+
+
 if __name__ == '__main__':
     import sys
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if '--columns' in sys.argv:
+        # 给已有的行补新增列（不加行）。加完新列后跑一次，之后是幂等的。
+        print('backfill_columns:',
+              backfill_columns(os.path.join(_root, 'series'),
+                               os.path.join(_root, 'cache'),
+                               dry_run='--dry-run' in sys.argv))
+        raise SystemExit(0)
     if '--backfill' in sys.argv:
         # 一次性的历史存量补齐，不进 monthly_run 的每日/每月主路径。
         print('backfill:', backfill(os.path.join(_root, 'series'),

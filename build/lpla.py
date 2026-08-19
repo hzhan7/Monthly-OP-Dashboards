@@ -139,6 +139,10 @@ CAL_BREAKS = {
 #: 序列比它短就用序列自己的起点（**只往右让、不往左借**）。
 WIN_FROM = '2016-01'
 WIN_S = 13          # gsx.stack_share / bridge_bar 的窗口（近端对比图，保持 13 个月）
+
+# 图注里被交叉引用的 Exhibit 编号一律走常量，不写字面数字：本页在末尾追加过图、
+# 也拆分过图，散在正文里的「Exhibit 12」会集体指错一张，而那种错没有任何自动化能发现。
+N_ADVISORY, N_BROKERAGE, N_ADV_SHARE = 12, 15, 16
 WIN_Q = 14          # gsx.qtr_bar / implied_vs_actual 的窗口（季度）
 
 
@@ -193,6 +197,50 @@ def cap_pack(n, desc, vals, hi=None, lo=None, cap_note='axis capped — true val
     if lo is not None:
         out['yfloor'] = lo
     return out, len(over)
+
+
+CAP_K = 6.0         # cap_bounds() 的 Tukey 栅栏倍数；图注里那句「Q3 ± k×IQR」引它，
+                    # 不写字面 6 —— 调了 k 而图注还写 6，就又是一句会过期的假话。
+
+
+def cap_bounds(vals, k=CAP_K, pad=0.12, step=5.0):
+    """截轴上下界**从数据现算**，不手挑常数。返回 (lo, hi)，都以 `step` 为单位取整。
+
+    为什么不能写死：Ex7 上一版写的是 `-6.0, 35.0`，那是 **25 个月窗口**下手挑的 ——
+    当时窗口里的日常上沿只有 $15bn 左右，35 离它一倍多，「离群」与「日常」分得开。
+    窗口放宽到 2016-01 之后，日常上沿已经是 $30.1bn（Oct-24 的 Advisory），35 离它
+    只剩 16%，于是 Apr-21 的 38.0 / 35.9（只比日常上沿高 26%）也被当成离群点截掉、
+    各配一个红色竖排真值标签，而真正顶出量程的其实只有 Atria 与 Commonwealth
+    那两个月（66.5 / 81.7 / 211.1，是日常上沿的 2–7 倍）。窗口每月往前滚，
+    手挑的界必然再次过期 —— 那只是把「过期」这件事往后推，所以这里现算。
+
+    算法：对给进来的所有有限值做 Tukey **极端**离群栅栏 Q3 + k×IQR / Q1 − k×IQR；
+    栅栏之外的算离群。有离群的那一侧按「栅栏内极差 × pad」留白后向外取整到 step；
+    没有离群的那一侧不额外留白，只向外取整到 step（那一侧本来就不需要为红圈让位）。
+
+    · k=6 不是拍脑袋：本页实测 k 从 6 一路取到 10，划出来的都是同一批 3 个离群点
+      （66.5 / 81.7 / 211.1），结论对 k 不敏感；k=4 才会把 Oct-24 的 30.1 也划进去。
+    · **一侧截了、另一侧也必须给界**：`lines_endlabels` 的默认下界是 mn − 0.20×极差，
+      极差被 $211bn 的尖峰撑开之后下界会掉到 −$46bn，只给 ycap 会留下一大片空白负区。
+    · 一个离群点都没有时返回 (None, None) —— 不截轴，交回引擎自己的留白，
+      `cap_pack()` 那边也就不会写「已截轴」那行字。
+    """
+    fin = np.array([float(v) for v in vals
+                    if v is not None and np.isfinite(float(v))], dtype=float)
+    if fin.size < 8:                       # 样本太少，四分位没有意义
+        return None, None
+    q1, q3 = np.percentile(fin, [25, 75])
+    iqr = q3 - q1
+    fence_hi, fence_lo = q3 + k * iqr, q1 - k * iqr
+    inb = fin[(fin <= fence_hi) & (fin >= fence_lo)]
+    if inb.size == 0 or not ((fin > fence_hi).any() or (fin < fence_lo).any()):
+        return None, None
+    span = float(inb.max() - inb.min()) or 1.0
+    hi = (math.ceil((inb.max() + pad * span) / step) * step if (fin > fence_hi).any()
+          else math.ceil(inb.max() / step) * step)
+    lo = (math.floor((inb.min() - pad * span) / step) * step if (fin < fence_lo).any()
+          else math.floor(inb.min() / step) * step)
+    return float(lo), float(hi)
 
 
 def brk_pack(idx, n=None, acq=True, cal=()):
@@ -999,6 +1047,25 @@ def main():
                   pct_series=True, roll_col='organic_growth_roll'))
 
     # ── Exhibit 5：Client assets advisory vs brokerage（gsx.stack_share, win=13）──
+    # ⚠ 这张**刻意**只画近端 WIN_S 个月，不跟着 WIN_FROM 走（2026-08-19 又核过一次）：
+    #   (1) 同样这三条序列的全历史本页已经各有一张全窗口的图 —— N_ADVISORY（advisory
+    #       资产）、N_BROKERAGE（brokerage 资产）、N_ADV_SHARE（advisory 占比），
+    #       拉长这张一个新信息都不带；具体期数与编号见下面图注里的 f-string，
+    #       **注释里不写死数字、也不写 {} 占位符**（注释不是 f-string，花括号不会被求值）。
+    #   (2) 这张图的全部价值在**段内那两个数值**（月末两块资产各多少 $bn）。段宽 =
+    #       0.62 x 带宽：13 期半栏是 21.9px，125 期即便通栏也只剩 5.3px，而段内标签
+    #       size=6.6 的「1,077」宽约 18px —— charts.js 的 thinLabels 会把四分之三抽掉，
+    #       换来的是一张读不出数值的堆叠墙。
+    #   (3) ⚠ 这里原先写的是「全站同类图一致：cboe Exhibit 5 / cme Exhibit 4 也是 13 期」。
+    #       **那条举证 2026-08-19 已被推翻**：同一轮里 cboe Exhibit 5 与 cme Exhibit 4
+    #       都放宽到了 127 期，本图现在是全站唯一一张既非数据边界、又保持近端窗口的
+    #       stacked_dual（hood Ex17=13、ibkr Ex8=14 都是数据边界，图注里写明了）。
+    #       站得住的差别不是「大家都这么分」，而是**能不能牺牲段内数值**：cboe Ex5 与
+    #       cme Ex4 在 payload 里都带 `full: true`（通栏 + xstep 抽 x 轴刻度），读的是
+    #       堆叠形状；本图是半栏、段内那两个 $bn 数值是它存在的唯一理由（见 (2)）。
+    #       **失效条件写在这里**：哪天本图改成通栏、或不再要求段内可读数值，(2) 与 (3)
+    #       同时失效，应当一并放宽到 WIN_FROM。
+    # 页尾「窗口」那一条已对读者写明这个分法，这里再给读者一个到长历史图的指路。
     share13 = (W13['advisory_assets_usdbn'] / (W13['advisory_assets_usdbn']
                                                + W13['brokerage_assets_usdbn']) * 100)
     ymax_share = max(60.0, 10.0 * math.ceil(float(share13.max()) / 10.0))
@@ -1016,7 +1083,13 @@ def main():
         'line': {'name': '% advisory (RHS)', 'color': 'GREEN', 'values': L(share13.values),
                  'ymax': ymax_share},
         'note': '堆叠柱为两个业务口径的月末资产（$bn），右轴绿线为 advisory 占比。'
-                + (BN13 + '。' if BN13 else '') + QNOTE + '。',
+                + (BN13 + '。' if BN13 else '') + QNOTE + '。'
+                + f'<b>本图只画近 {WIN_S} 个月，是刻意的</b>：它要读的是段内那两个'
+                  '月末金额，段宽拉到全历史就只剩几个像素、数值标签会被抽稀掉大半。'
+                  f'同样三条序列的<b>全历史（{len(W25)} 期）</b>本页各有一张：'
+                  f'Exhibit {N_ADVISORY}（advisory 资产）、'
+                  f'Exhibit {N_BROKERAGE}（brokerage 资产）、'
+                  f'Exhibit {N_ADV_SHARE}（advisory 占比）。',
     }, BK13)
 
     # ── Exhibit 6：What moved client assets（gsx.bridge_bar, win=13）──
@@ -1037,24 +1110,48 @@ def main():
     }, BK13N)
 
     # ── Exhibit 7：NNA by channel（gsx.multi_line, 主窗口）──
-    # 截轴（规矩 7）：两笔并表把 Advisory NNA 顶到 $211.1bn、Brokerage NNA 顶到 $81.7bn，
-    # 而其余 23 个月两条线都在 -$3 ~ +$15bn 之间 —— 不截轴的话整张图就是「两条压在
-    # 零线上的平线 + 两根尖峰」，日常经营的那点差异一个都读不出。截轴不删点：超界的点
-    # 画成空心红圈、真值竖排标出（Oct-24 的 66.5 / 30.1 与 Aug-25 的 211.1 / 81.7）。
-    # yfloor 必须一起给：lines_endlabels 的默认下界是 mn - 0.20×极差，极差被尖峰撑到
-    # 214 之后下界会掉到 -46，只给 ycap 会留下一大片空白负区。
-    ex7_lo, ex7_hi = -6.0, 35.0
+    # 截轴（规矩 7）：并表月把两条线顶出量程 —— 不截轴的话整张图就是「两条压在零线上的
+    # 平线 + 几根尖峰」，日常经营的那点差异一个都读不出。截轴不删点：超界的点画成
+    # 空心红圈、真值竖排标出（是哪几个月由下面的 ex7_top 现算，不写死）。
+    # **上下界一律由 cap_bounds() 从窗口数据现算**，不再手挑常数 —— 原先写死的
+    # `-6.0, 35.0` 是 25 个月窗口下的手挑值，窗口放宽到 2016-01 之后它把 Apr-21
+    # （38.0 / 35.9，只比日常上沿高 26%）也划成了离群点；理由与算法见 cap_bounds()。
+    #
+    # ⚠️ **Aug-25 那两个竖排真值标签（211.1 与 81.7）互相压 23.2px²，本轮判「保留」。**
+    # 别再拿「调调上界就好了」去试，代价已经量过：
+    #   · 根因在共用引擎，不在本页：同一个 x 上两条线都越界时，`assets/charts.js` 的
+    #     `capSlot()` 把两个竖排标签横向拉开**写死的 8px**，而标签字号是 `7.2 × FS`、
+    #     FS 随卡片宽度长 —— 1280 视口的通栏卡 W=1172 ⇒ FS=1.70 ⇒ 字号 12.24，
+    #     实测墨迹框宽 8.97px，比 8 宽 0.97px，乘上两个标签共有的 23.8px 长度
+    #     = 23.2px²。768 视口卡宽 736 ⇒ FS=1.52 ⇒ 墨迹框 8.0px，正好不压，
+    #     所以这条只在 1280 出现 —— 这也反过来证明根因是「8 不跟 FS 缩放」。
+    #     真正的修法是引擎里那一个常数（`8` → 随 FS 缩放的间距），
+    #     那是 34 页共用的文件，不在本轮范围。
+    #   · 抬上界到 $81.7bn 以上（唯一能让 Aug-25 只剩一个标签的做法）实测能清掉，
+    #     但界内 $-3 ~ $38bn 的日常起伏会从占纵轴 82% 掉到 43%，2016–2022 那六年
+    #     两条线一起压成贴零的一条带 —— 本图要讲的「Brokerage 长期净流出、
+    #     Advisory 是它的镜像」当场读不出。拿整张图的纵向分辨率换 1px 宽的压字，不换。
+    #   · 把真值标签改成整数（`label_fmt: 'f0'`）实测只降到 13.3px²，仍是 🟡，
+    #     而且「截轴不删点、真值竖排标出」这条规矩当场变成标了个四舍五入值。不换。
     ex7_v = list(W25['nna_advisory_usdbn'].values) + list(W25['nna_brokerage_usdbn'].values)
-    CAP7, _ = cap_pack(7, f'渠道 NNA，截 ${ex7_lo:.0f} ~ ${ex7_hi:.0f}bn', ex7_v,
+    ex7_lo, ex7_hi = cap_bounds(ex7_v)
+    CAP7, _ = cap_pack(7, f'渠道 NNA，截 ${ex7_lo:.0f} ~ ${ex7_hi:.0f}bn' if ex7_hi else '', ex7_v,
                         hi=ex7_hi, lo=ex7_lo,
                         cap_note='axis capped — true values shown in red')
-    ex7_top = '、'.join(
-        f'{mlab(p)} 的 {lab} NNA ${v:,.1f}bn'
-        for p, lab, v in sorted(
-            [(p, lab, float(v)) for c, lab in (('nna_advisory_usdbn', 'Advisory'),
-                                               ('nna_brokerage_usdbn', 'Brokerage'))
-             for p, v in W25[c].items() if v > ex7_hi],
-            key=lambda t: (t[0], t[1])))
+    ex7_out = sorted(
+        [(p, lab, float(v)) for c, lab in (('nna_advisory_usdbn', 'Advisory'),
+                                           ('nna_brokerage_usdbn', 'Brokerage'))
+         for p, v in W25[c].items()
+         if ex7_hi is not None and v is not None and v > ex7_hi],
+        key=lambda t: (t[0], t[1]))
+    ex7_top = '、'.join(f'{mlab(p)} 的 {lab} NNA ${v:,.1f}bn' for p, lab, v in ex7_out)
+    # 「不截轴会怎样」也现算：拿窗口里两条线的**全段极差**跟**界内极差**比，
+    # 不去复刻引擎的留白算式（那份算式在 charts.js 里，抄一遍就是第二份实现）。
+    ex7_fin = [float(v) for v in ex7_v if v is not None and np.isfinite(float(v))]
+    ex7_inb = [v for v in ex7_fin
+               if ex7_lo is not None and ex7_hi is not None and ex7_lo <= v <= ex7_hi]
+    ex7_shr = ((max(ex7_inb) - min(ex7_inb)) / (max(ex7_fin) - min(ex7_fin))
+               if ex7_inb and max(ex7_fin) > min(ex7_fin) else 0.0)
     add({
         'n': 7, 'kind': 'lines_endlabels', 'fmt': 'f1', 'xlabels': XL25,
         'title': 'Net new assets by channel', 'ylab': 'Net new assets ($bn)',
@@ -1066,7 +1163,12 @@ def main():
         'note': 'Brokerage NNA has been persistently negative — the advisory conversion is '
                 'visible as a mirror image。'
                 + (f'纵轴截在 ${ex7_lo:.0f}bn ~ ${ex7_hi:.0f}bn：并表月把线顶出量程'
-                   f'（{ex7_top}），不截轴则其余各月全部压成贴零的平线。'
+                   f'（{ex7_top}）。这两个界不是手挑的，是按窗口里两条线的 '
+                   f'Tukey 极端离群栅栏（Q3 ± {CAP_K:g}×IQR）现算 —— 栅栏之外的 '
+                   f'{len(ex7_out)} 个点算离群，界内 '
+                   f'${min(ex7_inb):,.1f} ~ ${max(ex7_inb):,.1f}bn 的日常起伏只有全段极差 '
+                   f'${max(ex7_fin) - min(ex7_fin):,.1f}bn 的 {ex7_shr * 100:.0f}%，'
+                   '不截轴就全部压成贴零的平线。'
                    '<b>截轴不删点</b> —— 超界的点画成空心红圈，真值竖排标在图上，'
                    '表格视图与 tooltip 里也是真值。' if CAP7 else '')
                 + (BNNA + '。' if BNNA else ''),
@@ -1162,7 +1264,7 @@ def main():
     }, BKQ)
 
     # ── Exhibit 12：Advisory assets（gsx.lvl_bar, 主窗口）──
-    ex.append(bar(12, 'advisory_assets_usdbn', 'Advisory assets', 'Advisory assets',
+    ex.append(bar(N_ADVISORY, 'advisory_assets_usdbn', 'Advisory assets', 'Advisory assets',
                   'Advisory assets ($bn)', 'f0c',
                   '月末 advisory 口径客户资产。' + YOY_NOTE,
                   breaks=BK25, brk_note=BN25, roll=False,
@@ -1220,14 +1322,14 @@ def main():
     })
 
     # ── Exhibit 15：Brokerage assets（gsx.lvl_bar, 主窗口）──
-    ex.append(bar(15, 'brokerage_assets_usdbn', 'Brokerage assets', 'Brokerage assets',
+    ex.append(bar(N_BROKERAGE, 'brokerage_assets_usdbn', 'Brokerage assets', 'Brokerage assets',
                   'Brokerage assets ($bn)', 'f0c',
                   '月末 brokerage 口径客户资产。' + YOY_NOTE,
                   breaks=BK25, brk_note=BN25, roll=False,
                   keep_why='brokerage 资产是<b>月末存量</b>。'))
 
     # ── Exhibit 16：Advisory share of client assets（gsx.lvl_bar, pct_series）──
-    ex.append(bar(16, 'pct_advisory', 'Advisory share of client assets',
+    ex.append(bar(N_ADV_SHARE, 'pct_advisory', 'Advisory share of client assets',
                   'Advisory share', 'Advisory share (% of client assets)', 'pct1',
                   'Advisory assets carry a higher payout-adjusted margin than brokerage, so the '
                   f'mix shift is a structural profit driver。原 deck 取两位小数；'

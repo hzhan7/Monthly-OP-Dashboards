@@ -156,7 +156,28 @@ _NOTE_TTM_CASH = (
 #    所以这五列一律 `'scale': 100` + pct1。本机用算术验过是分数而不是百分数：
 #    share ÷ (matched ÷ consolidated) 的中位比值 = 1.000（若是百分数会是 100）。
 #    对照：series/miax.csv 的 share_*_pct 存的是百分数（比值 99.9），那边不加 scale。
-# 3) RPC 官方给 2 位小数，现货 RPC 给到 $0.032~$0.055 ⇒ 前者 usd2、后者 usd3。
+# 3) 小数位一律**等于官方发的位数**，不多不少：rpc_*_usd 与 rpc_nyse_equity_options_usd
+#    源表给 2 位（0.05 / 0.04），rpc_nyse_us_cash_usd_per100sh 给 3 位（0.032~0.055），
+#    share_* 给到 0.001 的分数（= 0.1pp）。所以是 f2 / f3 / pct1。
+#    ⚠️ 这三处**不许为了让标签变窄而降位**：降一位就是把 ICE 已经发出来的有效数字扔掉，
+#    而 13 个月核对表的用途正是与官方披露逐格对账（CONTRACT §5.4）。
+#    实测：share 降到 pct0 之后，汇总表「本月 / 上月 / 去年同月」三格会一起印成
+#    「21%」，而旁边的变化列还写着 -10bp —— 表自己打自己。
+# 4) 8 条 RPC 列一律 **f2 / f3 而不是 usd2 / usd3** —— 去掉 `$` 前缀。
+#    `$` 在这一页是纯冗余：数字每一次出现旁边都已经写着单位 ——
+#    图上是纵轴标题 `USD/contract`、核对表是表头「（USD/contract）」、
+#    图注走 `unit_txt()` 印的是「$0.04 USD/contract」（币种符号与单位并排重复了一遍）。
+#    去掉它不丢任何信息，却把柱顶数值标签从 20.0px / 24.5px 压到 15.6px / 20.0px
+#    （8px 字号，尺子是 build/chartscale.py 的 `_label_px`）。
+#    这是必要的：窗口拉到 2016-01 之后每张时序图有 127 格，通栏 band 只有 8.35px，
+#    柱顶标签居中钉在自己那一格上、右轴刻度起于绘图区右缘 +6px，
+#    ⇒ 标签宽度预算 = band + 12 − 2×LAB_GAP = 17.3px（`chartscale._budget`）。
+#    超预算的标签会横向伸进右轴刻度那一列，和金色同比刻度叠字。
+#    每次 `python3 build/single.py ice` 都会把当轮实测值打在日志里
+#    （「⚠️ Exhibit N 柱顶标签压轴刻度：… 宽 …px > 预算 …px」），不用人眼去看。
+#    去 `$` 之后 Exhibit 12（期权 RPC，2 位小数）落进预算、不再叠字；
+#    Exhibit 15（现货 RPC）「0.041」= 20.0px 仍超 2.7px —— 3 位有效数字最短就是这么宽，
+#    再窄只能降位或改用官方没发过的单位（美分），两条都比这处叠字更坏，所以留着。
 
 SPEC = {
     'ticker': 'ice',
@@ -228,12 +249,12 @@ SPEC = {
         #    （2026-07 期 rpc_energy 已填），所以不进 slow_cols。
         #    但正因如此，任何 ICE vs Cboe 的 RPC 并排图，ICE 那条每月都会多伸出一格。
         {'zh': '单位经济：每张收入（RPC，滚动三月均）', 'cols': [
-            {'col': 'rpc_commodities_usd',       'zh': '大宗商品', 'unit': 'USD/contract', 'fmt': 'usd2'},
-            {'col': 'rpc_energy_usd',            'zh': '能源',     'unit': 'USD/contract', 'fmt': 'usd2'},
-            {'col': 'rpc_ag_metals_usd',         'zh': '农产品与金属', 'unit': 'USD/contract', 'fmt': 'usd2'},
-            {'col': 'rpc_financials_usd',        'zh': '金融',     'unit': 'USD/contract', 'fmt': 'usd2'},
-            {'col': 'rpc_rates_usd',             'zh': '利率',     'unit': 'USD/contract', 'fmt': 'usd2'},
-            {'col': 'rpc_other_financials_usd',  'zh': '股指与 FX', 'unit': 'USD/contract', 'fmt': 'usd2'},
+            {'col': 'rpc_commodities_usd',       'zh': '大宗商品', 'unit': 'USD/contract', 'fmt': 'f2'},
+            {'col': 'rpc_energy_usd',            'zh': '能源',     'unit': 'USD/contract', 'fmt': 'f2'},
+            {'col': 'rpc_ag_metals_usd',         'zh': '农产品与金属', 'unit': 'USD/contract', 'fmt': 'f2'},
+            {'col': 'rpc_financials_usd',        'zh': '金融',     'unit': 'USD/contract', 'fmt': 'f2'},
+            {'col': 'rpc_rates_usd',             'zh': '利率',     'unit': 'USD/contract', 'fmt': 'f2'},
+            {'col': 'rpc_other_financials_usd',  'zh': '股指与 FX', 'unit': 'USD/contract', 'fmt': 'f2'},
         ]},
 
         # ── 美股期权：adv_us_equity_options_industry_kcontracts 是**全行业分母**，
@@ -246,7 +267,7 @@ SPEC = {
             {'col': 'share_nyse_equity_options', 'zh': 'NYSE 份额（官方直接给）',
              'unit': '%', 'fmt': 'pct1', 'scale': 100},
             {'col': 'rpc_nyse_equity_options_usd', 'zh': 'NYSE 期权 RPC',
-             'unit': 'USD/contract', 'fmt': 'usd2'},
+             'unit': 'USD/contract', 'fmt': 'f2'},
         ]},
 
         # ── 美股现货：本页最重要的一组。
@@ -264,7 +285,7 @@ SPEC = {
             {'col': 'share_nyse_us_cash_matched', 'zh': 'NYSE 全美 matched 份额',
              'unit': '%', 'fmt': 'pct1', 'scale': 100},
             {'col': 'rpc_nyse_us_cash_usd_per100sh', 'zh': '现货 RPC（每 100 股）',
-             'unit': 'USD/100 shares', 'fmt': 'usd3'},
+             'unit': 'USD/100 shares', 'fmt': 'f3'},
             {'col': 'adv_tapeA_consolidated_mnsh', 'zh': 'Tape A 全市场',
              'unit': 'mn shares/day', 'fmt': 'f0c'},
             {'col': 'adv_nyse_tapeA_matched_mnsh', 'zh': 'Tape A · NYSE matched',

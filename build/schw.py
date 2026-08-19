@@ -672,6 +672,12 @@ def xstep_for(n):
     # 代价是最新月没有刻度（可接受，且本页各图的长度已刻意对齐，实际走不到这一支）。
     return next((k for k in range(lo, 2 * lo + 1) if (n - 1) % k == 0), lo)
 H_BAR = 330                            # 通栏长历史柱图的画布高（不含 x 标签带）
+# 只要 payload 上出现 ycap / yfloor（或右轴的 ymax），引擎就把上边距从 fscale(14) 抬到
+# fscale(30)，为竖排的截轴真值留一行位（charts.js 的 `capOn`）。那一行是**按需留的空**，
+# 与该图实际有没有超界的柱无关：设了下界却一根都没被切的图，白白少掉 16×FS 的绘图区高。
+# 1280px 通栏卡片上 FS 取上界 1.70 → 27px。给这类图把高度补回来，绘图区就与其余通栏柱图
+# 等高，页面的视觉节奏不会因为「加了一条下界」而断掉。
+H_BAR_CAP = H_BAR + 27
 H_BRIDGE = 360                         # 桥图更高：它要同时容纳堆叠段、净额菱形与截轴真值
 H_TALL = 420                           # 截轴图再高一档：截轴管「那一档占轴多少」，
                                        # 加高管「那一档有多少像素」，两件事互相独立
@@ -830,8 +836,25 @@ _bk4 = brk_idx(d4.index)                      # 分子是 core NNA，断点原�
 # 不再是滚动 12 个月率的 pp 差 —— 与本页其余各图同口径。
 ST4 = caliber_stats(og - og.shift(12), ogr - ogr.shift(12), d4.index)
 P4 = ptp_stats(og, d4.index, pct_series=True)
+# ── 负增长月必须待在绘图区里：本页唯一需要显式 yfloor 的图 ──
+# gs_bar 的纵轴下界被写死成 0（charts.js 的 `if (kind === 'gs_bar') { y0 = 0; … }`），
+# 负值全靠**双轴零点对齐**顺带撑出来的负区兜住 —— 对齐只扩不缩，扩出来的那一段正好在
+# 零线以下。本页其余双轴图都走对齐，负区是白送的（Ex2 对齐后左轴到 −39.2）。
+# 只有本图不是：它的对齐浪费率 50% 超过引擎阈值 38%，引擎改走「两轴各自缩放」兜底，
+# 左轴就停在 [0, max×1.22]，于是负增长月被画到底边**以外**（实测最深的那根伸出约 30px，
+# 一路探进 x 标签带）——柱还在、值也没错，但它有多深读者量不出来，等于画了一根读不了的柱。
+# yfloor 是引擎给的下界开关（语义同 ycap：截轴不删点），按引擎给其余图型用的
+# min×1.15 现算，不写死；下界永远低于最低柱，所以一根都不会被切（下面 assert）。
+_og_min = float(og.dropna().min())
+_og_min_m = mlab(og.dropna().idxmin())
+OG_FLOOR = round(_og_min * 1.15, 4) if _og_min < 0 else None
+_neg4 = [p for p in d4.index if pd.notna(og.get(p)) and float(og.loc[p]) < 0]
+if OG_FLOOR is not None and OG_FLOOR > _og_min:      # 规矩 5：切到柱就要响，不静默
+    raise SystemExit(f'Exhibit 4 的 yfloor {OG_FLOOR} 高于最低柱 {_og_min}')
 ex.append({
-    'n': 4, 'kind': 'gs_bar', 'full': True, 'height': H_BAR,
+    'n': 4, 'kind': 'gs_bar', 'full': True,
+    'height': H_BAR if OG_FLOOR is None else H_BAR_CAP,
+    'yfloor': OG_FLOOR,
     'fmt': 'pct1', 'yfmt': 'pct0', 'xlabels': xl(og, ALL_N), 'xstep': xstep_for(len(d4)),
     'title': f'Annualised organic growth rate — {mlab(og.dropna().index[0])} 至今',
     'ylab': '% annualised', 'ylab2': 'pp y/y (单月)', 'legend': 'Monthly',
@@ -851,6 +874,12 @@ ex.append({
                 '一半的噪音在这一步就被吸收了。' if ST4 else '')
              + f'当期读数：当月年化 {float(og.iloc[-1]):.2f}%、'
              f'（作为对照）滚动 12 个月 {float(ogr.dropna().iloc[-1]):.2f}%。'
+             + ('' if OG_FLOOR is None else
+                f'<b>纵轴下界显式取 {OG_FLOOR:.2f}%</b>（= 最低月 {_og_min:.2f}%'
+                f'（{_og_min_m}）× 1.15）：本图是全页唯一走「两轴各自缩放」兜底的双轴图，'
+                '拿不到零点对齐顺带撑出来的负区，而柱图的下界默认是 0 —— 不显式给，'
+                f'窗口内 {len(_neg4)} 个负增长月就会被画到绘图区底边以外，深浅读不出来。'
+                '这条下界低于最低柱，一根柱都没有被切。')
              + brk_note(_bk4)),
 })
 

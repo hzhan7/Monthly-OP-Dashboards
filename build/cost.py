@@ -63,8 +63,13 @@ def _source_dates():
 # 哪天想让头条图再长一些（本页 series 自 2015-12 起），改它一个就够。
 WIN_START = '2016-01'
 HIST_START = '2016-01'
-ECOMM_START = '2022-01'
-OVERLAY_MONTHS = 25
+# ECOMM_START = '2022-01' 已删（2026-08-19）：那是画图时截的窗口，不是数据的边界 ——
+# 与 Exhibit 11 上一轮用的是同一条判据，当时漏了这张。series/cost.csv 里 ec_r 自 2017-09、
+# ec_a 自 2017-12 起逐月无缺，2022 之前另有 52 / 49 个公司披露值被这个常数挡在图外。
+# 左端改成现算：max(WIN_START, 两条腿里最早的那个首值)（见 main() 里的 ECOMM_FROM）。
+# 不写死也不回退到 2022：写死一个新常数只是把过期时间往后推。
+# OVERLAY_MONTHS = 25 已删（2026-08-19）：唯一用它的 Exhibit 11 改成 win() = WIN_START 起。
+# 留着一个没人用的旧窗口常量，下一次有人「顺手复用一下」就把 25 个月又带回来了。
 # FY26 起 e-commerce comp 更名为 Digitally-Enabled comparable sales，公司不重述历史。
 # 断点在哪张图上画得出来、汇总表哪几格要加注，全部由它现算，不写死索引也不写死月份文案。
 ECOMM_BREAK = pd.Period('2025-09', 'M')
@@ -529,11 +534,46 @@ def main():
     ex.append(bar_line_ex(9, 'oi_a', 'oi_r', 'Other International Comp, y/y',
                           'Core (ex. gas & FX)', 'Reported'))
 
-    # Ex 10 —— 电商（窗口自 2022 起）
-    d8 = win(ECOMM_START)
+    # Ex 10 —— 电商（左端现算：公司开始披露 e-comm comp 的第一个月，不早于 WIN_START）
+    #
+    # 2026-08-19：原来这里是写死的 ECOMM_START='2022-01'，把图截在 55 格。判据与 Ex11 同一条 ——
+    # 「那是画图时截的窗口，不是数据的边界」—— 上一轮把 Ex11 放宽了却漏了这张。
+    # 两条腿在 series/cost.csv 里都是**逐月无缺**的连续段（下面的 assert 钉死），
+    # 2022 之前的那 50 来个月是公司真披露过的读数，不是插值，就该画上去。
+    #
+    # 左端取**两条腿里最早的那个首值**（ec_r 的 2017-09），不取主腿 ec_a 的首值：
+    # 后者会把 ec_r 那 3 个月真值扔掉，与本轮「数据在就画」的判据相反。bar_line 不属
+    # mrwin.DENSE，前 3 格只有线没有柱，引擎按 null 断笔处理，不会插出假柱。
+    _ec = df[['ec_r', 'ec_a']].dropna(how='all')
+    for _c in ('ec_r', 'ec_a'):
+        _s = df[_c].dropna()
+        if len(_s) != (_s.index[-1] - _s.index[0]).n + 1:
+            raise SystemExit(f'{_c} 首末之间有缺月，Exhibit 10 的左端判据要重看')
+    ECOMM_FROM = max(pd.Period(WIN_START, 'M'), _ec.index[0])
+    d8 = win(str(ECOMM_FROM))
     b10 = brk1(d8, ECOMM_BREAK)
-    ec_src = ('序列本身月度波动很大（FY25 区间 −2.5% ~ +35.7%），无法从图上分离口径影响。'
-              '图窗自 2022 起（2021-01 曾达 ~+106% 的 COVID 低基数）。')
+    _ec_w = d8[['ec_a', 'ec_r']]
+    _lo, _hi = _ec_w.min().min(), _ec_w.max().max()
+    _lo_p = _ec_w.min(axis=1).idxmin()
+    _hi_p = _ec_w.max(axis=1).idxmax()
+    _r0, _a0 = df['ec_r'].dropna().index[0], df['ec_a'].dropna().index[0]
+    ec_src = (f'序列本身月度波动很大（图窗内 {_lo:+.1f}% ~ {_hi:+.1f}%，'
+              f'低点 {mlab(_lo_p)}、高点 {mlab(_hi_p)}），无法从图上分离口径影响。'
+              f'<b>图窗自 {mlab(ECOMM_FROM)} 起，那是公司开始披露电商 comp 的第一个月，'
+              f'不是画图时截的</b>：报告口径自 {mlab(_r0)} 起 '
+              f'{int(df["ec_r"].notna().sum())} 个月、核心口径自 {mlab(_a0)} 起 '
+              f'{int(df["ec_a"].notna().sum())} 个月，逐月无缺，全部画上'
+              f'（最左 {(_a0 - _r0).n} 格只有 Reported 那条线：核心口径晚 {(_a0 - _r0).n} '
+              f'个月才开始披露，柱在那里留空、不补 0）。'
+              # 不写「本页其余 comp 图一律自 2016-01 起」—— 那是全称断言，加一张图就可能变假话。
+              # 只说本页窗口左端这个**口径**（WIN_START），它是本文件里的常量、当场引。
+              f'本页时序图的窗口左端统一取 {WIN_START}，这张够不到那里是<b>数据下限</b>。'
+              f'代价说在明处：窗口里含 COVID 低基数那一段（{mlab(_hi_p)} 峰值 {_hi:+.1f}%），'
+              f'纵轴被它撑开，近两年那段个位数波动在图上是一条窄带 —— '
+              f'要逐月读近端请看 Exhibit 1 汇总表与页尾核对表。'
+              f'本图<b>不截轴</b>：截轴的判据（cap_for）是「除最极端那一个月之外的最大值」，'
+              f'为的是把越界读数收敛到同一个 x 上；而这里高台是连续十几个月、不是一个离群点，'
+              f'截了会在图顶排出一串没法逐个对锚的红字。')
     ec_kw = {}
     if b10 is not None:
         # 同 Ex4：竖排标签原文 44 个字符，从图顶一路压到零线，中段压在深蓝柱上读不出来。
@@ -545,19 +585,37 @@ def main():
         ec_src = ('FY26 起口径由 e-commerce 改为 Digitally-Enabled comparable sales，前后不保证可比；'
                   '该断点已滚出本图窗口，图上不再画竖虚线。' + ec_src)
     ex.append(bar_line_ex(10, 'ec_a', 'ec_r', 'E-commerce / Digitally-Enabled Comp, y/y',
-                          'E-comm Core (ex. FX)', 'Reported', start=ECOMM_START,
+                          'E-comm Core (ex. FX)', 'Reported', start=str(ECOMM_FROM),
                           src_extra=ec_src, **ec_kw))
 
-    # Ex 11 —— 分地区核心 comp 叠图（最近 25 个月，带点标记）
-    # 标题里的月数由实际画出的点数生成：原文写死 "last 24m" 而 OVERLAY_MONTHS=25，
-    # 图上是 25 个点 —— 这是规格书自带的口径瑕疵，移植时照抄了下来。
-    # 标题也是一句「声称」，一样得是实话。
-    d9 = df.iloc[-OVERLAY_MONTHS:]
+    # Ex 11 —— 分地区核心 comp 叠图
+    # 2026-08-19：窗口从写死的 `df.iloc[-OVERLAY_MONTHS:]`（25 个月）改成 win() = 2016-01 起，
+    # 与本页 Ex2/3/4/5/6/7/8/9/12 同一个左端。理由不是「统一好看」，是这三列本来就有：
+    # series/cost.csv 的 us_a / ca_a / oi_a 从 2015-12 起 128 个月**一格不缺**（0 个 null），
+    # 25 个月是画的时候截的，不是数据的边界。同一页 Ex7/8/9 早就把这三条各自画满 127 个月，
+    # 而本图是它们的叠合对照 —— 单看一个地区能看十年、三个地区放一起只能看两年，
+    # 「哪个地区先转向」这个本图唯一要回答的问题在 25 个月里根本问不出来 ——
+    # 实测（2026-08-19 的数据）：三条序列的**每一个**极值都落在旧窗口（Jul-24 起）之外，
+    # 加拿大谷底 −5.0%（2020-04）、美国峰值 +24.9% 与加拿大峰值 +23.8%（同为 2021-04）、
+    # Other Int'l 谷底 −1.2%（2019-02）；旧窗口内三条线的实际区间只有 +2.7% ~ +12.3%。
+    # 标题里原本写死的 "last 25m" 一并作废 —— 那是对窗口的一句声称，窗口变了它就是假话。
+    #
+    # `markers` 同时撤掉：markers 在 charts.js 里是每点一个 r=2.1 的实心圆（直径 4.2px）。
+    # 25 个月半栏时一格 20.4px，圆点之间还有 16px 空当，是「逐月观测」的标记；
+    # 127 个月通栏后一格只剩 8.76px（mrwin.band_px 实测），三条线各铺 127 个 4.2px 的点，
+    # 线本身（lw=1.6）会被自己的标记吃掉，变成三条虚线带。点标记的信息在这个密度下已经没有了。
+    d9 = win()
     ex.append({
         'n': 11, 'kind': 'lines', 'yfmt': 'pct0',
-        'title': f"Core Comp by Region (ex. gas & FX), last {len(d9)}m",
-        'xlabels': [mlab(p) for p in d9.index], 'xstep': 2, 'markers': True,
+        'title': f"Core Comp by Region (ex. gas & FX), since {mlab(d9.index[0])}",
+        'xlabels': [mlab(p) for p in d9.index], 'xstep': 3,
         'zero_line': True,          # PDF 里 ex_region_overlay 调了 axhline(0)，轴需含 0
+        'src_extra': f'三条线都是公司披露的核心（除油汇）可比销售同比，'
+                     f'{mlab(d9.index[0])}–{mlab(d9.index[-1])} 共 {len(d9)} 个月逐月无缺。'
+                     f'与 Exhibit 7/8/9 是同样的三条序列，这里叠在一张图上是为了看'
+                     f'<b>地区之间的相对次序与转向先后</b>，不是重复。'
+                     f'（旧版本只画最近 25 个月并在标题里写 "last 25m"；'
+                     f'那是画图时截的窗口，不是数据的边界。）',
         'series': [{'name': 'US', 'color': 'NAVY', 'values': L(d9['us_a'])},
                    {'name': 'Canada', 'color': 'MBLUE', 'values': L(d9['ca_a'])},
                    {'name': "Other Int'l", 'color': 'BLUE', 'values': L(d9['oi_a'])}],
@@ -829,9 +887,11 @@ def main():
     # ── 口径与方法说明（原 index.html 的 10 条；凡是「图上画了什么」的话一律现算）──
     #
     # 这一节里的每一句「Exhibit N 画了红色竖虚线 / 截了轴」都是对渲染结果的**声称**。
-    # 声称必须由生成断点、生成截轴的那段代码本身产出，不能手写：Ex4 的窗口自 2021-01 起，
-    # 而 WEEK_BREAKS 里有 2018-01 / 2019-01 两个月落在窗口之外，原文却写「故 Exhibit 4
-    # 在这些位置画红色竖虚线」——读者会去图上找四条线，实际只有两条。
+    # 声称必须由生成断点、生成截轴的那段代码本身产出，不能手写。原案（Ex4 的窗口还写死
+    # 自 2021-01 起那阵）：WEEK_BREAKS 里的 2018-01 / 2019-01 落在窗口之外，原文却写
+    # 「故 Exhibit 4 在这些位置画红色竖虚线」—— 读者会去图上找四条线，实际只有两条。
+    # 窗口后来放宽到 WIN_START，四条线今天都在图上了 —— 但下面这段仍然现算，
+    # 因为「今天恰好都在」不是把话写死的理由，窗口或 CSV 一动它就又是假话。
     wk_all = sorted(WEEK_BREAKS)
     wk_drawn = [d.index[i] for i in b4]                       # Ex4 上真正画出来的
     wk_out = [p for p in wk_all if p not in wk_drawn]
@@ -848,7 +908,11 @@ def main():
                + (f'，Exhibit 10 在 {ECOMM_BREAK} 处画红色竖虚线标注该断点。'
                   if b10 is not None else
                   '；该断点已早于 Exhibit 10 的图窗起点，图上没有对应的线。')
-               + 'Exhibit 10 图窗自 2022 起（2021-01 曾达 ~+106% 的 COVID 低基数）。'
+               # 原文「Exhibit 10 图窗自 2022 起（2021-01 曾达 ~+106% 的 COVID 低基数）」
+               # 与图注是同源拷贝，窗口一放宽它就是假话，所以两处都由 ECOMM_FROM 现算。
+               + f'Exhibit 10 图窗自 {mlab(ECOMM_FROM)} 起 —— 那是公司披露电商 comp 的'
+                 f'第一个月（报告口径 {mlab(_r0)}、核心口径 {mlab(_a0)}，逐月无缺），'
+                 f'不是画图时截的窗口；纵轴因此含 COVID 低基数那一段，近端读数请看汇总表。'
                + ('' if not EC_CROSS_YOY else
                   f'Exhibit 1 汇总表里 e-comm 两行的 y/y 跨该断点，已加 † 标出。'))
     # ── 「公司披露的 y/y 已按可比周调整」这句话，用本页数据当场验一遍 ──────────

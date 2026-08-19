@@ -648,7 +648,9 @@ def main():
     yoy7_s = [((abf[k] / abf[ym(mi(k) - 12)] - 1) * 100) if ym(mi(k) - 12) in abf else None
               for k in WMa]
     ex.append(add_brk({
-        # 91 根柱：半栏每根约 3.1px，与 Exhibit 2 同一个问题，同样走通栏。
+        # 与 Exhibit 2 同一个问题、同样走通栏：柱数 = len(WMa)，窗口一放宽就是三位数，
+        # 半栏每根摊不到 3px。（原注释写死「91 根柱」，窗口拉到 2016 之后已经不是这个数 ——
+        # 具体每根几 px 由 mrwin 按实测算式复算，别在这里再写死一个新数。）
         'n': 7, 'kind': 'gs_bar', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': XLMa,
         'full': True, 'xstep': MSTEP, 'xrot': 90,
         'title': (f'Implied asset-based fee revenue — {mlab(LATEST)} ${abf[LATEST]:.1f}mn, '
@@ -765,7 +767,11 @@ def main():
         'n': 10, 'kind': 'lines_endlabels', 'fmt': 'pct1',
         'xlabels': [mlab(k) for k in yw],
         'full': True, 'xstep': MSTEP, 'xrot': 90,
-        'title': (f'Implied fee revenue vs. average AUM, y/y — {mlab(LATEST)} 费收 '
+        # 标题里的「单月同比 / single-month」不是修辞，是 CONTRACT.md §6 第 2 条的硬要求：
+        # 用单月同比就必须在**标题**里写明（tools/check_yoy_caliber.py 的 R4 就查这个，
+        # 2026-08-19 之前本图是全站唯一一条 🟡）。为什么这里该用单月，写在下面 note 里。
+        'title': (f'Implied fee revenue vs. average AUM, y/y（单月同比 / single-month）'
+                  f' — {mlab(LATEST)} 费收 '
                   f'{sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
                   f'缺口 {gap[-1]:+.1f}pp'),
         'ylab': '% y/y',
@@ -782,6 +788,18 @@ def main():
                  '「费收 ≈ 平均 AUM × 有效费率」，所以深蓝（费收同比）低于中蓝（平均 AUM 同比）'
                  '多少，就是费率压缩吃掉了多少增长（费率本身见 Exhibit 9）。'
                  '两条线同窗口、同口径（都是点对点单月同比），可以逐格相减。'
+                 # CONTRACT.md §6 第 2 条：用单月同比要在标题写明**并**在图注说明为什么。
+                 # 这里的理由是结构性的，不是「单月看着更灵敏」——
+                 # 中蓝那条的底层是 AUM，存量（§6 第 4 条：存量不许做滚动合计，
+                 # 合法口径就是点对点）；而本图的全部命题是「两条线的垂直距离 = 费率那一项」，
+                 # 要能逐格相减，深蓝那条就必须跟着走同一个点对点口径。
+                 # 把费收换成 12 个月滚动、AUM 留点对点，相减出来的东西不对应任何量。
+                 '<b>为什么这张图用单月而不是本仓默认的 12 个月滚动</b>：中蓝那条是'
+                 '<b>平均 AUM</b> 的同比，AUM 是存量，存量不许做滚动合计'
+                 '（12 个月末快照相加既不是一年的量、也不是平均水平），'
+                 '它的合法口径本来就是点对点；而本图唯一的命题是「两条线的垂直距离 = 费率'
+                 '那一项」，要能逐格相减，深蓝那条费收就必须跟着用同一个点对点口径。'
+                 '一条滚动、一条点对点相减，得到的差不对应任何真实存在的量。'
                  f'{mlab(LATEST)}：费收 {sgn_pct(yv[-1])} vs 平均 AUM {sgn_pct(aum_yoy)}，'
                  f'缺口 {gap[-1]:+.1f}pp。'
                  # 「差额就是费率压缩」这句原文案不精确，改这张图时一并纠正：

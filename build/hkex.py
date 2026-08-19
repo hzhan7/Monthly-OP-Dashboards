@@ -893,7 +893,8 @@ def main():
         'ylab': 'HK$bn / day',
         'series': [{'name': 'Average daily turnover', 'color': 'NAVY', 'values': L(adt_long.values)}],
         'note': f'本页收录的全部历史（{XL_LONG[0]} → {XL_LONG[-1]}，{len(adt_long)} 个月）。'
-                f'起点是本站统一口径（全站时序图一律自 {WIN_FROM} 起），不是源的上限 —— '
+                f'起点是本站统一口径（全站时序图的窗口左端一律<b>不早于</b> {WIN_FROM}；'
+                f'各图能不能画到那里由自己的序列定，本页就有几张回不到），不是源的上限 —— '
                 f'HKEX 的逐日成交档案本身可回到 1986 年。'
                 f'纵轴从 0 起（同原 deck），末点标出数值。原 deck 另在末 3 个月打红圈标记，'
                 f'网页 lines 图型没有该标记，最新 3 个月为 {last3}（HK$bn/日）。',
@@ -1070,6 +1071,34 @@ def main():
     tfee = _w(tfee_c)
     tfee_v = tfee.values
     y10 = yoy_rhs(tfee_c)
+    # Ex10 / Ex13 的图注都声称「图上这些柱已经是全部，短是因为费率表回溯不到 2016」。
+    # 那是一句关于「我们没有截窗口」的断言，得真的成立：本序列自 2023-10 起，晚于
+    # WIN_FROM=2016-01，所以 `_w` 对它必须是空操作。哪天 WIN_FROM 往后挪、或
+    # series/fee_rates.csv 真回补到 2016 之前，这里当场响，而不是让两条图注默默变成假话。
+    def assert_untrimmed(nm, full, cut):
+        if len(cut) != len(full):
+            raise SystemExit(
+                f'{nm}：_w 把隐含费收序列截短了（{len(full)} → {len(cut)}，'
+                f'{mlab(full.index[0])} → {mlab(cut.index[0])}）。'
+                f'图注写的是「图上这些柱已经是全部」，现在不成立了，请连图注一起改')
+
+    assert_untrimmed('Exhibit 10', tfee_c, tfee)
+
+    # 「为什么这张图只有这么几格」的因果必须说准：算式是 ADT × (季度交易日数 ÷ 3) × 费率，
+    # 右边**两条腿同出 series/fee_rates.csv 的同一张季度表**，一样只有十个季度。
+    # 原文只点名费率、还拿 series/hkex.csv 的月度交易日数当「交易日数不是瓶颈」的证据 ——
+    # 那句话作为「数据存不存在」成立，作为因果解释是错的：本图的交易日数根本不取自 hkex.csv
+    # （见上面 td_q 的定义），光把费率回补到 2016 这张图仍然到不了 2016。
+    TD_LEGS = (f'<b>法定挂牌费率</b>与<b>季度交易日数</b>，两者同出 '
+               f'<code>series/fee_rates.csv</code> 的<b>同一张季度表</b>、同样只有 '
+               f'{tf_list.index[0]} 起 {len(td)} 个季度；隐含序列取三条腿的交集，'
+               f'起点因此钉在 {mlab(tfee_c.index[0])} —— 光把费率回补到 '
+               f'{mlab(pd.Period(WIN_FROM, "M"))} 并不够，交易日数那条腿同时卡着。')
+    TD_MONTHLY = ((f'（<code>series/hkex.csv</code> 里确实另有<b>逐月实际</b>交易日数 '
+                   f'<code>trading_days_cash</code>，{int(df["trading_days_cash"].notna().sum())} '
+                   f'个月一格不缺；但本图用的不是它 —— 本图按「季度交易日数 ÷ 3」摊，'
+                   f'改用月度实测值等于换一套口径、既有的每一格都会变，那是另一个决定。）')
+                  if HAS_TD else '')
 
     def first_yoy_month(index, y):
         """次轴同比第一个有值的月份 —— 图注要说清楚折线为什么不是从最左边起画。"""
@@ -1081,9 +1110,24 @@ def main():
         'title': 'Implied cash trading-fee revenue',
         'ylab': 'HK$mn / month', 'ylab2': '% y/y, 12M roll.', 'legend': 'Implied trading fee',
         'values': L(tfee_v), 'yoy': y10,
-        'note': BR_NOTE + f' 费率与交易日数只有 {tf_list.index[0]} 起 {len(tf_list)} 个季度，'
-                          f'故整条隐含序列自 {mlab(tfee_c.index[0])} 起（图上按惯例只画最近 '
-                          f'{len(tfee)} 个月，即 {mlab(tfee.index[0])} 之后）；'
+        # ⚠️ 2026-08-19：原文这里写的是「整条隐含序列自 Oct-23 起（图上按惯例只画最近 34
+        # 个月，即 Oct-23 之后）」—— 那个括号是 `_w` 还写死 `.iloc[-25:]` 年代的残留。
+        # 现在 `_w` 只把左端截到 WIN_FROM=2016-01，而本序列自 2023-10 才存在，
+        # 所以 `_w` 对它是**空操作**：tfee 与 tfee_c 逐格相同（下面那句断言就是在钉这一点）。
+        # 留着那句话的坏处不是啰嗦，是它把一个「数据下限」说成了「我们截了窗口」，
+        # 读者会以为往前还有柱子只是没画。全站「所有图从 2016-01 起画」这一轮里，
+        # 这张图是真的画不了更早 —— 理由必须说成数据下限，不能说成惯例。
+        'note': BR_NOTE + f' <b>整条隐含序列自 {mlab(tfee_c.index[0])} 才存在，图上这 '
+                          f'{len(tfee)} 根柱已经是全部</b>，不是画的时候截掉了。'
+                          f'<b>瓶颈在费率表那一侧，不是成交额</b>：ADT 本页自 '
+                          f'{mlab(pd.Period(WIN_FROM, "M"))} 起逐月都有（Exhibit 2 画的就是它，'
+                          f'{len(adt)} 个月）；短的是算式右边的两条腿 —— ' + TD_LEGS + TD_MONTHLY
+                        + f'费率本身回溯不到的理由：它来自交易所收费页，'
+                          f'那个页面只印现行费率、不留历史，'
+                          f'series/fee_rates.csv 里因此只有 {tf_list.index[0]} 起 {len(tf_list)} 个季度。'
+                          f'而这段时间里收费表确实动过（交易征费 Trading Tariff 自 2023-01-01 取消，'
+                          f'见 <code>fetch/rates_hkex.py</code> §5），把今天的费率往回套并不安全，'
+                          f'所以宁可短。'
                           f'次轴改画 12 个月滚动合计同比后要等序列满 <b>24</b> 个月'
                           f'（12 个月填窗 + 12 个月比较），因此从 '
                           f'{first_yoy_month(tfee.index, y10)} 才有点 —— 折线比柱短是口径的'
@@ -1145,7 +1189,19 @@ def main():
                 '单位由原 deck 的「% of turnover（4 位小数）」改为「每成交 HK$1m 的交易费」'
                 f'（× 10,000，等价换算）：法定 HK${lst_r[-1]:,.1f} 恒定，'
                 f'实收 HK${eff_r[-1]:,.1f}，捕获率 {eff_r[-1] / lst_r[-1] * 100:.1f}%。'
-                'x 轴标的是各季末月份。 '
+                'x 轴标的是各季末月份。'
+                # 这张只有十格。**不要**在这里写「本页其余各图一律从 2016-01 起」那种全称断言
+                # （原注释就是这么写的，是假话）：本页各图从自己**各自序列**的第一个月起画，
+                # WIN_FROM 只是窗口左端的下限，长度本来就不齐 —— 衍生品与隐含收入那几条
+                # 序列根本回不到 2016。理由与 Ex10/Ex13 同源，但这张是**季度**图：
+                # 横轴单位就是季，不是被压缩过的月度轴。
+                f'<b>横轴是季度，不是月度</b>，共 {len(rq)} 格（{rq[0]} → {rq[-1]}），'
+                f'已经是全部 —— 深蓝那条有效费率 = 现货分部交易费收入 ÷ 成交额，'
+                f'而该收入是 2024 年三季报起才按现口径单列（更早的公告把 Northbound 混在'
+                f'同一个数里），官方按新口径给到的最早一季就是 {rq[0]}；'
+                f'灰线那条法定费率则来自交易所收费页，那个页面只印<b>现行</b>费率、不留历史。'
+                f'两条腿都回溯不到 {WIN_FROM}（成交额回溯得到，但它只是分母），'
+                f'所以这张图短，是数据下限不是截断。 '
                 + vintage_quarterly(rq[-1], LATEST, '有效费率（由收入倒算）与法定挂牌费率'),
     })
 
@@ -1154,13 +1210,32 @@ def main():
     cfee = _w(cfee_c)
     cfee_v = cfee.values
     y13 = yoy_rhs(cfee_c)
+    assert_untrimmed('Exhibit 13', cfee_c, cfee)
     ex.append({
         'n': 13, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': [mlab(p) for p in cfee.index],
         'title': 'Implied cash clearing-fee revenue',
         'ylab': 'HK$mn / month', 'ylab2': '% y/y, 12M roll.', 'legend': 'Implied clearing fee',
         'values': L(cfee_v), 'yoy': y13,
+        # 与 Ex10 同一条口径说明：柱短是数据下限，不是画的时候截的。这张比 Ex10 更硬 ——
+        # Ex10 的瓶颈只是「法定费率表查不到历史」，本图的有效清算费率是**由已披露收入倒算**
+        # 的，而 HKEX 是 2024 年三季报才开始把 Cash Segment 的清算费单列（旧公告把它和
+        # Northbound、SI fee 混在一起，语义不同），能按新口径回溯到的最早一季就是
+        # 2023-Q4。没有那个收入数就没有那个费率，没有费率这条隐含序列一格都算不出来。
+        # 见 fetch/rates_hkex.py §3「口径断层：2024-Q3 之前不要碰」。
         'note': CLR_NOTE + ' 清算费有最低/最高收费与 CCASS 结算费等分项，倒算出的有效费率把这些'
                            '一并吸收进去了，所以它随 mix 漂移，不能当法定费率读。'
+                           f'<b>整条隐含序列自 {mlab(cfee_c.index[0])} 才存在，图上这 '
+                           f'{len(cfee)} 根柱已经是全部</b>：有效清算费率是由公司披露的'
+                           f'现货分部清算费收入倒算的，而该收入是 2024 年三季报起才按现口径'
+                           f'单列（更早的公告把它与 Northbound、SI fee 混计，语义不同、不可比），'
+                           f'官方按新口径给到的最早一季就是 {cf.index[0]}。'
+                           f'瓶颈同样不是成交额（ADT 自 {mlab(pd.Period(WIN_FROM, "M"))} 起逐月都有），'
+                           f'是<b>费率算不出来</b>：没有那个收入数就倒算不出费率，'
+                           f'没有费率这条隐含序列一格都算不了。'
+                           f'与 Exhibit 10 一样，算式右边还有<b>季度交易日数</b>这第二条腿，'
+                           f'它同出 <code>series/fee_rates.csv</code> 的同一张季度表、'
+                           f'同样只有 {td.index[0]} 起 {len(td)} 个季度，两条腿一样短。'
+                           f'这张短是数据下限，不是截断。'
                            f'次轴自 {first_yoy_month(cfee.index, y13)} 起才有点 —— '
                            f'12 个月滚动合计同比要等序列满 <b>24</b> 个月'
                            f'（12 个月填窗 + 12 个月比较），而费率序列本身只有十个季度。 '
@@ -1921,11 +1996,26 @@ def main():
         '（b）现货清算费用<b>由收入倒算</b>的有效费率，只能算 now-cast，不能当检验。'
         '两者标题都带 Implied。',
 
+        # ⚠️ 2026-08-19：这一条的末句原文是「这两张图与其余近期图一样只展示最近 34 个月，
+        # 图上最左一格是 Oct-23，不是序列起点」—— `.iloc[-25:]` 年代的残留，两句都已成假话：
+        # 本页近期图的窗口左端现在统一是 WIN_FROM，Ex10/13 那 34 格恰恰**就是**整条序列，
+        # Oct-23 就是起点（Ex10/13 上面新加的 assert_untrimmed 钉的正是这一点）。
+        # 同源拷贝上一轮只改了图注、漏了页尾这份，两处在同一个 payload 里正面打架。
+        # 「与其余近期图一样」这类全称断言一并撤掉：本页各图各自从自己序列的第一个月起画，
+        # 长度本来就不齐（下面那几个数全部现算，不写死）。
         f'<b>费率序列只有 {tf_list.index[0]} 起 {len(tf_list)} 个季度</b>：季内各月共用该季费率，'
         '最新季之后沿用最后一个已知值；月度交易日数按「季度交易日数 ÷ 3」摊，'
-        f'不是当月实际交易日数。因此 Exhibit 10 / 13 的隐含收入序列自 {mlab(tfee_c.index[0])} 起，'
-        f'早于此的月份不画（宁可短，不拿近似值糊）；这两张图与其余近期图一样只展示最近 '
-        f'{len(tfee)} 个月，图上最左一格是 {mlab(tfee.index[0])}，不是序列起点。'
+        f'不是当月实际交易日数 —— <b>这条腿与费率同表同源</b>'
+        f'（同在 series/fee_rates.csv 的季度表里，{td.index[0]} 起 {len(td)} 个季度），'
+        f'所以它和费率一样短，只补费率补不出更早的月份。'
+        f'因此 Exhibit 10 / 13 的隐含收入序列自 {mlab(tfee_c.index[0])} 起，'
+        f'早于此的月份算不出来（宁可短，不拿近似值糊）：图上那 {len(tfee)} 格'
+        f'<b>就是整条序列</b>，最左一格 {mlab(tfee.index[0])} 正是<b>序列起点</b>，'
+        f'不是画的时候截掉的。本页近期图的窗口左端统一取 '
+        f'{mlab(pd.Period(WIN_FROM, "M"))}，但各图仍从自己序列的第一个月起画、'
+        f'长度<b>并不齐</b>：现货 ADT（Exhibit 2）{len(adt)} 格、'
+        f'衍生品 ADV（Exhibit 6）{len(dv)} 格（自 {mlab(dv.index[0])} 起）、'
+        f'这两张隐含收入图 {len(tfee)} 格 —— 短的是数据，不是窗口。'
         + vintage_monthly([tf_list, td, cf], tfee_c.index[-1],
                           '本页全部隐含收入图的费率', scope='隐含收入序列')
         + '（这句与 Exhibit 10 / 11 / 12 / 13 的费率口径说明一样，都由 series/fee_rates.csv '

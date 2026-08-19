@@ -25,9 +25,10 @@ gsx 函数 → 网页 kind 的对应：
     gsx.summary_table  → payload['summary']
 
 三处与 PDF 的有意差异（引擎能力所限，均在对应图注里写明）：
-  1. 费率那张 PDF 用对数轴（四条费率跨 1.0 到 55），charts.js 没有对数轴，也不许拿
-     「压在零刻度上的两条线」充数 —— 改成**按量级拆成两张**：Exhibit 13 是 20–55 档的
-     Options / Crypto，Exhibit 14 是 1–2 档的 Equities / Event contracts。因此本页从
+  1. 费率那张 PDF 用对数轴（四条费率跨两个数量级），charts.js 没有对数轴，也不许拿
+     「压在零刻度上的两条线」充数 —— 改成**按量级拆成两张**：Exhibit 13 是高档的
+     Options / Crypto，Exhibit 14 是低档的 Equities / Event contracts（两档的实测区间
+     由 `_rate_span()` 现算写进图注，不在任何地方写死）。因此本页从
      旧编号 14 起整体后移一位（旧 Ex14→15 … 旧 Ex27→28，核对表 28→29）。
      两张都用 kind='lines'：lines_endlabels 会对首/末点无条件调用格式器，而事件合约
      费率在 2023Q3 是缺失的（成交量四舍五入成 0.0），会直接抛 TypeError 把整页打挂。
@@ -38,7 +39,8 @@ gsx 函数 → 网页 kind 的对应：
 
 分位（3Y %ile）不在本文件里实现，一律调 build/pctile.py 的 cell() / why_blank()：
 判据是口径，口径只能有一处定义。本页原先那份 pctile36 的「≥90% 月环比不降」代理拦不住
-margin book（近 24 个月里 18 个月钉 100）这类「上下波动但分位常年顶格」的行。
+margin book 这类「上下波动但分位常年顶格」的行（近两年里绝大多数月份的 3Y 分位都是
+100 —— 具体几个月每月都在变，所以这里不写死，要看就现算）。
 """
 import datetime
 import importlib.util
@@ -86,6 +88,18 @@ q = q.sort_index().apply(pd.to_numeric, errors='coerce')
 gaps = [(df.index[i] - df.index[i - 1]).n for i in range(1, len(df))]
 if set(gaps) != {1}:
     raise SystemExit(f'series/hood.csv 月份不连续：{sorted(set(gaps))}')
+# 季度表同样要连续。Exhibit 13/14/15/17 的 x 轴直接取 `[str(p) for p in q.index]`，
+# 缺一季不会有任何报错，只会把 2022Q1 与 2022Q3 画成相邻两格 —— 正是 CONTRACT 规矩 3
+# 禁止的假时间轴。hood_q.csv 现在有人工回填的历史段（build/basefill/hood_q_2021.py），
+# 是一个人手可编辑的文件，所以这道看门狗必须和月度那道一样存在。缺的季度要**留空行**
+# （每列 NaN）把时间轴铺满，不许整行不写。
+qgaps = [(q.index[i] - q.index[i - 1]).n for i in range(1, len(q))]
+if set(qgaps) != {1}:
+    _miss = [str(q.index[i - 1] + k)
+             for i in range(1, len(q)) if (q.index[i] - q.index[i - 1]).n != 1
+             for k in range(1, (q.index[i] - q.index[i - 1]).n)]
+    raise SystemExit(f'series/hood_q.csv 季度不连续：缺 {_miss}'
+                     f'（补空行、不要补 0；步长 {sorted(set(qgaps))}）')
 if len(df) < 25 or len(q) < 8:
     raise SystemExit(f'序列太短：月度 {len(df)}、季度 {len(q)}')
 
@@ -152,6 +166,9 @@ rate_event_c = rate_q['Event contracts'] * 0.1    # $mn/bn张 → 美分/张
 # 某一类若上季没有可用费率（业务还没起量），该类同时从预测和实际里剔除。
 pred = pd.Series(index=q.index, dtype=float)
 actual_txn = pd.Series(index=q.index, dtype=float)
+# 每一类第一次真正进入桥（既进预测柱、也进「实际收入」柱）的季度。图注要现算：
+# 「哪张图含事件合约、从哪一季起含」写死过一次就错过一次（见 Exhibit 17 图注）。
+first_in_bridge = {}
 for i in range(1, len(q)):
     cur_q, prv_q = q.index[i], q.index[i - 1]
     tot = act = 0.0
@@ -163,6 +180,7 @@ for i in range(1, len(q)):
         tot += r * v
         act += q[_rc][cur_q]
         n_cls += 1
+        first_in_bridge.setdefault(_nm, cur_q)
     if n_cls:
         pred[cur_q], actual_txn[cur_q] = tot, act
 
@@ -240,9 +258,10 @@ def mom_of(s):
 # 单月同比的分母是**去年那一个月**：流量的月度分布本身带季节性与时点噪音（发薪日、
 # 加密行情的爆发月、并表落在哪一个月），分母越小同一笔绝对变化被放大得越狠。
 # 12 个月滚动合计把整整一年的流量加起来再比，分母是一整年，季节性自动对消。
-# 本页实测（对齐到两种口径都算得出的同一批月份，见 caliber_stats）：
-# 净流入的单月同比标准差是滚动口径的 2.2 倍，相邻月最大跳变 260pp vs 26pp，
-# 16 个可比月里 5 个月符号相反（Dec-25 单月 −40%、滚动 +35%）。具体数字一律现算。
+# 本页实测（对齐到两种口径都算得出的同一批月份，见 caliber_stats）：净流入的单月同比
+# 标准差是滚动口径的一倍多，相邻月最大跳变高出一个量级，且有相当一批月份两种口径**符号
+# 相反**。⚠ 具体倍数、跳变、符号相反的月份数**一律由 roll_note() 现算写进图注**，
+# 这里不复述 —— 窗口 2026-08 放宽之后，注释里那组写死的旧读数已经全部对不上了。
 #
 # ⚠ 一条更正（2026-08-07）：早先本文件写过「存量不许做滚动合计，所以只能点对点」。
 # **后半句是假的**：Σ12/Σ12′ 里的除数约掉，12 个月滚动**合计**比恒等于 12 个月
@@ -403,10 +422,11 @@ WIN_FROM = '2016-01'
 _I0 = next((i for i, p in enumerate(df.index)
             if f'{p.year}-{p.month:02d}' >= WIN_FROM), 0)
 W25 = df.index[_I0:]
-W15 = df.index[-15:]
+# W15/XL15 已删（2026-08-19）：只有 Exhibit 9 / 25 用过，两张都是从 deck 抄来的「近 15 个月」
+# 漂移窗口 —— 今天它正好含 1 个 Bitstamp 并表前的月份，下个月一个都不剩。两张现在都跟着
+# 各自序列自己的可得历史走（左端由 mrwin.resolve() 裁），常量留着只会诱人再写死一次。
 W13 = df.index[-13:]
 XL25 = [mlab(p) for p in W25]
-XL15 = [mlab(p) for p in W15]
 XL13 = [mlab(p) for p in W13]
 XL_LONG = [mlab(p) for p in df.index]
 XQ = [str(p) for p in q.index]
@@ -444,9 +464,10 @@ N_QTR_ND, N_QTR_DATS = 23, 26          # 季度净流入 / 季度 DATs
 N_TABLE = 29                           # 末尾核对表
 
 # y/y 线要画出来，至少得有这么高比例的点是可比的。
-# 事件合约（Exhibit 10）窗口内只有 6 个月有可比基数，画出来是「两段近乎垂直的竖线
-# 加一段贴地的直线」，还顺带把右轴撑到 0–3000% —— 除了「涨了很多」读不出别的，
-# 却挡住了柱子。这不是排版偏好：一条 76% 是断口的折线本来就不是一条序列。
+# 事件合约（Exhibit 10）窗口内只有一小撮月份有可比基数（确切几个由该图图注现算 ——
+# 窗口一放宽写死的数就作废），画出来是「两段近乎垂直的竖线加一段贴地的直线」，
+# 还顺带把右轴撑到几千个百分点 —— 除了「涨了很多」读不出别的，却挡住了柱子。
+# 这不是排版偏好：一条大部分是断口的折线本来就不是一条序列。
 # 用覆盖率而不是「量程多宽」当判据，是因为它会自己恢复：等事件合约有满 12 个月的
 # 真实基数，覆盖率自然过线，线就回来了，不用有人记得回来改这里。
 YOY_MIN_COVER = 0.60
@@ -632,7 +653,13 @@ _ex5_note = (
 lvl(5, FC, 'Funded customers', win=len(W25), fmt='f1', ylab='mn customers',
     breaks=BK_CUST, roll=False, what='入金客户数', note=_ex5_note)
 
+# ⚠ 这张**刻意**只画近端 13 个月，不跟着放宽后的主窗口走 —— 它读的是段内那三个数值与
+# 相邻月的差，段宽拉到全历史只剩几个像素、数值标签会被 charts.js 的 thinLabels 抽稀掉
+# 大半。页尾「序列起点」那一条对读者写着「每张图的左端由 mrwin.resolve() 裁、图注里都
+# 写了截在哪一期」，所以这个例外必须在图注里自报，否则那句话就是假的。
 _b = df.iloc[-13:]
+_b_note = (f'<b>左端是排版决定的，不是数据决定的</b>：本图只画最后 {len(_b)} 个月'
+           f'（月度序列共 {len(df)} 个月），拉到全历史段内那三个数值标签会被抽稀掉大半。')
 EX.append({
     'n': 6, 'kind': 'bridge_bar', 'title': 'What moved platform assets: flows vs. markets',
     'xlabels': XL13, 'fmt': 'usd0', 'ylab': '$bn change',
@@ -643,7 +670,8 @@ EX.append({
     'net': {'name': 'Total change in platform assets', 'values': L(_b['tpa_change_usdbn'])},
     'net_color': 'INK',
     'note': 'Identity: opening assets + net deposits + market gains = closing assets. '
-            'Market gains is the balancing item, so it also absorbs any acquired assets',
+            'Market gains is the balancing item, so it also absorbs any acquired assets. '
+            + _b_note,
 })
 
 # ══════════════════════ 交易量 ══════════════════════
@@ -666,26 +694,62 @@ lvl(7, df['adv_equity_usdbn'], 'Equity notional ADV', win=len(W25), fmt='usd1', 
 lvl(8, df['adv_options_mn'], 'Options contracts ADV', win=len(W25), fmt='f1',
     ylab='mn contracts / day', show_mom=True, left_zh=ADV_LEFT)
 
-_c = df.iloc[-15:]
-_cshare = (_c['adv_crypto_bitstamp_usdmn'] /
-           (_c['adv_crypto_app_usdmn'] + _c['adv_crypto_bitstamp_usdmn']) * 100)
+# ⚠ 窗口原来写死 `df.iloc[-15:]`（deck 移植时的近端窗口，2026-08 两轮放宽都漏掉了它）。
+# 那是一个会**漂**的窗口：今天 15 个月正好含 1 个并表前的月份，下个月就一个都不剩，
+# 图上只剩并表后的一段，读者再也看不到 Bitstamp 是从哪儿冒出来的。
+# 官方 Q1'26 Supplement 的「Total / Average Daily Trading Volumes」两节里，
+# 'Robinhood App' 与 'Bitstamp' 两行**逐月印到 2023-01**，并表前的月份印的是 0
+# （不是留白）—— 那是公司自己印出来的读数，照抄入库，所以这张图能画到 2023-01。
+# 再往前是老版式的 Supplement，那里根本没有这两行（见 build/basefill/hood_2021.py），
+# 所以左端由 mrwin.resolve() 钉在 2023-01，不是我们挑的。
+_share_all = (df['adv_crypto_bitstamp_usdmn'] /
+              (df['adv_crypto_app_usdmn'] + df['adv_crypto_bitstamp_usdmn']) * 100)
+_l9 = [mrwin.Leg('app', 'Robinhood App', L(df['adv_crypto_app_usdmn']), 'primary'),
+       mrwin.Leg('bs', 'Bitstamp', L(df['adv_crypto_bitstamp_usdmn']), 'primary'),
+       mrwin.Leg('sh', '% Bitstamp', L(_share_all), 'primary')]
+_w9 = mrwin.resolve('stacked_dual', _l9, XL25, 0)
+_c = df.iloc[_w9.start:]
+_cshare = _share_all.iloc[_w9.start:]
+_pre9 = int((_c['adv_crypto_bitstamp_usdmn'] == 0).sum())
 _ex9 = {
     'n': 9, 'kind': 'stacked_dual', 'title': 'Crypto ADV: Robinhood App vs. Bitstamp',
-    'xlabels': XL15, 'xstep': 2, 'fmt': 'f0c', 'ylab': '$mn / day',
+    'xlabels': XL25[_w9.start:], 'xstep': xstep_for(len(_c)), 'fmt': 'f0c',
+    'ylab': '$mn / day',
     'ylab2': '% Bitstamp (RHS)',
+    # ⚠ `label` / `label_color` 已删（2026-08-19）。段内逐段标数值在 15 个月的旧窗口下
+    # 放得下，43 期放不下 —— 而且撞的不是「同族标签互相挤」，是**两族标签互相看不见**：
+    # charts.js 的 `thinLabels()` 对每个 stack 抽一次、对右轴那条线的百分比标签再抽一次，
+    # 两次抽稀彼此不知道对方留下了哪些。并表前那一段 Bitstamp = 0，引擎把 `0.0%` 从零刻度
+    # 抬到柱顶上方 2px（charts.js:1495 的 `Math.min(yPct, Y(base[i]) - 2)`），于是它正好
+    # 落进相邻列段内数值所在的那一带高度上。
+    # 通栏救不了：768px 窄屏本来就是单列（`.card.wide` 是 `grid-column: 1/-1`，单列时无效），
+    # 那里 band 仍不够；缩窗口等于把刚放宽的窗口收回去。
+    # 全站长轴的 stacked_dual（ase / cme / exchanges-eu / exchanges-na / guc，68–127 期）
+    # 也都是不标段内数值的，本图 43 期原是唯一的例外。逐月读数一格不少，见右上角「表格」。
     'stacks': [
-        {'name': 'Robinhood App', 'color': 'NAVY', 'values': L(_c['adv_crypto_app_usdmn']),
-         'label': True, 'label_color': 'WHITE'},
-        {'name': 'Bitstamp', 'color': 'BLUE', 'values': L(_c['adv_crypto_bitstamp_usdmn']),
-         'label': True, 'label_color': 'NAVY'},
+        {'name': 'Robinhood App', 'color': 'NAVY', 'values': L(_c['adv_crypto_app_usdmn'])},
+        {'name': 'Bitstamp', 'color': 'BLUE', 'values': L(_c['adv_crypto_bitstamp_usdmn'])},
     ],
     'line': {'name': '% Bitstamp (RHS)', 'color': 'GREEN', 'values': L(_cshare),
              'ymax': float(np.ceil(np.nanmax(_cshare.values) / 10.0) * 10)},
     'note': 'Bitstamp is institutional and carries a different take rate from the '
-            'retail app, so the mix shift matters for revenue, not just for volume.',
+            'retail app, so the mix shift matters for revenue, not just for volume. '
+            f'左边 {_pre9} 个月 Bitstamp 段的高度是 <b>0</b>，那是官方自己印的 0（并表前'
+            '这家还不在合并范围内），不是缺数补零。'
+            + _w9.why
+            + '本图左端不能再往左：更早的月度表（老版式 Earnings Supplement）'
+              '没有「Robinhood App / Bitstamp」这两行，加密成交量只有一个总数。',
 }
 _bk9, _seg9 = breaks_for(9, _c.index, BK_CRYPTO)
 _ex9.update(_bk9)
+# band 现算（`mrwin.band_px` 走 `chartscale._margins`，与 charts.js 同一套量边距算式），
+# 不写死：窗口每过一个月就长一期，写死的像素数下个月就是假的。
+_ex9['note'] += (
+    f'<b>柱段上不再逐月标数值</b>：{len(_c)} 期塞进半栏卡片，每期只有 '
+    f'{mrwin.band_px(_ex9):.1f}px（按 <code>assets/charts.js</code> 的量边距算式复算，'
+    '不是目测），装不下一个三位数；而且引擎对「段内数值」与「右轴百分比」是各抽各的稀、'
+    '两边互不相让，并表前那一段的 <code>0.0%</code> 被抬到柱顶上方之后，正好压住相邻列的'
+    '段内数值。逐月读数一格不少，切右上角「表格」视图读。')
 if _seg9:
     _ex9['note'] += f' 红色竖虚线为口径断点：{_seg9}；线右侧与左侧不可直读。'
 EX.append(_ex9)
@@ -759,54 +823,98 @@ EX.append({
 
 # ══════════════════════ 收入桥：先讲费率，再讲检验，最后才给隐含值 ══════════════════════
 # ── 费率图按量级拆两张 ──
-# 四条费率跨 1.0 到 55：Options 41–51 c/contract、Crypto 20–55bp 是一档，
-# Equities 1.28–1.73bp、Event 1.00–1.19 c/contract 是另一档。原来四条共用一根线性轴，
-# 低位两条被完全压在零刻度线上、一条盖着另一条，整个窗口看不出任何变化——而图注自己
-# 就写着「线性轴会把股票与事件合约压到零附近」。既然知道，就不该这样发出来。
-# 引擎没有对数轴（也不许有：读者按线性直觉读对数轴会把 10x 读成 2x），
+# 四条费率的量级差两个数量级：Options 与 Crypto 是一档，Equities 与 Event 是另一档
+# （两档的实测区间由下面的 _rate_span() 现算，不写死 —— 窗口一变写死的数字就成假话）。
+# 原来四条共用一根线性轴，低位两条被完全压在零刻度线上、一条盖着另一条，整个窗口看不出
+# 任何变化——而图注自己就写着「线性轴会把股票与事件合约压到零附近」。既然知道，
+# 就不该这样发出来。引擎没有对数轴（也不许有：读者按线性直觉读对数轴会把 10x 读成 2x），
 # 所以按本仓既有规矩「不同量纲本来就不该同轴」拆成两张，每张两条线各自读得出变化。
 # 拆的依据是量级不是单位：按单位拆（c/contract 一张、bp 一张）会把 45 和 1.1 放同一张，
 # 压扁的问题原样保留。每条线的单位写在它自己的图例名里。
-# 窗口必须显式切到 13 个季度（deck 的 win=13）。今天 hood_q.csv 恰好 13 个季度，
-# 不切也看不出问题 —— 但 2026Q3 一入库网页就变 14 点而 PDF 仍是 13 点，此后越差越远。
+#
+# ⚠ 窗口**不再写死 `[-13:]`**（2026-08-19）。原来那句理由是「对齐 PDF deck 的 win=13」，
+# 而 2026-08-18 全站把时序窗口改成「数据有多少画多少」时那条理由就作废了；写死的切片
+# 还有第二个毛病：hood_q.csv 每多一季，最左边那一季就被静默丢掉。左端一律交给
+# `mrwin.resolve()` 按各条序列自己的首值裁（只调用，不改 mrwin）。
+# 2026-08-19 hood_q.csv 由 build/basefill/hood_q_2021.py 回填到 2021Q1（13 → 22 季）之后，
+# 这两张图画的就是季度收入表的**全部**历史。
 _RATE_SRC = ('Quarterly reported revenue / quarterly volume — derived, not disclosed. ')
+
+
+def _rate_span(*ss):
+    """几条费率合起来的实测区间，给图注用。写死区间是本仓踩过的坑（规矩 C）。"""
+    v = np.concatenate([np.asarray(s.values, float) for s in ss])
+    v = v[np.isfinite(v)]
+    d = 0 if v.max() >= 10 else 2
+    return f'{v.min():.{d}f}–{v.max():.{d}f}'
+
+
 _RATE_SPLIT = (
     'PDF 版把四条费率画在同一根对数轴上；网页引擎没有对数轴，改按量级拆两张 —— '
-    f'Exhibit {N_RATE_HI} 是 20–55 这一档，Exhibit {N_RATE_LO} 是 1–2 那一档。'
+    f'Exhibit {N_RATE_HI} 是 {_rate_span(rate_options_c, rate_crypto_bp)} 这一档，'
+    f'Exhibit {N_RATE_LO} 是 {_rate_span(rate_equities_bp, rate_event_c)} 那一档。'
     '两张的单位都混着 c/contract 与 bp（写在各自图例名里），跨图不能直接比高低，'
     '要比就切右上角「表格」视图读逐季数值。')
 
+_l13 = [mrwin.Leg('op', 'Options (c/contract)', L(rate_options_c), 'primary'),
+        mrwin.Leg('cr', 'Crypto (bp)', L(rate_crypto_bp), 'primary')]
+_w13 = mrwin.resolve('lines', _l13, XQ, 0)
+_c13 = rate_crypto_bp.iloc[_w13.start:]
+# 「近一年怎么走的」用最后 4 个季度现算；拿整窗口的 max→min 说「腰斩」会说反话 ——
+# 回填之后窗口内的最低点落在 2021Q1（业务刚起步），不是崩在最高点之后。
+_c13pk = _c13.idxmax()
+_c13tail = _c13.dropna()
 EX.append({
     'n': N_RATE_HI, 'kind': 'lines', 'markers': True, 'zero_base': True, 'end_label': True,
     'title': 'Effective take rate: options and crypto',
-    'xlabels': XQ[-13:], 'fmt': 'f2', 'label_fmt': 'f1',
+    'xlabels': XQ[_w13.start:], 'fmt': 'f2', 'label_fmt': 'f1',
     'ylab': 'cents/contract (options) · bp (crypto)',
     'series': [
-        {'name': 'Options (c/contract)', 'color': 'NAVY', 'values': L(rate_options_c)[-13:]},
-        {'name': 'Crypto (bp)', 'color': 'MBLUE', 'values': L(rate_crypto_bp)[-13:]},
+        {'name': 'Options (c/contract)', 'color': 'NAVY',
+         'values': L(rate_options_c)[_w13.start:]},
+        {'name': 'Crypto (bp)', 'color': 'MBLUE', 'values': L(rate_crypto_bp)[_w13.start:]},
     ],
     'note': _RATE_SRC + 'Crypto is the volatile one and it is what makes the revenue '
-            f'bridge (Exhibit {N_BRIDGE_TEST}) miss: the rate more than halved from '
-            f'{np.nanmax(rate_crypto_bp.values[-13:]):.0f}bp to '
-            f'{np.nanmin(rate_crypto_bp.values[-13:]):.0f}bp inside this window. ' + _RATE_SPLIT,
+            f'bridge (Exhibit {N_BRIDGE_TEST}) miss: it peaked at '
+            f'{_c13.max():.0f}bp in {_c13pk} and is {_c13tail.iloc[-1]:.0f}bp in '
+            f'{_c13tail.index[-1]}, having run between {_c13.min():.0f}bp and '
+            f'{_c13.max():.0f}bp across the window. Options moves in a much narrower band '
+            f'({rate_options_c.iloc[_w13.start:].min():.0f}–'
+            f'{rate_options_c.iloc[_w13.start:].max():.0f}c). ' + _RATE_SPLIT,
 })
 
+# 事件合约那条腿**不进 resolve 的 legs**：mrwin 给「派生腿比主腿短」生成的那句话写的是
+# 「所以左段只有柱没有线」—— 那是给 bar_line_dual 写的措辞，这里没有柱，会说假话。
+# 左端只由 equities 定（它是主腿），事件合约从哪一季开始由下面现算的一句话交代。
+_l14 = [mrwin.Leg('eq', 'Equities (bp)', L(rate_equities_bp), 'primary')]
+_w14 = mrwin.resolve('lines', _l14, XQ, 0)
+_ev14 = rate_event_c.dropna()
+_evv = q['q_vol_event_bn']
+_ev_blank = int(_evv.iloc[_w14.start:].isna().sum())      # 官方那一行还不存在的季度
+_ev_zero = int((_evv.iloc[_w14.start:] == 0).sum())       # 印出来但四舍五入成 0.0 的季度
+_ev14_txt = (
+    f'Event contracts have no back-solvable rate before {_ev14.index[0]}: quarterly event '
+    f'volume is blank for the first {_ev_blank} quarters here (the row did not exist in '
+    f'the supplements of the day) and then rounds to 0.0bn for {_ev_zero} more — including '
+    f'Oct-2024, the launch quarter — so the division has no denominator. That line starts '
+    f'{_ev14.index[0]} and is broken, not zero-filled, to its left. ' if len(_ev14) else '')
 EX.append({
     'n': N_RATE_LO, 'kind': 'lines', 'markers': True, 'zero_base': True, 'end_label': True,
     'title': 'Effective take rate: equities and event contracts',
-    'xlabels': XQ[-13:], 'fmt': 'f2', 'label_fmt': 'f2',
+    'xlabels': XQ[_w14.start:], 'fmt': 'f2', 'label_fmt': 'f2',
     'ylab': 'bp (equities) · cents/contract (event)',
     'series': [
-        {'name': 'Equities (bp)', 'color': 'RED', 'values': L(rate_equities_bp)[-13:]},
-        {'name': 'Event contracts (c/contract)', 'color': 'GREEN', 'values': L(rate_event_c)[-13:]},
+        {'name': 'Equities (bp)', 'color': 'RED', 'values': L(rate_equities_bp)[_w14.start:]},
+        {'name': 'Event contracts (c/contract)', 'color': 'GREEN',
+         'values': L(rate_event_c)[_w14.start:]},
     ],
     'note': _RATE_SRC + 'Both are round-number rates an order of magnitude below options '
-            'and crypto, which is why they get their own axis. Event contracts have no '
-            'rate before the business had volume, so that line starts partway through. '
-            + _RATE_SPLIT,
+            'and crypto, which is why they get their own axis. ' + _ev14_txt + _RATE_SPLIT,
 })
 
-_pi = [p for p in pred.index if p in actual_txn.index][-12:]
+# 桥检验的窗口跟着 pred 自己的长度走（原来写死 `[-12:]`，与上面两张同一个毛病）。
+# pred 的第一期必然缺：它按构造要「上一季的费率」，所以 hood_q 的第一季算不出预测值。
+_pi = [p for p in pred.index if p in actual_txn.index and np.isfinite(pred[p])]
 _pv = np.array([pred.get(p, np.nan) for p in _pi], float)
 _av = np.array([actual_txn.get(p, np.nan) for p in _pi], float)
 _err = np.where(_av != 0, (_pv / _av - 1) * 100, np.nan)
@@ -843,9 +951,55 @@ lvl(N_IMPLIED, df['implied_txn_rev_usdmn'], 'Implied transaction revenue', win=l
          'held flat afterwards. Matches its own quarter by construction — '
          f'Exhibit {N_BRIDGE_TEST} is the real test.')
 
-_rq = q.iloc[-13:]
+# ⚠ 左端由 mrwin.resolve() 裁，不写死（原来是 `q.iloc[-13:]`，多一季就丢最左那一季）。
+# 这张图注定截在 rev_event_usdmn 的首值上，而那一格的边界是**披露史**不是业务史：
+# 「Event contracts」是 Q2'26 Earnings Supplement 才从 P&L 的 'Other' 一行里拆出来的，
+# 而那份文件的季度 P&L 是滚动 13 个季度的窗口 —— 于是 2023Q2 及以后印得出事件合约收入
+# （2024Q3 及更早印的是 0），再往前**没有任何一份官方文件印过这一行**。
+# 业务本身 2024-10 才上线、事后看那一段就是 0，但补 0 是我们的断言不是公司的披露，
+# 所以 series/hood_q.csv 那 9 期留空（见 build/basefill/hood_q_2021.py 的文件头），
+# stacked_dual 又是平滑图型吃不了 null，两件事叠起来把左端钉在 2023Q2。
 _rcols = ['rev_options_usdmn', 'rev_equities_usdmn', 'rev_crypto_usdmn', 'rev_event_usdmn']
-_rshare = _rq['rev_event_usdmn'] / _rq[_rcols].sum(axis=1) * 100
+_rshare_all = q['rev_event_usdmn'] / q[_rcols].sum(axis=1, min_count=4) * 100
+_l17 = [mrwin.Leg('op', 'Options', L(q['rev_options_usdmn']), 'primary'),
+        mrwin.Leg('eq', 'Equities', L(q['rev_equities_usdmn']), 'primary'),
+        mrwin.Leg('cr', 'Crypto', L(q['rev_crypto_usdmn']), 'primary'),
+        mrwin.Leg('ev', 'Event contracts', L(q['rev_event_usdmn']), 'primary',
+                  '事件合约收入是 Q2\'26 Supplement 才从 Other 里拆出来的一行，'
+                  '而那份文件只滚动覆盖 13 个季度'),
+        mrwin.Leg('sh', '% event contracts', L(_rshare_all), 'primary')]
+_w17 = mrwin.resolve('stacked_dual', _l17, XQ, 0)
+_rq = q.iloc[_w17.start:]
+_rshare = _rshare_all.iloc[_w17.start:]
+_ev_on = q.index[[bool(v) for v in (q['rev_event_usdmn'] > 0).fillna(False)]]
+# ⚠ 下面这段结尾原先写的是「本页其余三张季度图（13/14/15）不含这一行，窗口是完整的 22 个
+# 季度」—— 两处都假：Exhibit 15 是 21 季（首季按构造算不出预测值），而 14 与 15 恰恰都用了
+# 事件合约。三张图的窗口与「含不含事件合约」一律现算，不写死也不做全称断言。
+_n13, _n14 = len(XQ) - _w13.start, len(XQ) - _w14.start
+_ev_bridge = first_in_bridge.get('Event contracts')
+_why17_others = (
+    f'<b>被这一行截住左端的只有本图</b>，因为堆叠图吃不了前导 null。'
+    f'Exhibit {N_RATE_HI} / {N_RATE_LO} / {N_BRIDGE_TEST} 各有各的窗口：'
+    f'Exhibit {N_RATE_HI} 不含事件合约，{_n13} 季；'
+    + (f'Exhibit {N_RATE_LO} <b>含</b>（绿线自 {_ev14.index[0]} 起），但折线允许左段断开，'
+       f'x 轴仍是 {_n14} 季；' if len(_ev14) else
+       f'Exhibit {N_RATE_LO} 目前反解不出事件合约费率，x 轴 {_n14} 季；')
+    + (f'Exhibit {N_BRIDGE_TEST} 的两根柱自 {_ev_bridge} 起<b>也把这一行计入</b>，'
+       if _ev_bridge is not None else
+       f'Exhibit {N_BRIDGE_TEST} 尚未把这一行计入，')
+    + f'它只有 {len(_pi)} 季是因为首季按构造算不出预测值（要用上一季的费率），与事件合约无关。')
+_why17_zh = (
+    '' if not _w17.start else
+    '钉住左端的是<b>事件合约收入那一行本身</b>：它是 Q2\'26 Earnings Supplement 才从 P&L 的 '
+    '「Other」里拆出来的，而那份文件的季度 P&L 只滚动覆盖 13 个季度 —— '
+    f'{XQ[_w17.start]} 及以后印得出（早期印的是 0），再往前<b>没有任何一份官方文件印过</b>。'
+    '事件合约 2024-10 才上线、事后看更早那一段就是 0，但补 0 是我们的断言不是公司的披露，'
+    '所以 series/hood_q.csv 那几期留空（详见 build/basefill/hood_q_2021.py 的文件头）。'
+    + _why17_others)
+_ev17_txt = (
+    f'Event contracts went from nothing to {_rshare.iloc[-1]:.0f}% of transaction revenue '
+    f'in the {(_rq.index[-1] - _ev_on[0]).n + 1} quarters since {_ev_on[0]} — the fastest '
+    'mix shift in the business. ' if len(_ev_on) else '')
 EX.append({
     'n': 17, 'kind': 'stacked_dual', 'title': 'Transaction revenue mix by asset class',
     'xlabels': [str(p) for p in _rq.index], 'fmt': 'f0c', 'ylab': '$mn per quarter',
@@ -862,9 +1016,8 @@ EX.append({
     ],
     'line': {'name': '% event contracts (RHS)', 'color': 'GREEN', 'values': L(_rshare),
              'ymax': float(np.ceil(np.nanmax(_rshare.values) / 5.0) * 5)},
-    'note': 'Quarterly actuals, not derived. Event contracts went from nothing to a '
-            'fifth of transaction revenue in six quarters — the fastest mix shift in '
-            'the business.',
+    # 「几个季度从零到几分之一」两个数都现算：写死之后每过一季就多错一季（规矩 C）。
+    'note': 'Quarterly actuals, not derived. ' + _ev17_txt + _w17.why + _why17_zh,
 })
 
 # ══════════════════════ 生息资产 ══════════════════════
@@ -969,9 +1122,39 @@ _qsum = _qs['sum']
 _qyoy = np.array([(_qsum.values[i] / _qsum.values[i - 4] - 1) * 100
                   if i >= 4 and _qsum.values[i - 4] else np.nan for i in range(len(_qsum))])
 _nlast = int(_qs['count'].iloc[-1])
+# ⚠ 两张季度柱图（本图与 Exhibit 26）都**通栏**，左端也都仍写死在近 13 季。
+# 这两件事是同一条几何约束的两半，都不是美学偏好，推导如下：
+#
+#   `charts.js` 的 qtr_bar 把右轴 y/y 的**末点读数**画在「最后一个可比 y/y」右侧 5px
+#   （:1547 的 `Xc(jq) + 5`）；而 `lineVals()` 会把未满季那一点丢掉（拿 1 个月比去年
+#   3 个月是口径错误，引擎在这一层就拦住了）。于是末季未满时 jq 是**倒数第二根**柱，
+#   读数正好画进最后一根柱那一格里 —— 而那一格已经有一个竖排的柱顶数值，且 qtr_bar 的
+#   柱顶标签**每根都画、一个不抽**（见 mrwin.VLABEL_KINDS 上面那段）。两段文字要错开，
+#   需要 band ≥ 5px 偏移 + 末点读数宽 + 竖排标签行盒半宽。
+#
+#   · 半栏 13 季的 band 装不下这个和。撞不撞取决于 y/y 与柱高这个月恰好落在哪 ——
+#     等于每个月重掷一次骰子：2026-08-19 这一轮 Exhibit 23 掷中了（「$5.6」压「57%」，
+#     实测墨迹相交 36.6px²），Exhibit 26 没中。所以两张一起通栏，不然只是把下个月的
+#     骰子交给另一张（band 现算写进各自图注，不写死）。
+#   · 那为什么不顺手把窗口铺到全部季度？因为 768px 窄屏本来就是单列、通栏在那里无效
+#     （`.card.wide` 只是 `grid-column: 1/-1`）。实测把两张都铺满全部季度：Exhibit 23 在
+#     768 下当场压成 🔴（66.8px²）。所以窗口维持近 13 季，被略去的季度数现算写进图注
+#     （页尾「序列起点」那一条承诺了「各图图注里都写了截在哪一期」，不写就是假话）。
 _w = _qsum.iloc[-13:]
-EX.append({
-    'n': N_QTR_ND, 'kind': 'qtr_bar', 'title': 'Net deposits by quarter',
+_qtr_cut = (lambda ex, n_all, n_win: '' if n_all <= n_win else
+            f'<b>本图通栏，左端也是排版决定的</b>：月度序列能聚合出 {n_all} 个季度，'
+            f'本图只画最后 {n_win} 个（更早的 {n_all - n_win} 季被略去）。'
+            '定住这两件事的是右轴 y/y 的<b>末点读数</b>：引擎把它画在「最后一个可比 y/y」'
+            '的右侧，而末季未满时那一点是倒数第二根柱 —— 读数于是落进最后一根柱那一格，'
+            '那里已经有一根竖排的柱顶数值。半栏每季只有 '
+            f'{mrwin.band_px(ex, full=False):.0f}px、两段文字错不开，通栏后是 '
+            f'{mrwin.band_px(ex, full=True):.0f}px（两个数都由构建期按 '
+            '<code>assets/charts.js</code> 的量边距算式复算，不是目测）。'
+            '窗口没有跟着铺满，是因为 <b>768px 窄屏本来就是单列、通栏在那里不起作用</b>：'
+            f'2026-08-19 实测把两张季度柱图都铺满全部季度，Exhibit {N_QTR_ND} 在 768 下'
+            f'当场把这两段文字压在一起；维持 {n_win} 季则两个视口都不压。')
+_ex23 = {
+    'n': N_QTR_ND, 'kind': 'qtr_bar', 'title': 'Net deposits by quarter', 'full': True,
     'xlabels': [str(p) for p in _w.index], 'fmt': 'usd1', 'label_fmt': 'usd1',
     'ylab': '$bn per quarter', 'ylab2': 'y/y (季度合计)',
     'legend': 'Complete quarter', 'values': L(_w),
@@ -984,10 +1167,12 @@ EX.append({
             'monthly series. '
             '右轴是<b>季度合计同比</b>（本季 3 个月合计 ÷ 去年同季 3 个月合计 − 1），'
             f'与 Exhibit 3 右轴的 12 个月滚动合计同比、以及 Exhibit 1 汇总表的单月同比'
-            '都不是同一个口径 —— 三者当期读数并排见页尾「同比口径」那一条。'
-            + ('' if _nlast >= 3 else
-               ' Latest bar is quarter-to-date and not comparable to full quarters.'),
-})
+            '都不是同一个口径 —— 三者当期读数并排见页尾「同比口径」那一条。',
+}
+_ex23['note'] += (_qtr_cut(_ex23, len(_qsum), len(_w))
+                  + ('' if _nlast >= 3 else
+                     ' Latest bar is quarter-to-date and not comparable to full quarters.'))
+EX.append(_ex23)
 
 _yrs = sorted({p.year for p in nd.index})[-4:]
 _ylines = []
@@ -1018,12 +1203,20 @@ EX.append({
 # 因为它是个被 0–100 夹住的份额，分母不会趋零，同比 pp 差本来就不会爆掉。
 # Bitstamp 从 ~4% 涨到 ~57% 是一次真实的结构性迁移，不是噪音，平滑掉反而看不见拐点。
 # 所以这张**保留单月口径**（roll=False），并把口径写进图例。
-lvl(25, df['crypto_bitstamp_share'], 'Bitstamp share of crypto volume', win=15, fmt='pct0',
+# ⚠ `win=15` 已删（2026-08-19）：与 Exhibit 9 同一个漂移窗口的毛病 —— 15 个月今天正好
+# 含 1 个并表前的月份，下个月一个都不剩。改成跟着 W25 走，左端交给 mrwin.resolve()，
+# 它按 crypto_bitstamp_share 自己的首值（2023-01，官方拆分行第一次出现的月）裁。
+lvl(25, df['crypto_bitstamp_share'], 'Bitstamp share of crypto volume', fmt='pct0',
     ylab='% of crypto ADV', pct_series=True, breaks=BK_CRYPTO,
     roll=False, what='加密成交量里 Bitstamp 的占比',
+    left_zh='官方的加密成交量拆分行（Robinhood App / Bitstamp）逐月只印到 2023-01，'
+            '更早的月度表只有一个加密总数、没有分母以外的那一半',
     ratio_extra='另外两点：它是被 0–100 夹住的份额，分母是同期加密总量、不会趋零，'
-                '所以百分点差本来就不存在小基数爆炸；而 Bitstamp 从个位数涨到过半是一次'
-                '真实的结构性迁移，任何平滑都会把那个拐点抹掉。'
+                '所以百分点差本来就不存在小基数爆炸；而 Bitstamp 在并表当月一步从 '
+                f'{float(df["crypto_bitstamp_share"].loc[BRK_BITSTAMP - 1]):.0f}% 跳到 '
+                f'{float(df["crypto_bitstamp_share"].loc[BRK_BITSTAMP]):.0f}%、'
+                f'其后最高到过 {float(df["crypto_bitstamp_share"].max()):.0f}%，'
+                '是一次真实的结构性迁移，任何平滑都会把那个拐点抹掉。'
                 '（真要一个「过去一年的 Bitstamp 占比」，正确做法是滚动 12 个月的 '
                 'Bitstamp 成交量 ÷ 滚动 12 个月的加密总成交量 —— 那是量加权，'
                 '不是把 12 个月的占比平均；本图不画它，因为拐点才是这张图的题眼。）',
@@ -1039,8 +1232,11 @@ _dyoy = np.array([(_dmean.values[i] / _dmean.values[i - 4] - 1) * 100
                   if i >= 4 and _dmean.values[i - 4] else np.nan for i in range(len(_dmean))])
 _dlast = int(_dq['count'].iloc[-1])
 _wd = _dmean.iloc[-13:]
-EX.append({
+_ex26 = {
     'n': N_QTR_DATS, 'kind': 'qtr_bar', 'title': 'Total daily average trades by quarter',
+    # 通栏的理由与 Exhibit 23 同源（见 _qtr_cut 上面那段）：本月它没撞上，只是因为
+    # y/y 与柱高恰好错开了 —— 几何约束是一样的，只改撞上的那一张等于把骰子留给下个月。
+    'full': True,
     'xlabels': [str(p) for p in _wd.index], 'fmt': 'f1', 'label_fmt': 'f1',
     'ylab': 'mn trades / day', 'ylab2': 'y/y (季度均值)',
     'legend': 'Complete quarter', 'values': L(_wd),
@@ -1050,10 +1246,12 @@ EX.append({
     'note': 'Quarterly average of the three asset classes; removes the month-length '
             'differences between equity trading days and crypto calendar days. '
             '右轴是<b>季度均值同比</b>（本季 3 个月均值 ÷ 去年同季 3 个月均值 − 1），'
-            '口径与 Exhibit 3 / 7 / 8 右轴的 12 个月滚动合计同比不同。'
-            + ('' if _dlast >= 3 else
-               ' Latest bar is quarter-to-date and not comparable to full quarters.'),
-})
+            '口径与 Exhibit 3 / 7 / 8 右轴的 12 个月滚动合计同比不同。',
+}
+_ex26['note'] += (_qtr_cut(_ex26, len(_dmean), len(_wd))
+                  + ('' if _dlast >= 3 else
+                     ' Latest bar is quarter-to-date and not comparable to full quarters.'))
+EX.append(_ex26)
 
 
 def heat(n, s, title, note, legend, n_years=4, fmt='f0'):
@@ -1325,6 +1523,14 @@ def _brk_line(period, what):
     return f'{what}（{period}，{where}）'
 
 
+# 左端写死（不走 mrwin.resolve）的那几张，供页尾「序列起点」那一条点名。宽度现算：
+# 这三张的 `.iloc[-13:]` 哪天改了，这句话跟着变，不会留下一个过期的写死数字。
+_FIXED_LEFT = [
+    f'Exhibit 6（资产变动分解，近 {len(_b)} 个月）',
+    f'Exhibit {N_QTR_ND}（季度净流入，近 {len(_w)} 季 / 可聚合 {len(_qsum)} 季）',
+    f'Exhibit {N_QTR_DATS}（季度 DATs，近 {len(_wd)} 季 / 可聚合 {len(_dmean)} 季）',
+]
+
 notes = [
     '<b>数据源（唯一）</b>：investors.robinhood.com → Monthly Metrics 的 Excel。HOOD 的月度数据'
     '按 Reg FD 挂在 IR 网站上，<b>不走 8-K</b>，盯 EDGAR 抓不到；季度收入与季度成交量取自同一个'
@@ -1356,9 +1562,13 @@ notes = [
     f'<b>唯一有信息量的检验是 Exhibit {N_BRIDGE_TEST}</b>：拿上一季的费率去预测本季收入，'
     '再与事后披露的实际值对照。',
 
-    f'<b>费率图拆成两张（Exhibit {N_RATE_HI} / {N_RATE_LO}）</b>：四条费率跨 1.0 到 55，'
+    f'<b>费率图拆成两张（Exhibit {N_RATE_HI} / {N_RATE_LO}）</b>：四条费率跨 '
+    f'{_rate_span(rate_equities_bp, rate_event_c).split("–")[0]} 到 '
+    f'{_rate_span(rate_options_c, rate_crypto_bp).split("–")[1]}，'
     'PDF 版靠对数轴收在一张图里，而本页的图表引擎没有对数轴。原先四条共用一根线性轴，'
-    '股票（1.3bp）与事件合约（1.1c/张）被压在零刻度线上、一条盖着另一条，整个窗口看不出变化。'
+    f'股票（最新 {rate_equities_bp.dropna().iloc[-1]:.1f}bp）与事件合约'
+    f'（最新 {rate_event_c.dropna().iloc[-1]:.1f}c/张）被压在零刻度线上、一条盖着另一条，'
+    '整个窗口看不出变化。'
     '现按<b>量级</b>拆开：高的一张放 Options 与 Crypto，低的一张放 Equities 与 Event contracts；'
     '两张的单位都混着 c/张与 bp（写在各条图例名里），<b>跨图不能直接比高低</b>。'
     f'本页因此从旧编号 14 起整体后移一位（核对表为 Exhibit {N_TABLE}）。',
@@ -1420,7 +1630,8 @@ notes = [
     '资产（这部分并不由 Robinhood 托管）。',
 
     # ── 历史从哪里来、为什么各图左端不一样：这一条是 2026-08-19 回填之后新增的 ──
-    f'<b>序列起点 {mlab(df.index[0])}，但各图左端不一样，这是数据决定的不是排版决定的。</b>'
+    f'<b>序列起点 {mlab(df.index[0])}，但各图左端不一样 —— 除下面点名的 '
+    f'{len(_FIXED_LEFT)} 张外，都是数据决定的、不是排版决定的。</b>'
     '当期那份月度 Excel 只发<b>滚动三年</b>窗口，2023-04 之前的月份要去 Quarterly Results 页'
     '翻当年的 Earnings Supplement（另一张页、另一种版式）。本站取的一律是'
     '<b>还拿得到的最早那一版</b>（2021-01~2022-12 用 Q1-23 那份、2023-01~03 用 Q1-26 那份），'
@@ -1429,11 +1640,35 @@ notes = [
     '<b>老版式的行少一半</b>：没有 ADV 那一节、没有 Cash and Deposits、没有 Bitstamp / '
     'Event contracts 拆分、没有加密交易日，出借收入 2022-05 才有数、Net 那一行 2023-01 才单列。'
     '这些格子<b>留空</b>，不补 0 也不用「成交量 ÷ 交易日」自己算 ADV —— 换算值不是披露值。'
-    '于是每张图的左端由 <code>mrwin.resolve()</code> 按它自己那几条序列裁，'
-    '各图图注里都写了截在哪一期、被谁定住。'
+    # ⚠ 这里原先写的是「每张图的左端由 mrwin.resolve() 裁」—— 全称断言，而同一页
+    # 有三张近端对比图的左端是写死的。例外必须点名，数量也现算：写死「三张」的话，
+    # 哪天多一张或少一张，这句话又会变成假话。
+    f'于是绝大多数图的左端由 <code>mrwin.resolve()</code> 按它自己那几条序列裁，'
+    f'截在哪一期、被谁定住写在各自图注里。<b>{len(_FIXED_LEFT)} 张近端对比图是例外，'
+    f'它们的左端是排版决定的</b>：' + '、'.join(_FIXED_LEFT) +
+    # ⚠ 这里原先还接了一句共同理由「每一格上都要印数值、拉到全历史标签会被抽稀掉大半」——
+    # 对 Exhibit 6 成立，对两张 qtr_bar 不成立（charts.js 只对 gs_bar / gs_line /
+    # gs_line_avg 调 thinLabels，qtr_bar 的柱顶竖排标签每根都画、一个不抽）。
+    # 三张的理由不是同一个，就不要在这里替它们做全称断言，各自图注里已经写了。
+    ' —— 每一张略去多少期、被什么定住，都写在它自己的图注里。'
     f'另有一处口径提示：{mlab(DARTS_UNTIL)} 及更早的 DATs 三列填的是当期印的 <b>DARTs</b>'
     '（公司 2026-07 才改名并重述，且只回溯到 Jan-25，Dec-24 及更早两种口径逐月相同），'
     f'见 Exhibit 11 图注。',
+
+    # ── 季度那一半的历史：2026-08-19 同一轮回填 ──
+    f'<b>季度表（<code>series/hood_q.csv</code>）同样回填过，现覆盖 {q.index[0]}–{LAST_Q}'
+    f'（{len(q)} 个季度）。</b>Earnings Supplement 的 Quarterly GAAP P&amp;L 与 '
+    'Quarterly KPIs 两页都是<b>滚动 13 个季度</b>的窗口，而抓取只吃最新那一份、只追加不回头 —— '
+    f'所以这张表原先左端停在 2023Q2，那是<b>管道</b>的起点不是<b>数据</b>的起点。'
+    '2021Q1–2022Q4 取自 Q1-23 那份 Supplement、2023Q1 取自 Q1-26 那份，'
+    '第三份（Q4-23）当证人逐格复核，实测三份文件对这段历史<b>零处不一致</b>'
+    '（脚本 <code>build/basefill/hood_q_2021.py</code> 每次运行都重算）。'
+    f'再往前没有了：公司 2021-07 才 IPO，现存最早的 Supplement 两页都从 {q.index[0]} 起。'
+    '<b>留空的两列</b>：事件合约收入是 Q2-26 那份才从 P&amp;L 的「Other」里拆出来的一行'
+    '（更早的文件里 Other ≡ 今天的 Other + Event，脚本逐季验过这条恒等式），'
+    f'所以 2023Q1 及更早没有任何官方文件印过它；事件合约成交量同理，只有 2023Q1 那一期'
+    f'（Q1-26 印了 0）有数。业务 2024-10 才上线、事后看那一段就是 0，但补 0 是我们的断言、'
+    f'不是公司的披露，故留空 —— 代价是 Exhibit 17 的左端因此钉在 {XQ[_w17.start]}。',
 
     f'<b>Exhibit 10（事件合约）没有画 y/y 线</b>，不是漏了：窗口内只有少数几个月有大于零的'
     '上年同月基数，画出来是两段近乎垂直的竖线加一段贴地的直线，还会把右轴撑到 3,000% 以上，'
