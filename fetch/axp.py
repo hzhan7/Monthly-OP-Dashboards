@@ -75,11 +75,15 @@ spread 曲线。所以 trust 必须回 10-D 原始件。
   改正后 |m/m Δ| > 1.5pp 从 9 处降到 3 处（2016-06 +1.70 / 2018-10 -1.81 / 2018-11 +3.15），
   那 3 处回查过 Group 1 成员名单前后月未变，是真波动。
   上面那句「哪天 Group 1 分裂成两个数值，这一列会立刻露馅」的意图是对的，
-  `n_series_at_that_es` 保留（现在记的是 Group 1 的家数），
-  组内分裂由 `parse_10d()` 里 0.01pp 的末位容差把关，超出直接抛。
+  `n_series_at_that_es` 保留，**记的是「报这个数的家数」，不是花名册人数** ——
+  两者相等说明组内同值，不等就说明组内分裂了，这正是那句预言要的哨兵。
+  写成花名册人数会让两者恒等，等于把哨兵永久关掉。
+  组内取值用**众数**而非花名册第一家；>0.01pp 的真分裂由 `parse_10d()` 直接抛。
   ⚠️ 回补到 2016 之后这一列**常年在动**（实测 2016 年 8 个 series、2019-04 到 12 个、
   2022-04 降到 5 个、2025-07 又到 14 个）。它是「Group 1 分裂预警」的哨兵，
   数值本身变动是正常的发债节奏，不是异常。
+  实测哨兵真的响过 3 次：2016-07/08/09 花名册 4 家、只有 3 家报同一个数，
+  第 4 家 2013-3 末位差 0.0007~0.0015pp，它在 2016-10 摊还出组。
 · **10-D 的口径断点（回补时踩到的，都已在代码里处理）**：
     2016-12 及更早  A 段叫 `Ending Total Accounts Receivable`（2017-01 起改名）
     2019-11 及更早  EX-99 附件名不带 01（`dNNNNNNdex99.htm`）
@@ -475,17 +479,30 @@ def _series_groups(t, want='Group 1'):
     return out
 
 
+_ES_HEAD = re.compile(r'Series\s+(20\d{2}-[0-9A-Z]{1,4})\s+(?:Certificat\w*|Notes?)\b')
+_ES_PCT = re.compile(r'Excess Spread Percentage \(?(-?[\d,]+\.\d+)\)? ?%')
+
+
 def _series_excess_spread(t):
-    """{series 代号: Excess Spread Percentage}，取每个 series 自己那一节里的第一处。"""
+    """{series 代号: Excess Spread Percentage}，取每个 series 自己那一节里的第一处。
+
+    右界是**下一个小节标题**，不是「往后数 N 个字符」—— 后者读到的可能是隔壁 series 的数，
+    而且串味了不报错，只是悄悄给个别人的值。
+
+    小节标题的词必须容错：全库 127 期里 `Certificates` 出现 2071 次，但另有
+    `Certificate`（2021-02 那期的 Series 2019-2）和 `Certificat` 各一次 —— 申报里的手误。
+    写死 `Certificates` 会让这两节整个读不到，而**读不到不抛错**，只是让那个 series 从
+    组内消失、家数少算一个。2021-02 就是这么把 8 家算成 7 家的。
+    """
+    heads = list(_ES_HEAD.finditer(t))
     out = {}
-    for m in re.finditer(r'Series\s+(20\d{2}-[0-9A-Z]{1,4})\b', t):
-        nm = m.group(1)
-        if nm in out:
+    for k, m in enumerate(heads):
+        if m.group(1) in out:
             continue
-        e = re.search(r'Excess Spread Percentage \(?(-?[\d,]+\.\d+)\)? ?%',
-                      t[m.end():m.end() + 9000])
+        end = heads[k + 1].start() if k + 1 < len(heads) else len(t)
+        e = _ES_PCT.search(t, m.end(), end)
         if e:
-            out[nm] = _num(e.group(1))
+            out[m.group(1)] = _num(e.group(1))
     return out
 
 
@@ -590,8 +607,15 @@ def parse_10d(html_bytes):
             'Group 1 的 excess spread 分裂成多个数值（%s），超出 0.01pp 的末位容差 —— '
             '原作者预言的那种情形真的发生了，需要人工决定取哪一个：%s'
             % (f'{lo}…{hi}', ', '.join(f'{n}={v}' for n, v in vals)))
-    r['excess_spread_pct_group1'] = vals[0][1]
-    r['n_series_at_that_es'] = float(len(vals))
+    # 容差之内也可能不是一个数（末位四舍五入）。取**组内众数**，不要取花名册第一家：
+    # 花名册顺序是申报顺序，第一家可能恰好是那个报了不同末位的。2016-07/08/09 三个月
+    # 里排头的 2013-3 正是与其余三家不同的那一家（它在 2016-10 摊还出组），
+    # 取第一家等于让整组跟着一个即将离场的 series 走。
+    val, cnt = collections.Counter(v for _, v in vals).most_common(1)[0]
+    r['excess_spread_pct_group1'] = val
+    # 列名说的是「报这个数的家数」，不是花名册人数 —— 组内一旦不同值，这两者就分家，
+    # 而它们分家正是原作者要的那个哨兵信号。写花名册人数会把哨兵永久关掉。
+    r['n_series_at_that_es'] = float(cnt)
     return r
 
 
