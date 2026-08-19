@@ -154,6 +154,11 @@ NII_NOTE = ('Assumption: monthly NII = average U.S. Consumer + Small Business ca
             'held flat after). The yield is company-wide but the balances are U.S. card only.')
 
 trust = trust.join(new[['consumer_nco_pct', 'consumer_dq30_pct']], how='left')
+# Ex 10/11 还要旧 loans-only 那两条（2016-01 → 2026-03）。8-K 有**两套互不可比的口径**，
+# 接成一条线会在 2024-05 造出一个纯口径造成的台阶，所以挂成两列、画两条各自起止的线，
+# 重叠的 2024-05 → 2026-03 正好让读者自己看出换口径值多少。
+trust = trust.join(old[['consumer_nco_pct', 'consumer_dq30_pct']].add_suffix('_old'),
+                   how='left')
 
 new['total_balance'] = new['consumer_balance_usdbn'] + new['sbs_balance_usdbn']
 old['total_balance'] = old['consumer_balance_usdbn'] + old['sbs_balance_usdbn']
@@ -528,13 +533,28 @@ def multi_line_ex(n, ttl, df, cols, colors, names, *, win, src_extra=None, note=
     legs = [mrwin.Leg(c, nm, vals[c], 'primary' if i == 0 else 'derived',
                       (lag_zh or {}).get(c, ''))
             for i, (c, nm) in enumerate(zip(cols, names))]
-    w = mrwin.resolve('lines_endlabels', legs, labels, 0)
+    # 有洞的图**改走 `lines`**（非 DENSE），并把真 kind 交给 mrwin.resolve() ——
+    # 不是绕开它，正是它的用法：非 DENSE 只按**主腿**裁左端，派生腿的前导 null 由引擎
+    # 断笔处理（mrwin.py:29-30）。Ex 10/11 因此能从 trust 的 2016-01 起画，而两条 8-K
+    # 各自从自己的首点起断开 —— 既没有补零造点，也没有为了迁就短腿把长腿截掉。
+    # 判据是「窗口内有没有 null」而不是写死图型：Ex 3/5/9 没有洞，仍走 lines_endlabels，
+    # 逐字节不变。
+    sparse = any(v is None for c in cols for v in vals[c])
+    kind = 'lines' if sparse else 'lines_endlabels'
+    w = mrwin.resolve(kind, legs, labels, 0)
     ex = {
-        'n': n, 'kind': 'lines_endlabels', 'title': ttl, 'fmt': 'pct1', 'yfmt': 'pct1',
+        'n': n, 'kind': kind, 'title': ttl, 'fmt': 'pct1', 'yfmt': 'pct1',
         'xlabels': labels[w.start:], 'xrot': 90, 'ylab': '%',
         'series': [{'name': nm, 'color': c, 'values': w.cut(vals[col])}
                    for col, c, nm, leg in zip(cols, colors, names, legs) if not leg.drop],
     }
+    if sparse:
+        # `lines` 的末点数值要显式开（engine_kinds.md §8）；引擎走 lastFinite()，
+        # 末尾一串 null 也会落在最后一个真值上。长历史 lines 不给 zero_base
+        # 就是一次没标注的隐性截轴。
+        ex['end_label'] = True
+        ex['label_fmt'] = 'pct1'
+        ex['zero_base'] = True
     note = ((note or '') + w.why) or None
     if note:
         ex['note'] = note
@@ -857,6 +877,20 @@ _es_y = lvl_yoy(tail_contiguous(trust['excess_spread_pct']), True).iloc[-_TW:].d
 # 图注里的同比读数必须跟次轴用同一个单位，所以走的是同一个 pp_unit()（同一份判据、
 # 同一批输入 → 同一个答案）。写死「pp」的话，哪个月轴切到 bp 图注就开始自相矛盾。
 _ES_MULT, _ES_UNIT, _ = pp_unit(_es_y.values)
+# 「柱看上去一样高吗」是个**可实测的量**，不是可以写死的说法：0 基线上柱高差占画布的
+# 比例随窗口长度变 —— 25 期窗口极差约 2pp、占 8%，拉到 2016 起 127 期极差 10.5pp、占 33%。
+# 「看上去一样高」这句话是从 25 期那版带过来的，在两位数 pp 的极差下已经是假话：
+# 图上最矮的柱只到最高柱的六成，肉眼一眼就分得出。低于 SAME_HEIGHT_MAX 才说那句。
+SAME_HEIGHT_MAX = 0.12
+_es_frac = (_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22)
+_ES_READ = (
+    f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 {_es_frac * 100:.0f}%，看上去一样高'
+    f' —— <b>水平请读柱顶数值，变化请读次轴那条金色同比线</b>'
+    if _es_frac < SAME_HEIGHT_MAX else
+    f'{len(_es_w)} 根柱的高度差占了画布的 {_es_frac * 100:.0f}%，柱高本身读得出水平走势'
+    f'（{mlab(_es_w.idxmin())} 的 {_es_w.min():.2f}% 最低、'
+    f'{mlab(_es_w.idxmax())} 的 {_es_w.max():.2f}% 最高）；'
+    f'<b>逐月的变化仍请读次轴那条金色同比线</b>')
 _es_d = 0 if _ES_UNIT == 'bp' else 2
 ex.append(gs_bar_ex(
     8, SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
@@ -870,10 +904,7 @@ ex.append(gs_bar_ex(
          + (f'；<b>最低那一格 {mlab(_es_w.idxmin())} 是信托加池当月</b> —— 红色竖虚线画的'
             f'就是它，分母当月整个变大而分子只到账一部分，那一点是机械性的、不是信用事件，'
             f'详见口径说明第 4 条' if _es_w.idxmin() == POOL_ADD else '')
-         + f'）。柱从 0 起是利差的正确基线，'
-         f'在这个基线上 {len(_es_w)} 根柱的高度差不到画布的 '
-         f'{(_es_w.max() - _es_w.min()) / (_es_w.max() * 1.22) * 100:.0f}%，看上去一样高 ——'
-         f'<b>水平请读柱顶数值，变化请读次轴那条金色同比线</b>'
+         + f'）。柱从 0 起是利差的正确基线，{_ES_READ}'
          f'（窗口内 {_es_y.min() * _ES_MULT:+.{_es_d}f}{_ES_UNIT} ~ '
          f'{_es_y.max() * _ES_MULT:+.{_es_d}f}{_ES_UNIT}，'
          f'当期 {_es_y.iloc[-1] * _ES_MULT:+.{_es_d}f}{_ES_UNIT}）。'
@@ -966,31 +997,66 @@ _e9, _W9 = multi_line_ex(
               'rate is an early warning that shows up months before delinquency does')
 ex.append(mark_pool_add(_e9, _W9))
 
-# Exhibit 10 / 11 是本页仅有的两张**跨数据源对照图**：trust 那条自 2016-01 起有值，
-# 8-K Consumer 那条是新合并口径、只到 2024-05（官方只重述了 24 个月）。窗口一放长，
-# 8-K 那条在图上前 100 期全是 null —— 而 lines_endlabels 是平滑图型，吃不了 null。
-# 左端交给 mrwin.resolve() 裁（见 multi_line_ex 的 docstring），这两张图因此实际
-# 从 8-K 线的首点起画，比 Exhibit 8/9 短，图注里由 Win.why 自己说明为什么。
+# Exhibit 10 / 11 是本页仅有的两张**跨数据源对照图**。8-K 侧有两套互不可比的口径，
+# 所以画**三条**线：trust（2016-01 起，全程同一口径）+ 8-K 旧 loans-only
+# （2016-01 → 2026-03）+ 8-K 新 Card balances（2024-05 起）。
+# 原先只画 trust + 新口径两条，左端被 mrwin 按 DENSE 裁到 2024-05 —— 那是承认了截断，
+# 而截掉的那 100 期 8-K 侧其实**有真数据**，只是在另一套口径里。把旧口径那条真序列接上来
+# 才是答案：不补零、不接成一条，两条各自起止、在 2024-05 → 2026-03 重叠 23 个月，
+# 那段的垂直距离就是「换口径值多少」。改走非 DENSE 的 `lines` 之后 mrwin 只按主腿
+# （trust）裁左端，三条线因此都能画到各自的真实起点。
 _LAG_8K = {'consumer_nco_pct': '8-K 新合并口径只重述到 2024-05，更早没有可比的 Card balances 数',
-           'consumer_dq30_pct': '8-K 新合并口径只重述到 2024-05，更早没有可比的 Card balances 数'}
+           'consumer_dq30_pct': '8-K 新合并口径只重述到 2024-05，更早没有可比的 Card balances 数',
+           'consumer_nco_pct_old': '旧 loans-only 口径在 2026-05 改口径当月封存，之后没有新数',
+           'consumer_dq30_pct_old': '旧 loans-only 口径在 2026-05 改口径当月封存，之后没有新数'}
+
+
+def basis_split_note(col):
+    """Ex 10/11 的口径说明：范围、重叠月数、重叠段的实测差距全部现算。
+
+    写死的话每个月都要人来改一次，而这一段恰恰是**读者据以不把两条线接起来读**的
+    唯一依据 —— 它比图上任何一个数字都更不该过期。
+    """
+    o = trust[col + '_old'].dropna()
+    w = trust[col].dropna()
+    lap = [p for p in o.index if p in set(w.index)]
+    gaps = [float(w[p] - o[p]) for p in lap]
+    gap_txt = (f'重叠段新口径平均低 {abs(np.mean(gaps)):.2f}pp，'
+               f'最新一个可比月 {mlab(lap[-1])} 低 {abs(gaps[-1]):.2f}pp'
+               if gaps else '两条没有重叠月，差多少无从实测')
+    return (f'图上有<b>两条 8-K 线</b>：灰线是旧 Card Member loans 口径（只含循环余额，'
+            f'{mlab(o.index[0])} → {mlab(o.index[-1])}），红线是新 Card balances 口径'
+            f'（把 pay-in-full 余额并了进来，{mlab(w.index[0])} 起）。'
+            f'<b>两条不能接成一条读</b> —— 分母不同，新口径的比率天生更低。两条在 '
+            f'{mlab(lap[0]) if lap else "—"} → {mlab(lap[-1]) if lap else "—"} 这 {len(lap)} '
+            f'个月里并存，那一段的垂直距离就是「换口径」本身值多少（{gap_txt}），'
+            f'不是信用在那个月改善了。深蓝那条 trust 线全程同一口径、'
+            f'{old.index[0].year} 年至今没断过，是本图唯一可以从头读到尾的序列。')
 _e10, _W10 = multi_line_ex(
-    10, SEC_T + 'Loss rate: trust pool vs. 8-K Card balances', trust,
-    ['nco_pct', 'consumer_nco_pct'], ['NAVY', 'RED'],
+    10, SEC_T + 'Loss rate: trust pool vs. 8-K', trust,
+    ['nco_pct', 'consumer_nco_pct_old', 'consumer_nco_pct'], ['NAVY', 'GRAY', 'RED'],
     ['Trust: annualised default rate, net of recoveries',
-     '8-K: U.S. Consumer net write-off rate'], win=_TW, lag_zh=_LAG_8K,
-    src_extra=TRUST_SRC + '.  The two are close analogues but not the same definition, and '
+     '8-K old basis (Card Member loans): U.S. Consumer net write-off',
+     '8-K new basis (Card balances): U.S. Consumer net write-off'],
+    win=_TW, lag_zh=_LAG_8K, note=basis_split_note('consumer_nco_pct'),
+    src_extra=TRUST_SRC + '.  The two 8-K lines are two different bases, not one series — '
+              'they overlap on purpose and must not be read across the join.  '
+              'Trust and 8-K are close analogues but not the same definition, and '
               + TRUST_NOTE.lower())
-# 这两张被 mrwin 裁到 2024-05，窗口里没有 2018-10 —— mark_pool_add 因此是 no-op。
-# 仍然照调：哪天 8-K 新口径往前重述、窗口回到 2018 年之前，这条线会自己出现。
+# 窗口回到 2016 之后 2018-10 重新落进窗口里，这条加池竖线因此**不再是 no-op** ——
+# 原注释预期的「哪天窗口回到 2018 年之前，这条线会自己出现」就是现在。
 ex.append(mark_pool_add(_e10, _W10))
 
 _e11, _W11 = multi_line_ex(
-    11, SEC_T + 'Delinquency: trust pool vs. 8-K Card balances', trust,
-    ['dq30_pct', 'consumer_dq30_pct'], ['NAVY', 'RED'],
-    ['Trust: total 30+ days delinquent', '8-K: U.S. Consumer 30+ days past due'],
-    win=_TW, lag_zh=_LAG_8K,
-    src_extra=TRUST_SRC + '.  Both are 30+ day measures on the same concept, so the persistent '
-              'gap is purely the pool difference: ' + TRUST_NOTE.lower())
+    11, SEC_T + 'Delinquency: trust pool vs. 8-K', trust,
+    ['dq30_pct', 'consumer_dq30_pct_old', 'consumer_dq30_pct'], ['NAVY', 'GRAY', 'RED'],
+    ['Trust: total 30+ days delinquent',
+     '8-K old basis (Card Member loans): U.S. Consumer 30+ days past due',
+     '8-K new basis (Card balances): U.S. Consumer 30+ days past due'],
+    win=_TW, lag_zh=_LAG_8K, note=basis_split_note('consumer_dq30_pct'),
+    src_extra=TRUST_SRC + '.  The two 8-K lines are two different bases, not one series.  '
+              'Trust and 8-K are both 30+ day measures on the same concept, so the '
+              'persistent gap is purely the pool difference: ' + TRUST_NOTE.lower())
 ex.append(mark_pool_add(_e11, _W11))
 
 # ══ 板块 C：旧 loans-only 口径（PDF 第 2 页，Exhibit 13-19）══
@@ -1006,8 +1072,12 @@ ex.append(bar_yoy_ex(
 
 # JPM Fig 2：季节性剥离。窗口固定 WIN_SEASON（13）——「近一年 vs 同月常态」是这张图的
 # 题眼，不随 WIN_FROM 放长（理由见 WIN_SEASON 的注释与 CONTRACT.md §5.4）。
+# **但灰柱那一侧的取样年数跟着 WIN_FROM 走**：years 写死 9 时，Mar-26 的同月常态只平均到
+# Mar-2017，2016 那一档明明有数却吃不进去。窗口（画几根柱）与常态深度（平均几年）是两件事，
+# 拉长的是后者 —— 序列覆盖几个日历年就取几年。
+SEAS_YEARS = int(old.index[-1].year - old.index[0].year)
 e13, y13 = seasonality_ex(13, SEC_O + 'Write-off rate vs. same-month norm',
-                          old['consumer_nco_pct'], win=WIN_SEASON, years=9,
+                          old['consumer_nco_pct'], win=WIN_SEASON, years=SEAS_YEARS,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e13)
 
@@ -1019,7 +1089,7 @@ ex.append(year_lines_ex(
     src_extra=SRC_O + '.  Each line is one calendar year; red = current year.  ' + BASIS_O))
 
 e15, y15 = seasonality_ex(15, SEC_O + 'Delinquency vs. same-month norm',
-                          old['consumer_dq30_pct'], win=WIN_SEASON, years=9,
+                          old['consumer_dq30_pct'], win=WIN_SEASON, years=SEAS_YEARS,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e15)
 
