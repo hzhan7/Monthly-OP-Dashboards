@@ -218,7 +218,7 @@ descent 0.212em ⇒ 框高 1.117em，而数字与大写字母只占基线上 0.7
 | `AXIS_UNEVEN` | 上一轮 `qa_ticks.html` 全站 71 条告警**无一真错**，全是 `dropClashingTicks` 让位 | 改判「像素-数值比恒定」（§3.3） | 如果某天引擎改成**非线性轴**（log），这条判据会全线假阳，需要按 kind 豁免 |
 | `TEXT_OVERLAP` | 45° 旋转标签用 AABB 判必然大面积互相相交 | 改用 OBB + 墨迹框内缩（§3.3） | 无。上一轮是直接跳过旋转文字，覆盖面反而更小 |
 
-**还没被判成误报、但读报告时要知道的两件事**：
+**还没被判成误报、但读报告时要知道的三件事**：
 
 1. **同一个根因会同时触发 #1 和 #2。** `exchanges12` Ex6 那个超长的热力图行标签，
    既是「越出画布左缘 28.1px」也是「越出卡片 28.1px」，报告里是两行。
@@ -227,6 +227,32 @@ descent 0.212em ⇒ 框高 1.117em，而数字与大写字母只占基线上 0.7
    （`charts.js:1310`，从 `M.t+3` 往下铺）横穿柱顶的数值标签。
    已用整页截图人工确认是**真的**（`lpla` Ex9：`Commonwealth` 这几个竖排红字
    直接盖住 `$49.5` 的后半截）。不是噪声，但它只有一个根因，修一处清一片。
+
+3. **`HSCROLL` 的「最宽越界元素」名单会系统性地把核对表报成头号嫌疑，而它几乎从来不是原因。**
+   这份名单是拿 `getBoundingClientRect()` 逐元素量的（`visual_qa.py` 的 probe，§3.2 第 5 条），
+   而 `getBoundingClientRect()` **量得到被祖先 `overflow` 裁掉的部分**。核对表的单元格是
+   `white-space: nowrap`，整张表一直比 `.tblwrap` 宽 —— 但 `.tblwrap` 有 `overflow-x: auto`
+   （`style.css:134`），它自己横滚、并不把 body 撑开。于是：只要页面有一张宽核对表，
+   表格就**永远**排在这份名单榜首、且**永远不是**真凶。
+
+   2026-08-19 的 `mtk` 就栽在这上面：报告写「最宽越界元素：table +28px」，
+   照着去改核对表是白费力气 —— 实测 `.tblwrap` 的 `scrollWidth 721 == clientWidth 721`、
+   `scrollLeft` 推到 999 仍回 0（根本没在溢出），把整个 `#tbl` 设 `display:none`，
+   body 的 `scrollWidth` 依然是 798 一点没降。真凶在另一个 section：`.prose` 里
+   一条被 `%20` 转义撑到 150 字符的长 URL（渲染 763px，而 768px 下 `.prose li` 可用宽只有 702px），
+   不可断的长词放不下又断不开，顶着 `li` 右缘伸出去。
+
+   **可靠的定位手法**：二分隐藏 `.inner` 的直接子元素，看 `body.scrollWidth` 在拿掉哪一个时掉回去。
+   ```js
+   const m = () => Math.max(de.scrollWidth, document.body.scrollWidth), base = m();
+   for (const k of document.querySelector('.inner').children) {
+     const old = k.style.display; k.style.display = 'none';
+     console.log(k.id || k.className, base - m());   // 掉幅 > 0 的才是真凶
+     k.style.display = old;
+   }
+   ```
+   要判断某个元素是不是「看着越界、其实被裁掉了」，就往上找祖先里第一个
+   `getComputedStyle(p).overflowX !== 'visible'` 的节点：找得到就说明它被裁，不参与 body 的滚动区。
 
 ---
 
