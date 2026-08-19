@@ -826,7 +826,7 @@
        末点读数按构造落在它自己那个值的轴高度上，而右轴刻度也在同一列 ——
        两者数值一接近就必然叠字（实测 6 页 18 处：'+5.0pp × +5.1pp'、'50% × 52%'…）。
        末点读数是真实数据、刻度只是标尺，冲突时让刻度让位（见 draw 末尾的 dropClashingTicks）。 */
-    var rtickEls = [], priorityLabs = [], brks = [];
+    var rtickEls = [], priorityLabs = [], brks = [], vLabs = [];
 
     var markSet = null, hatchId = null;
     if (ex.bar_marks && ex.bar_marks.length) {
@@ -1264,8 +1264,11 @@
     function vLabel(x, yTop, s, o) {
       var need = s.length * fscale(o.size || 8) * 0.62;   // 竖排长度 = 字数 × 实际字号
       var yy = Math.max(yTop, need + 2);
-      txt(g, x, yy, s, { size: o.size || 8, anchor: 'start', fill: o.fill || C.INK,
-        transform: 'rotate(-90 ' + x.toFixed(2) + ' ' + yy.toFixed(2) + ')' });
+      /* 收进 vLabs：这些是**竖排的柱顶读数**，属于真实数据，下面那段「优先标签避让」
+         必须避开它们。原来那段按 `rotate` 一刀切收集障碍物，把它们整批漏在外面 —— 
+         见 :1900 附近。vLabel 只有 qtr_bar 一处调用，所以 vLabs 在其余图种上恒为空。 */
+      vLabs.push(txt(g, x, yy, s, { size: o.size || 8, anchor: 'start', fill: o.fill || C.INK,
+        transform: 'rotate(-90 ' + x.toFixed(2) + ' ' + yy.toFixed(2) + ')' }));
     }
 
     if (kind === 'bar_line' || kind === 'diverging_bars' || kind === 'bars_labeled' || kind === 'bar_line_dual') {
@@ -1892,13 +1895,27 @@
            实测 6 处：schw Ex6「490 × 52%」、cboe Ex4「$7.3 × 44%」、axp Ex2「$113.8 × 7.6%」… */
         var others = [];
         g.querySelectorAll('text').forEach(function (t) {
-          if (t !== p && !(t.getAttribute('transform') || '').indexOf) return;
-          if (t !== p && (t.getAttribute('transform') || '').indexOf('rotate') < 0) others.push(t);
+          if (t === p) return;
+          if ((t.getAttribute('transform') || '').indexOf('rotate') < 0) { others.push(t); return; }
+          /* 竖排的也要分两种：**柱顶读数**（qtr_bar 的 vLabel）是真实数据，必须避；
+             断点注记与截轴真值是红色**标注**，不在此列（它们自己有另一套避让）。
+             原来这里按 rotate 一刀切排除，把柱顶读数整批漏掉了 —— umc Ex3 的
+             「24」×「17%」、hood Ex23 的「$5.6」×「57%」就是这么来的。 */
+          if (vLabs.indexOf(t) >= 0) others.push(t);
         });
+        /* 障碍里现在混有 rotate 的，getBBox 拿到的是**旋转前**的框（长宽正好互换），
+           拿它判压字必然算错 —— 统一改走 textRect() 的有向包围盒。
+           非旋转文字上 textRect() 与 getBBox() 逐字段等价，所以既有行为不变。 */
+        var boxOf = function (t) {
+          var r = textRect(t);
+          return r ? { x: r.x, y: r.y, width: r.w, height: r.h } : null;
+        };
         for (var k = 0; k < 6; k++) {
-          var pb = p.getBBox(), clash = null;
+          var pb = p.getBBox(), clash = null, ob;
           for (var q = 0; q < others.length; q++) {
-            if (others[q].parentNode && hit(pb, others[q].getBBox())) { clash = others[q]; break; }
+            if (!others[q].parentNode) continue;
+            ob = boxOf(others[q]);
+            if (ob && hit(pb, ob)) { clash = others[q]; break; }
           }
           if (!clash) break;
           // 优先往下让（末点读数原本就在点的右下方）；顶到画布底就改往上
