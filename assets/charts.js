@@ -774,6 +774,32 @@
           t 是一行竖排真值、r 是刻度数字（+ 可选轴标题）、b 是 x 标签带（已缩过）、
           l 是刻度数字（+ 可选轴标题 + lines_endlabels 的左端标签列）。
           M.r 的 14 与 M.l 的基数留的是「半个刻度数字的溢出」，同样正比于字号。 */
+    /* 左端标签那一列要多宽 —— 原来写死 30px，够不够全看这张图的数字有几位。
+       七位数就不够：`1,492,079` 在 size 8 下约 40px 宽，标签从 lx 向左伸 40px，
+       直接盖到画在 fscale(13) 上的竖排纵轴标题上（db1 Ex7「contracts/day」、
+       lseg Ex9「trades/day」，实测 58.3px²，两个视口各两处共 8 条 🟡）。
+
+       :1451 那段注释记过这个坑，也记了当时试过、并且**回退**了的另一条路：
+       把左端标签的落笔位置再往左推（`M.l - 10` 改 `fscale(10)`）—— 那是在
+       固定宽度的列里挪标签，挪多少都是拆东墙补西墙，实测反而把间距从 +0.18px
+       变成 −4.32px。它同时指出真正的解只有一条：**把这一列本身加宽**，
+       并注明「属于版式改动，要单独一轮回归，不在本轮范围」。这就是那一轮。
+
+       所以这里按实际内容定宽而不是继续猜一个常数：取本图各系列**首值**格式化后
+       最宽的那个，乘字号得 px，再留 6px 余量；下界仍是原来的 30px，
+       所以**数字短的图一个像素都不变**（全站 80+ 张 lines_endlabels 里绝大多数
+       是三四位数，emWidth×8 远不到 30）。
+       用 emWidth 估而不实测：这里还没建 SVG，量不了；估宽只会让留白保守一点。 */
+    function leCol(e) {
+      var w = 0, k, vs;
+      if (e.series)
+        for (k = 0; k < e.series.length; k++) {
+          vs = e.series[k].values;
+          if (vs && isNum(vs[0])) w = Math.max(w, emWidth(fmtOf(e.fmt)(vs[0])));
+        }
+      return Math.max(30, w * 8 + 6);
+    }
+
     var _rhsCap = (rhsOf(ex) || {}).ymax;
     var capOn = ex.ycap != null || ex.yfloor != null || _rhsCap != null;
     var M = { t: fscale(capOn ? 30 : 14),
@@ -781,9 +807,10 @@
                       : (kind === 'lines_endlabels' || kind === 'gs_line_avg' ||
                          kind === 'year_lines' ? 42 : 14)),
               b: XB,
-              /* lines_endlabels 的左端标签要有自己的一列：不加这 30px 就只能挤在
-                 Xc(0)-7，正好压在 y 轴刻度栏上（右端早就有 42px 的专列了）。 */
-              l: fscale((ex.ylab ? 56 : 46) + (kind === 'lines_endlabels' ? 30 : 0)) };
+              /* lines_endlabels 的左端标签要有自己的一列：不加这一列就只能挤在
+                 Xc(0)-7，正好压在 y 轴刻度栏上（右端早就有 42px 的专列了）。
+                 列宽由**本图最宽的那个左端读数**定，见 leCol()。 */
+              l: fscale((ex.ylab ? 56 : 46) + (kind === 'lines_endlabels' ? leCol(ex) : 0)) };
     var pw = Math.max(60, W - M.l - M.r), ph = Math.max(80, H - M.t - M.b);
 
     var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
