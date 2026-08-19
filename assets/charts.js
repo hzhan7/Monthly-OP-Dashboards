@@ -1847,9 +1847,9 @@
       });
     }
 
-    /* 左轴刻度 vs 逐点数值标签：同上一条规矩的另一半 —— 冲突时让刻度让位。
+    /* 左右轴刻度 vs 逐点数值标签：同上一条规矩的另一半 —— 冲突时让刻度让位。
 
-       上面那段只管住了「次轴末点读数 vs 右轴刻度」，可**左轴**有结构完全一样的问题：
+       上面那段只管住了「次轴末点读数 vs 右轴刻度」，可**两条轴**都有结构完全一样的问题：
        gs_line / gs_line_avg 的逐点标签是**居中**落在 Xc(i) 上的，i = 0 时它有一半宽度
        伸进左边的刻度栏；band 一小（长窗口）就实打实压上刻度。thinLabels() 只解标签
        之间的冲突，压刻度它管不着，于是读者看到的是一团糊在一起的字。
@@ -1866,11 +1866,15 @@
        两条保险：
          · 只删**真的重叠**的那一根（同 hit() 的 1px 容差），不做预防性删除；
          · 至少留 2 根刻度 —— 一根不剩就没有量纲了，那比叠字更糟。
-           实测下界从未被触发（每图最多删 1 根，而最少的图也有 4 根）。 */
+           实测下界从未被触发（每图最多删 1 根，而最少的图也有 4 根）。
+
+       **右轴走同一段代码**：上面那条「次轴末点读数」的规矩只护住了末点读数那**一个**
+       标签，而柱顶/逐点数值标签压右轴刻度是同一个几何 —— 标签居中落在 Xc(i) 上，
+       长窗口里 band 一小，末柱那个标签就有一半宽度探进右边的刻度栏。
+       判据与让位方向逐字相同，只是**两条轴各数各的剩余刻度数**（不能合起来数：
+       合着数的话左轴删到只剩 1 根、右轴还剩 3 根也算「还有 4 根」，左轴就没量纲了）。 */
     (function () {
-      var lticks = [], dlabs = [];
-      svg.querySelectorAll('[data-tick="l"]').forEach(function (t) { lticks.push(t); });
-      if (lticks.length < 3) return;              // 本来就两根，删了等于没刻度
+      var dlabs = [];
       /* 只跟**画在数据层 g 里的非旋转文字**比：旋转的是截轴真值/断点标签（竖排，
          本来就在别的地方），刻度自己带 data-tick 不会自比。 */
       g.querySelectorAll('text').forEach(function (t) {
@@ -1883,20 +1887,25 @@
         return a.x < b.x + b.width + 1 && b.x < a.x + a.width + 1 &&
                a.y < b.y + b.height + 1 && b.y < a.y + a.height + 1;
       };
-      var left = lticks.length, i, j, tb, lb;
-      for (i = 0; i < lticks.length && left > 2; i++) {
-        tb = bbox(lticks[i]);
-        if (!tb) continue;
-        for (j = 0; j < dlabs.length; j++) {
-          if (!dlabs[j].parentNode) continue;     // 已被 thinLabels 抽掉的不算
-          lb = bbox(dlabs[j]);
-          if (lb && over(tb, lb)) {
-            lticks[i].parentNode.removeChild(lticks[i]);
-            left--;
-            break;
+      ['l', 'r'].forEach(function (side) {
+        var ticks = [];
+        svg.querySelectorAll('[data-tick="' + side + '"]').forEach(function (t) { ticks.push(t); });
+        if (ticks.length < 3) return;             // 本来就两根，删了等于没刻度
+        var left = ticks.length, i, j, tb, lb;
+        for (i = 0; i < ticks.length && left > 2; i++) {
+          tb = bbox(ticks[i]);
+          if (!tb) continue;
+          for (j = 0; j < dlabs.length; j++) {
+            if (!dlabs[j].parentNode) continue;   // 已被 thinLabels 抽掉的不算
+            lb = bbox(dlabs[j]);
+            if (lb && over(tb, lb)) {
+              ticks[i].parentNode.removeChild(ticks[i]);
+              left--;
+              break;
+            }
           }
         }
-      }
+      });
     })();
 
     /* hover：整段 band 命中，tooltip 列出该期全部系列 */
