@@ -1789,7 +1789,18 @@
 
     if (ex.ylab) {
       var cy = M.t + ph / 2, xl = fscale(13);
-      txt(svg, xl, cy, ex.ylab, { size: 8.4, transform: 'rotate(-90 ' + xl + ' ' + cy + ')' });
+      var yle = txt(svg, xl, cy, ex.ylab, { size: 8.4, transform: 'rotate(-90 ' + xl + ' ' + cy + ')' });
+      /* 纵轴标题是竖排的，长度按构造可以超过绘图区高度，而这里**没有任何一处守住
+         画布这条界** —— `.plot svg` 是 overflow: visible（style.css），超出的那一截
+         就原样印到卡片上方的 .legend 上（ibkr Ex15 @768：「Net new accounts,
+         trailing 12 months (thousands)」压在图例「Net new accounts, T12M」上 32.2px²，
+         报成 TEXT_ON_PROSE；1280px 下画布高一点就不触发）。
+         它以 cy 为中心上下均分，所以能用的高度是 ph 而不是 ph/2；留 6px 与断点标签
+         那处（fitVertical(bel, ph - 6, 7)）取同一个契约。
+         下界 8.4 = 基线字号，即「永不小于基线」—— 放不下就仍旧溢出，与断点标签的
+         既有行为一致，不在本处新开一种失败模式。放得下的图一个属性都不改
+         （fitVertical 在 len <= maxLen 时直接返回），所以绝大多数图逐字节不变。 */
+      fitVertical(yle, ph - 6, 8.4);
     }
     if (ex.annot) {
       if (kind === 'bars_labeled')
