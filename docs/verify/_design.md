@@ -750,6 +750,17 @@ POOLS = [
 #### A7 长周期与近期双时窗 —— `qtr_bar`（长）+ `lines_endlabels`（近）
 
 近期沿用现有的 25 个月 `lines_endlabels`。长周期改用 `qtr_bar`：
+
+> **2026-08-19 注：本文里的 25 个月（`XL25` / `WIN_LINE = 25`）不是遗留物，别顺手改掉。**
+> 2026-08-18 那一轮把「近 25 个月」统一改成「2016-01 起」，改的是**单公司页**
+> （`build/single.py` 的 `WIN_FROM`、cboe / cme / hkex / cost / hood 的同名常量、
+> mrbase 那 7 家的 `window.x_from`）。**横截面页不在那一轮的范围里** ——
+> `build/exchanges_apac.py` 今天仍然是 `WIN_LINE = 25`，实测 `exchanges-apac.js`
+> 的短窗口 x 轴就是 25 格（长历史图另有 `XL_LONG`，127 格）。
+> 两类页的窗口本来就该分开定：单公司页比的是**一条序列自己的历史**，
+> 横截面页比的是**几家在同一窗口内的相对位置**，后者窗口越长成员起点差异越碍事。
+
+
 把 15 年 180 个月压成 60 根季度柱，比 180 个点的折线可读得多，且右轴可挂 y/y。
 
 **必须在 Python 侧处理的一个坑：** `qtr_bar` 的语义是"月度汇总成季度"，
@@ -864,7 +875,7 @@ MIAX 那一行几乎全红（它只在一个池里存在，其余是空格），
 这是本设计里最需要人工审的一处；
 (b) 各池的份额波动量级差一个数量级（北美现货年动 0.5pp、北美期权年动 3pp），
 单一 5/95 色标会把现货那一列压成一片白 ⇒ 需要 `scale: 'per_col'`（见 §2.C）；
-(c) 窗口固定 12 个月，不同池的成员起点不同（MIAX 现货 2020-12、TMX 2021-08）⇒
+(c) 窗口固定 12 个月，不同池的成员起点不同（MIAX 现货 2020-12；TMX 现货 `pools.py` 里仍写 2021-08，序列本身 2026-08-18 起已到 2015-01）⇒
 不满 12 个月的格子必须留 `None` 而不是用短窗口凑，宁可空一格。
 
 #### B5 ⭐ 增长归因桥：池扩大 vs 份额转移 —— `bridge_bar`
@@ -1078,8 +1089,8 @@ Ex10 与 Ex12 是这一页的题眼，Ex8/Ex9 是信息量最高的两张。
 | **2** | **MIAX** | B | `na_multilist_opt` 补齐对手方 + `fn_monopoly` 竞争侧 | **兑现题眼**：Cboe 在多挂牌期权池被侵蚀（份额 7.4%→17.9%），全仓唯一一对逐字同定义的 RPC | PDF 按 x 坐标分桶（按 token 顺序会静默把 53,135 读成 3,135，错 17 倍）；RPC 只有 18 个月，2026-12 前做不了同比 |
 | **3** | **Euronext** | A | `eu_cash`(与仓内 Cboe 立即成池) `eu_deriv` `fx_spot_ecn` `ags` `fn_listing` | 与 Cboe 在**欧洲现货**（同币同单位同口径，2026-06 实测 15.52 vs 14.95）与 **FX 即期**（同为 ECN）各成一对，是全仓两处最干净的头对头 | 单个 xlsx 裸奔可取、174 个月零断档。坑：Athex 并表（单股衍生品 2025-11 有 3-6 倍假跳，必须用 legacy 口径）、四条断点竖线 |
 | **4** | **JPX + SGX** | A / B | `apac_cash`(4 家齐) `apac_deriv` `rates` `equity_index` `fx_futures` | 亚太现货池从"只有 HKEX 一家"变成 4 家；JPX 与 HKEX 是全仓最干净的一对现货对照 | JPX 须**新建派生列** `adv_deriv_total_lgeq_kcontracts`（不建则排序翻转：原始张数下 JPX 是 HKEX 的 1.23 倍，当量口径下只有 0.27 倍）；SGX 是 PDF + 会轮换的 GraphQL id（失效时返回 200 + errors，静默失败） |
-| **5** | **DB1 + NDAQ** | B / B | `eu_cash` 补第三家 · `eu_deriv` 加 Eurex（与 ICE 欧洲利率正面对上）· `na_cash`/`na_total_opt` 补 Nasdaq | Eurex 的 `oi_eurex_total_contracts` 2026-06 = 1.37 亿张，**反超 CME 的 1.28 亿** —— 这是真头对头。Nasdaq 把北美现货池的残差从 ~30% 压到 ~15% | DB1 要缝三个源两种节奏、需引入 `xlrd`，且**慢腿列绝不能进 panel**（`exchanges.py:242` 对空洞直接 raise）；NDAQ 三条腿只有 19 个月，且交易日必须改用 MIAX 的（否则整页门槛被拖后一周） |
-| **6** | **ASX + TMX** | B / B | `apac_cash`/`apac_deriv` 补第 4 家 · `rates` 加加元腿 · `single_stock_etf_opt` 加两家 | 最低。两家都只能贡献混合口径或短序列 | ASX 分品种只有 2 个月且不可回补，历史区间只能给混合期货 ADV（含电力/NZ，比例会漂移）；TMX 现货起点 2021-08，比 HKEX 还短 2 年 7 个月，且 BOX 只有季度 —— **北美期权池永远缺 TMX** |
+| **5** | **DB1 + NDAQ** | B / B | `eu_cash` 补第三家 · `eu_deriv` 加 Eurex（与 ICE 欧洲利率正面对上）· `na_cash`/`na_total_opt` 补 Nasdaq | Eurex 的 `oi_eurex_total_contracts` 2026-06 = 1.37 亿张，**反超 CME 的 1.28 亿** —— 这是真头对头。Nasdaq 把北美现货池的残差从 ~30% 压到 ~15% | DB1 要缝三个源两种节奏、需引入 `xlrd`，且**慢腿列绝不能进 panel**（`exchanges.py:242` 对空洞直接 raise）；~~NDAQ 三条腿只有 19 个月~~（**2026-08-19 已部分证伪**：只有 `vol_us_options_mmcontracts` 与 `vol_nordic_cash_value_usdbn` 还是 19 个月，`vol_nordic_derivs_mmcontracts` 已回到 2013-01 共 163 个月、`vol_us_cash_matched_mnsh` 回到 2010-10 共 190 个月；⚠ `build/pools.py` 里这两条腿的 `start` 仍写着 `'2025-01'`，池子还没吃上这段新历史 —— 这是**待办**，不是本次文档清账能改的），且交易日必须改用 MIAX 的（否则整页门槛被拖后一周） |
+| **6** | **ASX + TMX** | B / B | `apac_cash`/`apac_deriv` 补第 4 家 · `rates` 加加元腿 · `single_stock_etf_opt` 加两家 | 最低。两家都只能贡献混合口径或短序列 | ASX 分品种只有 2 个月且不可回补，历史区间只能给混合期货 ADV（含电力/NZ，比例会漂移）；~~TMX 现货起点 2021-08，比 HKEX 还短 2 年 7 个月~~（**2026-08-18 已证伪**：TMX 现货经 CIRO 回填后是 2015-01 起 139 个月，比 HKEX 的 127 还长；⚠ `build/pools.py` 里 tmx 的 `start` 仍是 `'2021-08'`，待办同上），且 BOX 只有季度 —— **北美期权池永远缺 TMX** 这一条没变 |
 
 ### 4.1 各池"什么时候才凑得齐成员"
 

@@ -14,6 +14,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gsx
 
 D = os.path.dirname(os.path.abspath(__file__))
+# 三张源表都在仓库根的 series/ 下，不在 build/data/ —— build/data 这个目录从来不存在。
+# 2026-08-19 修：此前三处 read_csv 都写成 os.path.join(D, 'data', ...)，手动跑必 FileNotFoundError。
+# 本文件是 TSMC 专属 PDF 版生成器，不在 cron 路径上（monthly_run 走 build/tsm.py），
+# 所以坏了一年也没人被绊到；同目录其它 build_*.py 还留着同一个坏写法，不归这次改。
+SERIES = os.path.join(os.path.dirname(D), 'series')
 OUT = os.path.expanduser('~/Desktop')
 
 SRC = 'Source: TSMC monthly revenue reports; format after Goldman Sachs GIR'
@@ -23,7 +28,7 @@ SRC_G = 'Source: TSMC quarterly earnings-call guidance and reported results'
 SRC_FX = ('Source: monthly average NTD/USD — Federal Reserve H.10 daily rates '
           '(same definition and upstream as FRED EXTAUS)')
 
-df = pd.read_csv(os.path.join(D, 'data', 'tsm.csv'))
+df = pd.read_csv(os.path.join(SERIES, 'tsm.csv'))
 df['month'] = pd.PeriodIndex(df['month'], freq='M')
 df = df.set_index('month').sort_index()
 
@@ -44,7 +49,7 @@ df['ttm_bn'] = rev.rolling(12).sum() / 1000.0    # 滚动 12 个月营收 NT$bn
 df['yoy'] = df['yoy_pct'].astype(float)
 
 # ── 汇率拆分（任务 5）：把新台币营收按月均汇率折成美元，同比之差即汇率贡献 ──
-fx = pd.read_csv(os.path.join(D, 'data', 'tsm_fx.csv'))
+fx = pd.read_csv(os.path.join(SERIES, 'tsm_fx.csv'))
 fx['month'] = pd.PeriodIndex(fx['month'], freq='M')
 fx = fx.set_index('month').sort_index()['ntd_per_usd']
 df['fx'] = fx
@@ -53,7 +58,7 @@ df['yoy_usd'] = df['rev_usdmn'].pct_change(12) * 100
 df['fx_contrib_pp'] = df['yoy'] - df['yoy_usd']        # 同比之差 = 汇率贡献（百分点）
 
 # ── 季度指引 vs 实际（任务 2）──
-g = pd.read_csv(os.path.join(D, 'data', 'tsm_guidance.csv'))
+g = pd.read_csv(os.path.join(SERIES, 'tsm_guidance.csv'))
 g['q'] = g['quarter']
 qkey = rev.index.asfreq('Q')
 qtd_ntd = rev.groupby(qkey).sum()                      # 各季已公布月份的新台币累计

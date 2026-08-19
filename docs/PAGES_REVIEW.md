@@ -77,6 +77,10 @@
 定基名义额之后生成**，而 `series/contract_specs.csv` 里一批产品的 `base_price_local` 还是空的。
 
 我核了一遍 CSV，这条拦截是对的：73 个产品里**只有 23 个有 `base_notional_per_unit_local`**，
+（**2026-08-19 现值：74 行、41 行有常数、33 行空**；本段以下的 50 / 25 / 23 都是
+2026-08-06 那天的数，`docs/CRON_WIRING.md` §7 与 `python3 build/check_specs.py` 才是现值。
+现算：`python3 -c "import pandas as pd;d=pd.read_csv('series/contract_specs.csv');`
+`print(len(d), d['base_notional_per_unit_local'].isna().sum())"`）
 其中 14 个是「本来就是金额」的池（现货成交额、募资额、AUM、FX 即期，乘数 = 1），
 真正的合约类只有 9 个（Cboe SPX / VIX / VIX 期权 / XSP、CME MES、CME SR3 / ZB / ZF / ZN）。
 缺的 50 个里，卡在总览页路上的是这几个篮子：

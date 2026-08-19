@@ -55,30 +55,38 @@ series/asx.csv 里**没有成交股数列**（官方 MAR 不发），能配成�
 ② 将来若改回 FY 分桶，`year_label='end'` 的判据现成（同 SGX，与 JPX 的 'start' 相反），
 不必重新验。图已按用户指令改日历年，FY 对账基准见本节与 `_fy_probe()`。
 
+━━ ASX 24 分品种那 8 列来自**另一份官方文件**，所以起点比全页主体晚 ━━
+contracts_spi200_futures / oi_spi200_futures / contracts_3y_bond_futures /
+oi_3y_bond_futures / contracts_10y_bond_futures / oi_10y_bond_futures /
+contracts_90d_bankbill_futures / oi_90d_bankbill_futures 的源不是 MAR，而是
+ASX 24 的 **Monthly SFE Trading Report**（MAR 本身只给期货合计，不拆品种），
+链接逐期印在 MAR 正文的期货段末尾。
+
+2026-08 之前这 8 列**只有 2026-06 / 2026-07 两个月**，当时写的理由是「官方只保留最近
+2 期、历史不可回补」。那句话已被逐期实发 HTTP 推翻：卡住的是抓取器 ——
+`fetch/asx.py:_SFE_LINK` 把文件名里的日期写死成 8 位数字，而官方在 YYMMDD / DDMMYY /
+DDMMYYYY 之间来回换（见 fetch/asx.py 口径坑 22）。正则改成不解释日期之后，
+`python3 fetch/asx.py --sfe-backfill 2020-06 2026-05` 一次补齐 72 个月，
+**这 8 列因此上了页面**，起点由 `_span_zh()` 现算，不写死。
+
+⚠️ 起点那个月是**辅源在官网上的存档天花板，不是产品上线时间** —— SPI 200 与
+3/10 年期国债期货在 2016 年之前很久就在跑了。2020-05 及更早那批 MAR 指向的是老站点
+路径 `/data/market-reports/…`，该路径今天整体 302 到 404 页（200 + text/html 的
+soft-404）；2020-06 那一期起改指 DAM，从此一直在。
+⚠️ `build/pools.py` 里「asx 没有分品种序列，故排除出利率衍生品池」那条理由
+**本轮没有跟着改** —— pools.py 是跨页共用文件，不在本轮授权范围内。数据已经有了，
+谁改 pools 谁重读这一段。
+
 ━━ 有意不上页面的列，以及理由 ━━
-· contracts_spi200_futures / oi_spi200_futures / contracts_3y_bond_futures /
-  oi_3y_bond_futures / contracts_10y_bond_futures / oi_10y_bond_futures /
-  contracts_90d_bankbill_futures / oi_90d_bankbill_futures
-  —— **series 里目前只有 2026-06 与 2026-07 两个月**，两个点画不出任何时序图，
-  放上页面只会让人以为「ASX 的国债期货是 2026 年才有的」。
-  ⚠️ **理由到此为止 —— 「不可回补」那句已被实测推翻，别再拿它当结论。**
-  旧注释（与 docs/verify/asx.md 口径坑 8）说「官方只保留最近 2 期，更早的直链一律 404」。
-  2026-08 实测：MAR 正文里印的那条链接，2020-06…2026-07 共 74 期**全部 200 +
-  application/pdf**，且用未改动的 `asx.parse_sfe` 全部解析成功。真正卡住的是抓取器 ——
-  `fetch/asx.py:_SFE_LINK` 的文件名日期写死了 8 位数字，而官方 2020-06…2026-05
-  一直用 6 位（YYMMDD 与 DDMMYY 交替），只有 2026-06 起才是 8 位。
-  ⇒ 这 8 列是 **fetcher_window，不是 source_hard**；官方源的天花板是 2020-06
-  （2016-10…2020-05 只在 Wayback 有，属第三方存档，是否破例要用户拍板；
-  2016-01…2016-09 官方与 Wayback 都没有，那几期 MAR 正文本就没印分品种链接）。
-  回补这 8 列的工作**本轮没做**（本轮的目标是主体回到 2016-01，而这 8 列无论如何
-  到不了 2016-01，起点会与全页差 53 个月）。谁来做都要连带重写 build/pools.py:1292
-  把 asx 排除出利率衍生品池的那条理由。
-  ⇒ 在此之前，本页的期货口径只到 ASX 24 合计（adv_futures_contracts）。
 · trading_days_cash / trading_days_futures / trading_days_eto —— 三套分母（2026-04 实测
   分别是 19 / 20 / 19），ADV 已经除过了；上页面只会诱导别人拿错的那套去反推月总量。
 · contracts_futures_total / contracts_options_on_futures_total /
   contracts_futures_and_options_total / contracts_single_stock_options_total /
   contracts_index_options_total —— 月总量，= ADV × 对应交易日，与 adv_* 重复。
+  ⚠ 这条**不适用于**上面那 8 列分品种：官方那份分品种报告只印月度总量，
+  不印分品种 ADV，所以分品种图只能画月总量 —— 那不是重复，那是唯一形态。
+  也正因如此，分品种图与 ASX 24 合计那张图（contracts/day）**单位不同、不能对读**，
+  要比就先各自除以 trading_days_futures。
 """
 
 import csv
@@ -258,9 +266,13 @@ _PAGE_COLS = []
 #   源头未印  官方那时的 MAR 里没有这一行（别处也没有，或在另一份文档里）；
 #   口径切换  同一件事换了定义，旧列在同一期停发、新列在同一期开印 —— 必须打断点；
 #   披露扩充  官方那一期新增了行，旧行照常继续（不是断点，只是左边没有）。
-# 「产品那时没上线」这一类在 ASX **一条都没有**：本页所有列的起点差异全是文档变更，
-# SPI 200、国债期货、Centre Point 在 2016-01 之前很久就都在跑了。有人以后想拿
-# 「产品新上线」解释某条线的起点，先回来看这里。
+#   辅源天花板 这一列不出自 MAR，而出自另一份官方文件，那份文件**官网上只存到某月**；
+#            更早的那批链接指向已下线的老站点路径（今天整体 soft-404）。
+#            官方当年**印过**这些数，是站点后来把它们撤了 —— 与「源头未印」不是一回事。
+#            2026-08 新增这一类（分品种那 8 列），此前只有前三类。
+# 「产品那时没上线」这一类在 ASX **一条都没有**：本页所有列的起点差异全是文档变更或
+# 站点存档边界，SPI 200、国债期货、Centre Point 在 2016-01 之前很久就都在跑了。
+# 有人以后想拿「产品新上线」解释某条线的起点，先回来看这里。
 #
 # 每条理由后面的月份与行名都是 2026-08 逐期打开官方 PDF 核出来的（缓存在 cache/）。
 _START_WHY = {
@@ -307,6 +319,25 @@ _START_WHY = {
         '2024-08 那一期停印 <code>Total cash margins held on balance sheet</code>、'
         '改印 <code>Total margins held</code>（由「表内现金保证金」扩到「保证金总额」）。'
         '两列首尾相接，2024-07 是旧口径最后一期 ⇒ 页面打断点'),
+    # ── 分品种那 8 列：同一个原因，写在第一列上，其余引它 ────────────────────────
+    # 顺序跟着 _PAGE_COLS 走（`_late_starts()` 按首月排序，首月相同的保持出现顺序），
+    # 而 SPEC 里成交量组在未平仓组之前、SPI 200 在每组之首 ⇒ 下面这条一定排在最前。
+    'contracts_spi200_futures': (
+        '辅源天花板',
+        'MAR 只给 ASX 24 的期货合计，**不拆品种**；分品种的月度成交与未平仓出自另一份'
+        '官方文件 —— ASX 24 的 <b>Monthly SFE Trading Report</b>，链接逐期印在 MAR 正文里。'
+        '这份文件在官网上的存档只回到本列的首月：更早那批 MAR 印的链接指向老站点路径 '
+        '<code>/data/market-reports/…</code>，今天整体 302 到 404 页'
+        '（HTTP 200 + text/html 的 soft-404），拿不到原件。'
+        '<b>不是那时没有这些合约</b> —— SPI 200 与国债期货在本页首月之前很久就在跑了，'
+        'ASX 24 的期货合计（本页另有其图）也一直有数'),
+    'contracts_3y_bond_futures': ('同上', '与上一列同源同一份文件'),
+    'contracts_10y_bond_futures': ('同上', '与上一列同源同一份文件'),
+    'contracts_90d_bankbill_futures': ('同上', '与上一列同源同一份文件'),
+    'oi_spi200_futures': ('同上', '与上一列同源同一份文件（未平仓侧，同一张表的另一列）'),
+    'oi_3y_bond_futures': ('同上', '与上一列同源同一份文件'),
+    'oi_10y_bond_futures': ('同上', '与上一列同源同一份文件'),
+    'oi_90d_bankbill_futures': ('同上', '与上一列同源同一份文件'),
 }
 
 
@@ -365,10 +396,66 @@ def _msg_precision_step():
     return None
 
 
+_SFE_COLS = ('contracts_spi200_futures', 'oi_spi200_futures',
+             'contracts_3y_bond_futures', 'oi_3y_bond_futures',
+             'contracts_10y_bond_futures', 'oi_10y_bond_futures',
+             'contracts_90d_bankbill_futures', 'oi_90d_bankbill_futures')
+
+
+def _sfe_span():
+    """分品种那 8 列的覆盖情况 —— (首月, 末月, 有值月数, 八列不齐的月份数)。
+
+    八列同出一份文件、同一张表，所以正常情况下要么八列都有、要么八列都没有；
+    「不齐的月数」不为 0 就是抓取出了岔子，图注会照实说。全部现算：这 8 列每多一个月，
+    图注自己跟着走，不留一个会过期的手打数字。
+    """
+    ms = [r['month'] for r in _rows()
+          if any((r.get(c) or '').strip() for c in _SFE_COLS)]
+    if not ms:
+        return None, None, 0, 0
+    ragged = sum(1 for r in _rows()
+                 if any((r.get(c) or '').strip() for c in _SFE_COLS)
+                 and not all((r.get(c) or '').strip() for c in _SFE_COLS))
+    return ms[0], ms[-1], len(ms), ragged
+
+
 _PTN, _PTMED, _PTMAX, _PTONM = _per_trade_check()
 _FY0, _FY1, _FYL, _FYA, _FYB = _fy_probe()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
 _MSG_STEP = _msg_precision_step()
+_SFE0, _SFE1, _SFEN, _SFERAG = _sfe_span()
+
+
+_NOTE_SFE = (
+    '<b>分品种那两组图（SPI 200 / 3 年期国债 / 10 年期国债 / 90 日银行票据）'
+    '不出自月度活动报告 MAR，而出自另一份官方文件。</b>'
+    'MAR 只给 ASX 24 的期货合计，从不拆品种；拆品种的是 ASX 24 自家的 '
+    '<b>Monthly SFE Trading Report</b>，链接逐期印在 MAR 正文的期货段末尾。'
+    + ((f'本页这 8 列覆盖 <b>{_SFE0} 至 {_SFE1}</b>，共 {_SFEN} 个月'
+        + ('，八列逐月同齐。' if not _SFERAG else
+           f'，其中 <b>{_SFERAG} 个月八列不齐</b>（同一张表的列不该有这种事，'
+           f'值得回头查抓取）。'))
+       if _SFE0 else '本页这 8 列当前没有数据。')
+    + '<b>左边那一大段空白是那份文件的存档边界，不是产品那时不存在。</b>'
+      '更早的 MAR 同样印了链接，但指向已下线的老站点路径 '
+      '<code>/data/market-reports/…</code>，今天整体 302 到官网 404 页'
+      '（HTTP 200 + text/html 的 soft-404，不是干净的 404）；'
+      '首月那一期起改指 DAM，从此一直在。SPI 200 与国债期货本身在本页首月之前很久'
+      '就在跑了 —— 想看那段时间的期货活动，用同页的「ASX 24 期货与期货期权 ADV」。'
+      '<b>入库时每一期都过两道独立闸门</b>：① PDF 首页抬头必须逐字写着该数据月'
+      '（防止取到隔壁月份 —— 官方有两期 MAR 的 PDF 链接注解是陈的，指着三个月前那一份，'
+      '而那一份本身完全合法，只有抬头认得出来）；'
+      '② 该期报告的 <code>Total Exchange</code> 当月量必须等于同月 MAR 的'
+      '期货 + 期权合计（回补时逐月核过，零例外）—— 这一条同时证明了「文件对上了月份」'
+      '与「我们没有把哪一行读串」。'
+      '<b>口径两处要留神</b>：成交量那组是<b>当月总张数</b>（官方那份报告只印月总量、'
+      '不印分品种 ADV），与「ASX 24 期货与期货期权 ADV」那张图的 contracts/day '
+      '<b>不是一个单位</b>，要比先各自除以当月期货交易日数；未平仓那四张是'
+      '<b>月末快照</b>（存量），同比走点对点。'
+      '<b>后期报告回看同一个月时偶尔会给出与当期不同的数</b>'
+      '（实测一例：2025-03 期把 2024-03 的 3 年期国债成交印成 5,378,144，'
+      '而 2024-03 当期印的是 5,379,506，差 0.03%）—— 本页一律用<b>当期原值</b>，'
+      '不拿后期重述值盖历史。')
 
 
 _NOTE_DECOMP = (
@@ -524,6 +611,38 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'adv_options_on_futures_contracts', 'zh': '其中：期货期权',
              'unit': 'contracts/day', 'fmt': 'f0c'},
+        ]},
+
+        # ── ASX 24 分品种：源是另一份官方文件（Monthly SFE Trading Report）──────────
+        # 四条同为 contracts/month、量级同在百万级，同轴可比。起点现算写进组名 ——
+        # 那是**辅源的存档天花板**，不是产品上线时间（理由见 _START_WHY，页面上会印出来）。
+        # 单位与上面那组 ASX 24 合计（contracts/day）不同，底座按单位分桶，不会画到一根轴上。
+        # 前面几十个月为空：底座 `ex_lines` 见到窗口内有 null 会自动降级成不平滑的
+        # `lines`（平滑图型把 null 当 0，会画出一条塌到零的假线），这里不需要也不该
+        # 自己去裁窗口 —— 左端那片空白正是「辅源从哪个月才有」的如实呈现。
+        {'zh': f'ASX 24 分品种月度成交（{_span_zh("contracts_spi200_futures")}）', 'cols': [
+            {'col': 'contracts_spi200_futures', 'zh': 'SPI 200 股指期货',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+            {'col': 'contracts_3y_bond_futures', 'zh': '3 年期国债期货',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+            {'col': 'contracts_10y_bond_futures', 'zh': '10 年期国债期货',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+            {'col': 'contracts_90d_bankbill_futures', 'zh': '90 日银行票据期货',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+        ]},
+
+        # 未平仓是**月末快照**，与上面的当月成交量是两件事（成交量是流量、OI 是存量），
+        # 所以四列一律 stock=True：底座会把它们各自拆成一张期末口径的图、
+        # 次轴同比走点对点（月末 vs 去年同月月末），而不是按流量口径算。
+        {'zh': f'ASX 24 分品种月末未平仓（{_span_zh("oi_spi200_futures")}）', 'cols': [
+            {'col': 'oi_spi200_futures', 'zh': 'SPI 200 股指期货',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
+            {'col': 'oi_3y_bond_futures', 'zh': '3 年期国债期货',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
+            {'col': 'oi_10y_bond_futures', 'zh': '10 年期国债期货',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
+            {'col': 'oi_90d_bankbill_futures', 'zh': '90 日银行票据期货',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
         ]},
 
         {'zh': '股票期权（ASX Clear ETO）ADV', 'cols': [
@@ -723,13 +842,7 @@ SPEC = {
         '上市实体数含批发/零售债券发行人、LIC/LIT 与订书式实体，**不含 ETF 与 mFund**。'
         '与 HKEX 的 new_listings（主板 + GEM 股票）口径不同，横截面页放一起要标注。',
 
-        '本页**没有** ASX 24 分品种（SPI 200 / 3 年期与 10 年期国债期货 / 90 日银行票据）'
-        '的月度序列 —— series/asx.csv 里目前只有 2026-06 与 2026-07 两个月，画不出时序。'
-        '过去这里写的理由是「官方只保留最近 2 期、更早的一律 404 且不可回补」，'
-        '**那句话 2026-08 已被逐期实发 HTTP 证伪**：分品种报告 2020-06 至今共 74 期'
-        '全部可下载并解析，卡住的是抓取器里写死 8 位日期的文件名正则'
-        '（官方 2020-06…2026-05 用的是 6 位）。回补这 8 列是待办事项，不是不可能；'
-        '官方源的天花板是 2020-06，仍比本页主体晚 53 个月，所以补上之后也要单独标起点。',
+        _NOTE_SFE,
 
         '本页全部金额为澳元。跨币种比较由 build/notional.py 统一换算：'
         '流量（ADT、成交额、融资额、当月清算额）配月均汇率，'
@@ -817,18 +930,23 @@ if _LATE:
     _NOTE_STARTS = (
         f'<b>本页各图的窗口都自 {_FIRST} 起，但线不都从左边缘开始 —— 左半边的空白是'
         f'披露史，不是数据缺失。</b>'
-        f'ASX 每隔几年往月度活动报告（MAR）里加行 / 换行，所以有 {len(_LATE)} 列的'
-        f'官方披露起点晚于本页首月，在图上表现为「同一张图里两条线起点不同」或'
+        f'ASX 每隔几年往月度活动报告（MAR）里加行 / 换行，另有几列的源根本不是 MAR '
+        f'而是另一份官网上只存到某月的文件，所以有 {len(_LATE)} 列的'
+        f'可取起点晚于本页首月，在图上表现为「同一张图里两条线起点不同」或'
         f'「左边一段没有柱」。逐列的起点各自对应什么事（月份现算，理由逐列核过官方 PDF）：'
         # 内联 style 是刻意的：assets/style.css 只给 `.prose ol` 定了 padding-left: 19px，
         # 嵌套的 ul 会吃浏览器默认的 40px，缩进比外层还深一倍。样式表是**共用文件**，
         # 为一页图注去动它不划算，所以就地写死这两条。
         '<ul style="margin:6px 0 0;padding-left:17px">' + ''.join(_bullets) + '</ul>'
-        '<b>三类理由的区别要紧：</b>「源头未印」是官方那时根本没发这个数，'
+        '<b>四类理由的区别要紧：</b>「源头未印」是官方那时根本没发这个数，'
         '「口径切换」是同一件事换了定义（旧列同期停发、页面必须打断点），'
-        '「披露扩充」是新增行、旧行照常。<b>没有任何一列属于「产品那时才上线」</b>——'
-        'SPI 200、国债期货、Centre Point 在 2016-01 之前很久就在跑了，'
-        '起点差异全部来自文档本身的变更。'
+        '「披露扩充」是新增行、旧行照常，'
+        '「辅源天花板」是这一列不出自 MAR 而出自另一份官方文件、'
+        '而那份文件官网上只存到某月（官方当年<b>印过</b>，是站点后来把更早的撤了 ——'
+        '与「源头未印」不是一回事）。'
+        f'<b>没有任何一列属于「产品那时才上线」</b>——'
+        f'SPI 200、国债期货、Centre Point 在 {_FIRST} 之前很久就在跑了，'
+        '起点差异要么来自文档本身的变更，要么来自站点的存档边界。'
         '<b>一律不许拿别的列相加去补左边那段。</b>最容易被误会的是 '
         '<code>value_cash_onmarket_audbn</code>（仅场内成交额）：它可由'
         '「连续竞价 + 集合竞价 + Centre Point」三项相加倒推'

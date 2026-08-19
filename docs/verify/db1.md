@@ -59,7 +59,7 @@ Xetra 现货 ADV（€bn）、Eurex ADV 与 OI（分利率 / 股指）、Clearst
 | 全量列表 | 同域 `.../monthly-statistics-cash-market/4090756!search?pageNum={0,1}&hitsPerPage=50&sort=sDate%20desc` |
 | 直链 | `.../resource/blob/{blobid}/{hash}/data/FWB_Monthly_Cash_Market_Statistics.{YYYYMMDD}.xls` |
 | 格式 | BIFF `.xls`，24 张 sheet，要的是 `Cover` + `Total View` |
-| 覆盖 | **只有 2024-12 → 2026-07（20 期）** |
+| 覆盖 | **官方 CMS 只挂 2024-12 → 2026-07（20 期）** —— 这是那条 live 链路的物理天花板，不是抓取器窗口没开。⚠ 入库序列比这深得多：2026-08-18 由 `build/basefill/db1_spot_2016.py` 一次性回填到 2016-01/2016-06，见「历史深度」一节 |
 
 姊妹档（个股级，不建议入管道）：`Monthly_Turnover_Statistics.{YYYYMMDD}.xls`，
 同页 `.../monthly-turnover-statistics/4090748!search?...`，**150 期，2014-02 起** ——
@@ -148,7 +148,7 @@ Xetra 现货 ADV（€bn）、Eurex ADV 与 OI（分利率 / 股指）、Clearst
 | `gsf_collateral` | **2007-01** | |
 | 商品 TWh / 360T / cash balances | **2015-01** | |
 | `otc_*` / `ims_licensed_index_contracts` | **2016-01** | |
-| **FWB 分资产类别拆分（`turnover_xetra_*`）** | **2024-12** | ⚠ 只有 20 期，这是唯一的浅坑；总额可用 `cash_orderbook` 回溯到 2010-01 |
+| ~~**FWB 分资产类别拆分（`turnover_xetra_*`）**~~ | ~~2024-12~~ → **2016-01 / 2016-06** | **2026-08-18 已回填，「只有 20 期」不再成立。** 现值（2026-08-19 实测）：`turnover_xetra_eurbn` / `turnover_fwb_eurbn` **2016-01 起 127 个月**；六条资产类别拆分列 **2016-06 起**，但**各自条数不同** —— `turnover_xetra_equities` / `_etp` 107、`turnover_fwb_equities` / `_bonds` / `_structured` 62、`turnover_fwb_etp` / `_funds` 52、`turnover_xetra_structured` 只有 21。⚠ 那**不是断档，是官方在不同年份才开始拆这些类**；回填走的是一次性脚本 `build/basefill/db1_spot_2016.py`（archive.org 上的官方工作簿副本 + 月度现货新闻稿两条腿），不在 cron 路径上，官方 CMS 今天仍然只挂 20 期 |
 
 **Eurex 月度文件目录无断档**：1998-11 → 2026-07 共 333 个月全部在架（实测把 13 页 615 条抓全后逐月比对，missing = 空列表）。
 

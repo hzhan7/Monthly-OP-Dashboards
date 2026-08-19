@@ -32,14 +32,24 @@ Release of market announcement authorised by: Andrew Tobin, Chief Financial Offi
 裸 `urllib`（默认 Python-urllib UA、零 header）对三个入口全部 200：无 Cloudflare、
 无 Akamai、无 JS 渲染、无登录墙、不校验 UA。满足无人值守。
 
-辅源（分品种，**只有最近 2 期**）：Monthly SFE Trading Report
-      https://www.asx.com.au/content/dam/asx/documents/unlinked-docs/
-      monthly-futures-markets-report-{DDMMYYYY}.pdf      DDMMYYYY = 数据月最后一个日历日
-这份报告的链接**印在 MAR 正文第 4 页**，所以不用猜文件名，跟着 MAR 走。
+辅源（分品种）：Monthly SFE Trading Report，**官方一直留着，可回补到 2020-06**
+      https://www.asx.com.au/content/dam/asx/documents/unlinked-docs/…（命名见口径坑 22）
+这份报告的链接**印在 MAR 正文的期货段末尾**（第 3–4 页，"Volume of futures trading by
+individual contract is available at the following link:"），所以不用猜文件名，跟着 MAR 走。
 它是 SPI 200 / 3 年期国债 / 10 年期国债 / 90 日银行票据分品种月度成交与未平仓的
 唯一官方月度来源（MAR 本身只给期货合计，不拆品种）。
-实测 `31072026` / `30062026` → 200 application/pdf；`31052026` / `31122025` /
-`30062025` → 真 404。**历史不可回补**，只能从 2026-06 起逐月往后攒，漏抓一个月就永久缺一个月。
+**天花板 2020-06**，判据是**链接指向哪个目录**，不是「多久以前」：
+  · 2019-12…2020-05 的 MAR 指向老站点路径 `/data/market-reports/…`，
+    该路径今天整体 302 到 `content/asx/404.html`（200 + text/html，soft-404，口径坑 2）；
+  · 2020-06 起指向 DAM（`/content/dam/asx/documents/unlinked-docs/…`），2026-08 逐月实发
+    72/72（2020-06…2026-05）全部 200 + application/pdf + `%PDF-`，且用**未改动的**
+    `parse_sfe` 全部解析成功；
+  · 2016-09…2019-11 的 MAR 也印链接，同样是老站点路径 ⇒ 同样 soft-404；
+    2016-01…2016-08 的 MAR 正文里根本没有这条链接。
+「只有最近 2 期 / 历史不可回补」是 2026-08 之前记在这里的结论，**已被上面这轮实发推翻**，
+成因见口径坑 22 —— 它是抓取器的文件名正则太窄，不是官方撤了历史。
+`update()` 只对 `mon >= SFE_START` 的月份发这一次请求；历史一次性回补走
+`python3 fetch/asx.py --sfe-backfill 2020-06 2026-05`（**同样只走媒体中心，不碰同意页**）。
 
 ━━ 发布节奏 ━━
 次月第 3–8 个日历日，众数第 5–6 日，悉尼时间 8:30–9:30 am 上市场。
@@ -262,12 +272,52 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     句尾还挂着一个 pcp 数（"compared to 18.0 in December"），两个数字同在一句，
     位置不能当判据，只有月名能。
 
+22. **分品种报告的直链有 5 代命名、日期段 3 种写法，还会在正文里换行断开 ——
+    所以一个字符都不许自己拼，也不许解释里面的数字。** 2026-08 之前这里写的是
+    `monthly-futures-markets-report-(\\d{8})\\.pdf`，8 位那个量词把 2020-06…2026-05
+    共 72 期**全部**挡在门外，表现是「那 8 列只有最近 2 个月有值」，于是被写成
+    「官方只保留最近 2 期」。当时的「实测 404」也是这么来的：拿数据月最后一天
+    **自己拼**出 `31052026`，而官方那一期的真名是 `290526`。逐期实测的五代命名：
+        2019-12…2020-01  /data/market-reports/MonthlySfeMarketsReport{YYMMDD}.pdf
+        2020-02…2020-05  /data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf
+        2020-06          …/unlinked-docs/MonthlyFuturesMarketsReport{YYMMDD}.pdf
+        2020-07…2022-02  …/unlinked-docs/finance-reports[/{YYYY}]/monthly-futures-markets-report-{YYMMDD}.pdf
+        2022-03 至今     …/unlinked-docs/monthly-futures-markets-report-{日期}.pdf
+    日期段：2025-07 之前 YYMMDD、2025-08…2026-05 改 DDMMYY（**2026-02 那一期又写回
+    YYMMDD 的 `260227`**，所以连「哪一代用哪种」都不能当规则）、2026-06 起 DDMMYYYY。
+    主机名 www / www2 与 http / https 也随期乱换（www2 与 http 都 302 到 https://www，
+    正常跟随重定向即可）。
+    ⇒ `_SFE_LINK` 只认文件名词干，**日期段写成 `\\S*`，一个数字都不解释**。
+    两条取链路径都要，因为**两条各自都有坏掉的月份**：
+      · 正文文本：URL 会在 `-` 处**换行断开**（2020-08 断在 `…report-\n200831.pdf`、
+        2020-10 断在 `…markets-\nreport-201031.pdf`），所以搜之前要先把
+        「以 `-` 或 `/` 结尾的行」与下一行接回去（`_URL_WRAP`）；
+      · PDF 链接注解（`page.get_links()`）：2022-04…2022-10 与 2023-12 共 8 期**没有注解**；
+        2021-01 / 2021-02 的注解把句号也吃进了 URL（`…210131.pdf.`）；
+        **2024-11 与 2024-12 的注解是陈的，两期都指向 9 月那一份 `240930.pdf`**，
+        而正文印的是对的（`241129` / `241231`）。
+    ⇒ `_sfe_urls()` 两条都收、正文优先、注解兜底，逐条试；
+    最终判官是 `parse_sfe()` 的首页抬头校验（"Monthly SFE Trading Report for
+    November 2024"）—— 陈注解下回来的是一份**完全合法的 9 月报告**，
+    只有抬头能把它认出来，字节数、Content-Type、`%PDF-` 一律正常。
+    ⇒ 2026-08 回补 2020-06…2026-05 那 72 期时，除抬头外还逐月核了两条独立判据，
+      都是「官方自己在别处印的同一个数」，不是我们算的：
+        · **跨期自证**（同口径坑 19 的手法）：t 期报告的第 2 / 第 6 个数字列就是
+          t−12 月的当月量 / 月末 OI，拿它撞 series 里已有的那一行 —— **495/496 格一致**。
+          唯一不一致的那格是官方**后期重述**：2025-03 期把 2024-03 的 `3 Year Bonds / YT`
+          当月量印成 5,378,144（YTD 同步差同样的 1,362），而 2024-03 当期印的是
+          **5,379,506**。按本模块的规矩入库用**当期原值**，重述值不写。
+        · **与 MAR 对账**：该期报告页尾 `Total Exchange` 的当月量 = 同月 MAR 的
+          `contracts_futures_and_options_total`，**74/74 全等**。这一条同时证明
+          「文件配对到了正确的月份」与「值列没有整体串行」。
+
 ━━ 依赖 ━━ pymupdf（import 名 fitz）。不依赖 pandas / requests。
 """
 
 import csv
 import os
 import re
+import time
 import urllib.request
 from datetime import datetime
 
@@ -307,6 +357,13 @@ _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 # 2016-01…2019-11 只能由人跑一次 `--backfill`（走公告存档，要过同意页，见 docstring）。
 SERIES_START = '2016-01'
 
+# 分品种辅源（Monthly SFE Trading Report）的官方天花板 —— 见 docstring 辅源节与口径坑 22。
+# 2020-05 及更早的 MAR 指向老站点 `/data/market-reports/…`，那条路径今天整体 soft-404；
+# 2020-06 那一期起指向 DAM，2026-08 实发 72/72 全部 200 + 真 PDF。
+# 它只用来**省掉必然失败的请求**：`update()` 与 `--sfe-backfill` 都不对更早的月份发请求。
+# 真要复核这条天花板，把它改早再跑 `--sfe-backfill`，失败原因会逐月印出来。
+SFE_START = '2020-06'
+
 _MONTHS = {m.lower(): i for i, m in enumerate(
     ['January', 'February', 'March', 'April', 'May', 'June', 'July',
      'August', 'September', 'October', 'November', 'December'], 1)}
@@ -345,9 +402,17 @@ _PUB_DATE = re.compile(
     r'^(\d{1,2})\s+(January|February|March|April|May|June|July|August|'
     r'September|October|November|December)\s+(\d{4})$')
 
-# 分品种辅源：链接印在 MAR 正文里，直接从 PDF 文本里抠
+# 分品种辅源：链接印在 MAR 正文里，直接从 PDF 文本里抠。
+# 只认**文件名词干**（五代命名见口径坑 22），日期段一律 `\S*` —— 官方在 YYMMDD /
+# DDMMYY / DDMMYYYY 之间来回换，写死任何一种长度都会静默丢掉几十期。
+# 非贪婪到第一个 `.pdf`，所以注解里多出来的句号（`…210131.pdf.`）不会被吃进来。
 _SFE_LINK = re.compile(
-    r'https?://[^\s]*monthly-futures-markets-report-(\d{8})\.pdf', re.I)
+    r'https?://\S*'
+    r'(?:monthly-futures-markets-report-|monthlyfuturesmarketsreport|monthlysfemarketsreport)'
+    r'\S*?\.pdf', re.I)
+# 正文里的 URL 会在 `-` / `/` 处换行断开（口径坑 22）。只接「行尾是 - 或 /」这一种，
+# 且只用于抠链接的那份临时文本 —— 不碰任何参与数值解析的文本。
+_URL_WRAP = re.compile(r'(?<=[-/])[ \t]*\n[ \t]*(?=\S)')
 
 # 口径坑 21：`S&P/ASX 200 VIX` 的月内日均值在 **2019-10 之前不是表行，而是正文要点里的一句话**。
 # 两种句式（实测就这两种，2016-01…2026-07 共 71 期 PDF 逐期跑过）：
@@ -928,22 +993,39 @@ def _pub_date(path):
     return None, None
 
 
-def _sfe_url(path):
-    """从 MAR 正文里抠出当期分品种报告直链 -> (url, 'DDMMYYYY')；没有返回 (None, None)。
+def _sfe_urls(path):
+    """从 MAR 里抠出当期分品种报告直链，**按可信度排序的列表**（可能为空）。
 
-    不自己按「数据月最后一天」拼 URL：2024 版正文里的那条链接是另一套命名
-    （`MonthlyFuturesMarketsReport240731.pdf`，YYMMDD），而且现在整条路径都是
-    soft-404（口径坑 2）。跟着官方正文走，官方哪天再改命名也不用改代码。
+    不自己按「数据月最后一天」拼 URL：官方五年里换过 5 代命名、日期段 3 种写法
+    （口径坑 22），拼出来的名字在 72 期里只有 2 期碰巧对。跟着官方印的走，
+    官方哪天再改命名也不用改代码。
+
+    正文文本与 PDF 链接注解**两条都收**，因为两条各自都有坏掉的月份：正文里的 URL 会
+    换行断开（先用 `_URL_WRAP` 接回去），注解则有 8 期缺失、2 期多带句号、
+    **2 期是陈的（2024-11 / 2024-12 都指向 240930）**。正文排在前面，注解兜底；
+    哪一条是真的由 `parse_sfe()` 的首页抬头校验当场判定 —— 陈注解取回来的是一份
+    合法但月份不对的 PDF，只有抬头认得出来。
     """
+    out = []
+
+    def add(u):
+        u = (u or '').strip()
+        if u and u not in out:
+            out.append(u)
+
     doc = fitz.open(path)
     try:
         for pi in range(doc.page_count):
-            m = _SFE_LINK.search(doc[pi].get_text())
-            if m:
-                return m.group(0), m.group(1)
+            for m in _SFE_LINK.finditer(_URL_WRAP.sub('', doc[pi].get_text())):
+                add(m.group(0))
+        for pi in range(doc.page_count):
+            for lnk in doc[pi].get_links():
+                m = _SFE_LINK.search(lnk.get('uri') or '')
+                if m:
+                    add(m.group(0))
     finally:
         doc.close()
-    return None, None
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1194,21 +1276,43 @@ def _fetch_one(month, urls, cache_dir, want_sfe=True):
     _validate(month, rec)
     day, evidence = _pub_date(orig_path or corr_path)
 
-    # 分品种（辅源）：官方只保留最近 2 期，抓不到是常态，不能因此让整月失败。
+    # 分品种（辅源）：抓不到不让整月失败 —— 那 8 列在 series 里留空，_validate 不管它们。
     if want_sfe:
-        sfe_url, stamp = _sfe_url(path)
-        if sfe_url:
-            spath = os.path.join(cache_dir, 'asx_sfe_%s.pdf' % month)
-            try:
-                if not os.path.exists(spath):
-                    _write_bytes(spath, _http_pdf(sfe_url))
-                rec.update(parse_sfe(spath, month))
-            except AsxFetchError:
-                # 404 / soft-404 = 官方已经把这一期撤下来了（滚动 2 期窗口）。
-                # 这些列在 series 里天然为空，_validate 不管它们。
-                if os.path.exists(spath):
-                    os.remove(spath)
+        rec.update(fetch_sfe(month, path, cache_dir)[0])
     return rec, day, evidence
+
+
+def fetch_sfe(month, mar_path, cache_dir):
+    """下载并解析当月分品种报告 -> ({列: 值}, [失败说明])；拿不到返回 ({}, 原因列表)。
+
+    MAR 里印的候选链接逐条试，**第一条能解析出当月数据的胜出**。判定「能解析」靠
+    `parse_sfe()` 的首页抬头校验，不是 HTTP 状态 —— 2024-11 / 2024-12 的陈注解会
+    200 回来一份完全合法的 9 月报告（口径坑 22），只有抬头能把它挡掉。
+
+    先落临时文件再 `os.replace`：解析失败的那份**不会**盖掉 cache 里已有的原件。
+    """
+    spath = os.path.join(cache_dir, 'asx_sfe_%s.pdf' % month)
+    why = []
+    if os.path.exists(spath):
+        try:
+            return parse_sfe(spath, month), why
+        except AsxFetchError as e:                        # 缓存里那份不对，重下
+            why.append('缓存 %s：%s' % (os.path.basename(spath), e))
+    for url in _sfe_urls(mar_path):
+        tmp = spath + '.new'
+        try:
+            _write_bytes(tmp, _http_pdf(url))
+            out = parse_sfe(tmp, month)
+        except AsxFetchError as e:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            why.append('%s：%s' % (url, e))
+            continue
+        os.replace(tmp, spath)
+        return out, why
+    if not why:
+        why.append('MAR 正文与链接注解里都没有分品种报告直链')
+    return {}, why
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1267,8 +1371,9 @@ def update(series_dir, cache_dir):
         也偶尔在后续月报的 pcp 列里体现重述。让自动流程去改历史，等于把「官方悄悄
         改过数」这件事永久掩盖掉；要重刷历史请人工重跑 `--backfill`。
       · 只在既有行**原本为空**的格子上回补。目前唯一会用到的是分品种那 8 列：
-        它们的源只保留最近 2 期，所以本月跑的时候上个月那行可能还空着，而下个月
-        再想补就永远补不到了 —— 不做这个回补，那 8 列会长期只有最新一行有数。
+        MAR 与分品种报告偶尔不同时上线，上个月那行可能还空着 —— 顺手补一次。
+        （更早的空洞不在 cron 的职责里，人工跑 `--sfe-backfill`：那条源官方一直留着，
+        补一次就固化进 CSV，见 docstring 辅源节。）
       · 未被触碰的单元格是原样字符串搬运，所以「什么都没变」时文件字节级不变。
     """
     csv_path = os.path.join(series_dir, 'asx.csv')
@@ -1292,11 +1397,10 @@ def update(series_dir, cache_dir):
     pub = {}
     added = []
     for mon in sorted(set(todo)):
-        # 分品种辅源官方只保留最近 2 期（更早的日期是真 404 或 soft-404），
-        # 所以只对这 2 个月发那一次请求 —— 补历史时挨个去敲一条必然失败的路径，
-        # 既拖慢自己也是给对方站点添堵。
+        # 分品种辅源在 SFE_START 之前一条必然失败（老站点路径整体 soft-404），
+        # 挨个去敲既拖慢自己也是给对方站点添堵 —— 所以按天花板挡掉。
         rec, day, evidence = _fetch_one(
-            mon, index[mon], cache_dir, want_sfe=(mon >= prev))
+            mon, index[mon], cache_dir, want_sfe=(mon >= SFE_START))
         if day:
             pub[mon] = (day, evidence)
         if mon in have:
@@ -1395,12 +1499,64 @@ def _backfill(series_dir, cache_dir, start, end):
     return sorted(added)
 
 
+def _sfe_backfill(series_dir, cache_dir, start, end):
+    """把**分品种那 8 列**补进 series/asx.csv（人工跑一次，cron 不碰）。
+
+    与 `_backfill()` 的区别：这条路 **只走媒体中心**（MAR 在那里从 2019-12 起齐全），
+    再从 MAR 正文里印的直链取分品种报告 —— **全程不碰公告存档的那张同意页**。
+    只填既有行里**原本为空**的格子，一格已有值都不覆盖；CSV 里没有的月份跳过并报出来
+    （那 8 列是辅源，不该由它去新建行）。
+    """
+    csv_path = os.path.join(series_dir, 'asx.csv')
+    header, body = _read_csv(csv_path)
+    idx = {name: i for i, name in enumerate(header)}
+    missing_cols = [c for c in SFE_COLUMNS if c not in idx]
+    if missing_cols:
+        raise AsxFetchError('series/asx.csv 里没有这些列：%s' % missing_cols)
+    have = {r[0]: r for r in body}
+    index = _discover_media_centre(cache_dir)
+
+    filled, skipped = [], []
+    for mon in _month_range(max(start, SFE_START), end):
+        row = have.get(mon)
+        if row is None:
+            skipped.append((mon, 'series 里没有这一行（先跑 update / --backfill）'))
+            continue
+        blanks = [c for c in SFE_COLUMNS if not row[idx[c]].strip()]
+        if not blanks:
+            continue                                   # 已有值：永不覆盖
+        if mon not in index:
+            skipped.append((mon, '媒体中心索引里没有这个月的 MAR'))
+            continue
+        urls = index[mon]
+        mar = (_download_mar(mon, urls['corr'], True, cache_dir) if urls.get('corr')
+               else _download_mar(mon, urls['orig'], False, cache_dir))
+        rec, why = fetch_sfe(mon, mar, cache_dir)
+        # 只在这条**人工一次性**路径上限速：一轮要敲七十几份 PDF，
+        # cron 那条路每月只发 1 次请求，不需要也不该被这半秒拖住。
+        time.sleep(0.5)
+        if not rec:
+            skipped.append((mon, '；'.join(why)))
+            continue
+        for c in blanks:
+            if rec.get(c):
+                row[idx[c]] = rec[c]
+        filled.append(mon)
+        print('  %s  %s' % (mon, '  '.join('%s=%s' % (c, rec[c]) for c in SFE_COLUMNS)))
+    _write_csv(csv_path, header, body)
+    for mon, reason in skipped:
+        print('  跳过 %s：%s' % (mon, reason))
+    return filled
+
+
 if __name__ == '__main__':
     import sys
     _here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _series, _cache = os.path.join(_here, 'series'), os.path.join(_here, 'cache')
     if len(sys.argv) >= 2 and sys.argv[1] == '--backfill':
         print('backfilled:', _backfill(_series, _cache, sys.argv[2], sys.argv[3]))
+    elif len(sys.argv) >= 2 and sys.argv[1] == '--sfe-backfill':
+        print('sfe filled:', _sfe_backfill(_series, _cache, sys.argv[2], sys.argv[3]))
     else:
         print('latest:', latest_month(_cache))
         print('added :', update(_series, _cache))

@@ -10,7 +10,8 @@ exhibit 逐张移植成 payload 对象，写出 data/axp.js。图的顺序、编
    重述了 24 个月历史。两套口径不可直接连比。PDF 分两页呈现，网页版没有分页概念，
    改用标题里的板块小标题 + Exhibit 分组表达：
      【新口径 · Card balances】  Exhibit 2-7    2024-05 起（重述历史 + 最新申报）
-     【Lending Trust · 10-D】    Exhibit 8-11   2023-07 起（与 8-K 同日报送）
+     【Lending Trust · 10-D】    Exhibit 8-11   **2016-01 起**（与 8-K 同日报送）
+                                                （2026-08-18 由 10-D 申报清单回补，此前写 2023-07）
      【旧口径 · loans only】     Exhibit 12-18  2016-01 → 2026-03，只用于长历史与季节性
 
 数据源（只读 series/*.csv，不碰 build/data/）：
@@ -175,8 +176,11 @@ _tf['month'] = pd.PeriodIndex(_tf['month'], freq='M')
 _fd = _tf.set_index('month')['filing_date']
 SOURCE_DATE = str(_fd.get(LATEST, '')) or None
 
-# 10-D 全字段，按 axp_trust.csv 的月份对齐（两者起点不同：full 从 2023-01，摘要从 2023-07，
-# 排名口径必须与摘要表同一个窗口，否则「36 个月里第几低」会和汇总表那一列各说各话）。
+# 10-D 全字段，按 axp_trust.csv 的月份对齐。**2026-08-18 回补后两张表起点已经相同**
+# （都从 2016-01 起、各 127 个月；此处原写「full 从 2023-01，摘要从 2023-07」）。
+# reindex 这一步照留 —— 它保证的是「排名口径与摘要表同一个窗口」这条不变量，
+# 而不是在补两张表的起点差；两表哪天再次错开，这行仍然是唯一挡住
+# 「N 个月里第几低」与汇总表各说各话的地方。
 # 这张表才有违约率的**分解**：ann_default_rate_pct（毛）− ann_recovery_rate_pct（回收）
 # = ann_default_rate_net_pct（净，等于摘要表的 nco_pct）。brief 的 Trust 那句要用它。
 tfull = _tf.set_index('month').sort_index().reindex(trust.index)

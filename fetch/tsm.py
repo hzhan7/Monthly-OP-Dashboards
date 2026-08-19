@@ -529,7 +529,7 @@ def _append_rows(path, fieldnames, rows):
 # ══════════════════════════════════════════════════════════════════════════
 # 这一段**不进 update()**，不属于无人值守路径：公司債的两张表没有月度自动源
 # （MOPS ajax_t47sb17 只留滚动 3 个月窗口），新券要人工录进 tranches.csv。
-# 它存在的理由是：`tsm_bonds_monthly.csv` 的 77 行里只有最近 3 行是抄来的，
+# 它存在的理由是：`tsm_bonds_monthly.csv` 里只有最近 3 行是抄来的，
 # 其余全是**推导值** —— 推导值必须能被一条命令重放并对着官方年末余额验一遍，
 # 否则下一次「谁改了一行、哪年开始不对」就只能靠肉眼。
 #
@@ -546,6 +546,21 @@ def _append_rows(path, fieldnames, rows):
 
 BONDS_TRANCHES_CSV = 'tsm_bonds_tranches.csv'
 BONDS_MONTHLY_CSV = 'tsm_bonds_monthly.csv'
+
+# ── 月度序列的窗口起点 ─────────────────────────────────────────────────────
+# 2011-09 = 100-1 甲/乙兩檔的发行月，也是**能被官方年末余额验到的最早一个月**：
+# BOND_YEAR_END_NTMN 的第一行就是 2011（22,500），而 2011-09…2011-12 这四个月的
+# 在外券恰好就是那三檔（D5-C 4,500 + 100-1A 10,500 + 100-1B 7,500 = 22,500），
+# 所以窗口第一格是被 20-F 直接钉住的，不是外推出来的。
+#
+# ⚠️ **不要为了「从零画起」把它挪到 2002-01**（登记簿里最早那檔 D5-C 的发行月）。
+#    登记簿在 2011 之前是**知道自己不全**的：唯一那一行叫「Domestic 5th **丙類**」——
+#    同一期的甲類/乙類（更短年期，理应在 2002–2009 年间在外）根本不在表里，
+#    本仓也没有任何 2011 年之前的年末余额可以把它们核出来
+#    （BOND_YEAR_END_NTMN 起于 2011，20-F 最早那份是 FY2012）。
+#    从 2002-01 起画，头八年就是一条**已知偏低、且无从校验**的 NT$4.5bn 直线，
+#    而它会长得跟真数据一模一样。宁可窗口短九年，不要九年假线。
+BONDS_FROM = '2011-09'
 
 # 各年 20-F「BONDS PAYABLE」附注里 **Domestic unsecured bonds** 那一行的原值，NT$mn。
 # 每个年末都出现在两份 20-F 里（当年那份的右栏、次年那份的左栏），两处一致才录。
@@ -638,25 +653,43 @@ def _bond_state(tranches, k, ccy='TWD'):
     return tot, n, (num / tot if tot else None)
 
 
-def rebuild_bonds_monthly(series_dir):
+def rebuild_bonds_monthly(series_dir, start=BONDS_FROM):
     """按逐檔登记簿 + 同一套还本时程重算 tsm_bonds_monthly.csv 的每一行。
 
-    窗口沿用现有文件的 month 列，不自行扩张 —— 首行 2020-03 的 outstanding
-    因此**包含一笔 NT$35,300mn 的期初存量**（2020-03 时点上尚未到期的
-    100-/101-/102- 旧券），它不等于 issued 的累计和。这是有意的：
-    序列讲的是「在外余额」，不是「本窗口内发行了多少」。
+    窗口 = `BONDS_FROM` … 现有文件最后一个月，**逐月铺满**（不靠现有文件的
+    month 列驱动，那样窗口就再也长不了；也不自行往右扩，右端归月报表管）。
+
+    首行的 outstanding **包含一笔期初存量** —— `BONDS_FROM` 之前发行、当时
+    尚未到期的券（2011-09 起点上就是 D5-C 一檔 NT$4,500mn，2002-01 发、
+    2012-01 到期），所以首行 outstanding ≠ 首行 issued。这是有意的：
+    序列讲的是「在外余额」，不是「本窗口内发行了多少」。图注里那条
+    期初存量双算互校（build/mrspecs/_tsm_extra.py Exhibit ⑤）验的就是这一笔。
+
+    **既有行只许重放、不许改写**：已经在文件里的月份重算后必须逐格相同，
+    否则抛异常。真要改历史（像 2026-08 补旧券那次）走 `--restate`，
+    让「我在改历史」这件事必须被显式打出来，而不是被一次例行重建顺手做掉。
     """
     path = os.path.join(series_dir, BONDS_MONTHLY_CSV)
     fields, rows = _read_csv(path)
     tr = _bond_tranches(series_dir)
+    k0, k1 = _bond_key(_bond_month(start)), _bond_key(_bond_month(rows[-1]['month']))
+    if k1 < k0:
+        raise RuntimeError('BONDS_FROM=%s 晚于文件最后一个月 %s' % (start, rows[-1]['month']))
     out = []
-    for r in rows:
-        k = _bond_key(_bond_month(r['month']))
+    for k in range(k0, k1 + 1):
         tot, n, wac = _bond_state(tr, k)
+        if tot <= 0:
+            # 中间月在外余额为零本身不是错（2006-2013 的背書保證就真有 77 个月为零），
+            # 但公司債这条线一旦断在中间，wavg_coupon 就没有定义、图上会出现假缺口。
+            # 目前 2011-09 起一个月都没有，所以这里直接拒绝，而不是悄悄写空。
+            raise RuntimeError('%04d-%02d 在外余额为 0，wavg_coupon 无定义 —— '
+                               '窗口起点要么落在有券的月份，要么先为「零余额月」'
+                               '定义一套画法（缺月 null + 非 DENSE 图型）'
+                               % (k // 12, k % 12 + 1))
         iss = sum(t['amount'] for t in tr if t['ccy'] == 'TWD' and t['issue'] == k)
         rep = sum(a for t in tr if t['ccy'] == 'TWD'
                   for km, a in t['legs'] if km == k and t['issue'] <= k)
-        out.append({'month': r['month'],
+        out.append({'month': '%04d-%02d' % (k // 12, k % 12 + 1),
                     'issued_twd_k': '%d' % round(iss),
                     'repaid_twd_k': '%d' % round(rep),
                     'outstanding_twd_k': '%d' % round(tot),
@@ -670,6 +703,25 @@ def rebuild_bonds_monthly(series_dir):
             raise RuntimeError('%s 递推不自洽：%d ≠ %d' % (out[i]['month'], exp,
                                                           int(out[i]['outstanding_twd_k'])))
     return fields, out
+
+
+def diff_bonds_monthly(series_dir, new_rows):
+    """新算出来的行 vs 已入库的行，只比**两边都有**的月份。返回差异描述列表。
+
+    空列表 = 这次重建只是往左补月份，一格既有值都没动。
+    """
+    _, old = _read_csv(os.path.join(series_dir, BONDS_MONTHLY_CSV))
+    now = {r['month']: r for r in new_rows}
+    bad = []
+    for r in old:
+        n = now.get(r['month'])
+        if n is None:
+            bad.append('%s 从新窗口里消失了（窗口只许往左长，不许砍掉既有月）' % r['month'])
+            continue
+        for c in r:
+            if r[c] != n[c]:
+                bad.append('%s %s：已入库 %s → 重算 %s' % (r['month'], c, r[c], n[c]))
+    return bad
 
 
 def _bond_dec_fx(series_dir, year):
@@ -877,12 +929,26 @@ if __name__ == '__main__':
             raise SystemExit('[tsm][bonds] 对账未通过，拒绝写文件')
         if '--write' in sys.argv[2:]:
             _f, _rows = rebuild_bonds_monthly(sd)
+            _bad = diff_bonds_monthly(sd, _rows)
+            if _bad:
+                print('[tsm][bonds] 重算结果与已入库的行不一致（%d 处）：' % len(_bad))
+                print('\n'.join('    ' + b for b in _bad[:20]))
+                if len(_bad) > 20:
+                    print('    …另有 %d 处' % (len(_bad) - 20))
+                if '--restate' not in sys.argv[2:]:
+                    raise SystemExit(
+                        '[tsm][bonds] 拒绝写文件：例行重建只许往左补月份，不许改写既有值。'
+                        '若这确实是一次有据可查的历史更正（像 2026-08 补 100-/101-/102- '
+                        '旧券那次），显式加 --restate，并把依据写进 BOND_YEAR_END_NTMN '
+                        '上方的修正记录。')
+                print('[tsm][bonds] --restate：已确认要改写上面这些既有值')
             _p = os.path.join(sd, BONDS_MONTHLY_CSV)
             with open(_p, 'w', newline='', encoding='utf-8') as _fh:
                 _w = csv.DictWriter(_fh, fieldnames=_f, lineterminator=_line_terminator(_p))
                 _w.writeheader()
                 _w.writerows(_rows)
-            print('[tsm][bonds] 已重写 %s（%d 行）' % (BONDS_MONTHLY_CSV, len(_rows)))
+            print('[tsm][bonds] 已重写 %s（%d 行，%s … %s）'
+                  % (BONDS_MONTHLY_CSV, len(_rows), _rows[0]['month'], _rows[-1]['month']))
     elif len(sys.argv) > 1 and sys.argv[1] == 'latest':
         print(latest_month(cd))
     elif len(sys.argv) > 2 and sys.argv[1] == 'pubdate':

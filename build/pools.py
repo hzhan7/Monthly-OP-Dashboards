@@ -670,7 +670,7 @@ POOLS = [
              ],
              'contracts_col': ['adv_us_equities_matched_shares_bn']},
             {'key': 'ndaq', 'disp': 'Nasdaq', 'color': 'GOLD', 'csv': 'ndaq.csv',
-             'start': '2025-01', 'in_share': True,
+             'start': '2010-10', 'in_share': True,
              'chain': [
                  {'col': 'vol_us_cash_matched_mnsh', 'src': 'shares',
                   'unit_scale': MN,
@@ -700,7 +700,7 @@ POOLS = [
                      'capture 与 Cboe 分母不同（total vs touched），只进量与份额，'
                      '不进 take rate 图（docs/verify/verify_miax.md §四）'},
             {'key': 'tmx', 'disp': 'TMX（加拿大，另一分母）', 'color': 'GREEN',
-             'csv': 'tmx.csv', 'start': '2021-08', 'in_share': False,
+             'csv': 'tmx.csv', 'start': '2015-01', 'in_share': False,
              'chain': [
                  {'col': 'tmx_all_volume_shares', 'src': 'shares',
                   'unit_scale': ONE,
@@ -1290,10 +1290,16 @@ POOLS = [
             ('enx', 'Euronext 没有利率期货。MTS 现券与回购（adv_mts_cash_eurbn / '
                     'taadv_mts_repo_eurbn）是**另一层**（现券与回购不是衍生品），'
                     '禁止进同一张图'),
+            # 2026-08-19 更正：「只有 2 个月、不可回补」已被推翻 —— 那是抓取器的
+            # 文件名日期正则写死 8 位数字（官方五年换过 5 代命名、日期段有 6/8 位两种写法）
+            # 造成的 fetcher_window，不是官方没有。现已回补到 **2020-06**（官方存档天花板，
+            # 更早的链接指向已下线的老站点、整体 soft-404）。
+            # 这句话是**印在页面上的**，留着就是在页面上讲一件已经不成立的事。
             ('asx', '分品种列（contracts_3y_bond_futures / contracts_10y_bond_futures / '
-                    'contracts_90d_bankbill_futures）实测只有 2026-06 起 **2 个月**，'
-                    '不可回补。用 adv_futures_contracts 合计当代理会漂移，'
-                    '只能进 apac_deriv 的混合口径'),
+                    'contracts_90d_bankbill_futures）自 2020-06 起（官方存档天花板），'
+                    '比本池其余成员晚 53 个月；且它们是**月总张数**不是 ADV，'
+                    '要入池得先除以 trading_days_futures。两条都得处理才谈得上纳入，'
+                    '本轮未纳入，仍只进 apac_deriv 的混合口径'),
         ],
     },
 
@@ -2225,6 +2231,10 @@ def validate():
 
         keys, colors = set(), set()
         for m in members:
+            # ⚠ `start` 是**惰性字段**：这里只校验它「在不在」，全仓没有任何地方拿它切数据
+            #   （池子的起点由各列自己的首个非空月现算）。所以它写错不会让图错，
+            #   只会让**注释与页面文案**说假话 —— 2026-08 那轮回补就让 tmx / ndaq / asx
+            #   三处同时过期。改数据起点时记得回来同步它，或者干脆哪天把它改成现算。
             for k in ('key', 'disp', 'color', 'csv', 'start'):
                 if k not in m:
                     errs.append('池 %s 的成员 %r 缺字段 %r' % (pid, m.get('key'), k))

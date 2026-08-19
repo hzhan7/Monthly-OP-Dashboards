@@ -23,8 +23,11 @@
    outstanding 只有 SEC 月度 6-K 有。**两者差约 26%，永远不可拼接成一条序列**。
 4. `tsm_bonds_monthly.csv` / `tsm_bonds_tranches.csv` 公司債 —— MOPS ajax_t47sb17 +
    逐檔發行辦法登记簿 + FY2012~FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表。
-   月报表只留滚动 3 个月窗口，77 个月里只有最近 3 个来自月报表本身，
-   其余由券别登记簿与还本时程重建。
+   月报表只留滚动 3 个月窗口，**整条序列里只有最近 3 个月来自月报表本身**，
+   其余由券别登记簿与还本时程重建（月数别写死在这里，图注 `len(bmo)` 现算）。
+   窗口起点由 `fetch/tsm.py` 的 `BONDS_FROM` 定，2026-08 从 2020-03 前移到
+   2011-09 —— 理由（「能被 20-F 年末余额钉住的最早一个月」、以及为什么不到 2002）
+   写在那个常量上方，别在这里复述第二份。
    **对账口径要说清是哪一段、对的是哪个子集**（这一句以前写成「已用六个 20-F 年末
    余额对账」，那是一句自我表扬式的假话，实测只有三年能对上）：
      · 现在：`python3 fetch/tsm.py bonds` 逐年打表。2011–2019 九个年末对
@@ -51,6 +54,7 @@ import numpy as np
 import pandas as pd
 
 import mrbase
+import mrwin                        # 只调用（MAX_XLABS / DENSE），不改它
 from mrbase import L, mlab
 
 _SEC = '非营收月度披露：台积电按月申报的另外五张表'
@@ -394,6 +398,17 @@ def exhibits(ds, spec, n0, R):
     t5 = tw[tw['tenor_years'] == 5.0]
     new5 = t5.groupby('ip')['coupon_pct'].last().reindex(bmo.index).ffill()
     stock = bmo['wavg_coupon_pct'].astype(float)
+    # `lines_endlabels` 属于 mrwin.DENSE，吃不了前导 null（首点为 null 直接 TypeError）。
+    # 深色线是 ffill 出来的阶梯，只要窗口起点早于第一檔 5 年券就会留下一段 NaN。
+    # 现在起点恰好就是第一檔 5 年券的发行月，所以不留 —— 但那是**当前事实**，
+    # 谁把 BONDS_FROM 再往前挪一格就不成立了，所以在这里显式挡住。
+    if new5.isna().any():
+        raise ValueError(
+            f'新发 5 年券阶梯在窗口左端有 {int(new5.isna().sum())} 个 null'
+            f'（{mlab(bmo.index[0])} 早于第一檔 5 年券 {mlab(t5["ip"].min())}）—— '
+            f'lines_endlabels 是 DENSE 图型，前导 null 会被平滑成一条塌到零的假线。'
+            f'要么把 fetch/tsm.py 的 BONDS_FROM 挪回不早于第一檔 5 年券，'
+            f'要么给这张图换一个吃得了 null 的图型（见 mrwin.DENSE）')
 
     # 首月的在外余额里有一块是**窗口之前发的**：序列讲的是在外存量，不是「窗口内
     # 发了多少」，所以首行 outstanding ≠ issued。这个差额必须在图注里交代 ——
@@ -406,17 +421,99 @@ def exhibits(ds, spec, n0, R):
              + float(r0['repaid_twd_k']))
     pre = tw[(tw['ip'] < p0) & (tw['mp'] > p0)]
     n_pre = int(r0['n_tranches_outstanding']) - int((tw['ip'] == p0).sum())
+    # 简单求和只在期初那批券都是一次还本时成立。以前这句话只是括号里的一句提醒，
+    # 提醒挡不住任何东西 —— 期初真混进一檔 amort_50_50，上面的 `pre_k` 会静默偏大，
+    # 而两边**同时**偏大（月度表倒推的也不知道有半腿已还），互校照样通过。
+    if len(pre) and (pre['repayment_type'] != 'bullet').any():
+        raise ValueError(
+            f'{mlab(p0)} 的期初存量里有非 bullet 券：'
+            f'{list(pre.loc[pre["repayment_type"] != "bullet", "tranche_id"])} —— '
+            f'本处按发行额直接求和，分次还本的券在起点前可能已还掉一半，'
+            f'这个和会偏大而互校两边一起偏大、发现不了。'
+            f'请改用 fetch/tsm.py 的 `_bond_state` 口径重算期初存量')
     if abs(float(pre['issue_amount_k'].sum()) - pre_k) > 1.0 or len(pre) != n_pre:
         raise ValueError(
             f'{mlab(p0)} 期初存量对不上：月度表倒推 {pre_k:,.0f}k / {n_pre} 檔，'
             f'登记簿算出 {pre["issue_amount_k"].sum():,.0f}k / {len(pre)} 檔。'
             f'两份 CSV 已经不同步 —— 跑 `python3 fetch/tsm.py bonds --write` 重建，'
-            f'不要在这里改判据把它凑过去（若期初有分次还本的券，本处的简单求和本身也不再成立）')
-    # 图注里点名的「最后一檔旧券」「最便宜的一檔新券」都从数据里取，不手打券号 ——
-    # 手打的那一刻它就跟数据脱钩了，下次谁补一檔进来它照样理直气壮地印着旧答案。
-    last_pre = pre.loc[pre['mp'].idxmax()]
-    # 「哪几个系列」也现算：100- 系列到 2019-01 就还完了，窗口起点上其实只剩 101-/102-。
-    pre_ser = '-/'.join(sorted({str(q).split('-')[0] for q in pre['qibie']})) + '-'
+            f'不要在这里改判据把它凑过去')
+    # 图注里点名的券号都从数据里取，不手打 —— 手打的那一刻它就跟数据脱钩了，
+    # 下次谁补一檔进来它照样理直气壮地印着旧答案。
+    # 期初只剩一檔时直接点券号；多檔时才归并成「1xx- 系列」。
+    # ⚠️ 别无脑 `qibie.split('-')[0]`：2011 年之前那檔的期别是 "Domestic 5th"，
+    #    没有连字号，切完再补一个 '-' 就印成「Domestic 5th- 系列」。
+    if not len(pre):
+        pre_txt = ''
+    elif len(pre) == 1:
+        pre_txt = f'1 檔 {pre["tranche_id"].iloc[0]}（{mlab(pre["ip"].iloc[0])} 发、' \
+                  f'票面 {pre["coupon_pct"].iloc[0]:.2f}%）'
+    else:
+        _ser = sorted({str(q).rsplit('-', 1)[0] for q in pre['qibie']})
+        pre_txt = (f'{n_pre} 檔 {"/".join(_ser)} 系列的旧券'
+                   f'（{pre["coupon_pct"].min():.2f}%–{pre["coupon_pct"].max():.2f}%，'
+                   f'{mlab(pre["ip"].min())}–{mlab(pre["ip"].max())} 发）')
+    # 「期初存量」与「首行 outstanding ≠ issued」这两句在起点前移到第一檔发行月时
+    # 会变成假话（那时期初为 0、两者相等），所以整句按 pre 是否为空现算，不写死。
+    # ⚠️ 别用 `stock.iloc[<某个下标>]` 取「期初券到期那个月」—— 下标是当前窗口的
+    #    巧合，窗口一变它就静默指向另一个月份，而且指错了也照样印得出一个数。
+    if len(pre):
+        _pm = pre['mp'].max()
+        pre_sent = (f'起点之所以高，是因为窗口开始时账上还压着期初存量 '
+                    f'NT${pre_k / 1e6:,.1f}bn —— {pre_txt}；'
+                    f'这批券的最后一檔于 {mlab(_pm)} 到期，当月平均票面 '
+                    f'{float(stock.loc[_pm]):.2f}%。')
+        pre_warn = (f'⚠️ <b>首行 outstanding ≠ 首行 issued</b>：{mlab(p0)} 发了 '
+                    f'NT${float(r0["issued_twd_k"]) / 1e6:,.1f}bn，在外却是 '
+                    f'NT${float(r0["outstanding_twd_k"]) / 1e6:,.1f}bn，'
+                    f'差的就是上面那笔期初存量。'
+                    f'这条序列画的是<b>在外余额</b>，不是窗口内的发行累计。')
+    else:
+        pre_sent = (f'{mlab(p0)} 就是第一檔的发行月，<b>期初存量为 0</b>，'
+                    f'首行 outstanding 等于首行 issued。')
+        pre_warn = ('这条序列画的是<b>在外余额</b>，不是窗口内的发行累计 —— '
+                    '两者眼下恰好相等，只因为窗口起点上账面还没有旧券。')
+
+    # ── 发行断层：窗口里最长的一段「一檔没发」──────────────────────────────
+    # 这一段是扩窗之后才看得见的，也是深色阶梯线为什么会平躺好几年的唯一原因。
+    _im = sorted(tw.loc[tw['ip'] >= p0, 'ip'].unique())
+    _g0, _g1 = max(zip(_im, _im[1:]), key=lambda ab: ab[1].ordinal - ab[0].ordinal)
+    dry = _g1.ordinal - _g0.ordinal - 1                       # 中间几个月一檔没发
+    _pk = _g1 - 1                                             # 断层末月
+    # 深色阶梯的最长平台**不等于**发行断层：断层里最后那几次发行（102-2/3/4）压根
+    # 没有 5 年期的一檔，所以阶梯早在断层开始前 7 个月就已经不动了。
+    # 两个数各算各的，别拿一个去说另一个。
+    _run = new5.groupby((new5 != new5.shift()).cumsum())
+    _flat = max(_run, key=lambda kv: len(kv[1]))[1]
+    # 平均成本那条线的形状：**五个转折点全部现算**。
+    # 只报「首点 → 全局最低 → 末点」会印出「一路降到谷底」这种话，而中间那段
+    # 明明是在往上走 —— 图注自己打自己脸。断层两端就是那两个转折，顺手拿来用。
+    _pts, _seen = [], set()
+    for _p in (p0, stock.loc[:_g0].idxmin(), _pk, stock.idxmin(), bmo.index[-1]):
+        if _p not in _seen:
+            _seen.add(_p)
+            _pts.append(_p)
+    path_txt = ' → '.join(f'{float(stock.loc[_p]):.2f}%（{mlab(_p)}）' for _p in _pts)
+    # 断层两端的在外券，从登记簿独立切一遍；再拿它跟月度表的 wavg_coupon 对。
+    # 这是期初存量互校之外的**第二处双算**，而且落在新扩出来的那段窗口里 ——
+    # 不然扩出来的 102 个月就只有递推自洽这一条 guard 罩着。
+    _live = tw[(tw['ip'] <= _g0) & (tw['mp'] > _g0)]
+    gone, stay = _live[_live['mp'] <= _pk], _live[_live['mp'] > _pk]
+    if (_live['repayment_type'] != 'bullet').any():
+        raise ValueError(
+            f'{mlab(_g0)} 在外券里有分次还本的：'
+            f'{list(_live.loc[_live["repayment_type"] != "bullet", "tranche_id"])} —— '
+            f'下面按发行额加权算票面，半腿已还的券权重会偏大')
+
+    def _wa(x):
+        return float((x['issue_amount_k'] * x['coupon_pct']).sum() / x['issue_amount_k'].sum())
+
+    for _p, _sub in ((_g0, _live), (_pk, stay)):
+        if abs(_wa(_sub) - float(stock.loc[_p])) > 5e-4:
+            raise ValueError(
+                f'{mlab(_p)} 加权票面双算对不上：登记簿切出 {len(_sub)} 檔算得 '
+                f'{_wa(_sub):.4f}%，月度表印的是 {float(stock.loc[_p]):.4f}%。'
+                f'两份 CSV 已经不同步 —— 跑 `python3 fetch/tsm.py bonds --write` 重建，'
+                f'不要在这里放宽容差把它凑过去')
     # 被剔除的宝岛债也现算：檔数、名目、票面、年期全从登记簿取。
     # 「两檔各 US$10 亿、2.70%/3.10%、30–40 年期」以前是手打的，
     # 再发一檔宝岛债它就变成一句错话，而且是**图注自己说自己剔干净了**那种错话。
@@ -430,10 +527,20 @@ def exhibits(ds, spec, n0, R):
                   usd['tenor_years'].min(), usd['tenor_years'].max()))
     win = tw[tw['ip'] >= p0]
     cheap = win.loc[win['coupon_pct'].idxmin()]
+    # 「把平均从谷底拖回来的」必须是**谷底之后**发的券。取全窗口最贵的一檔会拿到
+    # 102-4F（2.10%，Sep-13）—— 一檔在谷底之前七年就已到期的旧券，
+    # 印在「近年新券」四个字后面就是一句直接说反了的话。
+    aft = win[win['ip'] > stock.idxmin()]
+    dear = aft.loc[aft['coupon_pct'].idxmax()]
+    n_dec = sum(1 for p in bmo.index if p.month == 12)         # 窗口内跨过的年末数
     ex.append(base(
         n=nxt(), kind='lines_endlabels', height=320,
         title='Cost of NT$ debt: new issues vs. the stock（新台币债务资金成本）',
-        xlabels=[mlab(p) for p in bmo.index], xstep=3, xrot=90,
+        # x 标签密度不写死：窗口长度是会变的，`xstep=3` 在 77 个月时是 26 个标签、
+        # 在 179 个月时就是 60 个 —— 一堵字墙。沿用 mrwin 给长月份轴定的同一条
+        # 上限（约 MAX_XLABS 个标签），只调用不改它。
+        xlabels=[mlab(p) for p in bmo.index], xrot=90,
+        xstep=max(3, -(-len(bmo) // mrwin.MAX_XLABS)),
         ylab='Coupon, %', fmt='pct2', label_fmt='pct2',
         series=[{'name': '最近一档新发 5 年券票面（边际成本）', 'color': 'NAVY',
                  'values': L(new5.values)},
@@ -442,25 +549,43 @@ def exhibits(ds, spec, n0, R):
         src_extra=_S_BOND,
         note=('深色是<b>边际成本</b>（今天再借要多少钱），浅色是<b>平均成本</b>'
               '（历史存量的实际负担）；两线之间的缺口是还没重定价完的部分。'
-              f'新发 5 年券自 {new5.min():.2f}%（{mlab(new5.idxmin())}）升到 '
-              f'{new5.iloc[-1]:.2f}%。深色线是<b>阶梯</b>：保持上一档 5 年券的票面'
-              '直到下一档发行，不是月度报价。'
-              f'<b>浅色那条不是单调上行，是先降后升</b>：自 {stock.iloc[0]:.2f}%'
-              f'（{mlab(p0)}）降到 {stock.min():.2f}%（{mlab(stock.idxmin())}）'
-              f'再回到 {stock.iloc[-1]:.2f}%。起点之所以高，是因为窗口开始时账上已经'
-              f'压着 NT${pre_k / 1e6:,.1f}bn、{n_pre} 檔 {pre_ser} 系列的旧券'
-              f'（{pre["coupon_pct"].min():.2f}%–{pre["coupon_pct"].max():.2f}%，'
-              f'{mlab(pre["ip"].min())}–{mlab(pre["ip"].max())} 发）；'
-              f'其后那批超低息新券（最低 {cheap["coupon_pct"]:.2f}%，'
-              f'{cheap["tranche_id"]}，{mlab(cheap["ip"])}）把平均一路摊薄，'
-              f'末檔旧券 {last_pre["tranche_id"]} 于 {mlab(last_pre["mp"])} 到期之后，'
-              '平均成本才跟着新发利率往上走。'
-              f'⚠️ <b>首行 outstanding ≠ 首行 issued</b>：{mlab(p0)} 发了 '
-              f'NT${float(r0["issued_twd_k"]) / 1e6:,.1f}bn，在外却是 '
-              f'NT${float(r0["outstanding_twd_k"]) / 1e6:,.1f}bn，差的就是上面那笔期初存量。'
-              '这条序列画的是<b>在外余额</b>，不是窗口内的发行累计。'
+              f'<b>浅色那条既不是单调上行也不是一个 V，是四段来回</b>：'
+              f'{path_txt}。'
+              + pre_sent +
+              # ── 扩窗之后才看得见的那一段，也是本图最容易被读反的一段 ──
+              f'<b>中间那段上坡不是利率在涨，是幸存者在换</b>：'
+              f'{mlab(_g0)} 发完最后一檔之后整整 {dry} 个月一檔没发，'
+              f'直到 {mlab(_g1)} 才重新开闸。这段断层里平均票面从 '
+              f'{float(stock.loc[_g0]):.2f}% 爬到 {float(stock.loc[_pk]):.2f}%，'
+              f'而这期间<b>没有任何一檔债被重定价</b> —— 只是先到期的 {len(gone)} 檔'
+              f'（NT${float(gone["issue_amount_k"].sum()) / 1e6:,.1f}bn、'
+              f'加权 {_wa(gone):.2f}%）比留下来的 {len(stay)} 檔'
+              f'（NT${float(stay["issue_amount_k"].sum()) / 1e6:,.1f}bn、'
+              f'加权 {_wa(stay):.2f}%）便宜，短券先走、长券留下，把平均抬了上去。'
+              f'其后 {mlab(_g1)} 起那批超低息新券（最低 {cheap["coupon_pct"]:.2f}%，'
+              f'{cheap["tranche_id"]}，{mlab(cheap["ip"])}）把平均砸到谷底，'
+              f'再由谷底之后新发的那批（最贵 {dear["coupon_pct"]:.2f}%，'
+              f'{dear["tranche_id"]}，{mlab(dear["ip"])}）拖回来。'
+              # ── 深色线 ──
+              f'深色线是<b>阶梯</b>：保持上一档 5 年券的票面直到下一档发行，'
+              f'不是月度报价。它自 {new5.iloc[0]:.2f}%（{mlab(p0)}）跌到 '
+              f'{new5.min():.2f}%（{mlab(new5.idxmin())}）、再升到 '
+              f'{new5.iloc[-1]:.2f}%（{mlab(bmo.index[-1])}）。'
+              f'⚠️ 它最长的一段平台有 <b>{len(_flat)} 个月</b>'
+              f'（{mlab(_flat.index[0])}–{mlab(_flat.index[-1])}），'
+              f'全程是 {float(_flat.iloc[0]):.2f}% 这一个 {mlab(_flat.index[0])} 的旧报价被拖着走，'
+              f'<b>不是「那些年都能按这个价借到钱」</b> —— 其中 {mlab(_g0)} 之后、'
+              f'{mlab(_g1)} 之前的 {dry} 个月台积电一檔新台币债都没发；'
+              f'平台比断层还长 {len(_flat) - dry} 个月，'
+              f'是因为断层前最后几次发行里根本没有 5 年期的一檔。'
+              + pre_warn +
               f'⚠️ {len(bmo)} 个月里<b>只有最近 3 个月来自月报表本身</b>'
               '（MOPS 只留滚动 3 个月窗口），其余由券别登记簿与还本时程重建，仍是推导值。'
+              f'窗口起点定在 {mlab(p0)} 而不是更早，是因为它是<b>能被官方年末余额'
+              f'钉住的最早一个月</b>（本图跨过 {n_dec} 个年末，逐年对账见下）；'
+              '再往前登记簿自己知道自己不全（唯一那檔 2002 年的旧券叫「丙類」，'
+              '同期的甲類/乙類根本不在表里），而本仓最早的 20-F 是 FY2012，'
+              '核都没得核 —— 详见 <code>fetch/tsm.py</code> 的 <code>BONDS_FROM</code>。'
               '对账口径分两段，别混着说：2011–2019 九个年末对 20-F 的 '
               '<b>Domestic unsecured bonds</b> 零误差；2020 起那一行含宝岛债，'
               '只能核到「残差 = 宝岛债名目 × 年末即期」。逐年结果跑 '

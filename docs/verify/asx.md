@@ -105,7 +105,7 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 | `adt_cash_trades` | 日均成交笔数 |
 | `avg_value_per_trade_aud` | 平均每笔金额 A$ |
 | `trading_days_cash` | 现货交易日数 |
-| `vix_asx200_avg` | S&P/ASX 200 VIX 月内日均值（2016 年后才有此行） |
+| `vix_asx200_avg` | S&P/ASX 200 VIX 月内日均值。⚠ **「2016 年后才有此行」说的是表行，不是这个数**：2019-10 之前 MAR 把它印在正文要点里（`The average daily S&P/ASX 200 VIX was 11.3`），2019-10 起才多出表行；两处 26 期并存实测同值。`fetch/asx.py::_vix_from_prose()` 因此在表里取不到时从正文取，**这一列的 `since` 是 2016-01 而不是 2019-10**，2026-08-19 实测 2016-01..2026-07 共 127 个月一格不缺 |
 
 ### ASX 24 期货与期货期权
 
@@ -184,6 +184,13 @@ https://www.asx.com.au/about/market-statistics/historical-market-statistics/hist
 | 2012 及更早 | 更旧，字段错位、偶有空 token 让 `float()` 炸 | ❌ 不建议 |
 
 **建议 series 起点：`2016-01`**（版式统一、字段最全、正好落在仓库偏好的 2015/2016）。退一步可到 `2015-10`。追到 2009 收益极低、代价很高。
+
+> **2026-08-19 追记：这条建议已落地。** `series/asx.csv` 今天是 **2016-01 → 2026-07 共 127 行 × 55 列**
+> （2026-08-18 从 2017-10 起前推 21 个月）。⚠ 行数不等于列长，三列另有各自的边界：
+> `participants_asx_total` / `participants_asx24_total` **2016-07 才有**（2016-01…06 的 MAR
+> 正文到 SETTLEMENT 段就结束，官方没印）、`capital_initial_raised_audmn` 与
+> `capital_total_raised_incl_other_audmn` **2023-09 之后官方不再印**。
+> 「分品种数据只有 2 个月窗口且不可回补」（下文口径坑 8）**没变**。
 
 ---
 

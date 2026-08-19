@@ -41,21 +41,44 @@
 九家全部走**通用底座**：没有一家有自己的 `build/<t>.py`，页面由 `build/single.py`
 读 `build/specs/<t>.py` 生成。好处是删掉一家不留残渣（见第 4 节）。
 
-下表的月数、列数、图数、数据起止全部是 2026-08-07 从仓内文件重测出来的
-（同比口径改造与量价分解落地后，图数比 2026-08-06 交付时普遍多 1-3 张；
-JPX 的列数从 40 到 42 是补抓了内国株金额两列）。
+下表 **2026-08-19 重测**（上一版是 2026-08-07；2026-08-18/19 那一轮十家回补把
+`asx` 的起点从 2017-10 推到 2016-01、`tmx` 从 2002-01 推到 2001-12、`miax` 多了一列，
+其余几家是常规的月度推进）。**别把它当核对基线 —— 现算一遍只要几秒：**
 
-| ticker | 公司                         | 数据起止          | 月数 | 序列列数 | 页面图数 | 发布节奏（实测）             |
-|--------|------------------------------|-------------------|------|----------|----------|------------------------------|
-| `db1`  | Deutsche Börse               | 2002-01 → 2026-07 | 295  | 63       | 40       | 次月 1-5 日（Eurex 快腿）    |
-| `ice`  | Intercontinental Exchange    | 2011-01 → 2026-07 | 187  | 55       | 25       | 次月第 3 个美股交易日        |
-| `tmx`  | TMX Group                    | 2002-01 → 2026-07 | 295  | 45       | 30       | 次月第 1-4 个工作日（MX 腿） |
-| `miax` | Miami International Holdings | 2015-04 → 2026-07 | 136  | 24       | 21       | 次月第 3-5 个工作日          |
-| `jpx`  | Japan Exchange Group         | 2014-12 → 2026-06 | 139  | 42       | 28       | 次月第 5 个营业日            |
-| `asx`  | ASX Limited                  | 2017-10 → 2026-07 | 106  | 55       | 32       | 次月第 3-8 天                |
-| `enx`  | Euronext                     | 2012-01 → 2026-06 | 174  | 71       | 38       | 次月第 3-13 天，中位第 7     |
-| `sgx`  | Singapore Exchange           | 2015-01 → 2026-06 | 138  | 32       | 27       | 次月第 6-13 天，中位第 9     |
-| `ndaq` | Nasdaq                       | 2005-09 → 2026-07 | 251  | 13       | 13       | 份额腿次月第 10 个工作日     |
+```bash
+python3 - <<'PY'
+import pandas as pd, json, glob, os
+for t in ['db1','ice','tmx','miax','jpx','asx','enx','sgx','ndaq']:
+    d = pd.read_csv(f'series/{t}.csv')
+    o = json.loads(open(f'data/{t}.js').read().split('window.DASH = ',1)[1].rstrip().rstrip(';'))
+    n = sum(1 for e in o['exhibits'] if isinstance(e, dict) and 'kind' in e)
+    print(f"{t:5s} {d['month'].iloc[0]} → {d['month'].iloc[-1]}  {len(d):4d} 月  "
+          f"{len(d.columns)-1:3d} 列  {n:3d} 图")
+PY
+```
+
+| ticker | 公司                         | 数据起止          | 月数 | 序列列数 | 发布节奏（实测）             |
+|--------|------------------------------|-------------------|------|----------|------------------------------|
+| `db1`  | Deutsche Börse               | 2002-01 → 2026-07 | 295  | 63       | 次月 1-5 日（Eurex 快腿）    |
+| `ice`  | Intercontinental Exchange    | 2011-01 → 2026-07 | 187  | 55       | 次月第 3 个美股交易日        |
+| `tmx`  | TMX Group                    | 2001-12 → 2026-07 | 296  | 45       | 次月第 1-4 个工作日（MX 腿） |
+| `miax` | Miami International Holdings | 2015-04 → 2026-07 | 136  | 25       | 次月第 3-5 个工作日          |
+| `jpx`  | Japan Exchange Group         | 2014-12 → 2026-07 | 140  | 42       | 次月第 5 个营业日            |
+| `asx`  | ASX Limited                  | 2016-01 → 2026-07 | 127  | 55       | 次月第 3-8 天                |
+| `enx`  | Euronext                     | 2012-01 → 2026-07 | 175  | 71       | 次月第 3-13 天，中位第 7     |
+| `sgx`  | Singapore Exchange           | 2015-01 → 2026-07 | 139  | 32       | 次月第 6-13 天，中位第 9     |
+| `ndaq` | Nasdaq                       | 2005-09 → 2026-07 | 251  | 13       | 份额腿次月第 10 个工作日     |
+
+**「页面图数」这一列已经删掉，故意的。** 它是全表最易过期的一个数（同一天里被两次
+口径改造改动过两回），且文首 2026-08-14 追记已经定下「全站图数不再钉死」的规矩。
+要数就用上面那段脚本 —— 它连图数一起打。
+
+⚠ **「月数」是 CSV 的行数，不是任何一列的覆盖长度。** 宽表允许列各自起点不同：
+`asx` 那 127 行里 `vix_asx200_avg` 与其余列同为 2016-01 起，但 `participants_asx*`
+两列 2016-07 才有、`capital_initial_raised_audmn` 2023-09 就断了；`ndaq` 的
+`vol_nordic_derivs_mmcontracts` 是 2013-01 起 163 个月、`vol_us_cash_matched_mnsh`
+2010-10 起 190 个月，都短于那 251 行。要逐列真相，用上面那段脚本的逐列版
+（见 `docs/verify/lseg.md` 顶部那一段）。
 
 加上原有 12 家（COST / IBKR / SCHW / LPLA / HOOD / CME / CBOE / HKEX / MSCI / SPGI /
 AXP / TSM），单公司页共 **21 张**。全站 `data/*.js` 合计 **584 张图**
@@ -415,7 +438,7 @@ python3 build/verify_pages.py
 | `monthly_run` 可导入  | `import monthly_run`              | OK，`CROSS = ['exchanges','wealth','exchanges12','exchanges-na','exchanges-eu','exchanges-apac']` |
 | 外壳重跑              | `python3 build/make_shells12.py`  | **写出 13 个页面外壳**（4 张横截面 + 9 家单公司，比删前少 1），4 张现存横截面页壳的 md5 前后逐字节相同，**不重建** `exchanges-intl/` |
 | 池定义未受损          | `python3 build/pools.py`          | `17 个池 / 61 个成员位`，`validate(): 全过`；5 个池的「页」列已变成 `exchanges-eu` / `exchanges-apac` |
-| 池的口径断言          | `python3 build/test_pools.py`     | `PASS —— 断言全过`，13 张 `series/*.csv` 就位，107 个 (表,列) 逐个核过 |
+| 池的口径断言          | `python3 build/test_pools.py`     | `PASS —— 断言全过`，13 张 `series/*.csv` 就位，**108** 个 (表,列) 逐个核过（2026-08-19；`miax` 新增 `vol_futures_ag_contracts` 进池后由 107 变 108 —— 这个数会随池成员变，跑一次即得，别照抄） |
 | 规格表                | `python3 build/check_specs.py`    | `OK 全部检查通过` |
 | 端到端校验            | `python3 build/verify_pages.py`   | **0 个 ERROR，0 个 WARN**；HTTP 段只剩 4 张横截面页，各 5 个引用全 200 |
 | 全仓残渣              | `grep -rn 'exchanges.intl\|exchanges_intl'` | 代码与产物 **0 处**，只剩文档里的过去式表述 |
@@ -486,7 +509,7 @@ python3 build/verify_pages.py
 |--------------|-----------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
 | 页面结构     | `python3 build/verify_pages.py --pages <全部 28 页>`            | **0 个 ERROR**，1 个 WARN（`data/exchanges12.js` 未生成，已知）                                                                    |
 | 规格表体检   | `python3 build/check_specs.py`                                  | OK 全部检查通过（退出码 0）                                                                                                        |
-| 池与分母     | `python3 build/test_pools.py`                                   | PASS —— 13 张 `series/*.csv` 全部就位，107 个 (表,列) 逐个核过真实表头                                                             |
+| 池与分母     | `python3 build/test_pools.py`                                   | PASS —— 13 张 `series/*.csv` 全部就位，**108** 个 (表,列) 逐个核过真实表头（2026-08-19 实测；此前 107）                            |
 | 基期价格复核 | `python3 build/verify_base_prices.py`                           | 6 行与 cdn.cboe.com 官方文件逐位相符（容差 1e-12 相对）                                                                            |
 | HTTP 探测    | 起 `http.server` 逐个 URL                                       | 62 个 URL（首页 + 21 单公司页 + 7 横截面页 + 各自 payload + 4 个静态资源），**61 个 200**，1 个 404（`data/exchanges12.js`，已知） |
 | 幂等         | 全部生成器连跑两轮，比对 `data/*.js` 的 md5（去掉首行构建日期） | **28 个文件全部逐字节相同**，两轮各 0 失败                                                                                         |

@@ -44,6 +44,31 @@ numpy==2.5.1
 #   而不是整个脚本崩 —— 但那等于半数看板停更，实际必装。
 openpyxl==3.1.5
 
+# xlrd —— **2026-08-19 新增**。只有一处用：fetch/lseg_primary.py 的 `_xlrd()`，
+#   读 LSE AIM factsheet 2016-10 及更早的 .xls（BIFF 二进制，openpyxl 读不了）。
+#
+#   为什么加这条依赖，而不是用本机已有的 `soffice --convert-to xlsx`：
+#     · xlrd 是纯 Python、无扩展模块、装完约 100KB，且**已经在本机**（2.0.2）；
+#       soffice 不用加依赖，但每转一个文件要起一次 LibreOffice 进程（本机实测冷启
+#       10s 量级），无人值守下还多两类新故障——用户级 profile 锁（同一台机上
+#       monthly_run 与人手操作撞车就挂）与转档失败时留下的僵尸进程。
+#       cron 里为了 12 个历史文件引入一个重进程，性价比是负的。
+#     · 转档还多一层「LibreOffice 怎么理解这张表」的不确定性；xlrd 是直接读 BIFF
+#       记录，拿到的就是文件里那个浮点数。本模块所有闭合检验都是逐位比对，
+#       多一层重排版就多一处解释不清的差异。
+#   xlrd 2.0 起**只支持 .xls**（不再读 xlsx），这正好是这里要的：xlsx 那一支归
+#   openpyxl，两者职责不重叠，不会出现「同一个文件两个库读出两个结果」。
+#
+#   ⚠ 它**不是可选依赖**。缺了它，fetch/lseg_primary.py 会在 2016-01 那一期直接
+#   raise（`_xlrd()` 里有明确报错），而不是悄悄少写 12 行 —— 因为合流层
+#   fetch/lseg.py 的 `_refresh_primary` 是整表重写 part CSV 的，静默少行会把已经
+#   入库的 12 行从 series/lseg_part_primary.csv 里抹掉。
+#   改版本前重跑：python3 -c "import importlib.util as u; \
+#     m=u.module_from_spec(s:=u.spec_from_file_location('p','fetch/lseg_primary.py')); \
+#     s.loader.exec_module(m); m.write_csv('series', m.fetch_rows('cache'))"
+#   然后确认 series/lseg_part_primary.csv 字节级不变。
+xlrd==2.0.2
+
 # lxml —— **没有任何一行代码直接 import 它，但它是硬依赖**，最容易在重装环境时漏掉。
 #   fetch/cost_release.py 的 `pd.read_html()`（parse_release 里解 comp 表）需要一个 HTML parser 后端。
 #   pandas 的 flavor=None 顺序是 lxml → bs4+html5lib；本机 html5lib **没装**，

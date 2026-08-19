@@ -254,10 +254,13 @@ MAR 的合计 = SFE `Total Exchange`，所以 MAR 口径同样含它。
 
 已核对现有 schema：
 ```
+（区间为 2026-08-19 重测；2026-08-18 那一轮把 cboe / hkex 都回补到了 2016-01，
+  下面这三行原写 cboe 2017-01 起、hkex 2019-01 起）
 cme.csv   adv_*_kcontracts（千张）+ oi_*_contracts（张）+ trading_days   2008-01→2026-07
-cboe.csv  adv_*_kcontracts（千张）+ rpc_*                                2017-01→2026-07
-hkex.csv  adt_hkdbn, mktcap_hkdtn, new_listings, ipo_funds_hkdbn,
-          derivatives_adv_contracts（**张**）, southbound_adt_hkdbn      2019-01→2026-07
+cboe.csv  adv_*_kcontracts（千张）+ rpc_*                                2016-01→2026-07
+                                                （rpc_* 只到 2026-06，比 adv_* 少一个月）
+hkex.csv  adt_hkdbn, mktcap_hkdtn, new_listings, ipo_funds_hkdbn,       2016-01→2026-07
+          derivatives_adv_contracts（**张**）, southbound_adt_hkdbn      ← 这两列 2018-01 起
 ```
 
 **可比的：**
