@@ -354,6 +354,125 @@ def guard_dirty_tree():
     return sh(['git', 'status', '--porcelain', '--', '.'] + [f':!{p}' for p in PUBLISH])
 
 
+def sync_with_origin(dry_run):
+    """把主 checkout 快进到 origin/main。**必须跑在任何抓取与构建之前。**
+
+    ## 不加会怎样：不是「掉一天」，是卡死
+
+    本函数之外，全脚本没有任何 fetch / pull / rebase，而 main() 末尾的发布段是
+    **先 commit 后 push**（两句紧挨着，中间没有任何同步动作）。于是「主 checkout 落后 origin」会这样
+    发展：commit 成功 → push 被 non-fast-forward 拒 → FAILED 退出，**而那个
+    提交留在本地**。第二天仍然没有 fetch，于是在它上面再 commit 一个、再被
+    拒……本地分支永远不会收敛。它每天安静地 FAILED 一次，直到有人手工介入，
+    而且每天的 data_changed() 都为真（上一天的改动已经 commit 进去了，工作树
+    反而干净），所以连「今天没数据」这种自愈都轮不到。
+
+    这个仓有多个 session 并发直推 main，**落后是常态而不是意外**。
+
+    ## 为什么放在这里，而不是发布段的 commit 之前
+
+    两个理由，后一个更重要：
+
+    1. 此刻工作树刚被 guard_dirty_tree() 验过是干净的，ff 能安全跑。到了
+       发布段的时候，28 家的 data/*.js 已经全部重建完、躺在工作树里未提交，
+       此时 `git merge --ff-only` 会被「Your local changes to the following
+       files would be overwritten by merge」直接拒掉 —— 故障没修好，只是挪到
+       了更晚、更难看懂的地方，还白跑了一整轮抓取和构建。
+    2. 整轮抓取与构建因此建立在**最新基线**上。在旧基线上构建出来的 payload
+       本身就可能是错的：别人刚推了一个生成器修正，这一轮还在用旧逻辑生成，
+       推上去等于**静默回退**——那比 push 被拒难发现得多，因为它不报错。
+
+    ## fetch 与 merge 的处理刻意不对称，不要把它们统一成一种
+
+    · fetch 失败**只 warn**：无人值守下因为一次网络抖动就整月不发布，代价大于
+      在旧基线上跑一轮 —— 后者至少还有 push 被拒兜底，前者是直接不干活。
+    · merge --ff-only 失败**必须 FAILED**：非快进意味着本地有 origin 没有的
+      提交，或工作树里有挡路的改动。无人值守下自动 rebase 数据提交，比不发布
+      危险得多 —— 那会把别人的提交和本轮数据搅在一起，且无人复核。
+
+    ## 已知副作用：ff 之后这一轮可能是「混版跑」——**接受，不要加自重启**
+
+    如果快进带进来的那批提交里**包含 monthly_run.py 自己**，那么当前进程跑的
+    仍是内存里的旧版本，而它接下来以子进程调起的 build/*.py、fetch/*.py 全是
+    新版本。绝大多数时候无害（新旧生成器都能跑），但它会造出一类极难查的现象：
+    **日志里的行为对不上文件里的代码**，而且只在 monthly_run.py 被更新的那一天
+    出现一次，下一轮就自愈了。
+
+    结论是**接受**。不加自重启：无人值守里进程自己 re-exec 一个刚拉下来、
+    没人看过的版本，比混版跑一轮危险得多（新版本若在启动路径上就有 bug，
+    自重启会把它变成无限重启，而混版最多错一轮）。
+    写在这里是因为：不写的话，下一个人查到这里会以为是 bug，然后去加自重启。
+    """
+    # 先确认站对了分支。guard_dirty_tree() 只看有没有改动、**不看在哪条分支上**，
+    # 所以「有人在主 checkout 上切了分支查东西、忘了切回来」能一路畅通地走到底：
+    # 脏树检查过 → 这里若不拦，那条分支若恰是 origin/main 的祖先还会真 ff 成功 →
+    # 整轮构建 → commit → 而 940 行是**裸 git push，推的是当前分支**。
+    # 结果是数据提交推到一条不是 main 的分支上，全程零报错，而 Pages 从 main
+    # 根目录发布，于是站点静默停更。和本函数防的那个雷是同一形状：
+    # 不是「会失败」，是**失败了没人知道**。
+    br = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], check=False)
+    if br != 'main':
+        msg = ('主 checkout 当前在分支 %r 而不是 main —— 本脚本只在 main 上发布'
+               '（Pages 从 main 根目录发），继续跑会把数据提交推到别的分支上，'
+               '且全程不报错、站点静默停更。' % br)
+        if dry_run:
+            # 与 guard_dirty_tree 的处理保持一致：--dry-run 不 commit/push，
+            # 此时正是要看「如果跑会发生什么」，故只告警不拦。
+            print('警告：' + msg + '（--dry-run 不发布，故只告警）')
+            return
+        print('FAILED ' + msg + ' 请先切回 main 再重跑。')
+        sys.exit(1)
+
+    env = dict(os.environ, GIT_SSH_COMMAND='ssh -o BatchMode=yes')
+    r = subprocess.run(['git', 'fetch', 'origin'], cwd=HERE,
+                       capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        # 只 warn（见 docstring 的不对称一节）
+        print('警告：git fetch 失败，这一轮将在可能已过期的基线上跑：%s'
+              % r.stderr.strip()[-200:])
+        return
+
+    # check=False：origin/main 引用缺失时 sh() 会抛裸 RuntimeError，那在日志里
+    # 是个 traceback 而不是一行干净的 FAILED，值班的人得先读栈才知道发生了什么。
+    behind = sh(['git', 'rev-list', '--count', 'HEAD..origin/main'], check=False)
+    ahead = sh(['git', 'rev-list', '--count', 'origin/main..HEAD'], check=False)
+    if not (behind.isdigit() and ahead.isdigit()):
+        print('FAILED 读不出与 origin/main 的差距（fetch 成功但 origin/main 引用'
+              '不可用，远端可能改了默认分支名或该引用被删）。拒绝在不知道基线'
+              '新旧的情况下发布。')
+        sys.exit(1)
+    if behind == '0' and ahead == '0':
+        return
+
+    if dry_run:
+        print('DRY_RUN 与 origin/main 相差：落后 %s / 领先 %s（正式跑会在此快进）'
+              % (behind, ahead))
+        return
+
+    if behind == '0':
+        # 只领先不落后：本地有还没推上去的提交（很可能就是上一轮 push 失败的
+        # 残留）。这不用快进，末尾那次 push 会把它一起带上去；但要说出来，
+        # 否则「今天推上去的东西比今天做的多」会让人对不上账。
+        print('注意：本地领先 origin/main %s 个提交（尚未推送），'
+              '本轮 push 会把它们一并推上去' % ahead)
+        return
+
+    r = subprocess.run(['git', 'merge', '--ff-only', 'origin/main'],
+                       cwd=HERE, capture_output=True, text=True)
+    if r.returncode != 0:
+        print('落后 origin/main %s 个提交，但快进失败：' % behind)
+        print((r.stderr or r.stdout).strip()[-400:])
+        print('FAILED 无法快进到 origin/main，拒绝在过期基线上发布。两种可能：'
+              '(a) 本地有 origin 没有的提交（上一轮 push 失败的残留，或有人直接'
+              '在主 checkout 上改过）—— 本脚本刻意不自动 rebase 数据提交；'
+              '(b) data/ 或 series/ 里有上一轮残留的未提交改动，git 因'
+              '「would be overwritten by merge」拒绝快进（guard_dirty_tree 只管'
+              'PUBLISH 之外的路径，管不到这两个目录）。'
+              '两种都请人工处理后重跑，不要让脚本自己猜。')
+        sys.exit(1)
+    print('已快进到 origin/main（原落后 %s 个提交）' % behind)
+
+
 def _body(text):
     """去掉 data/*.js 首行的构建日期注释，只留数据正文。"""
     return text.split('\n', 1)[1].strip() if '\n' in text else ''
@@ -862,6 +981,10 @@ def main():
     if dirty:
         print('警告：data/ 以外有未提交改动，正式跑会被护栏拦下：')
         print(dirty)
+
+    # 与 origin 对齐。位置很关键（工作树刚验过干净、且尚未开始构建），
+    # 挪到末尾发布段里会引入一个新故障 —— 理由写在 sync_with_origin 的 docstring。
+    sync_with_origin(a.dry_run)
 
     # ── preflight：规格表体检（工作树检查之后、下载之前）────────────────────
     # series/contract_specs.csv 是定基名义额的**唯一常数源**，而它的失效方式是
