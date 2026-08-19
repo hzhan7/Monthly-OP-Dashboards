@@ -1075,14 +1075,30 @@
        横排标签在 band 只有几像素宽的图上必然叠成一团。 */
     var capFmt = fmtOf(ex.label_fmt || yfKey || ex.fmt || 'f1');
     /* 被截的点常常挨在一起（同一个月的柱和线都超界、或连着几个月的低基数尖峰），
-       竖排字宽约 8px，比 band 还宽，所以要占位排开；只向右挪，仍紧贴各自的柱。 */
-    var capSlots = [];
+       竖排字宽比 band 还宽，所以要占位排开；只向右挪，仍紧贴各自的柱。
+
+       槽距必须**随字号缩放**。原来写死 8px，注释里那句「竖排字宽约 8px」只在 FS=1
+       时成立：通栏卡 FS→1.70 时这行字画出来是 fscale(7.2)=12.24px 宽、加上 txt() 的
+       2.4px 白描边约 14px，而槽距还是 8px —— 比注记自己的墨迹还窄，同一格里并排
+       两条真值必然叠。实测这一处吃掉了三个页共 7 条压字，而且它们在报告里长得完全
+       不像同一类（lpla Ex7「211.1×81.7」、schw Ex7「1,095×1,211」、cost Ex5
+       「32.5%×33.5%」分别被归进 lines_endlabels / gs_bar / bar_line 三个图种）——
+       按压字对的字面分类会分错，真正的分界是**这两个 text 是谁画的**。
+       FS=1 时 fscale(8) 恰为 8，半栏图输出逐字节不变。 */
+    var capSlots = [], CAPGAP = fscale(8);
     function capSlot(x) {
       var moved = true, k;
       while (moved) {
         moved = false;
         for (k = 0; k < capSlots.length; k++)
-          if (Math.abs(capSlots[k] - x) < 8) { x = capSlots[k] + 8; moved = true; break; }
+          /* 判据要留 1e-6 的裕度，**不能写成 `< CAPGAP`**：槽距成了浮点之后，
+             `x = capSlots[k] + CAPGAP` 再回头算 `|capSlots[k] - x|`，浮点误差可能
+             让它仍旧**差一丁点**小于 CAPGAP，于是把同一个 x 反复赋成同一个值 ——
+             `while (moved)` 永不退出，整页卡死白屏。槽距还是整数 8 时不会发生，
+             所以这一行是随 fscale 一起引入的，不是本来就有的坑。 */
+          if (Math.abs(capSlots[k] - x) < CAPGAP - 1e-6) {
+            x = capSlots[k] + CAPGAP; moved = true; break;
+          }
       }
       capSlots.push(x);
       return x;
