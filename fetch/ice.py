@@ -504,6 +504,71 @@ def _discover_workbook(cache_dir):
     return hit[0]['FilePath'], hit[0]
 
 
+_WB_URL_MONTH = re.compile(r'Monthly-Stats-([A-Za-z]+)-(\d{4})', re.I)
+
+
+def _url_month(url):
+    """从工作簿 URL 里取它自报的数据月 'YYYY-MM'；认不出返回 None。
+
+    实测形如 `2011-2026-Monthly-Stats-July-2026_vF.xlsx`。后缀历年变过
+    （2020 是 `_v1`、2026 是 `_vF`），但 `Monthly-Stats-<Month>-<Year>` 这一段
+    2015-2026 一直稳定。模块 docstring 已实测确认这里的 July-2026 是**数据月**
+    而不是发布月，所以它可以和解析结果直接比。
+    """
+    m = _WB_URL_MONTH.search(url or '')
+    if not m:
+        return None
+    try:
+        return '%s-%02d' % (m.group(2), MONTH_NAMES.index(m.group(1).title()) + 1)
+    except ValueError:
+        return None
+
+
+def _crosscheck_workbook_month(url, newest):
+    """工作簿自报的数据月 vs 解析出来的最新月，不等就炸。
+
+    这是本模块唯一一条**独立于解析器**的月份判据。防的是这一类：ICE 改了行标签
+    或缩进（本表大量用 \xa0 缩进、标签带 (n) 脚注），_lab / 行匹配认不出于是整行
+    静默丢掉，_validate 拿剩下的算出 newest = 上个月，fetch 干净报 NOCHANGE ——
+    没有 FAIL、没有红点、streaks 也不动。MSCI 2026-07 就是这么漏的
+    （见 resolved_issues.msci_silent_parse_miss）。
+
+    与新闻稿判据的区别、以及为什么这条能 raise 而那条只能 warn：
+    URL 和文件内容是**同一个 artifact 同批发布**的，不存在时间差；新闻稿则可能
+    先于 CDN 上的文件更新，拿它 raise 会在发布日误杀。
+
+    注意与 latest_month() 的「不信文件名」不冲突：真值仍然只从内容取，
+    文件名只做对账。文件名认不出时只 warn 不 raise —— 官方改个命名不该让
+    一个本来好好的源直接停摆，但必须让人看见护栏掉了。
+    """
+    declared = _url_month(url)
+    if declared is None:
+        print('[ice] ⚠ 护栏失效：工作簿 URL 认不出数据月（命名可能变了），'
+              '这一轮没有独立于解析器的月份判据。URL=%s' % url)
+        return
+    if declared != newest:
+        raise IceFetchError(
+            '工作簿自报数据月 %s，但解析出来的最新月是 %s（URL=%s）。二者同批发布、'
+            '不该不一致 —— 最可能是行标签/缩进变了导致整行被静默丢弃。拒绝写入，'
+            '请人工看一眼工作簿最后一列。' % (declared, newest, url))
+
+
+def _crosscheck_release_month(releases, newest):
+    """新闻稿 feed 里最新的数据月 vs 解析出来的最新月 —— **只告警，不阻断**。
+
+    ICE 的月度统计新闻稿和工作簿理论上同批出，但两者挂在不同的 feed / CDN 上，
+    发布日当天存在「稿先出、文件后更新」的窗口。所以这条只能提示，不能 raise，
+    否则每个发布日都可能误杀。真正能 raise 的判据是 _crosscheck_workbook_month。
+    """
+    if not releases:
+        return
+    latest_pr = max(releases)
+    if latest_pr > newest:
+        print('[ice] ⚠ 新闻稿已出到 %s，但本轮工作簿只解析到 %s。若非发布日当天的'
+              '时间差，就是工作簿还没更新或解析漏了月份 —— 明天这条 cron 会再试；'
+              '连续两天还这样就要人工看。' % (latest_pr, newest))
+
+
 def _download_workbook(cache_dir):
     """下载当前最新一期 xlsx，返回 (本地路径, url, HTTP Last-Modified 或 None)。"""
     url, _item = _discover_workbook(cache_dir)
@@ -1119,8 +1184,11 @@ def latest_month(cache_dir):
     文件名里的 "July-2026" 是数据月不是发布月，而 HKEX 那种「先把下个月的列开出来再填数」
     的做法 ICE 哪天也可能学。抓不到 / 解析不出来一律抛 IceFetchError，不返回 None 掩盖故障。
     """
-    path, _url, _lm = _download_workbook(cache_dir)
-    return _validate(parse_workbook(path))
+    path, url, _lm = _download_workbook(cache_dir)
+    newest = _validate(parse_workbook(path))
+    # 真值仍然只从内容取（见上）；文件名只用来对账，不等就炸。
+    _crosscheck_workbook_month(url, newest)
+    return newest
 
 
 def _fmt(v):
@@ -1169,8 +1237,12 @@ def update(series_dir, cache_dir):
     data = parse_workbook(path)
     newest = _validate(data)
 
+    # 独立于解析器的月份判据：工作簿自报的数据月必须等于解析出来的最新月。
+    _crosscheck_workbook_month(url, newest)
+
     # 外部证据：拿官方新闻稿的 y/y 回校最新月。取不到不阻断，但一定把话说清楚。
     releases = _stat_releases(-1)
+    _crosscheck_release_month(releases, newest)
     n_ok, note = _crosscheck_release(data, newest, releases.get(newest), cache_dir)
     print('[ice] %s' % note)
 

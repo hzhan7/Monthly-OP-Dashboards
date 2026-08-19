@@ -172,16 +172,46 @@ def _mon_key(month_name, year):
 
 
 def _fetch_report(cache_dir, month_name=None, year=None):
-    """下载某一期 xlsx 到 cache_dir，返回本地路径。month_name 为 None 时取最新一期。"""
+    """下载某一期 xlsx，返回 (本地路径, 这一期**自报**的报告月 'YYYY-MM')。
+
+    第二个返回值是本模块唯一一条**独立于工作簿解析器**的月份判据：
+      · 取最新一期时，它来自列表页挂出的文件名（官方说「当前最新是这一期」）；
+      · 回补指定月时，它就是我们点名要的那一期。
+    两种来源都与文件内容同批发布，不存在「新闻稿先出、文件后更新」那种时间差，
+    所以拿它和 _validate() 解析出来的最新月对不上时，只可能是解析出了问题
+    （见 _crosscheck_report_month）。曾经这个值被写成 `_mon` 就地丢弃 —— 判据
+    明明已经拿在手里却没用，等于把 msci_silent_parse_miss 那类静默漏抓的门敞着。
+    """
     os.makedirs(cache_dir, exist_ok=True)
     if month_name is None:
-        url, _mon, fname = _discover_latest(cache_dir)
+        url, mon, fname = _discover_latest(cache_dir)
     else:
         fname = FNAME_TMPL.format(month=month_name, year=year)
         url = CDN_BASE + fname
+        mon = _mon_key(month_name, year)
     path = os.path.join(cache_dir, fname)
     _write_bytes(path, _http_get(url))
-    return path
+    return path, mon
+
+
+def _crosscheck_report_month(expected, newest, path, where):
+    """这一期自报的报告月 vs 工作簿里解析出来的最新 ADV 月，不等就炸。
+
+    防的是这一类：官方改了表头写法（比如给 'Jul-26' 加了脚注、或换成 'Jul 26'），
+    _month_columns 认不出那一列于是静默丢掉，_validate 拿剩下的月份算出 newest =
+    上个月，fetch 干干净净报 NOCHANGE —— 没有 FAIL、没有红点、streaks 也不动，
+    整条链上没有任何人会发现少了一个月。MSCI 2026-07 就是这么漏的
+    （见 resolved_issues.msci_silent_parse_miss）。
+
+    这里刻意 raise 而不是 print warn：warn 之后状态仍是 NOCHANGE，等于没有护栏。
+    """
+    if expected != newest:
+        raise CboeFetchError(
+            '%s：这一期自报的报告月是 %s，但工作簿里解析出来的最新 ADV 月是 %s。'
+            '文件 %s。二者同批发布、不该不一致 —— 最可能是月份表头写法变了导致'
+            '整整一列被静默丢弃（_MONTH_HDR 只认 %%b-%%y 形状），也可能是官方换了'
+            '报告月的定义。拒绝写入，请人工看一眼工作簿第 4 行的表头。'
+            % (where, expected, newest, os.path.basename(path)))
 
 
 def _write_bytes(path, data):
@@ -438,9 +468,11 @@ def latest_month(cache_dir):
     抓不到 / 解析不出来一律抛 CboeFetchError，不返回 None 掩盖故障。
     （签名里的 -> str | None 是仓库统一约定；本实现只在成功时返回字符串。）
     """
-    path = _fetch_report(cache_dir)
+    path, official = _fetch_report(cache_dir)
     data = parse_workbook(path)
-    return _validate(data)
+    newest = _validate(data)
+    _crosscheck_report_month(official, newest, path, 'latest_month')
+    return newest
 
 
 def _fmt(v):
@@ -468,9 +500,10 @@ def update(series_dir, cache_dir):
     if unknown:
         raise CboeFetchError('series/cboe.csv 里没有这些列：%s' % unknown)
 
-    path = _fetch_report(cache_dir)
+    path, official = _fetch_report(cache_dir)
     data = parse_workbook(path)
     newest = _validate(data)
+    _crosscheck_report_month(official, newest, path, 'update 主抓')
 
     # 一期文件只为**它自己的最新月**的发布日作证。同一张表里更早的那些月是更早那几期
     # 发出来的，这份文件的 Updated on 与它们无关 —— 顺手给它们都盖上这个日期，
@@ -486,11 +519,12 @@ def update(series_dir, cache_dir):
         need = [m for m in _month_range(last_csv, newest) if m not in data]
         for mon in need:
             y, mm = int(mon[:4]), int(mon[5:])
-            extra = _fetch_report(cache_dir,
-                                  month_name=datetime(y, mm, 1).strftime('%B'),
-                                  year=y)
+            extra, extra_official = _fetch_report(
+                cache_dir, month_name=datetime(y, mm, 1).strftime('%B'), year=y)
             more = parse_workbook(extra)
             more_newest = _validate(more)
+            _crosscheck_report_month(extra_official, more_newest, extra,
+                                     'update 回补 %s' % mon)
             pub.setdefault(more_newest, (extra,) + _updated_on(extra))
             for k, v in more.items():
                 data.setdefault(k, v)
