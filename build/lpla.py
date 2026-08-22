@@ -69,18 +69,25 @@ QNOTE = ('Quarter-end months have no standalone monthly report; those values com
 #    真值落在 0.15–0.25 之间，两个写法都对）。它是既有真值，改它属于「拿今天的四舍五入
 #    盖历史」，不在本轮范围内。
 #
-# ⚠️ **与 build/wealth.py 的同名表已不再逐条相同**：那一份仍是 2023-01 起的旧版。
-#    本轮把 lpla 页的时序窗口放宽到 2016-01，2017-2021 那几笔并表第一次进到图里，
-#    所以这张表必须补齐；wealth 页是横截面页、LPL 的窗口只到近年，补不补不影响它今天的
-#    读数。**哪天 wealth 页也放宽窗口，必须把下面 2017-12…2021-09 这几条一并带过去**，
-#    否则同一条 LPL 有机 NNA 会在两页给出不同的值（那正是当年 Atria 断点两页打架的老病）。
+# ⚠️ **build/wealth.py 有一份同名表，两份必须逐条相同**：那边的 _sync_lpla() 会用 ast
+#    读这张表逐条比对，不一致就 SystemExit（"wealth 与 lpla 的断点/并购登记表已分叉"）。
+#    所以这里加一条，wealth 那份就得同步加一条 —— 不是「补不补都行」，是构建期硬拦。
+#    （2026-08-21 订正：此处原写「那一份仍是 2023-01 起的旧版」，早已不是事实，
+#      而且是 _sync_lpla() 结构上禁止存在的状态。）
+#
+# ⚠️ **新增一笔并购时，只补这张表是不够的**：它是**手写**的，官方 Acquired NNA 行并不进
+#    series/lpla.csv（列表是冻结的，见 fetch/lpla.py 的 VALUE_COLS），所以漏登一笔时
+#    nna_ex = nna - 0，"有机"图会**静默**印成 as-reported，没有任何机器判据会响。
+#    2026-06 的 0.5bn 就是这么漏的（线上印了一天 11.8，官方 11.3）。加一笔之前先照
+#    官方 Historical File 的 "Total Acquired NNA" 行核一遍当月值。
 ACQ = {'2017-12': 34.1, '2018-01': 2.5, '2018-02': 29.8, '2018-03': 3.7, '2018-04': 2.2,
        '2019-08': 2.9,
        '2020-10': 1.5, '2020-11': 2.5,
        '2021-04': 67.1, '2021-06': 1.8, '2021-09': 2.3,
        '2023-01': 3.2, '2023-03': 0.5, '2024-04': 5.0, '2024-08': 0.3, '2024-09': 0.3,
        '2024-10': 88.3, '2024-11': 0.8, '2024-12': 0.3, '2025-01': 0.1, '2025-02': 0.7,
-       '2025-03': 7.1, '2025-07': 0.1, '2025-08': 275.0, '2025-12': 2.0}
+       '2025-03': 7.1, '2025-07': 0.1, '2025-08': 275.0, '2025-12': 2.0,
+       '2026-06': 0.5}
 
 # ── 结构性断点 ①：整体并表 ──────────────────────────────────────────────────
 # 判据写在这里，别靠记忆：**当月 Acquired NNA ≥ 当月末客户资产的 5%** 就登记为断点 ——
@@ -808,7 +815,6 @@ def main():
     nna = df['nna_total_usdbn']
 
     df['pct_advisory'] = df['advisory_assets_usdbn'] / tot * 100
-    df['organic_growth_ann'] = nna * 12 / tot.shift(1) * 100
     df['cash_pct_assets'] = df['client_cash_usdbn'] / tot * 100
     df['market_gains'] = tot.diff() - nna
     acq = pd.Series({pd.Period(k, 'M'): v for k, v in ACQ.items()}).reindex(df.index).fillna(0.0)
@@ -1530,7 +1536,12 @@ def main():
             srow('Advisory NNA', 'nna_advisory_usdbn', 1, 'abs'),
             srow('Brokerage NNA', 'nna_brokerage_usdbn', 1, 'abs'),
             srow('Total NNA', 'nna_total_usdbn', 1, 'abs'),
-            srow('Annualised organic growth (%)', 'organic_growth_ann', 2, 'pp', pct=True),
+            # 这一行的列名必须是 organic_growth_ex（剔并购），不是 as-reported 的
+            # nna_total —— 行标签自己写着 organic，表注又叫读者拿它对 Exhibit 4。
+            # 2026-08-21 之前这里取的是 as-reported，于是并购月同一个指标在同一页
+            # 给出两个数（Jun-26 表里 5.54%、Exhibit 4 里 5.31%）。schw / hood 两页
+            # 同名列没有这个问题：它们的 NNA 本身就是有机口径，只有 LPL 的含并购导入。
+            srow('Annualised organic growth (%)', 'organic_growth_ex', 2, 'pp', pct=True),
             {'kind': 'group', 'label': 'Client cash ($bn)' + _GS},
             srow('Client cash balances', 'client_cash_usdbn', 1, 'ratio'),
             srow('% of client assets', 'cash_pct_assets', 2, 'pp', pct=True),
