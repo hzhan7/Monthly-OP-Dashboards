@@ -76,9 +76,14 @@ Cash Segment 的费用拆分只存在于一张**堆叠柱状图的数据标签**
 成一个数 "$1,976 million"）。所以必须解析图。
 
 图的文本抽取顺序**看起来**是「图例顺序的 (本期, 上年同期) 数对」，但有两个陷阱：
-  (a) 图里有一个**没有图例标签的空系列**，抽出来是 `-` / `-`。它出现的位置会变：
-      2024-Q3 在第 5 对，2025 各期在第 6 对，2026-Q1 干脆没有。
+  (a) 图里有一个**没有图例标签的空系列**。它出现的位置会变：2024-Q3 在第 5 对，
+      2025 各期在第 6 对，2026-Q1 干脆没有。
       ⇒ 先剔掉 None，再和图例按序对齐，不能按下标硬映射。
+      而且**它吐几个 `-` 也会变**：2024-Q3 / 2025 各期吐成对的 `-` / `-`（token
+      总数偶数），2026-Interim 起只吐**一个**。落单的 `-` 不是「多一个没用的值」，
+      它会让后面所有 token 整体错位一格 —— 2026-08-20 就是栽在这里：token 数 27
+      是奇数，被偶数校验挡掉，整份 1H2026 公告被跳过，而顶层只报 NOCHANGE，
+      2026-Q2 静默缺失了一整个季度。⇒ 见 _drop_orphan_dash()。
   (b) 图例文案会改：2025-Q1 之前叫 "Stock Exchange trades"，之后叫
       "Stock Exchange equity products"。⇒ 正则要两种都认。
 末尾固定是 4 对：营业开支 / EBITDA / 收入净额 / 交易相关开支。
@@ -309,6 +314,31 @@ _LEGEND = (
 )
 
 
+def _drop_orphan_dash(nums):
+    """token 数为奇数时，尝试剔掉一个**落单的** None（原文 `-`）。
+
+    §4(a) 那个无图例的空系列，2024-Q3 / 2025 各期都吐**成对**的 `-` / `-`（token
+    总数是偶数，配对天然正确），2026-Interim 起只吐**一个** `-`。落单的 `-` 会把它
+    后面所有 token 的配对整体错位一格，所以必须在配对前剔掉——不是「多一个没用的
+    值」，是整张图从那里开始就读错了。
+
+    只在「有且仅有一个落单 None」时动手：出现多个候选说明版式又变了，宁可返回原样
+    让调用方 continue（退化成本次修复之前的行为），也不猜哪个该删。成对的 `-` / `-`
+    一律不动，它是合法的空系列，由下游 `p[0] is not None` 负责剔除。
+
+    删对没删对不靠这里保证——靠下游那两条算术恒等式（各段之和 + 交易开支 == 收入
+    净额；收入净额 − 开支 == EBITDA，本期与上年同期各验一遍）。删错必然对不上，
+    会抛 ParseError，不会静默吐出错位的数。
+    """
+    orphans = [i for i, v in enumerate(nums)
+               if v is None
+               and not (i + 1 < len(nums) and nums[i + 1] is None)
+               and not (i > 0 and nums[i - 1] is None)]
+    if len(orphans) != 1:
+        return nums
+    return nums[:orphans[0]] + nums[orphans[0] + 1:]
+
+
 def _parse_segment_chart(pages):
     """Q1 / Interim / Q3 公告里的 Cash Segment 堆叠柱状图。
 
@@ -323,6 +353,8 @@ def _parse_segment_chart(pages):
             continue
 
         nums = [_num(t) for t in m.group('nums').split() if _NUM.match(t) or t == '-']
+        if len(nums) % 2:
+            nums = _drop_orphan_dash(nums)   # 偶数一律不碰，见该函数 docstring
         if len(nums) < 20 or len(nums) % 2:
             continue
 
