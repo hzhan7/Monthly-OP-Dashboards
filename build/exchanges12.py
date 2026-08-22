@@ -1025,11 +1025,15 @@ def load_notional_source():
 
 
 # ────────────────────────────── payload 组装 ──────────────────────────────
-def build_payload(raw, specs, fx, kconst, source_date):
+def build_payload(raw, specs, fx, kconst):
     """全部数值在这里算完；页面只画不算。
 
     kconst 只含**填得出基期常数**的 product_id。缺的那些不再卡整页，
     而是按模块 docstring 的降级规则：增长类图给点值或紧界，水平值类图直接不画那几家。
+
+    官方发布日也在这里查（原来由 run() 传进来）：它必须按**共同最新月**查台账，
+    而共同最新月 = 下面现算的 LATEST，run() 在调用本函数之前根本拿不到它 ——
+    原来那个参数就是这么被喂成 None 的。
     """
     nsrc = load_notional_source()
 
@@ -1055,6 +1059,16 @@ def build_payload(raw, specs, fx, kconst, source_date):
 
     LAG = [DISP[k] for k in MEM_KEYS if lasts[k] == LATEST]
     AHEAD = [(DISP[k], lasts[k]) for k in MEM_KEYS if lasts[k] > LATEST]
+
+    # 官方发布日 = 12 家里**最晚**发出 LATEST 这个月的那一天（CONTRACT.md 的
+    # source_date 一条：横截面页用 latest_of() 取成员里最晚的那个，缺任何一个成员就整体省略）。
+    # 月份必须传 LATEST 而不是各家自己的 lasts[k]：跑在前面的家会把它更新月份的发布日
+    # 安到本页画的旧月份上，日期整整晚一个月且看上去完全正常（同 build/wealth.py 的注释）。
+    # 2026-08-22 修：原来这里由 run() 传进来，而 run() 在 build_payload 之前拿不到 LATEST，
+    # 于是被喂成 {k: None} —— lookup() 开头 `if not month: return None`，12 次查表全 None，
+    # latest_of 的 all(got) 恒假 ⇒ 字段永远不出现，线上抬头一直缺「官方发布于」这半句。
+    source_date = load_source_dates().latest_of(
+        SERIES, MEM_KEYS, {k: LATEST for k in MEM_KEYS})
 
     # ── 产品块（多取 24 个月，好让共同窗口首月就有滚动同比）──
     # 为什么是 24 不是 12：滚动同比要「本月往前 12 个月的合计 ÷ 去年同月往前 12 个月的合计」，
@@ -2074,6 +2088,7 @@ def build_payload(raw, specs, fx, kconst, source_date):
         payload['source_date'] = source_date
     diag = {
         'LATEST': LATEST, 'IDX': IDX, 'LAG': LAG, 'lasts': lasts,
+        'source_date': source_date,
         'lvl_keys': lvl_keys, 'grow_keys': grow_keys, 'band_keys': band_keys,
         'mix_keys': mix_keys, 'gap_prods': gap_prods,
         'idx_rank': idx_rank, 'yy_exact': yy_exact,
@@ -2145,8 +2160,7 @@ def run(kconst_override=None, out_path=None, banner=None):
         print('  要让这几家回到水平值口径，把它们的 base_price_local / '
               'base_notional_per_unit_local 实测填进 series/contract_specs.csv。\n')
 
-    src_date = load_source_dates().latest_of(SERIES, MEM_KEYS, {k: None for k in MEM_KEYS})
-    payload, d = build_payload(raw, specs, fx, kconst, src_date)
+    payload, d = build_payload(raw, specs, fx, kconst)
 
     path = out_path or OUT
     payload_guard.write_dash(path, payload, TICKER)
@@ -2155,6 +2169,10 @@ def run(kconst_override=None, out_path=None, banner=None):
     print(f'共同最新月 {d["LATEST"]} | 短板 {"、".join(d["LAG"])} | '
           f'共同窗口 {d["IDX"][0]} → {d["IDX"][-1]}（{len(d["IDX"])} 个月）')
     print('各家最新：' + ', '.join(f'{DISP[k]}={d["lasts"][k]}' for k in MEM_KEYS))
+    # 这个 bug 能活 15 天，唯一原因是从头到尾没有任何地方打印过发布日。台账里 12 家
+    # 全齐只有 2026-07 一个月，下个月少一家就会静默退回没有发布日 —— 必须在日志里可见。
+    print('官方发布日 source_date = '
+          + (d['source_date'] or '（有成员在台账里查不到，整字段省略）'))
     print(f'覆盖度：水平值可算 {len(d["lvl_keys"])} 家（{"、".join(DISP[k] for k in d["lvl_keys"])}）'
           f'｜增长精确 {len(d["grow_keys"])} 家（{"、".join(DISP[k] for k in d["grow_keys"])}）'
           f'｜增长给区间 {len(d["band_keys"])} 家'
