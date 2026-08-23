@@ -473,9 +473,11 @@ def sync_with_origin(dry_run):
     print('已快进到 origin/main（原落后 %s 个提交）' % behind)
 
 
-def _body(text):
-    """去掉 data/*.js 首行的构建日期注释，只留数据正文。"""
-    return text.split('\n', 1)[1].strip() if '\n' in text else ''
+# _body 的实现已下沉到 build/payload_guard.body_of()：写盘侧（write_dash /
+# build/roster.py）要用同一套口径判断「正文有没有变、要不要落盘」。各写一份
+# 一旦漂移，就是「构建器不写、data_changed 说变了」的漏发夹缝。
+sys.path.insert(0, os.path.join(HERE, 'build'))          # 与 :995 幂等
+from payload_guard import body_of as _body               # noqa: E402
 
 
 def data_changed():

@@ -1744,10 +1744,23 @@ def write_shell():
         'make_shells', os.path.join(HERE, 'make_shells.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    os.makedirs(PAGE_DIR, exist_ok=True)
     p = os.path.join(PAGE_DIR, 'index.html')
+    html = mod.SHELL.format(t=TICKER)
+
+    # 内容没变就**不落盘**。这个页壳写在 PUBLISH（= ['data','series']）之外，而
+    # guard_dirty_tree() 跑在构建之前 —— 白写一次的后果是：本轮发不出去，下一轮
+    # 因工作树脏而 FAILED。重跑幂等（内容只跟 TICKER 有关），所以正常情况下
+    # 这里永远命中 return，只有模板真改了才写。
+    try:
+        with open(p, encoding='utf-8') as f:
+            if f.read() == html:
+                return p
+    except Exception:                                # noqa: BLE001 —— fail-open，宁可多写
+        pass
+
+    os.makedirs(PAGE_DIR, exist_ok=True)
     with open(p, 'w', encoding='utf-8') as f:
-        f.write(mod.SHELL.format(t=TICKER))
+        f.write(html)
     return p
 
 

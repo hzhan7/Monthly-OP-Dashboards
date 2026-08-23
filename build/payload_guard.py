@@ -184,6 +184,29 @@ def check(payload):
             f'  缺值请走 L()/LN() 输出 null（合法），NaN 说明算错了或解析出了问题。')
 
 
+def body_of(text):
+    """去掉 data/*.js 首行的构建日期注释，只留数据正文。
+
+    **全仓唯一实现。** monthly_run.data_changed() 判「data/ 有没有实质变化」、
+    本文件的 write_dash() 与 build/roster.py 判「要不要落盘」，必须共用这一套口径。
+    两处各写一份，一旦漂移就会造出「构建器认为没变所以不写、data_changed 认为
+    变了」（或反之）的夹缝 —— 那是真正的漏发风险，比它要解决的脏文件问题严重得多。
+    """
+    return text.split('\n', 1)[1].strip() if '\n' in text else ''
+
+
+def unchanged(path, body):
+    """磁盘上已有文件的正文是否与将要写的 `body` 逐字相同。
+
+    读不出 / 不存在 / 编码坏 一律返回 False —— **fail-open，宁可多写一次也不要漏写**。
+    """
+    try:
+        with open(path, encoding='utf-8') as f:
+            return body_of(f.read()) == body.strip()
+    except Exception:                                # noqa: BLE001 —— 任何异常都当「变了」
+        return False
+
+
 def write_dash(path, payload, gen):
     """自检 → 序列化 → 写 data/<gen>.js。14 个生成器写文件一律走这里。
 
@@ -200,12 +223,22 @@ def write_dash(path, payload, gen):
     # 这里也会 ValueError 而不是写出裸 NaN 字面量。
     txt = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
+    body = f'window.DASH = {txt};'
+
+    # 正文一个字节都没变就**不落盘** —— 否则每个 NOTHING_TO_DO 日跑完都会留下一批
+    # 只有首行日期不同的未提交改动（实测 7 个），它们既发不出去（data_changed() 按
+    # 正文比较，正确判定「无实质变化」），又会在第二方推到同名文件时让下一轮的
+    # `git merge --ff-only` 以「would be overwritten by merge」失败、整跑 FAILED。
+    # 首行日期因此停在「该正文真正生成的那天」，比每天刷成今天更诚实，也与
+    # monthly_run.py:482-487 与 README.md「幂等」节写明的设计意图同向。
+    if unchanged(path, body):
+        return path
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         # 构建日期只写首行注释，不进 payload —— 进了 payload，monthly_run 的
         # 「data 有没有实质变化」检查（忽略首行的正文比较）就永久失效。
         f.write(f'// 由 build/{gen}.py 生成于 {datetime.date.today().isoformat()}，请勿手改\n')
-        f.write('window.DASH = ')
-        f.write(txt)
-        f.write(';\n')
+        f.write(body)
+        f.write('\n')
     return path

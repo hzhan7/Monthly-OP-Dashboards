@@ -260,13 +260,19 @@ def main():
                    '每张图右上角可切「表格」视图逐条核对原值 · '
                    '仅供个人研究，不构成投资建议'),
     }
-    os.makedirs(DATA, exist_ok=True)
-    with open(os.path.join(DATA, 'roster.js'), 'w', encoding='utf-8') as f:
-        # 日期只写首行注释 —— 见模块 docstring 第 1 条。
-        f.write(f'// 由 build/roster.py 生成于 {today.isoformat()}，请勿手改\n')
-        f.write('window.ROSTER = ')
-        json.dump(payload, f, ensure_ascii=False, separators=(',', ':'))
-        f.write(';\n')
+    from payload_guard import unchanged        # 与 write_dash 共用同一套「正文」口径
+    body = 'window.ROSTER = ' + json.dumps(
+        payload, ensure_ascii=False, separators=(',', ':')) + ';'
+    rpath = os.path.join(DATA, 'roster.js')
+
+    # 正文没变就不落盘 —— 理由见 build/payload_guard.write_dash 里的同款注释。
+    if not unchanged(rpath, body):
+        os.makedirs(DATA, exist_ok=True)
+        with open(rpath, 'w', encoding='utf-8') as f:
+            # 日期只写首行注释 —— 见模块 docstring 第 1 条。
+            f.write(f'// 由 build/roster.py 生成于 {today.isoformat()}，请勿手改\n')
+            f.write(body)
+            f.write('\n')
     n = sum(len(g['items']) for g in groups)
     print(f'roster: {n} 页' + (f'，缺 {missing}' if missing else ''))
 
