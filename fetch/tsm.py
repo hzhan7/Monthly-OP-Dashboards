@@ -85,9 +85,15 @@
 ────────────────────────────────────────────────────────────────────────
 口径坑（踩过的，别再踩）
 ────────────────────────────────────────────────────────────────────────
-1. **investor.tsmc.com 有 WAF，认 UA 指纹**：curl 带浏览器 UA 也一律 403，
-   Python urllib 带同样的 UA 反而 200。所以本模块统一走 urllib，不要「顺手改成 requests/curl」。
-   （requests 未验证；改之前先自己跑一次。）
+1. **investor.tsmc.com 挂 Cloudflare managed challenge，认的是 TLS 指纹，不是 UA。**
+   2026-08-11 之前裸 urllib 还能 200；2026-08-23 起全面挑战：403 +
+   `Cf-Mitigated: challenge` + 正文 `<title>Just a moment...</title>`。
+   实测**无效**的：补齐 Accept / Sec-Fetch-* / sec-ch-ua（一整套 Chrome 头仍 403）、
+   先取落地页 cookie 再下、/usr/bin/nscurl（Apple TLS 同样被挑战）。
+   实测**有效**的只有 curl_cffi impersonate='chrome'（urllib 的 ja4=t13d171100… 无 ALPN；
+   Chrome 是 ja4=t13d1516h2…）。所以 _get() 在识别出挑战页时回落到 curl_cffi。
+   ⚠ 两点别写死：(a) 不能排除**出口 IP 信誉**也是打分输入，别把这条当成「TSMC 改了配置」的定论；
+   (b) 同域的 **pr.tsmc.com 没有挑战**，裸 urllib 200 —— 别顺手把整个模块换成 curl_cffi。
 2. **xlsx 有两个 sheet**：Unconsolidated（1999-2012，单体）和 Consolidated（2006-04 起，合并）。
    2013 起 TIFRS 只披露合并数，build 脚本用的是合并数。写死读 "Consolidated"，
    不要用 wb.worksheets[0] —— 那是单体表，2013 年以后全空。
@@ -171,7 +177,7 @@ PR_ARCHIVE = PR_ORIGIN + '/english/news-archives'
 MONTH_EN = ('January', 'February', 'March', 'April', 'May', 'June',
             'July', 'August', 'September', 'October', 'November', 'December')
 
-# WAF 认这个；见口径坑 1
+# 挑战页认的是 TLS 指纹不是这个 UA；留着只为日志好认。见口径坑 1
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/124.0 Safari/537.36')
 _HEADERS = {'User-Agent': _UA, 'Accept-Language': 'en-US,en;q=0.9'}
@@ -208,12 +214,57 @@ def _ssl_ctx():
     return ctx
 
 
+# ── 抗指纹回落通道 ──────────────────────────────────────────────────────
+# 同形先例：fetch/hood.py:168 _via_curl_cffi()（Akamai 按 JA3 挑客户端，urllib 必死）。
+# 与 hood 的差别：hood 整个模块走 curl_cffi，本模块**只在识别出挑战页时**才回落 ——
+# tsm.py 还打三个健康域（federalreserve.gov :313、openapi.twse.com.tw :335、
+# pr.tsmc.com :367/:419），它们裸 urllib 一直 200，不该为了一个域换掉另外三个的传输。
+_CHALLENGE_MARKS = (b'Just a moment', b'challenges.cloudflare.com', b'cf_chl_opt')
+
+
+def _is_challenge(blob, headers=None):
+    """Cloudflare 的挑战页是以 403 送出的。`Cf-Mitigated: challenge` 是权威判据
+    （大小写不敏感，urllib 与 curl_cffi 两种 headers 对象的 .get() 都可用）；
+    正文关键词只是兜底，防它哪天不发那个头。"""
+    if headers is not None:
+        try:
+            if headers.get('cf-mitigated'):
+                return True
+        except Exception:                            # noqa: BLE001 —— headers 形状不确定
+            pass
+    return any(m in (blob or b'')[:4096] for m in _CHALLENGE_MARKS)
+
+
+def _via_curl_cffi(url, timeout, referer):
+    """用 Chrome 的 TLS 指纹重发。
+
+    · **只带 Referer**：impersonate 会自动配一整套与指纹自洽的 Chrome 头，再把
+      _HEADERS 里的 Chrome/124 UA 盖上去，反而造出「UA 与 TLS 指纹互相矛盾」——
+      那正是风控要抓的特征。
+    · verify=False 是为了对齐 _ssl_ctx() 的 CERT_NONE（理由见那里：cron 环境证书链
+      不全时宁可拿到数据也不要静默停摆）。不写这行就是在回落腿上偷偷收紧了证书策略。
+    · 延迟 import：curl_cffi 是 OPTIONAL_DEPS（monthly_run.py:71，requirements.txt:100
+      标了「可选」）。没装时这里抛 ImportError，由调用方并进 RuntimeError ——
+      仍是一条**响的 FAIL**，绝不静默返回空。
+    """
+    from curl_cffi import requests as cr             # noqa: PLC0415 —— 见 docstring
+    r = cr.get(url, impersonate='chrome', timeout=timeout,
+               headers={'Referer': referer} if referer else {}, verify=False)
+    body = r.content or b''
+    if r.status_code != 200 or _is_challenge(body, r.headers):
+        raise RuntimeError('curl_cffi 仍被挡：HTTP %s，%d 字节' % (r.status_code, len(body)))
+    return body
+
+
 def _get(url, timeout=90, referer=None, tries=4):
     """带退避重试的 GET。
 
-    investor.tsmc.com 的 WAF 有**突发速率限制**：短时间内连打两次同一页，
-    第二次直接 403（不是永久封，隔几秒就恢复）。无人值守下必须自己扛掉这个抖动，
-    否则「先 latest_month() 再 update()」这种最自然的调用序列必然随机失败。
+    退避是给 429 / 5xx / 连接层抖动准备的。
+
+    ⚠ 这里原先写的是「investor.tsmc.com 的 WAF 有突发速率限制，隔几秒就恢复」——
+    2026-08-23 实测**证伪**：同一客户端相隔 5.5 分钟两发全 403，而毫秒级换成
+    Chrome TLS 指纹立刻 200。那是 Cloudflare 挑战页，不是限流，对它退避一万次也没用。
+    所以命中挑战页时**不退避**，直接换传输（见 _via_curl_cffi）。
     """
     h = dict(_HEADERS)
     if referer:
@@ -228,6 +279,21 @@ def _get(url, timeout=90, referer=None, tries=4):
                 return r.read()
         except urllib.error.HTTPError as e:
             last = e
+            # 先读 body：挑战页以 403 送出，丢掉它就只剩光秃秃的 HTTPError 403，
+            # 运维看不出病因（2026-08-23 就是这么查了半天）。
+            try:
+                body = e.read()
+            except Exception:                        # noqa: BLE001
+                body = b''
+            if _is_challenge(body, e.headers):
+                mit = e.headers.get('cf-mitigated') if e.headers else None
+                try:
+                    return _via_curl_cffi(url, timeout, referer)
+                except Exception as e2:              # noqa: BLE001 —— 并进 RuntimeError，不吞
+                    raise RuntimeError(
+                        'GET %s 命中 Cloudflare 挑战页（cf-mitigated=%r，正文前 120B=%r），'
+                        '退避无效已直接换传输，curl_cffi 回落也失败：%r —— 见口径坑 1'
+                        % (url, mit, body[:120], e2)) from e
             if e.code not in (403, 429, 500, 502, 503, 504):
                 raise                                # 404 之类是真错，别浪费时间重试
         except (urllib.error.URLError, TimeoutError, OSError) as e:
