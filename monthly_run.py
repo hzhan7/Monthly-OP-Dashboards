@@ -207,9 +207,21 @@ SLOW_LEGS = {
               'turquoise_integrated_', 'turquoise_dark_', 'turquoise_paneuropean_',
               'turquoise_trading_days_', 'gbp_eur_rate'), (12, 12)),
 
-    # jpx 的 2 条 IPO 列（ipo_public_offerings / ipo_funds_jpybn）同样落后一个月，
-    # 但 fetch/jpx.py 的 docstring 没给这条腿的实测到货日分布 —— **先不登记**，
-    # 免得凭猜的开闸日要么天天下载、要么根本不开。补测后照上面的格式加一行即可。
+    # 资金調達額 historical-sikin.xls：这条腿只填 2 列，比头条腿（次月第 7 天）
+    # 晚半个月。实测到货日两点 —— 2026-06 期 07-17、2026-07 期 08-19（后者由
+    # HTTP Last-Modified "Wed, 19 Aug 2026 06:13:35 GMT" 实测），与 fetch/jpx.py
+    # 表格里那句「每月中旬」一致。取第 15 天开闸：比两次实测都早 2 天留余量，
+    # 又只在第 15 天到到货日之间多打两三次请求。
+    #
+    # 本条 2026-08-17 立案时**刻意留空**过，理由是「没有实测到货日分布」。但按上面
+    # 那条 ⚠：开闸日不必取实测最早到货日，只要闸门在当月内开即可 —— 两个实测点
+    # 已经够定「中段」。留空的实际代价是 2026-07 那期在上游挂了 7 天没人取
+    # （08-19 发，闸门要等 09-03 才开），而首页仍是绿点、印着 2026-07。
+    #
+    # ⚠ 只登记这 2 列。同文件的 cmdty_proforma 停在 2020-07（停发六年）属「永久停发」，
+    #   登记它会把闸门顶成天天下载 —— 见上面第二条 ⚠。列名写全名不写前缀，免得将来
+    #   新增的 ipo_* 快腿列被前缀误收进来、把闸门钉死在一条本不该等的腿上。
+    'jpx':  (('ipo_public_offerings', 'ipo_funds_jpybn'), (15, 15)),
 }
 
 
@@ -658,6 +670,119 @@ def slow_pending(t, today=None):
         return True
 
 
+# ── 陈旧列审计 ────────────────────────────────────────────────────────────────
+# README「第四类：不出声的失败」的判据是「连续失败十天和成功十天，在日志里长得一样
+# 吗」。**逐家的 NOCHANGE 恰好就长得一样** —— 它只回答「今天没抓到新的」，不回答
+# 「这一列还活着吗」。28 家绝大多数天都是 NOCHANGE，所以一条冻住的列可以在末行永远
+# 是 NOTHING_TO_DO 的日志里躲无限久：闸门按 data_through 判「已追平」不再下载，
+# fetch 干净返回，streaks 里没有 FAIL 可记。首页红点确实会变红，但那是**浏览器端按
+# 打开页面那天现算的**，只有人去看站点才看得见；每天读 cron 输出的人什么也看不到。
+#
+# 所以这里补最后一道：不问「今天有没有新数据」，问「每一列离它本该有的月份差了多远」。
+#
+# ⚠ 判据必须能在稳态下**完全闭嘴**，否则就是又一个「每季度假一次的警报」，人很快
+#   学会无视它，这道护栏就白加了。两条设计保证这一点：
+#     · 永久停发的列写进 DEAD_COLS 白名单（下面每条都回过各模块自己的文档，
+#       不是猜的），登记过的不再报；
+#     · 其余列给 STALE_GRACE_MONTHS 个月宽限，盖住所有**按设计**就晚的慢腿
+#       （lseg 的 RepoClear 官方月表本身滞后约两个月，见 build/specs/lseg.py）。
+#
+# ⚠ 白名单是**双向**的：登记为「已停发」的列若哪天又有了新数据，说明登记本身错了，
+#   同样要出声 —— 否则这张表会慢慢变成掩盖真问题的地毯。
+#
+# ⚠ 本函数**不改末行总状态**。末行的文法（NOTHING_TO_DO / PUBLISHED / PARTIAL /
+#   FAILED）是调度任务唯一读的那行，动它等于改对外契约；陈旧不等于本轮失败，
+#   它是「该有人去看一眼」，不是「今天这轮跑挂了」。
+DEAD_COLS = {
+    'asx': {
+        'capital_initial_raised_audmn':
+            ('2023-09', '上市融资旧口径，官方改版后停发（build/specs/asx.py 标 dead=True）'),
+        'capital_total_raised_incl_other_audmn':
+            ('2023-09', '同上，与 capital_initial_raised_audmn 同一次改版'),
+        'margin_cash_onbs_audbn':
+            ('2024-07', '表内现金保证金旧口径，2024-08 起停发（同上 spec 的区间注释）'),
+    },
+    'cme': {
+        'adv_clearport_kcontracts':
+            ('2013-12', 'ClearPort 自 2014 起并入 Privately Negotiated，官方不再单列'
+                        '（fetch/cme.py 的口径坑：2014 起整行从 xlsx 消失，之后天然为空）'),
+    },
+    'jpx': {
+        'cmdty_proforma':
+            ('2020-07', '商品関連 pro-forma 回填**标记位**，只在 TOCOM 迁入 OSE 之前有意义；'
+                        '不是数据列，永远不会再有新值'),
+    },
+    'sgx': {
+        'vol_msci_taiwan_futures_contracts':
+            ('2021-11', 'MSCI Taiwan Index Futures 合约停用（fetch/sgx.py 明写「已停发的死列」，'
+                        'build/specs/sgx.py 亦然）'),
+    },
+}
+
+# 宽限月数：慢腿按设计就会晚，报它们等于制造假警报。取 3 是因为在册最慢的那条
+# （lseg RepoClear，官方月表自身滞后约两个月）要能安静通过，再留一个月余量。
+STALE_GRACE_MONTHS = 3
+
+
+def _month_sub(a, b):
+    """a - b，单位为月；a/b 形如 'YYYY-MM'。"""
+    return (int(a[:4]) * 12 + int(a[5:7])) - (int(b[:4]) * 12 + int(b[5:7]))
+
+
+def audit_stale_cols():
+    """逐列体检：哪一列离它本该有的月份差得离谱，或哪一条死列诈尸了。
+
+    整个函数体裹在 except 里：这是一道**观察**，不是护栏。它自己出错绝不能把
+    已经成功的一轮 monthly_run 带走 —— 那就本末倒置了。
+    """
+    try:
+        stale, risen = [], []
+        for t in sorted(_LAG_CACHE or load(os.path.join(HERE, 'build', 'roster.py'),
+                                           'roster_stale').LAG):
+            lag = due_lag(t)
+            p = os.path.join(SERIES, f'{t}.csv')
+            if lag is None or not os.path.exists(p):
+                continue              # 横截面页没有披露节奏，也没有自己的 series
+            due = _due_month(lag)     # 红点口径（LAG 本身），问的是「本该发了没有」
+            if due is None:
+                continue
+            with open(p, encoding='utf-8', newline='') as f:
+                rows = list(csv.reader(f))
+            if len(rows) < 2:
+                continue
+            head, dead = rows[0], DEAD_COLS.get(t, {})
+            for i, col in enumerate(head):
+                if not i:
+                    continue
+                ms = [r[0] for r in rows[1:] if i < len(r) and r[i].strip()]
+                if not ms:
+                    continue          # 整列空：不是「变陈旧」，是从来没有过
+                last = max(ms)
+                if len(last) < 7 or not last[:4].isdigit():
+                    continue          # 季度表等非「YYYY-MM」口径，不归本函数管
+                if col in dead:
+                    if _month_sub(last, dead[col][0]) > 0:
+                        risen.append((t, col, dead[col][0], last))
+                    continue
+                behind = _month_sub(due, last)
+                if behind > STALE_GRACE_MONTHS:
+                    stale.append((t, col, last, due, behind))
+        if stale:
+            print(f'  🔴 陈旧列 {len(stale)} 条（落后本该有的月份 >{STALE_GRACE_MONTHS} 个月，'
+                  f'且不在 DEAD_COLS 白名单里）——「NOCHANGE」说明不了它们还活着：')
+            for t, col, last, due, behind in stale:
+                print(f'     {t:6s} {col:44s} 止于 {last}，本该 {due}（落后 {behind} 个月）')
+            print('     处置：确认是上游永久停发 → 写进 monthly_run.DEAD_COLS；'
+                  '否则是这一列的解析静默失效了，按 README「第四类」补护栏。')
+        if risen:
+            print(f'  ⚠ DEAD_COLS 白名单有 {len(risen)} 条对不上了（登记为已停发，却又有了新数据）：')
+            for t, col, reg, last in risen:
+                print(f'     {t:6s} {col:44s} 登记止于 {reg}，实际已到 {last}')
+            print('     处置：上游恢复发布了 → 从 DEAD_COLS 删掉该条，否则它会一直被豁免。')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 陈旧列审计自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+
+
 def builder(t):
     """→ 重新生成 `data/<t>.js` 的命令行；三种写法都找不到时返回 None。
 
@@ -1039,6 +1164,10 @@ def main():
     # 在这里吞掉，页面会无声停在旧月份，而调度器读到的仍是 PUBLISHED。
     fails += build_cross(a.force)
     roster(todo)
+
+    # 陈旧列审计：这一轮唯一「即使 28 家全 NOCHANGE 也照样开口」的检查。
+    # 上面每一家的 NOCHANGE 都只说明「今天没抓到新的」，说明不了「这一列还活着」。
+    audit_stale_cols()
 
     def nothing():
         """「没有任何东西可发布」的统一出口 —— 有失败就必须让调度器看见。"""
