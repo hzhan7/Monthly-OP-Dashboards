@@ -170,10 +170,14 @@ SCHW_NNA_BRK = [(pd.Period('2025-01', 'M'), 'SCHW $10→$25bn')]
 # Robinhood：口径与月份同 build/hood.py 的 BK_ND / BK_CUST / BK_TPA。
 HOOD_ND_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
                (pd.Period('2026-03', 'M'), 'HOOD TradePMR'),
-               (pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
+               (pd.Period('2026-06', 'M'), 'HOOD WonderFi'),
+               (pd.Period('2026-07', 'M'), 'HOOD Trump')]
+# ⚠ Trump Account 只进 ND 与 TPA 两族，**不进 CUST** —— 官方 7 月 Excel 脚注明写
+#   "Funded Customers do not include Trump Accounts."（同 build/hood.py 的 BK_CUST 注释）。
 HOOD_CUST_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
                  (pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
-HOOD_TPA_BRK = [(pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
+HOOD_TPA_BRK = [(pd.Period('2026-06', 'M'), 'HOOD WonderFi'),
+                (pd.Period('2026-07', 'M'), 'HOOD Trump')]
 
 # 「客户资产」这一族图（重定基与 y/y）同时受 LPL 的两次并表与 Robinhood 的 WonderFi 影响，
 # 所以三张图引用同一个合集，不各拼各的。
@@ -197,6 +201,9 @@ BRK_TXT = {
     pd.Period('2025-06', 'M'): 'Robinhood 2025-06 起把 Bitstamp 并入净流入与客户数',
     pd.Period('2026-03', 'M'): 'Robinhood 2026-03 起把 TradePMR 顾问资产的流量并入净流入',
     pd.Period('2026-06', 'M'): 'Robinhood 2026-06 并入 WonderFi（带进约 30 万 funded customers）',
+    pd.Period('2026-07', 'M'): 'Robinhood 2026-07 起把 Trump Account 并入总平台资产'
+                               '（仅 Robinhood 托管部分）与净流入（缴款）；'
+                               'funded customers 不含 Trump Accounts，故客户数那族图不画此线',
 }
 
 

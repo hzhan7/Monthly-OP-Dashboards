@@ -111,13 +111,26 @@ BRK_WONDERFI = pd.Period('2026-06', 'M')   # 收购 WonderFi，带进 ~30 万 Fu
 BRK_BITSTAMP = pd.Period('2025-06', 'M')   # Bitstamp 并入净流入、加密成交量与客户数
 BRK_TRADEPMR = pd.Period('2026-03', 'M')   # TradePMR 顾问资产的流量并入净流入
 BRK_SWEEP = pd.Period('2026-02', 'M')      # High-Yield Cash 改版，>$6bn 从 sweep 挪到 deposits
+BRK_TRUMP = pd.Period('2026-07', 'M')      # Trump Account 并入总平台资产与净流入（见下）
 WONDERFI_CUSTOMERS_MN = 0.3                # WonderFi 带进的 funded customers（公司披露 ~300k）
+
+# Trump Account 断点的口径边界**只有两条序列**，第三条明确排除 —— 官方 7 月 Monthly
+# Metrics Excel 的脚注原文（cache/hood_2026-07_*_July_2026_Monthly_Metrics_xlsx.xlsx）：
+#   · "Starting in July 2026, Total Platform Assets include Trump Account assets
+#      custodied by Robinhood."          → BK_TPA 要这条断点
+#   · "Starting in July 2026, Net Deposits include Trump Account contributions."
+#                                        → BK_ND 要这条断点
+#   · "Funded Customers do not include Trump Accounts."
+#                                        → **BK_CUST 不要这条断点**
+# 三条序列一刀切全加会在客户数那张图上凭空画一条假断点，把一个口径没变的 m/m
+# 涂成「不可比」。加断点和不加断点一样，都要按脚注逐条对，不能按「这个月有新闻」加。
 
 # 每条序列受哪些断点影响。汇总表的 m/m / y/y 是否跨断点、图上画哪几条竖虚线，
 # 都从这里推 —— 手写在两处必然走偏（原版就是图上画了 WonderFi、表里 m/m 照涂绿）。
-BK_ND = [(BRK_BITSTAMP, 'Bitstamp'), (BRK_TRADEPMR, 'TradePMR'), (BRK_WONDERFI, 'WonderFi')]
-BK_CUST = [(BRK_BITSTAMP, 'Bitstamp'), (BRK_WONDERFI, 'WonderFi')]
-BK_TPA = [(BRK_WONDERFI, 'WonderFi')]
+BK_ND = [(BRK_BITSTAMP, 'Bitstamp'), (BRK_TRADEPMR, 'TradePMR'), (BRK_WONDERFI, 'WonderFi'),
+         (BRK_TRUMP, 'Trump Accounts')]
+BK_CUST = [(BRK_BITSTAMP, 'Bitstamp'), (BRK_WONDERFI, 'WonderFi')]   # 刻意不含 BRK_TRUMP，见上
+BK_TPA = [(BRK_WONDERFI, 'WonderFi'), (BRK_TRUMP, 'Trump Accounts')]
 BK_CRYPTO = [(BRK_BITSTAMP, 'Bitstamp acquired')]
 BK_SWEEP = [(BRK_SWEEP, 'High-Yield Cash')]
 
@@ -1682,7 +1695,9 @@ summary = {
     'note': f'口径断点：Bitstamp 自 {BRK_BITSTAMP} 并入净流入、加密成交量与客户数；'
             f'TradePMR 的流量自 {BRK_TRADEPMR} 并入净流入；High-Yield Cash 改版于 {BRK_SWEEP} '
             f'把逾 $6bn 从 Cash sweep 挪到 Cash and deposits；WonderFi 自 {BRK_WONDERFI} '
-            f'带进约 {WONDERFI_CUSTOMERS_MN * 1000:.0f}k funded customers（股权交易，不是自然获客）。'
+            f'带进约 {WONDERFI_CUSTOMERS_MN * 1000:.0f}k funded customers（股权交易，不是自然获客）；'
+            f'Trump Account 自 {BRK_TRUMP} 起并入总平台资产（Robinhood 托管部分）与净流入'
+            f'（缴款），<b>但不计入 funded customers</b>。'
             f'带 {MARK} 的格子表示<b>该格的比较区间跨过上述断点</b>，两端不是同一个口径下的数，'
             f'因此数值照登、但不涂红绿。{_fc_ex_txt}'
             '3Y %ile = 当月读数在近 36 个月里高于多少百分比的观测，判据统一取自 '
@@ -1810,6 +1825,9 @@ notes = [
         _brk_line(BRK_WONDERFI,
                   f'WonderFi 带进约 {WONDERFI_CUSTOMERS_MN * 1000:.0f}k funded customers'
                   '（股权交易，不是自然获客）'),
+        _brk_line(BRK_TRUMP,
+                  'Trump Account 并入总平台资产（Robinhood 托管部分）与净流入（缴款），'
+                  '不计入 funded customers'),
     ])
     + '。汇总表里<b>跨断点的 m/m 与 y/y 都带 †</b>，数值照登但不涂红绿 —— 两端不是同一个口径下的数，'
       '「好消息还是坏消息」这个判断做不了。',
