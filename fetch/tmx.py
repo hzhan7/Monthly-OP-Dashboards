@@ -238,6 +238,10 @@ series/tmx_box_q.csv，一行一个自然季，`quarter` 为 `YYYY-Qn`。
    有表 60 期（2021-09-08 → 2026-08-07 发布）、无表 80 期（2015-01-06 → 2021-08-05），
    边界干净无交叉。「这一期没有表格」是**明确可识别的状态**（本模块直接跳过该期），
    不是解析失败，更不能解析出一堆空值混进 CSV。
+   ⚠ 但「可识别」这三个字得靠判据兑现，不能靠一句 continue 蒙混：跳过的条件是
+   **标题自报的数据月早于 SPOT_START**，不是「正文里没找到表」。二者当年是同一个
+   分支，于是「官方改了表头写法」和「这一期本来就没表」在日志里长得一模一样 ——
+   现在由 _crosscheck_headline_month 把它们分开，后者放行，前者抛。
    ⇒ 所以 `SPOT_START` 不是保守设置，是 feed 本身的上限；2015-01~2021-07 由 CIRO 补
    （源 5 / 口径坑 16），**不是**由本模块补。
 
@@ -503,8 +507,29 @@ BOX_COLUMNS = ['quarter', 'box_volume_mncontracts', 'box_equity_options_share_pc
 _MONTHS = {m: i for i, m in enumerate(
     ['January', 'February', 'March', 'April', 'May', 'June', 'July',
      'August', 'September', 'October', 'November', 'December'], 1)}
-# 表头单元格里的月份可能被 inline 标签拆开（口径坑 5），所以先 _squash 再按无空格形态匹配
-_MON_HDR = re.compile(r'^([A-Z][a-z]+)(\d{4})$')
+# 月名 -> 月号的**容错查表**（键一律小写）：全名 + 3 字母缩写 + 'Sept'。
+# 官方今天在表头和标题里印的都是全名（60 期表头、140 期标题实测无一例外），
+# 加缩写不是迁就今天的写法，是让「Jul 2026」这类改法**不再是静默的**：认得出就走
+# _crosscheck_headline_month 的对账，认不出就整期无声消失。宽到能读、严在对账 ——
+# 同 fetch/msci.py 那段注释的意思，兜住下一次改版的是对账不是正则，正则只认识见过的变体。
+_MONTH_LOOKUP = {k: n for m, n in _MONTHS.items()
+                 for k in (m.lower(), m[:3].lower())}
+_MONTH_LOOKUP['sept'] = 9
+# 表头单元格里的月份可能被 inline 标签拆开（口径坑 5），所以先 _squash 再按无空格形态匹配。
+# 尾部**刻意不锚定**：这份稿子到处挂脚注符（表下的 `*Includes NEX`、小节标题的
+# `All TMX Equities Marketplaces *`），脚注哪天迁进表头变成 `July2026*`，`$` 锚就会把
+# 整期现货静默挡在门外。前缀仍然咬死「字母紧跟 4 位年」，所以 YTD 表进不来 ——
+# 它表头第一个数据列是 `2026`，压根没有前导字母（口径坑 6）。
+_MON_HDR = re.compile(r'^([A-Za-z]+)[.\-–—]?(\d{4})')
+# 标题里的「月名 + 年份」。标题是纯英文散文，与正文那张 HTML 表格是两条互不相干的东西，
+# 这正是它能当**外部判据**的理由（同 cboe 的自报报告月、ice 的工作簿 URL 月）。
+_HEADLINE_MON = re.compile(
+    r'\b(%s)\.?\s+(\d{4})\b' % '|'.join(sorted(_MONTH_LOOKUP, key=len, reverse=True)),
+    re.IGNORECASE)
+# 月度 CTS 正稿的标题指纹（_squash 后小写），140 期无一例外。
+# 只用来把「tagList 上挂了一条临时通知」和「正稿的表格没了」分开，不参与取数：
+# 认不出只会让护栏对那一条降级成告警，一个数都不会变。
+_CTS_TITLE = 'consolidatedtradingstatistics'
 # 引子句在 PDF 文字层里可能被换行切开，所以词间用 \s+ 而不是写死空格；
 # 锚点只到 "market" 为止 —— YE-2024 / YE-2025 那两份少了 "share" 一词（口径坑 15）。
 _BOX_ANCHOR = re.compile(r'The\s+following\s+table\s+summarizes\s+the\s+BOX\s+volume'
@@ -559,6 +584,15 @@ def _squash(s):
 
 def _norm(v):
     return re.sub(r'\s+', ' ', str(v)).strip() if v is not None else ''
+
+
+def _month_num(name):
+    """月名 -> 1..12，认不出返回 None。全名 / 3-4 字母缩写 / 任意大小写都认。
+
+    返回 None 而不是抛，是因为两个调用方要的处置不一样：表头那边「不是月份」是家常便饭
+    （YTD 表、脚注表都得安静丢掉），标题那边读不出则会让护栏自己失效并喊一声。
+    """
+    return _MONTH_LOOKUP.get((name or '').lower())
 
 
 def _num(s):
@@ -687,9 +721,10 @@ def _parse_cts_table(table):
     if len(head) < 2:
         return None, None
     m = _MON_HDR.match(head[1])
-    if not m or m.group(1) not in _MONTHS:
+    num = _month_num(m.group(1)) if m else None
+    if num is None:
         return None, None
-    month = '%s-%02d' % (m.group(2), _MONTHS[m.group(1)])
+    month = '%s-%02d' % (m.group(2), num)
 
     out = {}
     for tr in rows[1:]:
@@ -778,12 +813,96 @@ def _cts_to_row(month, rec, headline):
     return row
 
 
-def fetch_cts(cache_dir, page_size):
+def _headline_month(headline):
+    """从新闻稿标题里读出它自报的数据月 'YYYY-MM'；读不出返回 None（宁缺勿猜）。
+
+    140 期标题实测全部形如 `TMX Group Consolidated Trading Statistics - July 2026`
+    （连字符 `-` 与 en dash `–` 混用过，尾巴上挂过 `(Revised)` / `(revised)` /
+    `(Corrected)`），每一条**恰好**出现一处「月名 + 年份」，且与正文表格解析出来的
+    数据月 60/60 一致、与无表那 80 期的边界 2021-07 / 2021-08 严丝合缝。
+
+    刻意要求「恰好一处」：哪天标题写成 "July 2026 (revised October 2026)"，
+    两处月份就说不清哪个是数据月 —— 这时返回 None 让护栏自己失效，也绝不猜一个月份
+    去和解析结果对账。猜错的代价不是漏抓一次，是把一期健康的稿子判成故障、天天 FAIL。
+    """
+    hits = _HEADLINE_MON.findall(headline or '')
+    if len(hits) != 1:
+        return None
+    num = _month_num(hits[0][0])
+    return None if num is None else '%s-%02d' % (hits[0][1], num)
+
+
+def _crosscheck_headline_month(headline, parsed):
+    """标题自报的数据月 vs 正文表格解析出来的数据月，对不上就炸。返回标题月（或 None）。
+
+    本模块的「独立于解析器的外部判据」，同 fetch/cboe.py 的 _crosscheck_report_month、
+    fetch/ice.py 的 _crosscheck_workbook_month。
+
+    防的是 README「第四类：不出声的失败」里那一种：官方把表头 `July 2026` 改成
+    `July 2026*` / `JULY 2026` / `July 2026 vs 2025`，或者干脆把 <table> 换成 div 网格，
+    于是 _parse_cts_table 返回 (None, None)、parse_cts_release 跟着返回 (None, None)、
+    fetch_cts 一个 continue 把整期丢掉 —— 现货 17 列就此冻结。而这件事在日志里
+    **连续失败十天和成功十天长得一模一样**：MX 那条腿照常前进、data_through 照常跳月、
+    首页红点本来就是按 MX 判的、build/specs/tmx.py 又明写着现货列最新月留空是正常状态。
+    没有这道对账，这种坏法在本模块里没有任何人会发现。
+
+    刻意 raise 而不是 print warn：warn 之后总状态仍是 UPDATED / NOCHANGE，等于没有护栏
+    （理由同 cboe._crosscheck_report_month）。也**不需要** ice 那种「先等一天」的时间阈值 ——
+    标题和表格在同一个 Body 字段里同批发出，不存在 CDN 文件晚于新闻稿的时间差。
+
+    三条豁免，每一条都对着真实存在的合法输入：
+      · 标题读不出月份 -> 判据本身没了，喊一声护栏失效然后放行（同 ice 的做法）；
+      · 标题月份早于 SPOT_START -> 2021-07 及更早那 80 期正文本来就没有表格（口径坑 7），
+        这是**按设计跳过**，不是故障。2026-08-18 复核过边界干净无交叉；
+      · 标题不像月度 CTS 正稿 -> tagList=trading-statistics 哪天被官方拿去挂一条临时通知
+        （11 年 140 期一次都没有过，但契约上没禁止），那条通知本来就不该有表格。
+        这一支同样只喊一声：为一条通知让 28 家里的一家天天 FAIL，代价比它挡住的风险大。
+        真出事时还有 update() 里的 _guard_spot_not_vanished 从反侧兜着。
+
+    ⚠ **这道护栏一旦响，不会自愈。** 如果官方真把正文表格永久撤回 2021-07 那种
+    「只给一条 /resource 链接」的版式，它就会天天 FAIL，重试多少次都一样，
+    要人来决定怎么办（改 SPOT_START 的边界，还是另找一条现货源），代码自己决定不了。
+    这是明知故犯：另一头是 17 条现货列在绿点后面悄悄冻住，没人会发现。
+    """
+    hm = _headline_month(headline)
+    if hm is None:
+        print('[tmx] ⚠ 护栏失效：这一期标题读不出数据月，本期没有独立于解析器的月份判据。'
+              '标题=%r' % (headline,))
+        return None
+    if parsed is None:
+        if hm < SPOT_START:
+            return hm               # 口径坑 7：正文本来就没有表格
+        if _CTS_TITLE not in _squash(headline).lower():
+            print('[tmx] ⚠ %s 这条 trading-statistics 条目的标题不像月度 CTS 正稿、正文也没有'
+                  '月度表格，按临时通知放过。标题=%r' % (hm, headline))
+            return hm
+        raise TmxFetchError(
+            '标题自报数据月 %s（不早于 %s，正文本该带月度表格），但一张月度表都没解析出来。'
+            '标题=%r。最可能是表头写法变了（_MON_HDR 只认「月名紧跟 4 位年」）或表格离开了'
+            '正文（回到 2021-07 那种只给 /resource 链接的版式）。拒绝静默跳过 —— 跳过等于'
+            '现货 17 列冻结而日志一片正常；请对照 cache/tmx_cts_feed.json 里这一期的 Body。'
+            % (hm, SPOT_START, headline))
+    if hm != parsed:
+        raise TmxFetchError(
+            '标题自报数据月 %s，正文表格解析出来却是 %s（标题=%r）。两者同批发出、不该不一致 —— '
+            '最可能是表头月份写法变了导致取到了别的表（YTD 表？去年同月列？）。拒绝写入。'
+            % (hm, parsed, headline))
+    return hm
+
+
+def fetch_cts(cache_dir, page_size, window_out=None):
     """拉 CTS feed，返回 {'YYYY-MM': (行字典, 官方发布日, 标题, MX 对账值)}。
 
     第 4 项是新闻稿 Montréal Exchange 小节里的成交合约数与 OI。
     **它不入库**（口径坑 10：那两行 2022-09 被官方"修订"成了错的），
     只交给 crosscheck() 当第二条独立证据链用。
+
+    每一条都过 _crosscheck_headline_month：不拿标题自报的月份对一遍账，
+    「正文表格没解析出来」和「这一期本来就没有表格」就永远是同一个 continue。
+
+    window_out 传一个 list 进来，就把本轮 feed 窗口里各期**标题自报的数据月**填进去
+    （读不出的那几期不填）。它是给 update() 的哨兵用的：哨兵得先知道窗口伸到哪个月，
+    才谈得上「已入库的那个月这一轮该不该还在」。不传就是纯读，行为不变。
     """
     os.makedirs(cache_dir, exist_ok=True)
     raw = _http_get(FEED_URL.format(n=page_size))
@@ -798,14 +917,18 @@ def fetch_cts(cache_dir, page_size):
 
     out = {}
     for it in items:
-        month, rec = parse_cts_release(it.get('Body') or '', it.get('Headline', ''))
+        headline = it.get('Headline', '')
+        month, rec = parse_cts_release(it.get('Body') or '', headline)
+        hm = _crosscheck_headline_month(headline, month)
+        if window_out is not None and hm:
+            window_out.append(hm)
         if month is None:
             continue                    # 2021-07 及更早：正文没表格，正常（口径坑 7）
-        row = _cts_to_row(month, rec, it.get('Headline', ''))
+        row = _cts_to_row(month, rec, headline)
         day = _release_date(it)
         mx_ref = {'volume': rec.get(('mx', 'mx_volume')),
                   'oi': rec.get(('mx', 'mx_oi'))}
-        out.setdefault(month, (row, day, it.get('Headline', ''), mx_ref))
+        out.setdefault(month, (row, day, headline, mx_ref))
     return out
 
 
@@ -1417,6 +1540,39 @@ def latest_month(cache_dir):
     return max(have)
 
 
+def _guard_spot_not_vanished(spot_from, cts, window):
+    """已入库的**最新现货月**，这一轮必须还能从 feed 里解析出来；不见了就炸。
+
+    这是 fetch/msci.py 的 update() 里那条「已入库月份整行不见了 -> 抛」在本模块的同款，
+    也是 _crosscheck_headline_month 的补网 —— 两道网的盲区不重叠：
+    那道从「标题说这一期该有什么」的正面查，这道从「我们已知库里有什么」的反面查。
+    官方哪天把标题写法也一起改了（_headline_month 返回 None、那道护栏自己失效并降级成
+    告警），就只剩这一道还站着；而告警改变不了总状态，改变不了就等于没拦。
+
+    只查最新那一个月，不是偷懒，是**为了不越出 feed 窗口**：
+      · window 是本轮各期标题自报的数据月，spot_from 早于窗口下沿时直接放行 ——
+        窗口没伸到那儿，谈不上「不见了」；
+      · 往回多查几个月看着更严，实际上只是拿误杀换覆盖：真出事的时候窗口里这几十期是
+        一起解析失败的，查一个月和查六个月抓到的是同一件事，而多查一个月就多一分
+        「官方撤下一期旧稿」被判成故障的机会。
+
+    两条豁免：库里还没有任何 CTS 来源的月份（全新的 CSV），或者最新现货月早于
+    SPOT_START —— 后者说明库里那段现货全部来自 CIRO 回补（口径坑 16），
+    feed 窗口本来就不该包含它。
+    """
+    if not spot_from or spot_from < SPOT_START:
+        return
+    if not window or spot_from < min(window):
+        return
+    if spot_from in cts:
+        return
+    raise TmxFetchError(
+        '%s 已经在 series/tmx.csv 的现货列里，这一轮 feed 窗口（%s 起，共 %d 期）却'
+        '一个月度表都没为它解析出来。官方不撤稿，所以多半不是它没了，是我们没解析出来 ——'
+        '本轮不写入，请对照 cache/tmx_cts_feed.json 里那一期的 Body 人工确认。'
+        % (spot_from, min(window), len(window)))
+
+
 def update(series_dir, cache_dir):
     """把新月份写进 series/tmx.csv（并顺带刷新季度的 tmx_box_q.csv），返回新增月份列表。
 
@@ -1465,7 +1621,11 @@ def update(series_dir, cache_dir):
     # feed 一次最多回 300 条（全量 139 期也才 139 条）；缺口小的常规月只拉十来条，
     # 省掉每月几 MB 的正文下载，也少给对方站点添堵。+3 是给「官方补发/重发」留的余量。
     page = min(300, max(6, gap + 3))
-    cts = fetch_cts(cache_dir, page_size=page)
+    window = []
+    cts = fetch_cts(cache_dir, page_size=page, window_out=window)
+    # 反侧哨兵：上一轮已入库的最新现货月，这一轮必须还在（见 _guard_spot_not_vanished）。
+    # 放在 _merge 之前 —— 一旦要炸就一个字节都别写。
+    _guard_spot_not_vanished(spot_from, cts, window)
     for month in sorted(cts):
         row = cts[month][0]
         if _merge(header, body, have, month, row):

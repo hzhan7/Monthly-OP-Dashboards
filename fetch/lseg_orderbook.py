@@ -41,7 +41,10 @@ londonstockexchange.com 是 Angular SPA，`/reports?tab=...` 那个页面 curl �
      "world": "documents", "title": "LSEG market report June 2026",
      "lastupdate": "2026-07-30T21:04:07"}
 
-本模块按 **title 精确匹配**取链接，绝不按文件名拼 URL。
+本模块按 title 取链接，**绝不按文件名拼 URL**：先全等匹配，全等落空再退一步做
+「标题里同时含 'market report' 与该月标签、且 url 以 .pdf 结尾」的宽松匹配
+（见 `_find_month_report`）。退这一步的理由见下面「文件名坑 2」与「护栏」两节 ——
+CMS 标题历史上就漂过，而标题一漂，全等匹配返回的是 None，那条路是**静默**的。
 
 📌 已经踩到的两个文件名坑（正是「不许猜」的理由）：
   1. **同名重传会被 Drupal 加后缀**：`Order book trading_1558.xlsx`（数字每传一次 +1）、
@@ -109,6 +112,36 @@ web.archive.org 在本机是黑名单。别再往这三条路上走。
 `Order book trading` 工作簿的 Last-Modified 停在 2026-07-30 21:04 GMT、数据只到 7 月 30 日；
 同一天 2026-07 那期月报**还没发**（检索接口查无此条）。所以「LSEG 的月度数据慢」
 是常态，别把 NOCHANGE 当成抓取坏了。
+
+━━ 护栏：这一路「读不到」时必须出声 ━━
+
+检索接口按标题找不到月报时返回的是 None 而不是异常，`fetch_rows` 把该月记进
+`missing` 就继续往下走。而稳态下 `skip` 覆盖全部已入库月份 ⇒ rows 为空 ⇒ 函数走
+「全部已入库，无新月份」那一支干净返回 []，`fetch/lseg.py` 那边 after−before 为空、
+只打一行 `orderbook ok N 个月`。**标题模板一改，这一路就会这样连年安静空转**：
+没有异常、没有缺列、没有断档，而 orderbook 又是 build/specs 里的慢腿（页面自带
+「最新月留空是正常的」那句说明、不点红点），growing 的右边缘缺口反而被解释掉了。
+README 判据一句话：连续失败十天和成功十天在日志里长得一样，就缺一道护栏。
+
+三道，照 fetch/msci.py 的形状，缺一不可：
+
+  ① **宽松匹配**（`_find_month_report`）：只挡**已知**的那种漂法（改词、带扩展名）。
+     选错文件不会静默 —— `parse_report` 核 PDF 自己印的抬头月份、`_sanity` 核
+     日均×交易日恒等式、`_crosscheck` 核副源工作簿，三道都在下游等着。
+  ② **逾期哨兵**（`_guard_overdue_missing`）：`missing` 无条件打印，且其中任何一个月
+     离数据月月末超过 `_MAX_PUBLISH_LAG_DAYS` 就抛。这道才是挡住**下一种没见过的**
+     漂法的那道 —— ① 只认识见过的变体。别只留 ①。
+  ③ **独立外部判据**（②里那段 judge，形状同 `fetch/cboe.py::_crosscheck_report_month`
+     与 `fetch/ice.py::_crosscheck_workbook_month`）：过了阈值之后再去问副源工作簿
+     「这个月它算不算完整月」，把「官方还没发」和「我们找不到」分开写进错误消息。
+     ⚠ 副源**只能作证、不能当触发器**：它在次月头几天就把上个月记成完整月（口径坑 6），
+     而月报 PDF 的 2026 年中位滞后是 +19 天 —— 拿它当触发器等于每个月误报三个星期，
+     而每月假一次的警报，人很快就学会无视了。
+
+抛出来的后果是**降级不是 FAIL**：`fetch/lseg.py` 的 `_update` 逐路 catch，所以这里抛
+只让 orderbook 这一路当天不前进（日志多一行 `⚠ orderbook 这一路本轮失败` 与
+「本轮降级的路：orderbook」），另外三路照常合流发布。这正是要的形状：出声，
+但不牵连别人。
 
 ━━ 口径坑（按踩坑概率排序）━━
 
@@ -298,12 +331,86 @@ def _find_doc(title):
     return None
 
 
-def _download(url, path, min_bytes=20000):
-    """下到 cache/。判有效而不只判存在 —— 0 字节残骸会让后续每轮都以为「已经有了」。"""
+def _find_month_report(month):
+    """取某个月的 Monthly Market Report 文档记录；找不到返回 None（不抛）。
+
+    先全等匹配，落空再退一步做宽松匹配。为什么要退这一步：CMS 标题会漂 ——
+    2022-06 那期的标题带 `.pdf`（`_title_key` 已经吃掉），而**下一次漂成什么样
+    没人知道**（改成 "LSEG Monthly Market Report August 2026"、挂个 "(revised)"、
+    把空格换成不间断空格，都会让全等匹配返回 None）。全等落空是**静默**的，
+    正是本模块要拦的那种失败形状，所以宽松匹配的意义是把「标题小改」从
+    「安静空转一年」拉回「照常抓到」。
+
+    宽松判据是三条**与**起来：标题含 'market report'、标题含该月标签
+    （'august 2026'）、url 以 .pdf 结尾。2026-08-26 实测全站只有
+    `LSEG market report <Month> <Year>` 这一族 PDF 用到 "market report" 这两个词
+    （拿 'market report June 2026' 与 'AIM market report June 2026' 各拉 30 条命中
+    逐条核过，没有第二族），所以三条与起来在今天是唯一的。
+    **命中多于一份不同 url 时宁可抛、绝不猜**：那说明将来真出了同名的第二族文档，
+    该由人决定取哪一份。
+
+    退这一步之后仍然安全，靠的是下游三道：`parse_report` 核 PDF 自己印的抬头月份
+    （下错月直接抛）、`_sanity` 核恒等式、`_crosscheck` 核副源。而「宽松匹配也认不出」
+    这一种由 `_guard_overdue_missing` 兜，不在这里兜 —— 正则只认识见过的变体。
+    """
+    title = f'LSEG market report {_month_label(month)}'
+    hits = _search(title, size=30)
+    key = _title_key(title)
+    for hit in hits:
+        # 第一轮与 `_find_doc` 完全同义：全等命中时行为一个字节都不变。
+        if _title_key(hit.get('title')) == key and (hit.get('url') or '').startswith('http'):
+            return hit
+    label = _month_label(month).lower()
+    loose = {}
+    for hit in hits:
+        url = hit.get('url') or ''
+        if not url.startswith('http') or not url.lower().endswith('.pdf'):
+            continue                            # 页面命中不是文档；非 PDF 不是月报
+        tk = _title_key(hit.get('title'))
+        if 'market report' in tk and label in tk:
+            loose.setdefault(url, hit)
+    if len(loose) > 1:
+        raise LsegOrderbookFetchError(
+            f'{month}: 标题全等匹配落空，宽松匹配又命中 {len(loose)} 份不同文档 '
+            f'{sorted(loose)} —— 拒绝猜，请人工确认哪一份才是 Monthly Market Report')
+    if loose:
+        hit = next(iter(loose.values()))
+        print(f'[lseg_orderbook] ⚠ {month}: CMS 标题已经不是 {title!r}，'
+              f'宽松匹配取到 {hit.get("title")!r} —— 全等匹配这一路已经失效，'
+              f'核对无误后把新写法补进 _find_month_report 的判据')
+        return hit
+    return None
+
+
+#: 副源工作簿的缓存寿命（小时）。**只有这一份文件开缓存过期，mmr_*.pdf 一律不开。**
+#: 工作簿是「同一个文件名持续更新」的，而 `_download` 一命中缓存就直接返回 ——
+#: 2026-08-26 实测 cache/lseg_orderbook/order_book_trading.xlsx 的 mtime 停在
+#: 2026-08-07、里面最新一天是 2026-07-30，也就是说这道「独立外部判据」自己先冻了
+#: 大半个月。冻住的后果不是报错：`_crosscheck` 对**新月份**永远查不到对应行，转而
+#: 打印一句「副源 xlsx 尚无这些月份，未做双源核对」—— 一道从不生效的护栏，在日志里
+#: 和一道生效的护栏长得一模一样，正是第四类失败。24 小时 = 每天最多重下一次。
+_XLSX_MAX_AGE_HOURS = 24.0
+
+
+def _download(url, path, min_bytes=20000, max_age_hours=None):
+    """下到 cache/。判有效而不只判存在 —— 0 字节残骸会让后续每轮都以为「已经有了」。
+
+    `max_age_hours` 默认 None = 关，**不要给 mmr_*.pdf 打开它**：那 127 份是每月一份的
+    不可变快照，重下只会拉到重传件（文件名带 `_1`），而重传件的 /CreationDate 记的是
+    重新导出那天，会污染 `--cadence` 那张节奏表（文件头「+1855 天」那条就是这么来的），
+    而 LAG / EARLY_BY 又是照那张表定的。只有副源工作簿要开它，见 `_XLSX_MAX_AGE_HOURS`。
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    stale = False
     if os.path.exists(path) and os.path.getsize(path) >= min_bytes:
-        return path
-    if os.path.exists(path):
+        if max_age_hours is None:
+            return path
+        if (time.time() - os.path.getmtime(path)) / 3600.0 < max_age_hours:
+            return path
+        stale = True     # 手上有一份能用的旧档：重下失败时不能先把它删了（见下）
+    if os.path.exists(path) and not stale:
+        # 只删「残骸」。过期但完整的那份留到新文件真的下回来为止 —— 先删后下会让一次
+        # 网络抖动把副源判据整个抹掉，而抹掉之后 `_crosscheck` 只会安静地少核几个月。
         os.remove(path)
     data = _http_get(url, timeout=120)
     if len(data) < min_bytes:
@@ -341,6 +448,17 @@ def _prev_month(month):
 def _today_month():
     d = datetime.date.today()
     return f'{d.year}-{d.month:02d}'
+
+
+def _month_end(month):
+    """'YYYY-MM' → 该月最后一天的 date。
+
+    逾期哨兵按「离**数据月月末**几天」算，和文件头那张实测节奏表、和 `cadence()`
+    是同一个口径 —— 阈值是从那张表读出来的，两边口径必须一致，否则阈值就不是它
+    看起来的那个意思了。
+    """
+    y, m = (int(x) for x in month.split('-'))
+    return datetime.date(y + (m == 12), (m % 12) + 1, 1) - datetime.timedelta(days=1)
 
 
 # ──────────────────────────────────────────────────────────────── PDF 解析
@@ -551,13 +669,17 @@ def _xlsx_monthly():
 
     完整月的判据不看日历、不查假期表：Daily sheet 里出现过比该月更晚的交易日，
     该月就一定走完了。见 docstring 口径坑 6。
+
+    ⚠ 这份工作簿必须**带过期时间**下载（`_XLSX_MAX_AGE_HOURS`），不能吃永久缓存：
+    它是本模块唯一一个独立于 PDF 解析器的判据，冻在半个月前等于这道判据对最新月
+    永远失效，而失效时它只会打印一句「副源尚无这些月份」，不会报错。
     """
     import openpyxl
     hit = _find_doc('Order book trading')
     if hit is None:
         raise LsegOrderbookFetchError('检索接口找不到 "Order book trading" 工作簿')
     path = _download(hit['url'], os.path.join(CACHE, 'order_book_trading.xlsx'),
-                     min_bytes=100000)
+                     min_bytes=100000, max_age_hours=_XLSX_MAX_AGE_HOURS)
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     for need in ('Daily Order Book Trading', 'Monthly Order Book Trading'):
         if need not in wb.sheetnames:
@@ -669,13 +791,90 @@ def _crosscheck(rows, xlsx):
     return len(rows) - len(skipped)
 
 
+# ─────────────────────────────────────────────────── 逾期哨兵（护栏②③）
+
+#: 逾期阈值：某个月的月报离**数据月月末**超过这么多天还没在检索接口里出现，就不再
+#: 当「官方还没发」，而当「我们找不到」抛出来。
+#:
+#: 取值只能从本模块自己量过的节奏来（文件头「实测发布节奏」），不许拍脑袋：
+#:     2021-01 起 67 期：中位 +4 天，**最晚 +51 天**（2026-01 那期。它是重传件，
+#:                      但同日还发了 2026-02 那期，说明 2026 年初确实积压了两个月
+#:                      一起补 —— 所以这个 51 当上界读是站得住的）
+#:     2024-01 起 30 期：**最晚 +24 天**（2026-03 的数据 → 2026-04-24）
+#: 90 天 ≈ 全样本最坏值的 1.8 倍、近两年最坏值的 3.75 倍，还跨满一个季度。
+#: 也就是说它只可能在「官方真的停发」或「我们真的找不到」时响，不会在一次正常的
+#: 晚发上响 —— 这条护栏宁可迟三个月才响，也不能每月假响一次：
+#: 每月假一次的警报，人很快就学会无视，然后连真的那次也一起无视了。
+#:
+#: ⚠ **它哪天响了，不要往上调它。** 官方永久停发这份月报，要照 monthly_run 里 JPX
+#: cmdty_proforma 那套处置（写下停发结论 + 把该月移出预期窗口），调阈值只是把哨兵
+#: 关掉，而关掉之后这一路又回到「安静空转」那个状态。
+_MAX_PUBLISH_LAG_DAYS = 90
+
+
+def _guard_overdue_missing(missing, use_judge=True, today=None):
+    """`missing` 里有月份逾期未见 → 抛。这一路唯一能把「还没发」和「找不到」分开的判据。
+
+    为什么必须**抛**而不是 print 一句 warn：稳态下 `skip` 覆盖全部已入库月份，检索
+    接口一旦按标题找不到新月份，`fetch_rows` 的 rows 就是空的，函数走「全部已入库」
+    那一支干净返回，`fetch/lseg.py` 那边 after−before 为空、只打一行 `orderbook ok`。
+    warn 治不了这个 —— 打完 warn 状态仍然是「正常」，连续失败计数、红点、断档哨兵
+    照样一个都不动。要让「坏了十天」和「稳了十天」在日志里长得不一样，只有抛。
+
+    判据顺序刻意是「先看时间，再问副源」，不能反过来：副源在次月头几天就把上个月
+    记成完整月，而月报 PDF 的 2026 年中位滞后是 +19 天。拿副源当触发器 = 每个月
+    误报三个星期。所以副源在这里只**作证**（把错误消息分成两种），不参与「要不要抛」。
+    """
+    if not missing:
+        return
+    today = today or datetime.date.today()
+    overdue = [(m, (today - _month_end(m)).days) for m in sorted(missing)]
+    overdue = [(m, d) for m, d in overdue if d > _MAX_PUBLISH_LAG_DAYS]
+    if not overdue:
+        return                                  # 还在正常晚发的窗口里，闭嘴
+
+    # 外部判据（形状同 fetch/cboe.py::_crosscheck_report_month、
+    # fetch/ice.py::_crosscheck_workbook_month）：问一个**不经过 PDF 解析器**的源。
+    judge = '（本轮没问副源：crosscheck 关着）'
+    if use_judge:
+        try:
+            done = _xlsx_monthly()
+        except Exception as e:                  # noqa: BLE001 —— 作证失败不许盖住主错
+            # 副源自己取不到时仍然要抛上面那件事，只是消息里说清楚证人没到场，
+            # 免得下一个人以为「没提副源 = 副源说没事」。
+            judge = f'（副源工作簿本轮也取不到：{type(e).__name__}: {e}）'
+        else:
+            ready = [m for m, _d in overdue if m in done]
+            if ready:
+                judge = (f'而副源 `Order book trading` 工作簿已经把 {ready} 记成完整月 —— '
+                         f'数据本身早就出来了，是月报 PDF 这一路找不到')
+            else:
+                judge = ('副源 `Order book trading` 工作簿也还没把这些月记成完整月 —— '
+                         '更像官方整体停发，而不是标题写法变了')
+
+    raise LsegOrderbookFetchError(
+        '检索接口里这些月份的月报逾期未见（阈值 {} 天，本模块实测最慢一期 +51 天）：'
+        '{}。{}。按标题找不到时取链接那一步是返回 None 不抛的，所以不抛在这里，'
+        '这一路就会一直安静空转。先手工搜一次 "LSEG market report <Month> <Year>" '
+        '看标题写法变没变（变了就把新写法补进 `_find_month_report` 的宽松判据）；'
+        '若确认是官方永久停发，照 JPX cmdty_proforma 那套写下结论并收窄窗口，'
+        '**不要调 _MAX_PUBLISH_LAG_DAYS**。'.format(
+            _MAX_PUBLISH_LAG_DAYS,
+            ', '.join(f'{m}（月末后 {d} 天）' for m, d in overdue),
+            judge))
+
+
 # ──────────────────────────────────────────────────────────────── 对外接口
 
 def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=()):
     """返回 [{'month': 'YYYY-MM', <17 列>}, ...]，按月份升序。
 
-    end 默认取「上个月」—— 当月的月报当然还没出。逐月按标题去检索接口要链接，
-    检索不到就当作「这一期还没发」跳过（并打印），不抛异常。
+    end 默认取「上个月」—— 当月的月报当然还没出。逐月按标题去检索接口要链接
+    （`_find_month_report`：先全等、后宽松），检索不到的记进 `missing`。
+
+    `missing` 里的月份**只在还没超期时**算「这一期还没发」：超过
+    `_MAX_PUBLISH_LAG_DAYS` 的由 `_guard_overdue_missing` 抛出来。为什么不能一律
+    当「还没发」静静跳过，见文件头「护栏」那一节 —— 那正是本模块踩过的第四类失败。
 
     `skip` = 已经入库、不必再抓的月份集合。**窗口从 2021-01 前推到 2016-01 之后
     这个参数是必需的，不是优化**：本函数对窗口里的每个月都发一次检索请求 + 下一份
@@ -693,8 +892,7 @@ def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=
     for month in _months(start, end):
         if month in skip:
             continue
-        title = f'LSEG market report {_month_label(month)}'
-        hit = _find_doc(title)
+        hit = _find_month_report(month)
         if hit is None:
             missing.append(month)
             continue
@@ -714,15 +912,28 @@ def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=
                   f'/ {rec["lse_orderbook_trades_count"]:,} trades')
         time.sleep(0.25)                            # 对官方站客气一点
 
+    # missing 无条件先打印、哨兵无条件先跑。**顺序是护栏的一部分**：这两句原先排在
+    # 下面 `if not rows: return []` 的后面，而稳态下 rows 恰恰总是空的（skip 覆盖
+    # 全部已入库月份）—— 于是「某个月检索不到月报」这件事一次都没被打印过，函数还
+    # 顺口报了一句「全部已入库」（在有 missing 的日子里，那句话是假的）。
+    if missing:
+        print(f'[lseg_orderbook] 检索接口没有这些月份的月报: {missing}')
+    _guard_overdue_missing(missing, use_judge=crosscheck)
+
     if not rows and not skip:
         raise LsegOrderbookFetchError(f'{start}..{end} 一期月报都没抓到')
     if not rows:
         # 全窗口都已入库 = 稳态下最常见的一轮，不是故障。
         # （加 skip 之前这里是无条件抛 —— 直接搬过来会让「本月还没发」变成整家 FAIL。）
-        print(f'[lseg_orderbook] {start}..{end} 全部已入库，无新月份')
+        # ⚠ 只有 missing 为空时「全部已入库」才是真话；有 missing 时如实说，
+        #   别再让一句假的正常话盖住上面那行。
+        if missing:
+            print(f'[lseg_orderbook] {start}..{end} 本轮无新月份入库；'
+                  f'其中 {len(missing)} 期检索不到，但都还在 '
+                  f'{_MAX_PUBLISH_LAG_DAYS} 天的正常晚发窗口内')
+        else:
+            print(f'[lseg_orderbook] {start}..{end} 全部已入库，无新月份')
         return []
-    if missing:
-        print(f'[lseg_orderbook] 检索接口没有这些月份的月报: {missing}')
     if crosscheck:
         n = _crosscheck(rows, _xlsx_monthly())
         print(f'[lseg_orderbook] 双源核对通过 {n}/{len(rows)} 个月')

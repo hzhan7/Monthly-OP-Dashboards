@@ -70,6 +70,25 @@ EARLY_BY['spgi'] 照最早的第 13-14 天开闸，宁可空跑几周也不能�
    数值完全一致，没有重述。但重述是可能的，所以 update() 会把工作簿重算的历史月份
    与 CSV 已有值对一遍，发现不一致时**告警但不改写历史**（改写历史必须人工决定）。
 
+════════ 三道护栏：防「读不到不抛错」════════
+本模块最危险的坏法不是抓取失败，是**官方改一个表头写法，我们把整整一列静默丢掉**。
+那一列丢了不会报错：当年每个月都缺字段，_complete_months 只对夹在已披露区间里的
+缺字段月份抛错（整年一个完整月份都不剩时它的 year_done 是空的，一声不响），于是
+done 塌回上一年 12 月、update() 干净返回 []、日志和「这个月官方还没发」一模一样。
+按 README「第四类：不出声的失败」的判据 —— 连续失败十天和成功十天在日志里长得
+一样吗 —— 答案是「一样」，所以三道网一起上，方向不同、盲区不重叠：
+
+  (a) 表头侧　_crosscheck_year_columns：Indices 表的同比年份集合必须等于 ADV
+      年份集合。最早响，不依赖库里已有什么，parse() 里就响。
+  (b) 反侧　　_crosscheck_stored_months：已入库且落在本期工作簿覆盖区间内的月份，
+      必须重新解析得出来。看得见 (a) 看不见的坏法（Ratings 侧丢列、某格变横杠）。
+  (c) 外部判据 _crosscheck_asof_month：文件名自报的 as-of 月 vs 表内最后一个完整
+      月份。唯一一条**不经过 openpyxl** 的判据，形状照 fetch/cboe.py 的
+      _crosscheck_report_month 与 fetch/ice.py 的 _crosscheck_workbook_month。
+
+_adv_columns 顺带认了两位年写法（"'26 ADV …"），但那只是把**已经想到的**那一种
+变体接住；接住下一种没想到的靠 (a)(b)(c)。别只留容错、删掉护栏。
+
 ════════ 对外接口 ════════
     latest_month(cache_dir) -> "YYYY-MM" | None
     update(series_dir, cache_dir) -> ["YYYY-MM", ...]   # 新增的月份，幂等
@@ -110,6 +129,14 @@ UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
 # build/basefill/spgi_history.py::BASE_YEAR 与本常数是同一个判断，改一个必须改另一个
 # —— 不一致时增量追加会拿 100 当错误年份的基数，把整条链接歪且不报错。
 BASE_YEAR = 2022
+
+# as-of 月「只缺它自己」这一种形状的容忍期（天），见 _crosscheck_asof_month 的豁免段。
+# 取值依据是本文件开头那张实测发布节奏表：as-of 月月末之后第 14 / 31 / 41 天各出过一次，
+# 最慢的一次是 41 天。补发修正版走的是同一条节奏，所以 41 天是「还可能自愈」的上界；
+# 留出约一个月的富余定在 75 天 —— 到那时下一期工作簿（M+1 那份，月末后 45-72 天）
+# 本该早就把这一份顶掉了，还维持原样就不是「等官方补发」，而是没人看见的静默停更。
+# 别把它调小到 41 附近：那等于把一次正常的季末迟发判成故障。
+ASOF_BLANK_GRACE_DAYS = 75
 
 SHEET_RATINGS = 'Ratings'          # 子串匹配，防官方改全名
 SHEET_INDICES = 'Dow Jones'
@@ -241,8 +268,17 @@ def _guess_cdn_urls(period):
                 CDN_BASE, y, q, name, pub_m, day, pub_y)
 
 
-def _resolve_source(cache_dir):
-    """定位并下载最新一份 xlsx，返回 (本地路径, asof_period, 源 url)。"""
+def _resolve_source(cache_dir, refresh=False):
+    """定位并下载最新一份 xlsx，返回 (本地路径, asof_period, 源 url)。
+
+    refresh=True 时**无视本地缓存重下一遍**。默认 False，行为与从前一致。
+    为什么需要这个开关：本地文件按 as-of 月做键，命中就永不重下 —— 而官方在同一个
+    as-of 月内会补发修正版（缓存里 7 月那份自述 "Published on 8/17/2026"，
+    6 月那份是 7/15/2026，都晚于常规的 15 号），补发时文件名里的 Published 日期
+    变了、URL 也就变了。所以「重下」必须重新走一次发现（feed 每次都重新请求，
+    这个函数本来就是先发现后落盘），不能拿旧 url 再 GET 一次原地打转。
+    调用点见 _load_workbook_months：只有在 as-of 月没能完整解析出来时才会用到它。
+    """
     try:
         url, period = _discover_via_feed()
     except (urllib.error.URLError, SpgiFetchError) as exc:
@@ -271,7 +307,7 @@ def _resolve_source(cache_dir):
 
     os.makedirs(cache_dir, exist_ok=True)
     local = os.path.join(cache_dir, 'spgi_monthly_metrics_%s.xlsx' % _ym(period))
-    if not (os.path.exists(local) and os.path.getsize(local) > 4096):
+    if refresh or not (os.path.exists(local) and os.path.getsize(local) > 4096):
         blob = _http_get(url)
         if not blob.startswith(b'PK'):
             raise SpgiFetchError('下载到的不是 xlsx（前 4 字节 %r），可能被拦截页顶替了'
@@ -297,7 +333,10 @@ def _header_row(ws):
             v = ws.cell(row, col).value
             if isinstance(v, str) and '% change' in v.lower():
                 return row
-    raise SpgiFetchError('sheet %r 里找不到 "% Change" 表头行' % ws.title)
+    # %% 是必须的：字面量里那个 "% Change" 会被 % 格式化当成转换说明符，
+    # 写成单个 % 时这一行抛的是 TypeError 而不是 SpgiFetchError —— 护栏自己的
+    # 报错路径挂掉，人看到的就不是「表头找不到」而是一句莫名其妙的格式化错误。
+    raise SpgiFetchError('sheet %r 里找不到 "%% Change" 表头行' % ws.title)
 
 
 def _yoy_columns(ws, hrow):
@@ -320,6 +359,17 @@ def _yoy_columns(ws, hrow):
     return out
 
 
+# ADV 表头里的**两位年**写法（"'26 ADV (in millions of contracts)"）。
+# 同一行的同比表头本来就是两位年（"'26 v. '25 % Change"），官方哪天把 ADV 表头
+# 也改成同一套写法，只认四位年的那条 re.search(r'(20\d{2})') 就会把当年那一整列
+# 静默丢掉 —— 后果不是报错，是当年所有月份都缺 adv 字段、被 _complete_months
+# 当「还没披露」丢掉，done 塌回上一年 12 月，update() 干净地报 NOCHANGE。
+# 必须锚在撇号上（直角撇 ' 与弯撇 ’ 都要），并且后面不许再跟数字：
+# 不锚的话 "…contracts) 26" 这种尾巴、四位年的后两位都会被认成年份，
+# 那是把一列数安到错误的年份上，比丢掉更坏。
+_ADV_YEAR2_RE = re.compile(r"['’](\d{2})(?!\d)")
+
+
 def _adv_columns(ws, hrow, default_year=None):
     """把 "2026 ADV (in millions of contracts)" 解析成 {年份: 列号}。
 
@@ -327,14 +377,20 @@ def _adv_columns(ws, hrow, default_year=None):
     "ADV (in millions of contracts)" —— 因为当时表里只有一年，不需要区分。
     那种表头拿 default_year 兜底（调用方从月份行标签 "Jan 2023" 里取到的年份）。
     没有 default_year 又读不出年份时照旧报错：宁可炸也不能把一列数安到猜的年份上。
+
+    三种写法按「越具体越优先」的顺序试：四位年 → 两位年 → 无年份 + default_year。
+    ⚠ 加宽写法只是把**已经想到的**那一种变体接住了，接不住下一种没想到的；
+    真正兜底的是 _crosscheck_year_columns（同一张表的同比年份集合与 ADV 年份集合
+    必须一致）。两条要一起在，别只留这一条 —— 参见 fetch/msci.py 口径坑 6 的原话。
     """
     out = {}
     for col in range(1, ws.max_column + 1):
         v = ws.cell(hrow, col).value
         if isinstance(v, str) and 'adv' in v.lower():
-            hit = re.search(r'(20\d{2})', v)
+            hit = re.search(r'(20\d{2})', v) or _ADV_YEAR2_RE.search(v)
             if hit:
-                out[int(hit.group(1))] = col
+                got = int(hit.group(1))
+                out[got if got > 99 else 2000 + got] = col
             elif default_year is not None and 'million' in v.lower():
                 # 无年份表头只允许出现一次：出现两列就说明这份表里有多年数据却都不标年，
                 # 那时 default_year 会把两列覆盖成同一年，属于静默错配，必须炸。
@@ -345,6 +401,37 @@ def _adv_columns(ws, hrow, default_year=None):
     if not out:
         raise SpgiFetchError('Indices sheet 表头行没有 ADV 绝对值列')
     return out
+
+
+def _crosscheck_year_columns(ws_title, yoy_years, adv_years, path):
+    """Indices 表：同比列认出的年份集合，必须和 ADV 绝对值列认出的年份集合一样。
+
+    这是**表头这一侧**的对账，三道网里最早响的那一道（parse() 里就响，
+    还没轮到 CSV、也不依赖库里已经有什么）。防的是：官方改了 ADV 表头的年份写法
+    （四位年 → 两位年、或者干脆不写年），_adv_columns 认不出于是**整整一列**被
+    静默丢掉。那一列丢了不会报错 —— 当年每个月都缺 adv 字段，而 _complete_months
+    只对**夹在已披露区间里**的缺字段月份抛错，整年一个完整月份都不剩时它的
+    year_done 是空的，一句话都不说。结果是 done 塌回上一年 12 月，
+    update() 干干净净返回 []，日志和「这个月官方还没发」长得一模一样。
+
+    判据成立的理由：这两组列出自**同一张表的同一行表头**、同一次发布，官方每年
+    开一列 ADV 就同时开一列同比、滚掉一年也是两列一起滚。cache/basefill/spgi/ 里
+    2023-03 到 2026-07 的 15 份，加上 cache/ 里当前那 2 份（as-of 月与其中两份重复），
+    共 17 份文件、跨三种版式（2023 年的单年截断版、2024-2025 年的三年版、
+    2026 年的两年版）逐份验过，无一例外都对称。
+
+    ⚠ 刻意**只在 Indices 表内部对账，不跨表和 Ratings 比**。跨表也是 17 份全对称，
+    但 Ratings（评级）与 SPDJI（指数）是两条业务线各自出的数，哪天一边多留一年
+    历史都算正常源行为 —— 拿它 raise 会把一个健康的源变成天天 FAIL。
+    Ratings 那一侧丢列由 _crosscheck_stored_months 与 _crosscheck_asof_month 兜。
+    """
+    if set(yoy_years) != set(adv_years):
+        raise SpgiFetchError(
+            'sheet %r 的表头对不上：同比列认出的年份是 %r，ADV 绝对值列认出的是 %r。'
+            '这两组列出自同一行表头、同一次发布，不该不一致 —— 最可能是某一侧的年份'
+            '写法变了（四位年 ↔ 两位年、或表头措辞改了）导致整整一列被静默丢弃。'
+            '拒绝写入，请人工打开 %s 看一眼表头行。'
+            % (ws_title, sorted(yoy_years), sorted(adv_years), os.path.basename(path)))
 
 
 # 月份行标签的两种写法：现行版式是裸月名（"January"），2023 年那四份带年份且
@@ -426,6 +513,7 @@ def parse(xlsx_path):
     # 先读月份行：2023 年那四份的 ADV 表头不带年份，年份只能从行标签 "Jan 2023" 里取。
     i_rows, i_label_year = _month_rows(ws_i, hi)
     i_adv = _adv_columns(ws_i, hi, default_year=i_label_year)
+    _crosscheck_year_columns(ws_i.title, i_yoy, i_adv, xlsx_path)
 
     data = {}
     for year, col in sorted(r_yoy.items()):
@@ -511,6 +599,119 @@ def _complete_months(data):
     return complete
 
 
+def _crosscheck_stored_months(done, data, asof, stored, path):
+    """已经入库的月份，在本期工作簿里必须重新出现 —— 少一个就炸。
+
+    反侧那道网（照抄 fetch/msci.py update() 的哨兵②）。上面 _crosscheck_year_columns
+    是从「表头上有什么」这一侧查的，看不见 Ratings 表丢列、也看不见「某一格变成
+    横杠」这类坏法；这一道从「我们已知该有什么」的反侧查，两边盲区不重叠。
+
+    判据靠得住的理由：官方每月**全年重发**（模块 docstring 口径坑 5），已入库的
+    月份下个月还会原样再来一遍 —— 实测 2026-03 版与 2026-06 版对 1-3 月逐位相同。
+    所以一个已入库的月份在本期工作簿里「解析不出来」，几乎只能是我们把行/列丢了。
+    ⚠ 与「数值变了」处置不同：数值变了是官方重述，只告警不改历史（见 update()
+    里那段循环）；整月消失不是源的正常行为，直接抛。
+
+    ── 两条圈定范围的条件，缺一条这道护栏就变成天天误杀 ───────────────────
+    (1) 只查落在本期工作簿**覆盖区间**里的月份。工作簿只带「当年 + 上年（早年那几份
+        是三年）」，2026 年那两份已经把 2023 / 2024 滚掉了，而 series/spgi.csv 从
+        2023-01 起 —— 不圈范围的话每一次跑都会为 2023 年的行报错。
+        区间左端取 min(data)：滚掉一年是官方每年 1 月的正常动作，不能写死年份。
+    (2) 只查 <= as-of 月的月份。feed 挂掉时 _resolve_source 会往回猜最多 6 个月，
+        解析到的可能是一份旧工作簿；2023 年那四份更是按当季截断的（3/6/9/12 行）。
+        比 as-of 还新的库内月份本来就不该在里面，不是丢了。
+
+    已知的残余盲区（刻意留着，不要为它加检查）：整区间**最左端那一年**整体丢列时，
+    min(data) 会跟着右移，那一年就被条件 (1) 划到范围外。代价有限 —— 那些月份早已
+    入库，页面不会因此停更，丢的只是重述体检的基线；而收紧它就必然要写死年份，
+    每年 1 月官方滚掉一年时就会误杀一次。
+    """
+    have = set(done)
+    floor = min(data)
+    lost = [ym for ym in sorted(stored)
+            if floor <= _parse_ym(ym) <= asof and _parse_ym(ym) not in have]
+    if lost:
+        raise SpgiFetchError(
+            '%d 个已入库的月份在本期工作簿里没能完整解析出来：%s（工作簿 %s，'
+            'as-of=%s，覆盖到 %s 起）。官方每月全年重发，已入库的月份不该消失 —— '
+            '最可能是某一列/某一行的写法变了被静默丢弃。本次不写入，请人工核对版式。'
+            % (len(lost), ', '.join(lost[:6]), os.path.basename(path),
+               _ym(asof), _ym(floor)))
+
+
+def _prev_month(period):
+    return (period[0] - 1, 12) if period[1] == 1 else (period[0], period[1] - 1)
+
+
+def _crosscheck_asof_month(asof, done, data, path, where):
+    """文件名自报的 as-of 月 vs 表里最后一个完整月份，对不上就炸。
+
+    这是本模块**唯一一条独立于解析器**的月份判据：as-of 月是 _MM_RE 从 CDN
+    文件名（feed 的 DocumentPath）里取的，一个字节都不经过 openpyxl，所以解析器
+    认错行、认丢列，它不会跟着错。形状照抄 fetch/cboe.py 的 _crosscheck_report_month
+    与 fetch/ice.py 的 _crosscheck_workbook_month，连「刻意 raise 而不是 warn」
+    这一条也照抄 —— 那边的原话是：warn 之后状态仍是 NOCHANGE，等于没有护栏。
+    本模块原来正是只在这里 sys.stderr.write 了一句提醒。
+
+    防的是这一类：官方改了某个表头（ADV 的年份写法、Ratings 那列的 "% Change"
+    措辞），整整一列被静默丢掉，当年所有月份都缺字段，_complete_months 把它们
+    当「还没披露」丢掉（它只对夹在已披露区间里的缺字段月份抛错，整年不剩时
+    year_done 是空的，一声不响），done 塌回上一年 12 月，update() 干净返回 []。
+    没有 FAIL、没有红点、断档也抓不到 —— README「第四类：不出声的失败」那句判据
+    「连续失败十天和成功十天在日志里长得一样吗」，在这里答案是「一样」。
+
+    ⚠ 必须在 update() 里那句 `if not done: return []` **之前**调用。整份表一个完整
+    月份都不剩时（同比列与 ADV 列同时改写法就会这样），那句 return 会先跑掉，
+    连上面那行提醒都不会打 —— 那是最安静的一种坏法，护栏站在它后面等于不存在。
+
+    ── 唯一的豁免，以及为什么非留不可 ─────────────────────────────────────
+    官方确实可能把某一期发成半成品：Ratings 那几格填了、SPDJI 的 ADV 还空着
+    （本模块原先那句提醒写的「多半是官方某一列漏填了」说的就是这个）。那种情况下
+    done[-1] 恰好停在 as-of 的**前一个月**，别的什么都不缺。对这一种形状只喊不炸：
+    否则一次几天内自愈的源侧抖动，会让 spgi 天天 FAIL 到下一份工作簿发布为止，
+    而「把一个本来好好的源变成天天 FAIL」比它要治的陈旧更贵。
+    判据写成「done[-1] 正好是 as-of 的前一个月」而不是「差得不多」：整列丢失会把
+    **同年更早的月份**一起带走，done[-1] 会退得更远，落不进这个豁免。
+
+    豁免带时限 ASOF_BLANK_GRACE_DAYS：源侧抖动会自愈，版式变更不会。过了这个期限
+    还是同一副样子，就不再是「等官方补发」，而是没人看见的静默停更，该炸。
+    ⚠ 这个时限只有配上 _load_workbook_months 那次强制重下才成立：本地文件按 as-of
+    月做键、命中就永不重下，不重下的话官方补发的修正版我们根本看不到，容忍期一到
+    必然误杀一次本来已经自愈了的抖动。两处要一起在。
+    """
+    if done and done[-1] == asof:
+        return
+
+    prev = _prev_month(asof)
+    only_asof_missing = (bool(done) and done[-1] == prev
+                         and asof in data and any(k in data[asof] for k in NEED))
+    if only_asof_missing:
+        # as-of 月月末之后过了多少天。用月末而不是月初：发布节奏表就是按月末算的。
+        end = _dt.date(asof[0], asof[1], calendar.monthrange(asof[0], asof[1])[1])
+        aged = (_dt.date.today() - end).days
+        if aged <= ASOF_BLANK_GRACE_DAYS:
+            sys.stderr.write(
+                '[spgi] ⚠ %s：文件名 as-of=%s，但表内最后完整月份=%s，只差这一个月，'
+                '且 %s 那一行认得出（拿到 %r）—— 判为官方漏填了某一格，先只提醒。'
+                '月末后已 %d 天，超过 %d 天仍如此就会改判为故障并 FAIL。\n'
+                % (where, _ym(asof), _ym(done[-1]), _ym(asof),
+                   sorted(data[asof]), aged, ASOF_BLANK_GRACE_DAYS))
+            return
+        raise SpgiFetchError(
+            '%s：as-of=%s 的这一格已经空了 %d 天（超过 %d 天的容忍期），表内最后完整'
+            '月份仍是 %s。源侧漏填几天内会补发修正版，拖这么久说明不是漏填 —— '
+            '要么版式变了没人发现，要么官方停更了。工作簿 %s，请人工看一眼。'
+            % (where, _ym(asof), aged, ASOF_BLANK_GRACE_DAYS, _ym(done[-1]),
+               os.path.basename(path)))
+
+    raise SpgiFetchError(
+        '%s：文件名自报 as-of=%s，但表内最后一个完整月份是 %s（工作簿 %s）。'
+        '二者同批发布、不该不一致，而且缺的不止 as-of 这一个月 —— 最可能是某一整列'
+        '（同比列或 ADV 列）的表头写法变了被静默丢弃。拒绝写入，请人工看一眼表头行。'
+        % (where, _ym(asof), _ym(done[-1]) if done else '一个都没有',
+           os.path.basename(path)))
+
+
 # ---------------------------------------------------------------- CSV 读写
 
 def _read_csv(path, cols):
@@ -543,15 +744,45 @@ def _append_csv(path, lines):
 
 # ---------------------------------------------------------------- 对外接口
 
+def _load_workbook_months(cache_dir):
+    """下载 + 解析 + 挑出完整月份，返回 (路径, asof, url, data, done)。
+
+    as-of 月没能完整解析出来时，**强制重下一次再判**。这一步是
+    _crosscheck_asof_month 敢 raise 的前提，不是可有可无的优化：
+    本地文件按 as-of 月做键、命中就永不重下（见 _resolve_source），而官方会在
+    同一个 as-of 月内补发修正版。没有这一次重下，官方发的第一版里哪怕只是漏填
+    一格，我们也会抱着那份残缺的本地副本一直判到容忍期满 —— 一次两三天就自愈的
+    源侧抖动会被判成一个月的 FAIL。重下只在「已经不对劲」时发生，正常月份不多花
+    一个请求。
+
+    重下本身失败（网络抖动、feed 临时挂）不能反过来拖垮这一轮：喊一声，
+    拿第一次的结果继续往下判，护栏该响还是会响。
+    """
+    path, asof, url = _resolve_source(cache_dir)
+    data = parse(path)
+    done = _complete_months(data)
+    if not done or done[-1] != asof:
+        try:
+            path, asof, url = _resolve_source(cache_dir, refresh=True)
+            data = parse(path)
+            done = _complete_months(data)
+        except (urllib.error.URLError, OSError) as exc:
+            sys.stderr.write('[spgi] ⚠ as-of 月不完整，想重下一次确认却失败了（%s）；'
+                             '改用本地已有的那一份继续判\n' % exc)
+    return path, asof, url, data, done
+
+
 def latest_month(cache_dir):
     """官方源当前最新、且三个字段齐全的月份 "YYYY-MM"。
 
     抓不到 / 解析不出来一律抛 SpgiFetchError（不返回 None 掩盖故障）。
-    返回 None 只在一种情形：文件下到了、结构也对，但一个完整月份都没有——
-    那是官方发了空表，属于真·无数据。
+    ⚠ 「一个完整月份都没有」也算故障，同样抛：文件名自报 as-of 是某个月，表里却
+    连那个月都不完整，这两件事同批发布、不该不一致（判定与豁免见
+    _crosscheck_asof_month）。从前这里返回 None，把「官方发了空表」和「我们把整列
+    解析丢了」混成同一个返回值 —— 而后者恰恰是本模块最安静的坏法。
     """
-    path, _, _ = _resolve_source(cache_dir)
-    done = _complete_months(parse(path))
+    path, asof, _url, data, done = _load_workbook_months(cache_dir)
+    _crosscheck_asof_month(asof, done, data, path, 'latest_month')
     return _ym(done[-1]) if done else None
 
 
@@ -580,20 +811,23 @@ def update(series_dir, cache_dir):
     结论：spgi.csv = 本模块的私有台账 + 重述基线，只被 fetch 读回、不进 build。
     要动它之前先把上面两条职责搬走，否则删除 = SPGI 抓取炸掉 + 永久丢失重述告警。
     """
-    path, asof, url = _resolve_source(cache_dir)
-    data = parse(path)
-    done = _complete_months(data)
-    if not done:
-        return []
-    if done[-1] != asof:
-        # 文件名的 as-of 月份和表里最后一个完整月份对不上 —— 多半是官方某一列漏填了。
-        sys.stderr.write('[spgi] 提醒：文件名 as-of=%s，但表内最后完整月份=%s\n'
-                         % (_ym(asof), _ym(done[-1])))
+    path, asof, url, data, done = _load_workbook_months(cache_dir)
 
     raw_path = os.path.join(series_dir, 'spgi.csv')
     clean_path = os.path.join(series_dir, 'spgi_clean.csv')
+    # 两个 CSV 刻意提到护栏**之前**读：_crosscheck_stored_months 要拿库内已有月份
+    # 当判据，而两道护栏又都必须站在 `if not done: return []` 之前（理由见它们各自的
+    # docstring —— 整份表全军覆没时那句 return 会先跑掉，站在它后面的护栏等于不存在）。
     _, raw_rows = _read_csv(raw_path, COLS_RAW)
     _, clean_rows = _read_csv(clean_path, COLS_CLEAN)
+
+    # ── 两道护栏，查的方向相反、盲区不重叠，都刻意 raise 而不是 warn ─────────
+    # 前者从「库里已知该有什么」的反侧查，后者拿文件名这个独立于解析器的外部判据查。
+    _crosscheck_stored_months(done, data, asof, [r[0] for r in raw_rows], path)
+    _crosscheck_asof_month(asof, done, data, path, 'update')
+
+    if not done:            # 上一行已经把这种情况判成故障，留着只是兜底
+        return []
 
     have_raw = {r[0] for r in raw_rows}
     clean_by_month = {r[0]: r for r in clean_rows}

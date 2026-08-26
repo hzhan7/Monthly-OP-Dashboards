@@ -311,18 +311,57 @@ def _ir_html():
     return html
 
 
+#: 月份 token → 月序号，按**前 3 个字母**认。十二个英文月的前三字母两两不同
+#: （Jan/Jun/Jul、Mar/May 都靠第三个字母分开），所以前缀匹配不会认串；
+#: 换来的是缩写月（'Aug'、'Sept'）与全称一样认得出，不会整月被 continue 掉。
+_MONTH_BY_PREFIX = {m[:3].lower(): i + 1 for i, m in enumerate(_MONTHS)}
+
+#: 落地页上「长得像月度新闻稿」的 href —— **只用来数个数**，不用来解析。
+#: 刻意限死成「含那串 percent-encode 的固定词组 + 以 .pdf 结尾」：放宽成任意
+#: 含该词组的链接，页面上随便一个营销锚点都会让下面的对账天天抛。
+_PR_HREF_ANY = re.compile(r'href="([^"]*Monthly%20Sales%20Revenue[^"]*\.pdf)"', re.I)
+#: 严格解析用的形状，与 _PR_HREF_ANY 数出来的那一批逐条对账。
+_PR_HREF_STRICT = re.compile(
+    r'^[^"]*Monthly%20Sales%20Revenue%20([A-Za-z]+)%2c?,?%20?(\d{4})\.pdf$', re.I)
+
+
 def _pr_links(html):
-    """{'YYYY-MM': 绝对 URL}，来自落地页上的月度新闻稿 href。"""
-    out = {}
-    pat = re.compile(
-        r'href="([^"]*Monthly%20Sales%20Revenue%20([A-Za-z]+)%2c?,?%20?(\d{4})\.pdf)"',
-        re.I)
-    for href, mon, year in pat.findall(html):
-        mon = mon.capitalize()
-        if mon not in _MONTHS:
+    """{'YYYY-MM': 绝对 URL}，来自落地页上的月度新闻稿 href。
+
+    两道护栏，与 fetch/msci.py 的 parse() 是同一套（**别只留前一道**）：
+      (a) 月份 token 按 _MONTH_BY_PREFIX 前缀匹配，写法容错；
+      (b) **条数对账**：_PR_HREF_ANY 数出来的每一条 href 都必须被严格形状认下来，
+          认不下来的记进 dropped 并抛。
+
+    为什么 (b) 不能省：原来只有 `if not out: raise`，它挡的是「一条都没有」，
+    挡不住「少一条」。而少的那一条恰恰总是**最新那个月** —— 上游把某个月的文件名
+    改一个字（缩写月、词间多一个 token），那一月被 continue 掉，links 停在上个月，
+    update() 的增量循环根本走不到它，返回 []、零异常、`mtk NOCHANGE`。
+    没有 FAIL、没有连击推送、红点还要等 LAG+GRACE 才亮。(a) 只认识已经见过的变体，
+    下一种没见过的靠的是 (b)。
+
+    **不对「两条 href 落到同一个月」报错**：口径坑 3 记着 hubfs 有两种前缀
+    （`/hubfs/MediaTek Assets/…` 与 `/hubfs/728015/MediaTek Assets/…`）且两者都可用，
+    同一份稿在页面上挂两遍是合法的（2026-08 实测 2025-01 就挂了两次）。
+    真假由 `_press` 的内容标记把关，不由这里的条数把关。
+    """
+    out, dropped = {}, []
+    # dict.fromkeys：先按 href 去重再对账。直接拿条数比 len(out) 会在页面把同一份稿
+    # 挂两遍时凭空少一条 —— 2026-08 实测落地页 68 条 href、去重后 67 条。
+    for href in dict.fromkeys(_PR_HREF_ANY.findall(html)):
+        hit = _PR_HREF_STRICT.match(href)
+        mon = _MONTH_BY_PREFIX.get(hit.group(1)[:3].lower()) if hit else None
+        if mon is None:
+            dropped.append(href)
             continue
-        out[f'{int(year)}-{_MONTHS.index(mon) + 1:02d}'] = urllib.parse.urljoin(
+        out[f'{int(hit.group(2))}-{mon:02d}'] = urllib.parse.urljoin(
             ORIGIN, urllib.parse.unquote(href))
+    if dropped:
+        raise MtkFetchError(
+            f'落地页上有 {len(dropped)} 条月度新闻稿 href 认不出月份/年份，'
+            f'宁可整次失败也不静默漏月（漏的多半就是最新那一月）：\n  '
+            + '\n  '.join(dropped[:5])
+            + '\n  —— 命名多半变了，请对照落地页确认后改 _PR_HREF_STRICT / _MONTH_BY_PREFIX')
     if not out:
         raise MtkFetchError('落地页里一个月度新闻稿链接都没解析出来（改版？）')
     return out
@@ -476,7 +515,11 @@ def _annual_months(html, year, *, required):
             errs.append(f'{url.rsplit("/", 1)[-1]}: {exc}')
             continue
         return _parse_annual(txt, year)
-    msg = f'{year} 年度汇总 PDF 四种拼写全部取不到（命名又改了？）：\n  ' + '\n  '.join(errs)
+    # 措辞要同时容得下两种成因：命名换代（口径坑 3），以及「今年这份滚动 YTD 汇总
+    # 还没上线」——年初 years 已经够到当年、而当年第一份月报要到 2 月才发，
+    # 那一个月里这条 warn 每天都会出现，它是正常的，不该被读成「命名又改了」。
+    msg = (f'{year} 年度汇总 PDF 四种拼写全部取不到'
+           f'（命名又改了？还是该年度的滚动汇总还没上线？）：\n  ' + '\n  '.join(errs))
     if required:
         raise MtkFetchError(msg)
     print(f'[mtk][warn] {msg}')
@@ -515,6 +558,66 @@ def _twse_latest():
     except Exception as exc:                                       # noqa: BLE001
         print(f'[mtk][warn] TWSE OpenAPI 交叉校验跳过：{exc!r}')
     return None, None, None
+
+
+#: TWSE 对账的宽限期：只有过了「该月次月第 N 天」才允许把分歧判成故障。
+#: 这个日子是本护栏**全部的安全边际**，收紧它就是在制造假警报。取值依据：
+#:   · 法定上限是次月 10 日，联发科惯例踩着 10 日（模块头「发布节奏」）；
+#:   · 67 期实测公告日分布是第 7 天到第 12 天，**最晚第 12 天**（2021-03，撞假日顺延）；
+#:   · roster LAG 取 (12, 12)，正是照这个最坏情形定的；
+#:   · 20 比实测最晚多留 8 天、比法定上限多留 10 天。
+#: 方向刻意不对称：源冻住这件事晚几天发现，代价是页面多挂几天旧数据；
+#: 而假期堆叠时误杀一次，代价是 README「新鲜度红点」那节写的那句 ——
+#: 每季度假一次的警报，人很快就学会无视了，最后整套护栏被人关掉。
+TWSE_CROSSCHECK_GRACE_DAY = 20
+
+
+def _crosscheck_twse_month(tw_month, have, today=None):
+    """证交所已经收到的月份，本序列里必须也有；过了宽限期还缺就抛。
+
+    这是本模块唯一一条**独立于联发科 IR 落地页**的月份判据，同形先例是
+    fetch/cboe.py 的 _crosscheck_report_month 与 fetch/ice.py 的
+    _crosscheck_workbook_month。它防的是落地页那一头**整个停住**这一类：
+    命名/路径惯例换了代（口径坑 3 说这家每年 1 月改一次年度 PDF 的命名，
+    改名季就是这时候），新一年的稿既进不了 `_pr_links` 的条数对账（页面上压根
+    没有那条 href 了）、也进不了 `official`，而 `recheck` 那三个月全是老命名的
+    旧月份、照常解得开 —— 于是 update() 返回 []、零异常、`mtk NOCHANGE`，
+    并且会一直冻在上一年 12 月。
+
+    原来这里只 print 一行 warn。warn 之后状态仍是 NOCHANGE、不 FAIL、不进连击推送，
+    等于没有护栏 —— 同 cboe._crosscheck_report_month 的那句「这里刻意 raise 而不是
+    print warn」。
+
+    **宽限期不能省**：TWSE 与 IR 落地页不同批发布，TWSE 完全可能先于 IR 页放出该月，
+    没有宽限期的版本会正好在每月发布日当天把整家打成 FAIL。宽限期内维持 warn。
+
+    `tw_month` 为 None（TWSE 自己抽风）时只打印「护栏失效」，**绝不阻断**：
+    判据自己挂了不能拖着联发科一起挂，否则 TWSE 的一次抽风就是本家的一次停更。
+    """
+    if not tw_month:
+        print('[mtk][warn] 护栏失效：TWSE OpenAPI 这一轮取不到，'
+              '本次没有独立于 IR 落地页的月份判据（不阻断）')
+        return
+    if tw_month in have or tw_month < START_MONTH:
+        return
+    y, m = int(tw_month[:4]), int(tw_month[5:])
+    if not (1990 < y < 2100 and 1 <= m <= 12):
+        # 判据自己解析出一个不成立的月份时同样只告警：宁可这一轮没有护栏，
+        # 也不能让 TWSE 那边的一次格式抽风把本家打成 FAIL。
+        print(f'[mtk][warn] 护栏失效：TWSE 给的月份 {tw_month!r} 不成立，本轮不做月份对账')
+        return
+    y2, m2 = (y, m + 1) if m < 12 else (y + 1, 1)
+    deadline = datetime.date(y2, m2, TWSE_CROSSCHECK_GRACE_DAY)
+    if (today or datetime.date.today()) <= deadline:
+        print(f'[mtk][warn] TWSE 已出到 {tw_month}，本轮还没入库 —— '
+              f'{deadline} 之前算发布时差，明天这条 cron 会再试')
+        return
+    raise MtkFetchError(
+        f'TWSE OpenAPI 已经收到 2454 的 {tw_month}，本轮却没能入库，且已过宽限期'
+        f'（{deadline}）。证交所手里有的月份，IR 落地页不可能还没发 —— 最可能是'
+        f'新闻稿的命名/路径换了代（口径坑 3：每年 1 月一次），于是落地页上既没有'
+        f'那条 href、年度汇总 PDF 也取不到。拒绝当作 NOCHANGE 放过去，'
+        f'请人工看一眼 {IR_PAGE}')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -598,11 +701,22 @@ def update(series_dir, cache_dir):                                 # noqa: ARG00
     # 年份区间从 **START_MONTH 那一年**起，不是从「库里已有的最早年」起 ——
     # 后者会让 START_MONTH 往前挪时什么都不发生：新窗口那几年的年度 PDF 根本不去取，
     # 于是既没有历史可回补（见下面的回补分支），那几年的重述也永远查不到。
-    years = list(range(int(START_MONTH[:4]), int(newest[:4]) + 1))
+    # 上界取「落地页最新月那一年」与「今年」的较大者。原来只用 `int(newest[:4]) + 1`，
+    # 而 `newest = max(links)` —— 也就是说 **links 停住，years 就永远够不到新的一年**，
+    # 那一年的年度汇总 PDF 根本不去取，下面那道「历史回补」的网跟着一起断。
+    # 跨年那一次正是命名换代的时候（口径坑 3），偏偏也正是回补最该顶上的时候。
+    # 年度汇总 PDF 是**本年至今的滚动文件**（实测：2026 那份解出 2026-01…07，8 月起是空），
+    # 所以哪怕落地页丢了某一月，它照样能把那个月补进来。
+    years = list(range(int(START_MONTH[:4]),
+                       max(int(newest[:4]), datetime.date.today().year) + 1))
     official = {}
     for year in years:
-        # 只有「今年」这一份每年 1 月玩命名轮盘，取不到只告警；往年的消失了是真信号（口径坑 3）
-        official.update(_annual_months(html, year, required=(year != years[-1])))
+        # **最新两年都不 required**，不是只豁免最后一年。理由是口径坑 3 的命名轮盘：
+        # 每年 1 月改一次名，而年初 years[-1] 会翻成新的一年、把刚结束那一年顶成
+        # required=True —— 正好撞上轮盘，于是每年 1 月硬 FAIL 一整月。
+        # 代价是刚结束那一年的重述体检①从「取不到就抛」降级成「取不到只告警」，
+        # 一年之后它自己会重新变回 required。拿一年的降级换掉一个每年必犯的假故障。
+        official.update(_annual_months(html, year, required=(year <= years[-1] - 2)))
     drift = [(m, have[m], v[0]) for m, v in sorted(official.items())
              if m in have and have[m] != v[0]]
 
@@ -696,7 +810,9 @@ def update(series_dir, cache_dir):                                 # noqa: ARG00
     # 写失败不阻断入库 —— 少一句「官方发布于」远好过整条链 FAIL。
     _record_source_dates(series_dir, {**seen_dates, **dates})
 
-    # ── 交叉校验：TWSE OpenAPI（只告警，不阻断）────────────────────────────────
+    # ── 交叉校验：TWSE OpenAPI ─────────────────────────────────────────────────
+    # 金额/累计两项**只告警**（口径差一个舍入就没必要拦住一次正常入库）；
+    # 但「证交所有这个月、我们没有」这一项过了宽限期是要抛的，见 _crosscheck_twse_month。
     tw_month, tw_val, tw_ytd = _twse_latest()
     if tw_month:
         if tw_month != newest:
@@ -709,6 +825,10 @@ def update(series_dir, cache_dir):                                 # noqa: ARG00
             if abs(run - tw_ytd) > 12:
                 print(f'[mtk][warn] {newest[:4]} 逐月累加 {run} vs '
                       f'TWSE 累计 {tw_ytd} NT$mn 差得超出舍入上界')
+
+    # 放在最后：上面该入库的都已经入库了（`have` 含本轮新增与回补），
+    # 这一道问的是「入完之后是不是还缺着证交所已经有的那个月」。
+    _crosscheck_twse_month(tw_month, have)
 
     return added
 

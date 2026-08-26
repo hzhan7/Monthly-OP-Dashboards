@@ -654,6 +654,96 @@ def _regime_for(sched, year, q):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 对账：拿 discover_documents() 当独立判据
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 下面两道判据防的是同一件事：**parse_document() 失败时这个模块不出声**。
+# rows() 里那个 `except ... continue` 只打一行 WARN 就把整份公告扔了，于是
+#   · cum 里仍然装满旧季度 → rows() 照样返回一百多行、形状完美；
+#   · fetch/fee_rates.py 的 _validate 只查形状（非空 list、period 正则、数值有限、
+#     公司内不重复），一份「完整得体面、只是少了最新一季」的结果原样放行；
+#   · update() 发现每个 (company, period, metric) 都已在 series/fee_rates.csv 里，
+#     一行都不追加 → monthly_run 打印 `fee_rates NOCHANGE 无新季度`。
+# 连续失败十天和成功十天，在日志里只差一行混在 INFO 里的 WARN —— README 第四类。
+# 这不是假想：git 4fcb90b（2026-08-22，落单的 `-` 让 1H2026 整份公告被静默跳过）
+# 记的就是这个形状，那次修的是 token 层的 _drop_orphan_dash，类级别的兜底一直空着。
+#
+# 判据来自 discover_documents()：它读的是 IR 站的 landing URL，**完全不经过 PDF
+# 解析器**，所以「官方到底发了哪几份公告」这件事是外部事实。形状上与
+# fetch/cboe.py 的 _crosscheck_report_month、fetch/ice.py 的
+# _crosscheck_workbook_month 一致 —— 拿源自己说的东西核对我们解析出来的东西。
+
+
+def _crosscheck_documents_landed(expected, failed, cum):
+    """判据①：过了 NEW_LAYOUT_FROM 闸门的每一份公告，都得留下**它自己那个累计期**。
+
+    处置分两档，和 fetch/msci.py update() 的「数值变了只喊，整行没了就抛」同构：
+
+      · 累计期没人补上 → 抛。这份公告是官方实打实发出来的，我们读不出来就是解析
+        器该修了，绝不能退化成一句 WARN 让上层报 NOCHANGE。
+      · 解析失败、但同一个累计期已经被**更晚发布**的公告用「上年同期列」补上 →
+        只喊。这是这个源自带的冗余（每份公告都同时给本期和上年同期两列），
+        为一份可以被替代的公告把整个 fee_rates 步骤判失败，方向反了。
+
+    expected 只装过了闸门的文档，这一点是这道判据能安全上线的关键：2024-Q1 与
+    2024-Interim 那两份老版式公告**确实解析不出来**（"没找到 Cash Segment 分部图"），
+    但它们在 try 之前就被闸门挡掉了，本来就不该进对账（见 NEW_LAYOUT_FROM 的注释）。
+    写成「对 discover_documents() 的全部返回值对账」会在上线第一天就炸。
+    """
+    missing = []
+    for doc, own in expected:
+        if own in cum:
+            continue
+        err = failed.get(own, (None, None))[1]
+        missing.append('%d-%s（%s）：%s' % (
+            doc['year'], doc['kind'], doc['url'],
+            '解析失败 %r' % (err,) if err is not None else '解析没报错，却一个累计期都没吐出来'))
+    if missing:
+        raise ParseError(
+            'IR 站上这 %d 份新版式公告官方已经发布，却没能产出各自的累计期：%s'
+            ' —— 多半是这一期的 PDF 版式又变了（分部图的空系列位置 / 图例文案 / '
+            '落单的 `-`，见模块 docstring §4）。拒绝返回一份「看起来完整、只是少最新'
+            '一季」的结果，那种结果在上层长得和成功一模一样。' % (len(missing), '；'.join(missing)))
+
+    for own, (doc, err) in sorted(failed.items()):
+        if own in cum:
+            _log('WARN %d-%s 解析失败，但 %d 年第 %d 个累计期已由更晚发布的公告'
+                 '（上年同期列）补上，本次不判失败' % (doc['year'], doc['kind'], own[0], own[1]))
+
+
+def _crosscheck_quarters_emitted(expected, out):
+    """判据②：这些公告**已经披露过**的季度，每一个都必须真的出成行。
+
+    判据①管的是「整份公告没落地」，管不到差分阶段：rows() 的输出循环里还有三个
+    同样安静的 continue —— 缺上一累计期 / 交易日·ADT 异常 / 差分出负数。它们各自
+    只丢**一个季度**，日志里同样只有一行 WARN，上层同样是 NOCHANGE。
+
+    「该有哪些季度」从文档反推：一份覆盖到第 nq 个累计期的公告，意味着官方已经
+    公布了它那一年的第 1…nq 季。这个口径是刻意收窄的 ——
+      · 只算**文档自己那一年**，不算它上年同期列顺带覆盖到的那一年。所以今天
+        2024-Q3 那份公告只要求 2024-Q1…Q3，不会去要 2023 年的季度；现存那条
+        「WARN 2023-Q3 缺上一累计期」因此仍然合法（2023 年没有任何一份公告在
+        FIRST_YEAR 窗口内，2023-Q2 的累计期天然拿不到，差分不出 2023-Q3）。
+        写成「cum 里有的都得出成行」会在上线第一天就为这个老季度炸掉。
+      · 反过来 2024-Q1 / 2024-Q2 是被要求的：2024-Q3 与 2024-Annual 两份公告已经
+        公布过它们，值走的是 2025 年同类公告的上年同期列（见模块 docstring §3）。
+        真要有一天取不到，那是实打实的缺口，该炸。
+    """
+    have = {r['period'] for r in out}
+    want = {}
+    for doc, (year, nq) in expected:
+        for q in range(1, nq + 1):
+            want.setdefault('%d-Q%d' % (year, q), doc)
+    missing = sorted(set(want) - have)
+    if missing:
+        raise ParseError(
+            '这些季度官方公告里已经披露过，却没能出成行：%s —— 上面的 WARN 里写着'
+            '各自卡在哪一步（缺上一累计期 / 交易日·ADT 异常 / 差分出负数）。'
+            '若确认是 IR 站把某一年的 landing 页下线导致上年累计期取不到，'
+            '调 FIRST_YEAR 缩窗口；不要把这道判据删掉。' % ('、'.join(missing),))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 主入口
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -672,22 +762,32 @@ def rows(cache_dir):
         raise ParseError('一份业绩公告都没发现，检查网络或 IR 站改版')
 
     cum = {}          # (year, nq) -> dict
+    # 过了闸门的文档 + 各自「自己那个累计期」的 key，交给 _crosscheck_documents_landed。
+    # 单份公告解析失败仍然只是 continue（一份坏公告不该拖垮其余九份），但失败这件事
+    # 到此为止不再是故事的结局 —— 它被记进 failed，由下面两道判据决定是喊还是抛。
+    expected = []     # [(doc, (year, nq))]
+    failed = {}       # (year, nq) -> (doc, 异常)
     for doc in docs:
         ki = [k[0] for k in KINDS].index(doc['kind'])
         if (doc['year'], ki) < NEW_LAYOUT_FROM:
             _log('INFO 旧版式，按设计跳过 %d-%s（该累计期改从次年同类文档的'
                  '上年同期列取）' % (doc['year'], doc['kind']))
             continue
+        own = (doc['year'], doc['nq'])
+        expected.append((doc, own))
         try:
             parsed = parse_document(doc)
         except Exception as e:                            # noqa: BLE001
             _log('WARN 跳过 %d-%s: %s' % (doc['year'], doc['kind'], e))
+            failed[own] = (doc, e)
             continue
         for key, val in parsed.items():
             # 同一 (year, nq) 可能被多份文档报告（本期 / 下一年的上年同期列）。
             # 取**发布最晚**的那份 —— 官方重述以最新为准。
             if key not in cum or val['order'] > cum[key]['order']:
                 cum[key] = val
+
+    _crosscheck_documents_landed(expected, failed, cum)
 
     sched = parse_fee_schedule(cache_dir)
 
@@ -751,6 +851,7 @@ def rows(cache_dir):
         add('stock_settlement_fee_max_per_trade', reg['max'],
             reg['max_unit'], reg['source'])
 
+    _crosscheck_quarters_emitted(expected, out)
     return out
 
 

@@ -86,9 +86,11 @@ import html as _html
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date as _date
 
 CIK = 1397911
 CIK_PADDED = '%010d' % CIK
@@ -103,6 +105,29 @@ UA = 'monthly-op-dashboards/1.0 (hzhan7@gmail.com)'
 
 # 这张表最早出现在 2024Q1 新闻稿；再早的 8-K 下下来也白下，直接按日期截断省请求
 _EARLIEST_FILING_DATE = '2024-01-01'
+
+# Interest-Earning Assets 表首次出现的那一份新闻稿的申报日（2024Q1 稿，见口径坑 1）。
+# 这是 observations() 里那道「新闻稿必须解析出行」的闸门：更早的稿子解析出 0 行是
+# **设计内**的正常结果（表还不存在），拿它当失败会在上线第一天就炸 —— 缓存里
+# 2024-02-01 那份（2023Q4 业绩）正是这样，11 份里唯一解析出 0 行的一份。
+_EARLIEST_TABLE_FILING_DATE = '2024-04-30'
+
+# 「新闻稿申报日 − 它解析出的最新季度的季末」实测跨度：缓存里 10 份全在 25-38 天。
+# 阈值取 75 天，两头都留了余量：
+#   · 往下，是实测最大值 38 天的近两倍 —— LPLA 比史上最慢再拖五周也不会误报；
+#   · 往上，「整整落后一个季度」这种坏法最快也要 115 天（25 + 一个季度 90 天），
+#     离 75 还有 40 天，所以该抓的照样抓得住。
+# 别往 120 调：那会盖过 115，判据就永远抓不到「落后一个季度」这件唯一要抓的事。
+_MAX_REPORT_LAG_DAYS = 75
+
+# 松口径再验：文件名是申报代理手拼的（见上面「数据源」一节：「那是巧合不是契约」），
+# 'earnings-release' / '.html' / 'ex99_1' 任何一种写法都能打穿严口径匹配。
+# 用它把「这份申报真没有新闻稿正文」和「正文在，只是改名了」分开。
+_RELEASE_HINT = re.compile(r'earn|release|ex-?_?99', re.I)
+
+# EDGAR 的 SGML 头页自报的文档数。它和 index.json 是**两条独立的索引**，
+# 这正是它能当判据的原因，见 _sgml_document_count。
+_DOC_COUNT_RE = re.compile(r'PUBLIC[\s-]*DOCUMENT[\s-]*COUNT[:>]?\s*(\d+)', re.I)
 
 # (行名精确匹配, 三个列位) → CSV 里的 metric 名与 unit。名字和单位写法是 CSV 的既有约定，不许改。
 _ROW_SPEC = {
@@ -171,6 +196,91 @@ def _cached(cache_dir, name, url, binary=True):
 
 # ────────────────────────── EDGAR 索引 ──────────────────────────
 
+def _warn(msg):
+    sys.stderr.write('[rates_lpla] %s\n' % msg)
+
+
+def _sgml_document_count(acc, acc_nodash):
+    """这份申报**真实的**文档数，取自 EDGAR 的 SGML 头页（index-headers.html）。
+
+    为什么需要第二条索引：index.json 会漏列，而且此刻就在漏。
+    2026-08-26 实测，窗口内 11 份 item 2.02 的 8-K 里有 4 份
+    （2024-02-01 / 2024-10-30 / 2025-05-08 / 2025-07-31）的 index.json 只列出
+    index / xbrl 那四个包装文件、一份正文都不列；而同一份申报的 SGML 头页写着
+    PUBLIC DOCUMENT COUNT: 14-16，人读版 index.html 里 a2025q2earningsrelease.htm
+    也好端端挂着。文档在，只是 index.json 这条索引看不见它。
+    这四份在 2026-08-05 建缓存时还是正常发现的（cache/lpla_rates/ 里躺着它们的正文），
+    之后才退化 —— 解析器一个字没改，覆盖面自己缩了水，而缩水的日子和正常的日子
+    在日志里长得一模一样。正是 README 第四类。
+
+    形状上与 fetch/cboe.py 的 _crosscheck_report_month、fetch/ice.py 的
+    _crosscheck_workbook_month 一致：拿一条**不经过同一个解析路径**的外部事实，
+    去核对我们手里的东西。取不到就返回 None，判据退化成「不下结论」而不是误判。
+    """
+    try:
+        txt = _get(ARCHIVE_DIR % ('%s/%s-index-headers.html' % (acc_nodash, acc)))
+    except SourceError:
+        return None
+    m = _DOC_COUNT_RE.search(txt.decode('utf-8', 'replace'))
+    return int(m.group(1)) if m else None
+
+
+def _judge_missing_release(filing_date, acc, acc_nodash, listed, fatal):
+    """一份 item 2.02 的 8-K 没匹配到 *earningsrelease*.htm 时，判定这是不是真的没有正文。
+
+    原来这里是一句无条件 `continue`（注释写「有些 2.02 的 8-K 只是补充材料」）。
+    问题是这一个动作压着三件完全不同的事：
+      ① 真的只有补充材料，没有新闻稿正文 —— 合法，跳过；
+      ② 正文在，只是申报代理换了命名（accession 前缀已经换过一次代理，
+         000139791… → 000162828…，命名规律跟着换很正常）；
+      ③ 正文在、名字也没变，是 index.json 这条索引漏列了（见 _sgml_document_count）。
+
+    ②③ 落在**最新**那份申报上时，后果是当季整季拿不到，而整条链上没有一个人会喊：
+    observations() 的 `if not out` 炸不了（老申报照样解析得出来），
+    fee_rates._validate 只查形状也拦不住，update() 发现没有新 key 就一行不写，
+    monthly_run 打印一句 NOCHANGE。这就是 fetch/rates_cme.py disclosures() 里那道
+    newest_ok 绊线要拦的同一件事，rates_lpla 一直没有对应物。
+
+    处置分两档，和 fetch/msci.py update() 的「数值变了只喊，整行没了就抛」同构：
+      · 最新那份 → 抛。这一季不补上就永远不会有人发现。
+      · 更早的那些 → 只喊不抛。这个源一份新闻稿同时给三个季度（本季 / 上季 /
+        去年同季），中间漏一份通常会被前后两份的冗余列补回来 —— 今天漏掉的那四份
+        里，有三份的季度就是这样被补回去的，只有 2023-Q3 真的掉了。为一个早就滚出
+        看板窗口、且多半能被补回的老季度把整个 fee_rates 步骤天天判失败，方向反了。
+        **但这一声必须和正常日子长得不一样**，所以把判据的结论写进 WARN 正文。
+    """
+    # index.json 里以 accession 打头的那四个是包装文件（index-headers / index / txt /
+    # xbrl.zip），不是申报正文。
+    real = [n for n in listed if not n.startswith(acc)]
+    if not real:
+        why = ('index.json 一份正文都不列（只有 %d 个 index/xbrl 包装文件）—— '
+               '而任何一份 EDGAR 申报至少有一份主文档，所以这不可能是「真的没有正文」，'
+               '是 index.json 这条索引漏列了' % len(listed))
+    else:
+        loose = [n for n in real
+                 if n.lower().endswith(('.htm', '.html')) and _RELEASE_HINT.search(n)]
+        if not loose:
+            # 目录里确实有文档，只是没有一份像新闻稿 —— 这才是注释里说的「补充材料」，
+            # 合法跳过，保持原来的安静行为。
+            return
+        why = ('目录里有长得像新闻稿的文件 %r，只是文件名不含 earningsrelease '
+               '或后缀不是 .htm —— 命名变了' % (loose[:3],))
+
+    if not fatal:
+        _warn('WARN %s %s 没找到新闻稿正文：%s。它不是最新一份，本次只告警不判失败 —— '
+              '该季度多半会被相邻两份新闻稿的「上季 / 去年同季」列补回来。' % (filing_date, acc, why))
+        return
+
+    declared = _sgml_document_count(acc, acc_nodash)
+    extra = ('；SGML 头页自报这份申报有 %d 份文档' % declared) if declared else ''
+    raise SourceError(
+        '最新一份 item 2.02 的 8-K %s（%s）取不到新闻稿正文：%s%s。'
+        '拒绝返回一份「看起来完整、只是少最新一季」的结果 —— 那种结果上层只会报 NOCHANGE。'
+        '要修：命名变了就放宽 earnings_releases() 里的匹配；index.json 漏列就改从'
+        ' %s-index.html（人读版申报索引，那里仍然列着正文）取文件名。'
+        % (acc, filing_date, why, extra, acc))
+
+
 def earnings_releases(cache_dir):
     """列出所有「业绩新闻稿」文档：[(filing_date, accession_no_dashes, url)]，按日期升序。
 
@@ -199,15 +309,21 @@ def earnings_releases(cache_dir):
     if not cand:
         raise SourceError('EDGAR 里没找到 LPLA 含 item 2.02 的 8-K，submissions JSON 结构可能改了')
 
+    cand = sorted(set(cand))
+    newest_acc = cand[-1][1]          # 绊线只绑在**最新**那份上，见 _judge_missing_release
+
     out = []
-    for date, acc in sorted(set(cand)):
+    for date, acc in cand:
         a = acc.replace('-', '')
         idx = json.loads(_get(ARCHIVE_DIR % (a + '/index.json')))
         time.sleep(0.2)
-        names = [it['name'] for it in idx['directory']['item']
-                 if 'earningsrelease' in it['name'].lower() and it['name'].lower().endswith('.htm')]
+        listed = [it['name'] for it in idx['directory']['item']]
+        names = [n for n in listed
+                 if 'earningsrelease' in n.lower() and n.lower().endswith('.htm')]
         if not names:
-            # 有些 2.02 的 8-K 只是补充材料，没有新闻稿正文，跳过不算错
+            # 有些 2.02 的 8-K 只是补充材料，没有新闻稿正文，跳过不算错 —— 但只有
+            # 经判据确认「真的没有正文」时才算，否则告警或抛。
+            _judge_missing_release(date, acc, a, listed, fatal=(acc == newest_acc))
             continue
         out.append((date, a, ARCHIVE_DIR % (a + '/' + names[0])))
     if not out:
@@ -336,6 +452,36 @@ def parse_release(path, source_url):
 
 # ────────────────────────── 对外 API ──────────────────────────
 
+def _quarter_end(period):
+    """'2026-Q2' → date(2026, 6, 30)。"""
+    y, q = period.split('-Q')
+    m = int(q) * 3
+    return _date(int(y), m, 31 if m in (3, 12) else 30)
+
+
+def _crosscheck_filing_lag(filing_date, source_url, got):
+    """外部判据：一份新闻稿解析出的最新季度，不能比它自己的申报日落后一个季度。
+
+    申报日是 EDGAR 的元数据，HTML 解析器一个字都读不到它 —— 这正是它能当判据的
+    原因，形状与 fetch/cboe.py 的 _crosscheck_report_month、fetch/ice.py 的
+    _crosscheck_workbook_month 一致。
+
+    它拦的是「解析成功了，只是认错了表」这一支：比如官方在同一页再排一张历史季度的
+    Interest-Earning Assets 表、锚点飘到那张上去。这种坏法行名对、列数对、
+    9 个数字也照样取到，parse_release 里那几道 ParseError 一道都不会响，
+    上面那道「解析出 0 行就抛」也看不见 —— 只是整份稿子的季度集体后退一格。
+    """
+    newest = max(r['period'] for r in got)
+    lag = (_date.fromisoformat(filing_date) - _quarter_end(newest)).days
+    if lag > _MAX_REPORT_LAG_DAYS:
+        raise ParseError(
+            '%s 申报的新闻稿解析出的最新季度是 %s，两者相差 %d 天，超过 %d 天上限'
+            '（实测 LPLA 一贯是季末后 25-38 天发稿）—— 多半是表锚点落到了同一页上'
+            '另一张历史季度的表上，或者官方改了表头日期的写法。'
+            '拒绝把一份整体后退的结果当成正常数据。来源：%s'
+            % (filing_date, newest, lag, _MAX_REPORT_LAG_DAYS, source_url))
+
+
 def observations(cache_dir):
     """所有 (季度, metric) 在**每一期**新闻稿里的观测值，含重复。用来找重述。
 
@@ -345,7 +491,21 @@ def observations(cache_dir):
     out = []
     for date, acc, url in earnings_releases(cache_dir):
         path = _cached(cache_dir, 'lpla_8k_%s_%s.htm' % (date, acc), url)
-        for row in parse_release(path, url):
+        got = parse_release(path, url)
+        # parse_release 对「找不到 Interest-Earning Assets 锚点」是 return []，不是抛。
+        # 那一支对 2024Q1 之前的稿子是**正确**的（表还不存在，口径坑 1），但对之后的
+        # 每一份都是静默失效：官方改一次表头行名，这里就安静地少一份稿子的三个季度，
+        # 而 rows() 仍然返回一份形状完整的结果。所以按申报日开闸 —— 表已经存在的年代，
+        # 解析出 0 行只有一种解释，就是解析器该修了。
+        if not got and date >= _EARLIEST_TABLE_FILING_DATE:
+            raise ParseError(
+                '%s 申报的新闻稿解析出 0 行，但这张表从 %s 那份起就一直存在 —— '
+                '官方大概率改了 "Interest-Earning(s) Assets" 这个锚点行名（历史上已经'
+                '拼错过又改回，见口径坑 2）。宁可整次失败，也不静默少一份稿子的三个季度。'
+                '来源：%s' % (date, _EARLIEST_TABLE_FILING_DATE, url))
+        if got:
+            _crosscheck_filing_lag(date, url, got)
+        for row in got:
             row['filing_date'] = date
             out.append(row)
     if not out:

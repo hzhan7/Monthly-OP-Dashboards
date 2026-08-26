@@ -387,6 +387,43 @@ def _probe_direct(max_back=6):
     raise HkexFetchError('直链倒推也失败：' + '; '.join(tried))
 
 
+def _probe_forward(claimed):
+    """落地页说「当前最新是 claimed」时，再往前伸一个月探一下 /-/media/。
+
+    探到就返回 (url, 月份, 文件内容, Last-Modified)，探不到返回 None。
+
+    防的是这一类**安静的停更**：media 服务器上的新一档其实已经上线，落地页那条
+    锚点却还挂着上个月 —— 页面被 CDN 缓存住、编辑没换链接、或者锚点文案改了
+    _HREF_RE 只认得出旧的那一条。三种成因不同，症状完全一样：_discover_url()
+    返回一个**能下载、能解析、干干净净的过期档**，update() 一个新月都加不出来，
+    日志照报 NOCHANGE —— 和「本月官方还没发」逐字相同，连续错十天也看不出来。
+    _probe_direct() 兜不住这一格：它只在 _discover_url() **抛异常**时才跑，
+    而这里落地页是 200、正则也命中了，压根走不到那条退路。
+
+    刻意做成**自愈**而不是护栏：一个月里绝大多数天 claimed+1 本来就该 404
+    （数据要等次月上旬才发，见模块 docstring「发布节奏」），把这个正常答案当成
+    故障就是拿一条本来跑得好好的链路去换一条每天报红的。所以这里任何异常、
+    任何非 zip 响应一律当作「没探到」，继续用落地页给的那一份。
+
+    只往前探一个月：工作簿是累加的（坑 1），本任务每天跑一次，就算落后几个月，
+    也会一个月一个月自己追上来，不需要在这里循环。
+    """
+    nxt = _mstr(_mkey(claimed) + 1)
+    y, mm = int(nxt[:4]), int(nxt[5:])
+    url = MEDIA_BASE % (_MON[mm - 1], y)
+    try:
+        blob, last_modified = _get(url, timeout=45, want_headers=True)
+    except Exception:                               # noqa: BLE001  404 才是常态，不是故障
+        return None
+    if not blob.startswith(b'PK'):
+        # 200 但不是 zip，多半是软 404 页面。这里**不能**抛：抛了就等于让一条
+        # 纯属加分的自愈路径，把原本能跑通的落地页那一份也一起打死。
+        return None
+    print('[hkex] 落地页仍指向 %s，但 media 上已经有 %s 了，改用后者（落地页锚点滞后）'
+          % (claimed, nxt))
+    return url, nxt, blob, last_modified
+
+
 def _download(cache_dir):
     """把最新一档 xlsx 落到 cache_dir，返回 (本地路径, 文件名声明的月份, Last-Modified 原文)。
 
@@ -399,7 +436,11 @@ def _download(cache_dir):
     except HkexFetchError as e:
         url, claimed = _probe_direct()
         print('[hkex] 落地页发现失败(%s)，改用直链倒推：%s' % (e, url))
-    blob, last_modified = _get(url, want_headers=True)
+    ahead = _probe_forward(claimed)                  # 落地页锚点滞后时自愈，见该函数
+    if ahead is None:
+        blob, last_modified = _get(url, want_headers=True)
+    else:
+        url, claimed, blob, last_modified = ahead
     if not blob.startswith(b'PK'):                   # xlsx 必须是 zip；返回 HTML 说明被挡或路径错
         raise HkexFetchError('下载到的不是 xlsx（前 16 字节 %r），URL=%s' % (blob[:16], url))
     path = os.path.join(cache_dir, 'hkex_monthly_highlights_%s.xlsx' % claimed)
@@ -626,6 +667,114 @@ def _mkey(m):
 def _mstr(k):
     """_mkey 的逆。"""
     return '%04d-%02d' % ((k - 1) // 12, (k - 1) % 12 + 1)
+
+
+def _month_end_age_days(month):
+    """从 month 的月末到今天（港时）过了多少天。月还没走完时为负。"""
+    nxt = _mstr(_mkey(month) + 1)
+    month_end = _dt.date(int(nxt[:4]), int(nxt[5:]), 1) - _dt.timedelta(days=1)
+    return (_dt.datetime.now(_HK).date() - month_end).days
+
+
+# ── 链路 A 的两道对账（独立于解析器的月份判据）──────────────────────────────
+#: 「文件名自报的月份还空着」能被容忍多少天（自该月**月末**起算）。
+#:
+#: 数值出处是模块 docstring「发布节奏」那张实测表 —— 每一档的上线日距数据月月末：
+#:     2025-10→11 天、2025-11→8、2025-12→8、2026-01→9、2026-02→17（异常晚，疑似重传）、
+#:     2026-03→9、2026-04→8、2026-05→4、2026-06→7、2026-07→7（source_dates.csv）。
+#: 实测最坏 17 天，这里取 45 天 ≈ 2.6 倍，落在次次月的 14/15 号 —— 也就是说，
+#: 要等到**下一个发布周期都走完**了还没填上，才认定不是「官方还没填」。
+#: 留这么大的余量是有代价的（真出问题时晚 4 周才喊），但反过来的代价更贵：
+#: 阈值卡太紧，就会在官方「先开列后填数」的那几天里天天把一个健康的源打成 FAIL。
+_CLAIMED_EMPTY_GRACE_DAYS = 45
+
+
+def _crosscheck_claimed_month(claimed, data, path, where):
+    """文件名自报的数据月 vs 解析出来的月份网格 —— 链路 A 唯一一条**独立于解析器**的判据。
+
+    claimed 来自 HKEX 自己写的文件名 "(Updated-to-Jul-2026)"，与文件内容是同一个
+    artifact、同一批上线，不存在「新闻稿先出、文件后更新」那种时间差，所以拿它和
+    _parse 的结果对账是站得住的。这个值以前在 update() 里被写成 `_` 就地丢掉 ——
+    判据明明已经拿在手里却没用，正是 README「第四类：不出声的失败」点名的那种漏法
+    （cboe/ice 手里有自报月却没拿来对账，2026-08-19 一天之内复发三次）。
+
+    两种坏法分开处置，因为它们的「合法」程度完全不一样：
+
+    · **claimed 这一列根本不在网格里 → 立刻抛。** _parse 只收表头行里是 datetime
+      的格子；官方给最新月的表头加个脚注、改成文本 'Jul-26'、或者多塞一行说明把
+      hdr_row 探歪，这一整列就被静默丢掉，剩下的月份照样解析得干干净净，
+      latest_month 停在上个月，fetch 干净地报 NOCHANGE —— 没有 FAIL、没有红点、
+      断档检查也看不见（因为压根没新增行）。MSCI 2026-07 就是这么漏的。
+      这一支不给宽限：文件名说「更新到 X 月」而表里连 X 月这一列都没有，是文件
+      自相矛盾，任何合法输入都不长这样，只可能是我们没读出来。
+
+    · **claimed 这一列在、但 ADT 还是空的 → 过了 _CLAIMED_EMPTY_GRACE_DAYS 才抛。**
+      这一支是 latest_month docstring 记着的**合法**形状：HKEX 有时先把列开出来
+      再填数，那几天里 claimed 本身就是个空壳月，此时停在上一个有数的月是正确行为，
+      不是故障。所以这里必须挂时间闸门——不挂就等于把一个健康的源在官方的正常
+      节奏里天天打成 FAIL，那比它要修的静默停更还糟。但也不能永远不抛：空壳挂满
+      一个完整发布周期还没填上，就不再是「官方还没填」，而是 ADT 那一格被我们读丢了
+      （_find_rows 只保证行标签在，保不了那一格的值读得出来）。
+
+    刻意 raise 而不是 print warn：warn 之后状态仍是 NOCHANGE，等于没有护栏。
+    latest_month 里原有的那行「文件名声称 X，实际最后有数的月是 Y」保留不动 ——
+    它还管着反方向那个情形（表里有比 claimed 更新的月），本函数不查那一侧。
+    """
+    if claimed not in data:
+        raise HkexFetchError(
+            '%s：文件名自报数据月 %s，但解析出来的月份网格里根本没有这一列'
+            '（网格 %s ~ %s，共 %d 列）。文件 %s。二者是同一份文件，不该不一致 ——'
+            '最可能是月份表头写法变了（加脚注 / 改成文本 / 多塞了说明行），'
+            '导致整整一列被静默丢弃。拒绝写入，请人工看一眼工作簿的月份表头行。'
+            % (where, claimed, min(data), max(data), len(data), os.path.basename(path)))
+    if data[claimed]['adt_hkdbn'] is not None:
+        return
+    age = _month_end_age_days(claimed)
+    if age <= _CLAIMED_EMPTY_GRACE_DAYS:
+        print('[hkex] %s：文件名声称 %s，但该月 ADT 还空着（距月末 %d 天，宽限 %d 天内）——'
+              '按官方「先开列后填数」处理，本轮仍以最后一个有数的月为准'
+              % (where, claimed, age, _CLAIMED_EMPTY_GRACE_DAYS))
+        return
+    raise HkexFetchError(
+        '%s：文件名自报数据月 %s，该列在表里但 ADT 一直是空的，距该月月末已经 %d 天'
+        '（宽限 %d 天，见 _CLAIMED_EMPTY_GRACE_DAYS 的推导）。文件 %s。'
+        '官方「先开列后填数」的窗口没有这么长 —— 更可能是那一格的值我们读不出来'
+        '（_find_rows 只保证 ADT 那一行在，保不了这一格读得出数）。'
+        '拒绝写入，请人工看一眼工作簿 %s 那一列的 "Average daily turnover by value"。'
+        % (where, claimed, age, _CLAIMED_EMPTY_GRACE_DAYS, os.path.basename(path), claimed))
+
+
+def _crosscheck_no_regression(series_newest, data, path):
+    """反侧那道：已入库的最新 ADT 月，在这一轮解析结果里不能倒退回去。
+
+    与 _crosscheck_claimed_month 的盲区不重叠。那一道从「文件说自己是什么」这一侧查，
+    看不见「我们下到了一份**旧档**」—— 落地页锚点回退到上个月、或 _probe_direct
+    倒推时命中了更早的一档，此时 claimed 与文件内容完全自洽，那道对账全绿，而
+    update() 拿着一份过期工作簿一个新月也加不出来，照样是 NOCHANGE。msci 的
+    update() 哨兵② 就是这个形状。
+
+    判据成立的前提写在模块 docstring 坑 1：这份工作簿是**逐月累加、从不滚动**的
+    （2018-01 起一路加到最新月），所以已经出现过的月份不可能再消失。倒退只有两种
+    可能，都得让人看见：拿错了文件，或者最新那一列被解析丢了。
+
+    **口径只比「最新有 ADT 的月」，不做集合包含**，这一条是这道护栏能不能用的关键：
+    series 从 START_MONTH=2016-01 起（那 24 个月由 _backfill_rows 用链路 B 造出来），
+    而工作簿最早只到 2018-01 —— 写成「已入库的月都得在网格里」，2016-2017 那 24 行
+    会让它每天都炸。
+    """
+    if series_newest is None:
+        return
+    filled = [m for m, v in data.items() if v['adt_hkdbn'] is not None]
+    if not filled:
+        return                                       # 空壳文件由 latest_month / 上面那道管
+    parsed_newest = max(filled, key=_mkey)
+    if _mkey(parsed_newest) >= _mkey(series_newest):
+        return
+    raise HkexFetchError(
+        'series/hkex.csv 里最新的有数月是 %s，这一轮工作簿却只解析到 %s（文件 %s）。'
+        '这份工作簿逐月累加、从不滚动（坑 1），已经有过的月不该消失 —— 要么落地页/'
+        '直链把我们指到了一份**旧档**，要么最新那一列被解析丢了。拒绝写入，'
+        '请人工确认下载到的是哪一期。' % (series_newest, parsed_newest, os.path.basename(path)))
 
 
 # ══ 链路 B：成交股数 / 成交笔数 ═══════════════════════════════════════════
@@ -1129,6 +1278,7 @@ def latest_month(cache_dir):
     """
     path, claimed, _ = _download(cache_dir)
     data = _parse(path)
+    _crosscheck_claimed_month(claimed, data, path, 'latest_month')
     filled = sorted(m for m, v in data.items() if v['adt_hkdbn'] is not None)
     if not filled:
         raise HkexFetchError('解析成功但没有任何月份有 ADT，文件疑似空壳：%s' % path)
@@ -1166,8 +1316,10 @@ def update(series_dir, cache_dir, allow_restate=False):
     if not os.path.exists(csv_path):
         raise HkexFetchError('找不到 %s；本模块只负责增量，不负责从零建序列' % csv_path)
 
-    path, _, last_modified = _download(cache_dir)
+    path, claimed, last_modified = _download(cache_dir)
     data = _parse(path)
+    # claimed 以前在这里被写成 `_` 丢掉 —— 判据拿在手里却没用，见 _crosscheck_claimed_month。
+    _crosscheck_claimed_month(claimed, data, path, 'update')
 
     raw = open(csv_path, 'rb').read().decode('utf-8')
     nl = '\r\n' if '\r\n' in raw else '\n'
@@ -1196,6 +1348,13 @@ def update(series_dir, cache_dir, allow_restate=False):
 
     added, filled_cells, restatements = [], [], []
     month_key = _mkey
+
+    # ── 反侧对账：已入库的最新有数月，不能在这一轮的解析结果里倒退回去 ──
+    # 取 body 里 adt（第 2 个字段）非空的最大月，也就是「看板认得的最新月」。
+    # 必须在 _backfill_rows 之前算：回补造出来的是 2016-2017 的老行，不影响最大值，
+    # 但在这里算，读到的就明明白白是**这一轮开始前 CSV 里的样子**。
+    _crosscheck_no_regression(
+        max((f[0] for f in body if f[1]), key=month_key, default=None), data, path)
 
     # ── 历史回补：只在序列首月之前造行，且不早于 START_MONTH ──
     # 放在 xlsx 那一轮**之前**跑，是为了让回补出来的行在下面被当成「已有行」处理：

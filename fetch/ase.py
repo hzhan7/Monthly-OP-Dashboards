@@ -352,6 +352,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import html as _html
 import json
 import os
 import re
@@ -400,10 +401,50 @@ _PERIOD_RE = re.compile(r'^(Q\d{1,2}|FY|YTD|Jan|Feb|Mar|Apr|May|Jun|June|Jul|'
 _CURRENCY_RE = re.compile(r'^\((NT\$|US\$) Million\)$')
 _TABLES = ('C', 'A', 'C_USD', 'A_USD')
 _NUM_RE = re.compile(r'^[\d,]+$')
+# 落地页行正则。**刻意不锁死 `<tr><td>` 的裸标签形态**：原来写死成裸标签时，
+# IR 的 CMS 只要给最新那一行挂一个角标（`<tr class="latest">`、
+# `<td>August <span class="new">NEW</span></td>` 这类「最新一期高亮」是常见做法），
+# 那一行就整行失配 —— 而失配的恰恰是**还没入库的最新月**，_discover 的
+# `if not found: raise` 因为其余 11 行还在而不触发，fetch 干净报 NOCHANGE。
+# 于是放宽到「允许属性、允许格内有标签」，取文本时再把标签剥掉（见 _cell_text）。
+# 2026-08-26 拿 2018~2027 十张真页实测：放宽前后每一年命中的行数逐年相同（8/12/…/7/0），
+# 页面上没有别的三格表被卷进来。
 _ROW_RE = re.compile(
-    r"<tr>\s*<td>([A-Za-z]+)</td>\s*<td>([^<]*)</td>\s*<td>(.*?)</td>\s*</tr>", re.S)
+    r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*</tr>",
+    re.S)
+_TAG_RE = re.compile(r'<[^>]+>')
+# 落地页上**合法**的非月份行标签：见到它们安静跳过，见到别的又长得像数据行的一律记账
+# （见 _year_rows 的 dropped）。表头那行现在写在 <thead>/<th> 里、根本不会被 _ROW_RE
+# 命中，'month' 留在这里是为了官方哪天把它改成 <td> 时不至于当场 FAIL。
+# 季度 / 全年汇总行今天不存在，但 PDF 里早就有 Q 表与 FY 表（口径坑 8），
+# 落地页哪天跟着加一行是完全可能的 —— 白名单必须和护栏同时上线，不能等它先误杀一次。
+_NON_MONTH_OK = frozenset((
+    'month', 'total', 'subtotal', 'fy', 'full year', 'ytd', 'year to date',
+    'q1', 'q2', 'q3', 'q4', '1q', '2q', '3q', '4q',
+    'first quarter', 'second quarter', 'third quarter', 'fourth quarter'))
 _HREF_RE = re.compile(r"""href=['"]([^'"]+\.pdf)['"]""", re.I)
 _COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
+
+
+def _cell_text(raw):
+    """单元格 HTML → 纯文本。落地页混着 BOM(﻿)、&nbsp;，格里还可能挂角标 <span>。"""
+    s = _html.unescape(_TAG_RE.sub(' ', raw))
+    return re.sub(r'\s+', ' ', s.replace('﻿', ' ').replace('\xa0', ' ')).strip()
+
+
+def _month_num(text):
+    """行标签 → 月份序号；不像月份返回 None。全称、缩写、以及后面挂了角标都认。
+
+    只取首个英文词：`August NEW`、`August *` 这类装饰不该让一整行掉出去。
+    三字母回退**只对 ≤4 字母的词开放**（'Sept'→'Sep'），否则 'Marketing' 会被
+    当成三月。
+    """
+    m = re.match(r'([A-Za-z]+)', text)
+    if not m:
+        return None
+    w = m.group(1).title()
+    return (_MONTH_NAME.get(w) or _MONTH_ABBR.get(w)
+            or (_MONTH_ABBR.get(w[:3]) if len(w) <= 4 else None))
 
 
 class AseFetchError(RuntimeError):
@@ -460,39 +501,71 @@ def _get_pdf(url):
 # ══════════════════════════════════════════════════════════════════════════════
 # 落地页 —— 只用来发现 PDF 链接与月份，金额一概不信（口径坑 2）
 # ══════════════════════════════════════════════════════════════════════════════
-def _year_rows(year):
+def _year_rows(year, dropped=None):
     """返回 [(month 'YYYY-MM', 落地页印的金额 float|None, PDF 绝对 URL|None), …]。
 
     ⚠️ 必须先剥掉 HTML 注释（口径坑 11）。
+
+    `dropped` 是给调用方的**落库对账**用的（同 fetch/msci.py parse() 里那一条）：
+    「首格不像月份、可金额格是个数、新闻稿格还挂着 PDF」的行不是装饰行，它就是
+    一行数据，只是月份写法我们没见过。这种行必须记账、由 _discover 抛出来，
+    不能像表头行那样安静 continue —— 安静丢掉的后果见该函数的说明。
     """
     html = _COMMENT_RE.sub('', _get_html(f'{IR_PAGE}?year={year}'))
     out = []
     for name, amount, cell in _ROW_RE.findall(html):
-        if name not in _MONTH_NAME:
-            continue
+        label = _cell_text(name)
         href = _HREF_RE.search(cell)
-        raw = amount.replace('$', '').replace(',', '').replace('﻿', '').strip()
+        raw = _cell_text(amount).replace('$', '').replace(',', '').strip()
         try:
             val = float(raw)
         except ValueError:
             val = None
-        out.append((f'{year}-{_MONTH_NAME[name]:02d}', val,
+        mon = _month_num(label)
+        if mon is None:
+            # 表头行 / 装饰行本该在这里被安静丢掉。但「金额是数 + 挂着新闻稿 PDF」
+            # 的行不是装饰行。白名单里的季度 / 全年汇总行照旧安静跳过。
+            if (dropped is not None and label.lower() not in _NON_MONTH_OK
+                    and val is not None and href):
+                dropped.append(f'{year} 年那张表里的 {label!r}（金额 {val}）')
+            continue
+        out.append((f'{year}-{mon:02d}', val,
                     urllib.parse.urljoin(IR_ORIGIN, href.group(1)) if href else None))
     return out
 
 
-def _discover(years):
-    """扫若干年的落地页，返回 {month: (落地页金额, PDF URL)}，只保留有 PDF 的月。"""
-    found = {}
+def _discover(years, seen=None):
+    """扫若干年的落地页，返回 {month: (落地页金额, PDF URL)}，只保留有 PDF 的月。
+
+    `seen` 传进来时填成 {year: {该年页面上出现过的月份}}，**只登记真的抓下来的年份** ——
+    update() 的哨兵拿它当边界，否则某一年页面偶发被 WAF 挡掉（下面那个 per-year
+    swallow）会被误读成「这一年的月份全消失了」，一次网络抽风变成一次 FAIL。
+    登记的是「页面上出现过」而不是「有 PDF 链接」：新月份的行先上、PDF 稍后才挂
+    是正常的，那不该被算作消失。
+
+    行标签写法变了时**抛异常而不是少返回几行**：少返回的那几行不产生 FAIL、不产生
+    断档（断档只看已入库月份之间的洞），fetch 干净报 NOCHANGE，页面就一直挂旧数据。
+    `if not found: raise` 这道老网挡不住它 —— 实测把全部行标签换成三字母缩写时，
+    'May' 因为缩写与全称同形而独自幸存，found 非空，什么都不会喊。
+    """
+    found, dropped = {}, []
     for year in years:
         try:
-            rows = _year_rows(year)
+            rows = _year_rows(year, dropped)
         except AseFetchError as exc:
             print(f'[ase][warn] {year} 年落地页跳过：{exc}')
             continue
+        if seen is not None:
+            seen[year] = {month for month, _val, _url in rows}
         for month, val, url in rows:
             if url and month >= START_MONTH:
                 found[month] = (val, url)
+    if dropped:
+        raise AseFetchError(
+            f'落地页上有 {len(dropped)} 行长得像数据行却没能落库：{dropped[:5]!r}'
+            '——「金额是数、还挂着新闻稿 PDF，首格却不像月份」多半是月份写法变了'
+            '（改缩写、后面挂了角标、或换了别的写法）。宁可整次失败也不静默漏月；'
+            '请打开 ir_revenues.php 确认写法后改 _month_num / _NON_MONTH_OK。')
     if not found:
         raise AseFetchError(f'{years} 这几年的落地页一个 PDF 链接都没抓到（改版？）')
     return found
@@ -728,7 +801,25 @@ def update(series_dir, cache_dir):                                 # noqa: ARG00
     today = datetime.date.today()
     last = max(have) if have else START_MONTH
     years = sorted({int(last[:4]), today.year - 1, today.year})
-    found = _discover(years)
+    seen = {}
+    found = _discover(years, seen)
+
+    # ── 哨兵：已入库的月份在落地页上消失就抛（照 fetch/msci.py update() 哨兵②）──
+    # 它和 _discover 里那道 dropped 对账**盲区不重叠**，两道都要：
+    #   · dropped 从「页面上有什么」这一侧查，管得到**还没入库的最新那一行**
+    #     （被挂角标、被单独改写法的多半正是它）；
+    #   · 这一条从「我们已知该有什么」的反侧查，管得到**整表一起换写法**
+    #     —— 那种情况下没有任何一行进得了 dropped，因为它们全都不像数据行了。
+    # 边界刻意收得很紧，免得把合法输入变成每日 FAIL：只查 `seen` 里登记过的年份
+    # （某一年页面偶发抓不下来时那一年不在册），且只查该年页面上出现过的月份。
+    vanished = sorted(m for m in have
+                      if int(m[:4]) in seen and m not in seen[int(m[:4])])
+    if vanished:
+        raise AseFetchError(
+            f'{vanished[:5]} 在 series/ase.csv 里，本轮却在 IR 落地页对应年份的表里'
+            f'找不到（共 {len(vanished)} 个月，已抓下来的年份 {sorted(seen)}）——'
+            '落地页是全量年表、不删历史行，所以多半是行标签或表格标记变了导致整表'
+            '被解析漏掉。本次不写入，请人工打开 ir_revenues.php 看一眼那张表。')
 
     missing = sorted(m for m in found if m >= START_MONTH and m not in have)
     if not missing:

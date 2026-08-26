@@ -86,6 +86,28 @@
    偏差 0.58%，在容忍范围内，照收。
 
 ────────────────────────────────────────────────────────────────────────────
+不出声的失败：四道护栏，缺一道就有盲区
+────────────────────────────────────────────────────────────────────────────
+  本模块所有安静失败都从同一个出口走：解析结果里没有新月份 -> update() 返回 []
+  -> NOCHANGE。**连续十天失败和连续十天成功，在日志里长得一模一样**
+  （README「第四类：不出声的失败」）。四道护栏分别堵住四种走法，盲区不重叠：
+
+  1. _lab()                     —— 词形容错。官方给行名挂脚注（'Metals*'）时，
+                                   在标签进映射之前就把它剥干净。
+  2. _parse_adv / _parse_oi     —— 行数对账（照 fetch/msci.py 那道）。
+     的孤儿检查                    「认得出的行标签、却没有列可放」= 某个年份块的
+                                   日期表头没读出来，整块被吞。当场炸。
+  3. parse() 的全表空列检查     —— 某个 CORE 列十八年一起变空 = 行标签改名了。
+                                   在 CORE 过滤器把所有行判成半拉子之前炸。
+  4. update() 的两条 crosscheck —— 反侧与外部判据，都在 `if not new` 早退之前：
+                                   _crosscheck_stored_tail 查「已入库的月份消失了」，
+                                   _crosscheck_name_month 拿官方文件名当独立判据
+                                   （同 cboe/_crosscheck_report_month、
+                                   ice/_crosscheck_workbook_month）。
+
+  四道都刻意 raise 而不是 print：warn 之后状态仍是 NOCHANGE，等于没有护栏。
+
+────────────────────────────────────────────────────────────────────────────
 接口
 ────────────────────────────────────────────────────────────────────────────
   latest_month(cache_dir) -> "YYYY-MM"      官方源当前最新完整月；抓不到抛异常
@@ -170,6 +192,25 @@ REQUIRED = [c for c in COLUMNS if c != 'month' and c not in OPTIONAL]
 # 最差是 2021-04 的 26.4%（整列被污染，必须丢弃）。2% 卡在两者之间。
 VENUE_TOL_REL = 0.02
 
+# 「已入库的月份不许从解析结果里消失」这道哨兵只查**表尾** N 个月（见
+# _crosscheck_stored_tail）。取 6 是照抄 fetch/msci.py 的同款哨兵：源是月度、
+# 每月只多一行，6 个月足够覆盖任何一次结构变动的波及范围；而只查表尾、不查全部
+# 223 个月，是给「CME 哪天把 2008-2010 那几个年份块裁掉」留的余地 —— 那是官方
+# 的正当动作，不该把一个健康的抓取器变成天天 FAIL。
+SENTINEL_TAIL_MONTHS = 6
+
+# 官方文件名自报的数据月，允许比表内最新完整月领先几期（见 _crosscheck_name_month）。
+# 这个数不是随手拍的，是从本模块 docstring 记的节奏推出来的：
+#   · 1 期 —— parse() 的 docstring 写着「OI 偶尔比 ADV 晚一天上线」，那几天文件
+#     已经是新一期（Jul26）而我们能收全的还是上一个月（2026-06），领先 1 期是**正常**；
+#     同一格余量也顺手兜住「CME 哪天改成按发布月命名」这种纯改名（那会让每个月
+#     都恒定领先 1 期，一个纯粹的化妆品变化不该让抓取器停摆）。
+#   · +1 期 headroom —— 上面两件事可能同时发生（按发布月命名 + 当月 OI 晚到），
+#     那就是领先 2 期，仍然健康。所以容忍到 2，第 3 期才开口。
+# 代价说清楚：这道判据因此只会「迟一到两个月」才发现漏月，它是**次要**护栏；
+# 当场就能发现的是 _parse_adv/_parse_oi 的行数对账和 parse() 的全表空列检查。
+NAME_MONTH_LEAD_TOL = 2
+
 
 class FetchError(RuntimeError):
     """源不可达 / 结构变了 / 数据不完整 —— 一律显式抛，绝不静默写 NaN。"""
@@ -247,6 +288,27 @@ def _mkey(v):
     return f'{v.year:04d}-{v.month:02d}'
 
 
+def _lab(v):
+    """行标签归一化：压空白 + 转小写 + 右剥脚注记号。
+
+    用全等匹配（原来的 `a.lower()`）挂在一个假设上：官方永远不给行名加脚注。
+    这个假设在别家已经被打破过 —— fetch/cboe.py 的 _lab 就是为
+    'Futures - ADV (contracts, thousands)*' 写的，MSCI 更是把脚注写成裸文本，
+    害得整整一行被静默丢弃（README「第四类：不出声的失败」记着这一天三连）。
+    CME 今天一个脚注都没有，正因为如此才要现在剥：等它加了脚注的那个月，
+    表现是某个资产类别的列**整列变空**，不是报错。
+
+    右剥 ' *¹²³0123456789' 是安全的：本模块认的十一个标签
+    （_CLASS_MAP 七个 + _VENUE_MAP 四个）没有一个以数字或星号结尾。
+    唯一被剥没的是年份行 '2026' -> ''，而它本来就不在任何映射里，照样跳过。
+    注意剥不掉的形态（如 'Metals (1)'）不是漏网：它进不了映射，
+    于是 parse() 的全表空列检查会响 —— 两道是接力，不是重复。
+    """
+    if v is None:
+        return ''
+    return re.sub(r'\s+', ' ', str(v)).strip().lower().rstrip(' *¹²³0123456789')
+
+
 def _num(v):
     if v is None or v == '':
         return None
@@ -273,12 +335,14 @@ def _parse_adv(ws):
     section = None          # 'class' | 'venue' | None(=跳过)
     cmap = None
     pending_days = None     # 坑 2：Trading Days 行先于表头出现，暂存后回填
+    orphans = []            # 长得像数据行、却没能落库的行；循环末尾一起抛
 
     for row in ws.iter_rows(values_only=True):
         a = str(row[0]).strip() if row[0] is not None else ''
         b = str(row[1]).strip() if isinstance(row[1], str) else ''
+        key = _lab(a)
 
-        if a.lower() == 'trading days':
+        if key == 'trading days':
             pending_days = row
             continue
 
@@ -305,10 +369,23 @@ def _parse_adv(ws):
                 pending_days = None
             continue
 
-        if not section or cmap is None or not a:
+        if not section or not a:
             continue
 
-        key = a.lower()
+        # 段落标题已经读到、日期表头却没读到 —— 这一段的每一行都无处安放，
+        # 于是被静默丢弃。这不是假想：表头单元格是手工维护的（坑 5 记着
+        # 2026-01-01 / 2025-01-20 / 2013-02-11 这种日号乱飘），哪一年新块的表头
+        # 被打成文本而不是日期，这里就会整块吞掉；而新块正好在 sheet 最上方，
+        # 吞掉的就是当年**全部**月份。原来的表现是 parse() 少产出十几行、
+        # latest_month() 安静停在去年 12 月、update() 报 NOCHANGE ——
+        # 连续十天失败和连续十天成功，在日志里长得一模一样（README 第四类）。
+        # 所以凡是「我们认识这个行标签、却没地方放」的行，一律记下来最后炸。
+        if cmap is None:
+            if (section == 'class' and key in _CLASS_MAP) or \
+                    (section == 'venue' and key in _VENUE_MAP):
+                orphans.append(f'{a}（{section} 段）')
+            continue
+
         if section == 'class' and key in _CLASS_MAP:
             col = f'adv_{_CLASS_MAP[key]}_kcontracts'
         elif section == 'venue' and key in _VENUE_MAP:
@@ -321,6 +398,15 @@ def _parse_adv(ws):
             if v is not None:
                 out.setdefault(mk, {})[col] = v
 
+    # 行数对账（照抄 fetch/msci.py parse() 那道）。实测：现行工作簿 38 个
+    # class/venue 表头全部认得出，孤儿数 0；把 2026 年块的表头改成文本，
+    # 孤儿立刻变成 10 条。该响的时候响、平时一声不吭，就是这道的意义。
+    if orphans:
+        raise FetchError(
+            f'{SHEET_ADV}: {len(orphans)} 行长得像数据行却没能落库：{orphans[:6]!r}'
+            ' —— 多半是某个年份块的日期表头不是日期单元格（被打成了文本），'
+            f'整块被吞掉。宁可整次失败也不静默漏月；请对照 {CACHE_NAME} 的'
+            ' 段落标题下一行确认表头写法。')
     if not out:
         raise FetchError(f'{SHEET_ADV}: 一行都没解析出来，sheet 结构可能改了')
     return out
@@ -330,20 +416,33 @@ def _parse_oi(ws):
     """解析 'F&O OI by Asset Class'：月末未平仓合约数（张，不是千张）。"""
     out = {}
     cmap = None
+    orphans = []            # 同 _parse_adv：认得出的行标签却没地方放，末尾一起抛
     for row in ws.iter_rows(values_only=True):
         if _is_date(row[1]):
             cmap = _colmap(row)
             continue
-        if cmap is None or row[0] is None:
+        if row[0] is None:
             continue
-        key = str(row[0]).strip().lower()
+        key = _lab(row[0])
         if key not in _CLASS_MAP:
+            continue
+        # 本 sheet 最新的年份块在最上方，它的日期表头若读不出来，这一块的七行
+        # 就落在「还没有任何 cmap」的状态里被安静丢掉 —— 丢的正好是当年全部
+        # 月份，而 OI 是 CORE 列，缺了整年的行会被 parse() 的 CORE 过滤器
+        # 一并剔除，最后 update() 干干净净报 NOCHANGE。记下来最后炸。
+        if cmap is None:
+            orphans.append(str(row[0]).strip())
             continue
         col = f'oi_{_CLASS_MAP[key]}_contracts'
         for i, mk in cmap.items():
             v = _num(row[i]) if i < len(row) else None
             if v is not None:
                 out.setdefault(mk, {})[col] = v
+    if orphans:
+        raise FetchError(
+            f'{SHEET_OI}: {len(orphans)} 行长得像数据行却没能落库：{orphans[:6]!r}'
+            ' —— 首个年份块的日期表头没解析出来（多半被打成了文本），'
+            '整块被吞掉。拒绝写入，请人工看一眼该 sheet 最上面那个表头。')
     if not out:
         raise FetchError(f'{SHEET_OI}: 一行都没解析出来，sheet 结构可能改了')
     return out
@@ -380,6 +479,33 @@ def parse(xlsx_path):
         if c not in df.columns:
             df[c] = pd.NA
     df = df[COLUMNS[1:]].sort_index()
+
+    # ── 全表空列检查：CORE 列一个非空值都没有，就炸 ──────────────────────
+    # 下面那行 CORE 过滤器是这个模块最安静的一处失败。官方哪天把 'Metals'
+    # 写成 'Metals (1)'、把 'Interest Rates' 改成单数，_CLASS_MAP 就再也匹配不上，
+    # 对应的 adv_/oi_ 列**全 223 个月一起变空**（xlsx 是一份滚动覆盖全历史的
+    # 文件，改模板就是改十八年），过滤器于是把每一行都判成「半拉子月份」丢掉，
+    # 而 update() 见到空帧只会 `if not new: return []` —— 一次干净的 NOCHANGE，
+    # 天天如此。这正是 README「第四类」的判据：连续失败十天和成功十天长得一样。
+    #
+    # 检查放在过滤**之前**，是为了让报错说得出是哪一列没了；放在之后只会得到
+    # 一句毫无线索的「0 行」。判据故意宽到不能再宽 —— 只要全表还有**一个**
+    # 非空值就放行，所以「当年剩余月份是空列」「某月 OI 晚一天上线」这些正常
+    # 情形一概不会误伤（实测现行工作簿每个 CORE 列都是 223 个非空值）。
+    #
+    # 这里刻意 raise 而不是 print：warn 完状态仍是 NOCHANGE，等于没有护栏
+    # （同 fetch/cboe.py _crosscheck_report_month 的理由）。代价要说清楚：
+    # CME 若真的停发某个资产类别，这里会天天 FAIL 到有人来改 COLUMNS/_CLASS_MAP。
+    # 那正是护栏 2「缺列一律失败」要的效果 —— 停发是需要人做决定的事，
+    # 不该由抓取器替他悄悄决定成「这列从此为空」。
+    empty_cols = [c for c in CORE_REQUIRED if not df[c].notna().any()]
+    if empty_cols:
+        raise FetchError(
+            f'{os.path.basename(xlsx_path)}: CORE 列 {empty_cols} 在整份工作簿里'
+            '一个值都没有（不是某个月缺，是十八年一起缺）—— 最可能是官方改了行标签，'
+            f'_CLASS_MAP / _VENUE_MAP 匹配不上了（{SHEET_ADV} / {SHEET_OI} 的首列）。'
+            '拒绝返回半张表，否则这一列会静默变成空值上线。')
+
     df = df[df[CORE_REQUIRED].notna().all(axis=1)]
 
     # 坑 8：venue 段偶尔被官方写错，必须交叉验，不能照抄。
@@ -487,6 +613,74 @@ def _name_month(name):
     return f'20{m.group(2)}-{mon:02d}'
 
 
+def _month_delta(a, b):
+    """a 比 b 领先几个月（'YYYY-MM' 字符串）；有一个读不懂就返回 None。"""
+    try:
+        ya, ma = int(a[:4]), int(a[5:7])
+        yb, mb = int(b[:4]), int(b[5:7])
+    except (TypeError, ValueError):
+        return None
+    return (ya - yb) * 12 + (ma - mb)
+
+
+def _crosscheck_stored_tail(stored_months, parsed_index):
+    """已入库的最近几个月，在这一轮解析结果里必须还在 —— 少一个就炸。
+
+    这是「反侧」那道网，和 _parse_adv / _parse_oi 的行数对账盲区不重叠：
+    对账从**工作簿里有什么**这一侧查（认得出的标签没地方放），这里从
+    **我们已知该有什么**的反侧查。只有反侧这道才拦得住「行标签只在最近几个
+    年份块被改名」那种局部走样 —— 那时旧月份照样解析得出来，全表空列检查
+    看不见，可 2026 年那几行已经从解析结果里消失了，而它们明明躺在
+    series/cme.csv 里。
+
+    为什么这个源「少一行 = 我们解析丢了」而不是「官方少发了」：xlsx 是一份
+    滚动覆盖全历史的文件（坑 7 说得清楚，官方只**重述**数值，不删行）。
+    所以处置和 fetch/msci.py 的哨兵②一致 —— 数值变了只喊，整行没了直接抛。
+
+    只查表尾 SENTINEL_TAIL_MONTHS 个月，理由见该常量旁注。
+    """
+    tail = sorted(stored_months)[-SENTINEL_TAIL_MONTHS:]
+    gone = [m for m in tail if m not in parsed_index]
+    if gone:
+        raise FetchError(
+            f'{gone} 在 series/cme.csv 里，这一轮却从 xlsx 解析结果里消失了。'
+            '这个源只重述数值、不删行（坑 7），所以多半是我们解析漏了 —— '
+            '行标签被改名、或某个年份块的日期表头读不出来，都会长成这样。'
+            f'本次不写入，请对照 {CACHE_NAME} 人工确认。')
+
+
+def _crosscheck_name_month(name, newest):
+    """官方文件名自报的数据月 vs 表内解析出来的最新完整月 —— 领先太多就炸。
+
+    本模块唯一一条**独立于工作簿解析器**的月份判据（同 fetch/cboe.py 的
+    _crosscheck_report_month、fetch/ice.py 的 _crosscheck_workbook_month）：
+    文件名来自 IR 服务器的 Content-Disposition，和我们怎么读 sheet 毫无关系。
+    防的是行数对账和全表空列检查都看不见的那一类坏法 —— 比如最新月的数值格
+    被官方填成 'n/a' 之类的文本，_num 返回 None，那一行被 CORE 过滤器判成
+    半拉子月份丢掉：表头没坏、标签没改、旧月份齐全，前两道全都不响。
+
+    只在文件名**领先**超过 NAME_MONTH_LEAD_TOL 期时抛，落后不抛：文件名滞后
+    是纯化妆品问题（官方忘了改名），不该让一个数据好好的抓取器停摆。
+    文件名认不出格式时也不抛，但要喊一声护栏掉了 —— 「静默地失去一道护栏」
+    本身就是第四类失败。
+    """
+    if not newest:
+        return                    # 空帧的判据在 _crosscheck_stored_tail，这里只是别炸成 IndexError
+    nm = _name_month(name)
+    if nm is None:
+        print(f'[cme] ⚠ 护栏失效：官方文件名 {name!r} 认不出数据月（命名可能变了），'
+              '这一轮没有独立于解析器的月份判据')
+        return
+    lead = _month_delta(nm, newest)
+    if lead is None or lead <= NAME_MONTH_LEAD_TOL:
+        return
+    raise FetchError(
+        f'官方文件名自报数据月 {nm}，表内解析出来的最新完整月却只到 {newest}，'
+        f'领先 {lead} 期（容忍 {NAME_MONTH_LEAD_TOL} 期，见 NAME_MONTH_LEAD_TOL）。'
+        '文件名和表内数据是同一份 artifact，不该差这么多 —— 最可能是最新那几个月'
+        '被静默丢掉了（数值格变成文本、行被吞）。拒绝写入，请人工看一眼工作簿。')
+
+
 def _record_publish_date(series_dir, cache_dir, xlsx_path, name, added, latest):
     """把这一期的发布日记进台账 —— 只记这个文件自己那一期（latest），且它确实刚落库。
 
@@ -565,6 +759,14 @@ def update(series_dir, cache_dir) -> list:
     path, name = download(cache_dir)
     src = parse(path)
     csv_path, cur, eol = _read_series(series_dir)
+
+    # ── 两道判据必须跑在下面那个 `if not new: return []` 之前 ──────────────
+    # 那个早退是本模块所有「不出声的失败」共同的出口：只要解析结果里没有新月份，
+    # 不管是因为官方今天真没发，还是因为我们把最新那一整年读丢了，update() 都
+    # 返回同一个 []，monthly_run 都记同一个 NOCHANGE。判据放在早退之后
+    # （比如 _record_publish_date 那一带）等于永远不执行。
+    _crosscheck_stored_tail(cur['month'].astype(str).tolist(), src.index)
+    _crosscheck_name_month(name, str(src.index[-1]) if len(src.index) else None)
 
     have = set(cur['month'].astype(str))
     new = [m for m in src.index if m not in have]

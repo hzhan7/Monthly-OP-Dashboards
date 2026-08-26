@@ -51,6 +51,11 @@
     (b) 下一个月报附表的 13 个月滚动表 —— 例如 jul2026 月报的表里会带上 jun2026，
         但要等到 8 月中，比 (a) 慢一个月。
   所以「季末月漏掉」这个坑的正确解法不是特判某几个月，而是：**两个源都抓，取并集**。
+· 实测发布日（月末后第几天，8 期）：月报 12 / 13 / 13 / 14，季报 16 / 16 / 21 / 21
+  —— 常规月最坏 14、季末月最坏 21，就是 _LAG_DAYS 与 build/roster.py 的 LAG['schw']。
+  样本来自 series/source_dates.csv 与 cache 里几份新闻稿的电头，随时可复核。
+  注意实测最坏值**正好顶到**这两个数，所以任何拿它当红线的判断都必须另加余量，
+  见 _crosscheck_due_month 与 _OVERDUE_MARGIN_DAYS。
 
 ========================== 官方发布日（source_dates）==========================
 页面抬头「官方发布于 X」要的是**源头自己说出来的那一天**，所以只认新闻稿正文的电头：
@@ -356,7 +361,10 @@ def _ir_page_links(cache_dir: str) -> list[str]:
         return []
     with open(os.path.join(cache_dir, '_schw_ir_financial_reports.html'), 'w') as f:
         f.write(out)
-    return sorted(set(re.findall(r'https://content\.schwab\.com/[^"\']+\.xlsx', out)))
+    # 扩展名大小写都收：官方历史上真发过 .XLSX（见 _HIST_XLSX），而这个函数是
+    # _crosscheck_due_month 的判官 —— 判官只认小写，官方哪天改回大写它就当作
+    # 「落地页上没有更新的表」，护栏又变回静默。
+    return sorted(set(re.findall(r'https://content\.schwab\.com/[^"\']+\.[xX][lL][sS][xX]', out)))
 
 
 # ── 解析 ───────────────────────────────────────────────────────────────
@@ -519,6 +527,162 @@ def _candidates(back: int = 8):
             qq += 4
             yy -= 1
         yield 'quarterly', QUARTER_URL.format(q=qq, year=yy), (yy, qq * 3)
+
+
+def _template_url(ym: tuple[int, int]) -> str:
+    """本模块**推**出来的那个 URL。和 _candidates 给的是同一套写法，只是按月点名取一个。"""
+    y, m = ym
+    if m % 3 == 0:                       # 季末月没有独立月报，值在当季季报附表里
+        return QUARTER_URL.format(q=(m - 1) // 3 + 1, year=y)
+    return MONTHLY_URL.format(mon=_MON[m - 1], year=y)
+
+
+# ── 逾期对账：拦「文件名模板过期了」这一类不出声的失败 ──────────────────
+# _candidates() 给的是**推**出来的文件名，不是**发现**的。官方哪天改了命名规则，
+# 新一期的 URL 就 404 —— 而 404→None（_get）与 continue（_collect）都是**设计如此**：
+# 当月月报还没发之前那个 URL 本来就该 404，季末月的月报更是永远 404。
+# 于是坏掉的样子是这样的：最新一期永远抓不到，老月份照旧从 cache 里读得出来，
+# `if not got` 那道护栏（它要求 ~11 个候选**全部** 404）永远轮不到，update() 每天
+# 干干净净返回 []、报 NOCHANGE。**连续坏十天和正常十天，日志里长得一模一样。**
+# 而这不是假想：本模块自己的 _HIST_XLSX 就记着官方已经改过两次名（季报附表前缀
+# schwab_ / 扩展名大写 .XLSX），且改名是**只往前改**的 —— 老文件至今仍 200。
+# 只往前改，恰恰是让 got 一直为 True、让上面那道护栏永远沉默的那种改法。
+#
+# 所以这里补 README「第四类：不出声的失败」要的那道：拿一个**独立于文件名模板**的
+# 判据来对账 —— 官方 IR 落地页上真实挂着的链接（_ir_page_links）。形状照
+# fetch/cboe.py 的 _crosscheck_report_month、fetch/ice.py 的 _crosscheck_workbook_month。
+
+# (常规月, 季末月)：某个月的数据在**该月结束后第几天**发布。这两个数是第一手实测，
+# build/roster.py 的 LAG['schw'] 是它的抄件（那张表的表头注释写着「数值取自各
+# fetch/<t>.py docstring 里的实测发布日」）—— 哪天实测节奏变了，两处要一起改。
+# 季末月单独一个数不是可有可无的讲究：季末月（3/6/9/12）没有独立月报，数值随当季
+# 季报走，晚一周。拿常规月的日子去判季末月，这道护栏会**每个季度误报一次**，
+# 而每季度假一次的警报，人很快就学会无视（README「新鲜度红点」讲的是同一件事）。
+_LAG_DAYS = (14, 21)
+# 红线再往后推的余量。红点用的是 roster.GRACE = 5，这里刻意给到它的近三倍。
+# 两者方向相反：红点早响一天只是页面上多一个红圆点；这道护栏早响一天，是把一家
+# 本来健康的 fetcher 变成每日 FAIL。次序必须是「红点先红、人先看见，本护栏远远
+# 跟在后面才开口」。而且余量不能按 GRACE 那个量级给 —— 8 期实测发布日
+# （月报第 12/13/13/14 天、季报第 16/16/21/21 天，见 series/source_dates.csv 与
+# cache 里几份新闻稿的电头）**正好顶到** _LAG_DAYS，撞一次假日顺延就越线了。
+_OVERDUE_MARGIN_DAYS = 14
+
+# 从 URL 里认报告月：判官要**容错**，因为它存在的理由就是「命名规则变了」。
+# 全称与三字母缩写都认（还额外认 sept 这个常见写法），分隔符可有可无，大小写无关。
+# 刻意不把 'table' / 'earnings' 写进条件：那正是可能被改掉的那部分词。
+# 但也刻意**不**做成「月份三字母后面随便跟什么」—— 那样 marketdata2026.xlsx 会被
+# 读成 2026-03，而这道护栏一旦误判就是 FAIL，宁可少认一种写法也不能凭空造一个月份。
+_URL_MONTH_RE = re.compile(
+    r'(?<![a-z])(' + '|'.join([f.lower() for f in _MON_FULL] + ['sept'] + _MON)
+    + r')[-_ ]?(20\d{2})(?![0-9])', re.IGNORECASE)
+_URL_QUARTER_RE = re.compile(r'(?<![a-z0-9])q([1-4])[-_ ]?(20\d{2})(?![0-9])', re.IGNORECASE)
+_URL_QUARTER_RE2 = re.compile(r'(?<![0-9])(20\d{2})[-_ ]?q([1-4])(?![0-9])', re.IGNORECASE)
+
+
+def _month_end(ym: tuple[int, int]) -> _dt.date:
+    """该月最后一天。用「下月 1 号减一天」算，省得为了闰年再引一个 calendar。"""
+    ny, nm = _shift(ym, 1)
+    return _dt.date(ny, nm, 1) - _dt.timedelta(days=1)
+
+
+def _overdue_deadline(ym: tuple[int, int]) -> _dt.date:
+    """这个报告月的红线：过了这一天还没有它，就该有人来看一眼。"""
+    lag = _LAG_DAYS[1] if ym[1] % 3 == 0 else _LAG_DAYS[0]
+    return _month_end(ym) + _dt.timedelta(days=lag + _OVERDUE_MARGIN_DAYS)
+
+
+def _due_ym(today: _dt.date | None = None) -> tuple[int, int]:
+    """截至今天，**最新一个已经越过红线**的报告月。
+
+    从上个月往回数，第一个红线已过的就是它（当月永远不可能越线，所以从 -1 起步）。
+    参数 today 只为可测：生产路径一律用系统日期。
+    """
+    today = today or _dt.date.today()
+    ym = _shift((today.year, today.month), -1)
+    for _ in range(24):                  # 正常两三步就返回；24 只是防死循环的上界
+        if _overdue_deadline(ym) <= today:
+            return ym
+        ym = _shift(ym, -1)
+    return ym
+
+
+def _url_report_ym(url: str):
+    """从一个 xlsx 链接里认出它是哪一期 → (y, m)；认不出返回 None。
+
+    季报按季末月记（q2_2026 → 2026-06），和 _candidates 对季报的记法一致，
+    这样它和月报可以放在同一根时间轴上比大小。
+    先只看文件名，认不出再看整条 URL —— 路径里常有「/2026/」这类年份噪音。
+    """
+    for text in (url.rsplit('/', 1)[-1], url):
+        hit = _URL_MONTH_RE.search(text)
+        if hit:
+            return (int(hit.group(2)), _MON.index(hit.group(1).lower()[:3]) + 1)
+        hit = _URL_QUARTER_RE.search(text)
+        if hit:
+            return (int(hit.group(2)), int(hit.group(1)) * 3)
+        hit = _URL_QUARTER_RE2.search(text)
+        if hit:
+            return (int(hit.group(1)), int(hit.group(2)) * 3)
+    return None
+
+
+def _crosscheck_due_month(merged: dict, cache_dir: str) -> None:
+    """拿到的最新月 vs 按发布节奏早该有的月，落后了就去问 IR 落地页这个外部判官。
+
+    **抛不抛，只由判官说了算，绝不由日期单独说了算。** 这是这道护栏能进无人值守
+    主路径的全部理由：官方晚发几天是常有的事（8 期实测正好顶着 _LAG_DAYS），
+    光凭「过了红线」就 FAIL，等于每逢一次假日顺延就把一家健康的 fetcher 判死。
+    而「落地页上明明挂着比我们拿到的更新的表」不是晚发能造出来的状态 —— 那只可能
+    是我们推的文件名不对了。
+
+    落地页这条路平时**不进主流程**（www.aboutschwab.com 在 Akamai 后面按 TLS 指纹
+    拦人，见模块 docstring），所以只在越线那一天才问它一次，正常日子零额外请求。
+
+    判官自己哑了（curl 被拦、落地页改版捞不到链接）时**只喊不抛**：一道连自己的
+    探针都失灵了的护栏，不能反过来把数据摄入判死。但那一声必须喊出来 —— 否则这道
+    护栏就悄悄退化成它本来要消灭的那个形状（静默）。
+    """
+    newest, due = max(merged), _due_ym()
+    if newest >= due:
+        return
+    due_key = f'{due[0]:04d}-{due[1]:02d}'
+    newest_key = f'{newest[0]:04d}-{newest[1]:02d}'
+    line = _overdue_deadline(due)
+
+    links = _ir_page_links(cache_dir)
+    if not links:
+        print(f'  [overdue] {due_key} 已过红线 {line} 仍未拿到（手上最新是 {newest_key}），'
+              f'而 IR 落地页这次一个 xlsx 链接都没捞到（{IR_PAGE}，curl 被 Akamai 拦？）。'
+              f'判官自己哑了，本次不判失败 —— 请人工打开落地页核一眼命名规则。')
+        return
+
+    advertised = [(ym, u) for ym, u in ((_url_report_ym(u), u) for u in links) if ym]
+    if not advertised:
+        print(f'  [overdue] {due_key} 已过红线 {line} 仍未拿到（手上最新是 {newest_key}）；'
+              f'IR 落地页捞到 {len(links)} 个 xlsx 链接，却没有一个能解析出报告月：'
+              f'{links[:5]}。命名规则可能变得连判官也认不出了，请人工核对。')
+        return
+
+    # 只认「比手上新、且自己也已经越过红线」的那一档：落地页上偶尔会先挂出还没到
+    # 发布期的下一期链接，拿那种未来期当证据就是自己造一个假警报。
+    newer = sorted((ym, u) for ym, u in advertised if newest < ym <= due)
+    if not newer:
+        print(f'  [overdue] {due_key} 已过红线 {line} 仍未出现；IR 落地页上也没有比 '
+              f'{newest_key} 更新的表，判定为**官方晚发**，不是抓取故障。')
+        return
+
+    ym, real = newer[-1]
+    raise FetchError(
+        '逾期对账失败：IR 落地页上挂着 %s 的附表，我们按文件名模板推出来的 URL 却没拿到它。\n'
+        '  落地页上的真实链接：%s\n'
+        '  本模块推出来的 URL：%s\n'
+        '  手上最新月 %s，红线 %s（= 月末 + %s 天节奏 + %d 天余量）。\n'
+        'CDN 的命名规则或路径多半变了（史上改过：季报附表前缀 schwab_、扩展名大写 .XLSX，'
+        '见 _HIST_XLSX）。这时候静默返回 NOCHANGE，页面会一直挂着旧数据而日志上看不出'
+        '任何异常，所以这里拒绝写入：请照落地页上的真名改 MONTHLY_URL / QUARTER_URL，'
+        '再跑一次。'
+        % (f'{ym[0]:04d}-{ym[1]:02d}', real, _template_url(ym), newest_key, line,
+           _LAG_DAYS[1] if due[1] % 3 == 0 else _LAG_DAYS[0], _OVERDUE_MARGIN_DAYS))
 
 
 # ── 历史回填源（2013-09 … 2018-04）─────────────────────────────────────
@@ -772,9 +936,14 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
     if not got:
         links = _ir_page_links(cache_dir)
         raise FetchError(
-            '最近 %d 个月的月报附表和最近 3 个季度的季报附表全部 404。'
-            'CDN 命名规则可能变了。IR 落地页上当前的 xlsx 链接：%s'
+            '最近 %d 个月的月报附表和最近 3 个季度的季报附表**全部** 404 —— 整个目录或'
+            '域名搬家了。（只改命名规则走不到这里：官方改名是只往前改的，老文件照旧 200，'
+            '这个 got 就一直是 True。那种坏法由 _crosscheck_due_month 负责，别再指望这一条。）'
+            'IR 落地页上当前的 xlsx 链接：%s'
             % (back, links[:10] or '（落地页也取不到）'))
+    # 上面那道只管「一个都没拿到」。真正常见的是「老的都拿到了、最新一期没拿到」——
+    # 那种没有任何 404 计数、没有任何异常，得靠外部判官对账。见该函数 docstring。
+    _crosscheck_due_month(merged, cache_dir)
     return merged
 
 

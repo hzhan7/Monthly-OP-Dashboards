@@ -39,6 +39,11 @@ PIPELINE = os.path.join(HERE, 'ibkr_source.py')
 
 _MOD = None
 
+# update() 的「已入库月份不许凭空消失」哨兵回看几个月。取 6 是折中：足够抓住一次
+# 版式失效（那会让整段读空，绝不止差一个月），又短到即使官方把历史表改成滚动窗口
+# 也不会误伤 —— 在册最短的滚动窗口是 HOOD 独立月度表的 13 个月。
+_SENTINEL_MONTHS = 6
+
 
 class IbkrFetchError(RuntimeError):
     """本模块所有失败路径统一抛它，调度器只需 catch 一种。"""
@@ -133,6 +138,24 @@ def update(series_dir, cache_dir=None):
     if unknown:
         raise IbkrFetchError(f'series/ibkr.csv 有 ibkr_source.LABELS 里没有的列 {unknown}，'
                              f'两边口径已分叉，拒绝写入')
+
+    # 哨兵：已入库的月份必须仍出现在刚解析出来的 data 里（同 fetch/msci.py 的哨兵②）。
+    # 防的是「解析器认不出行」这一类：历史表的版式一变，parse 可能整段读空或整体错位，
+    # 而下面那个循环只会「没有新月份 → added 为空 → 干净 NOCHANGE」，一声不吭。
+    # 缺列有护栏、缺**整月**原本没有 —— 这里补上。
+    #
+    # 只查最近 _SENTINEL_MONTHS 个月，不查全部 127 个：官方历史表眼下是全量追加式，
+    # 但真要哪天改成滚动窗口（HOOD 的月度表就是 13 个月滚动），全量比对会让一次
+    # 合法的窗口收缩把 IBKR 变成天天 FAIL。查最近几个月足以抓住版式失效，
+    # 又不会被上游裁掉陈年历史误伤。
+    recent = sorted(have)[-_SENTINEL_MONTHS:]
+    vanished = [m for m in recent if m not in data]
+    if vanished:
+        raise IbkrFetchError(
+            f'已入库月份 {vanished} 在官方历史表里消失了（本轮解析出 '
+            f'{len(data)} 个月，最新 {max(data) if data else "无"}）—— '
+            f'多半是版式变了导致整段读空或错位，而不是官方真的删了历史。'
+            f'先核对 ibkr_source.parse_hist_page 的表头定位，别直接放宽本判据。')
 
     added = []
     for key in sorted(data):

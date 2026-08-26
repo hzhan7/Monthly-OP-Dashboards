@@ -158,6 +158,7 @@ r"""联华电子（UMC，2303.TW / NYSE: UMC）月度营收 —— 无人值守�
 from __future__ import annotations
 
 import csv
+import datetime
 import html as _html
 import json
 import os
@@ -186,6 +187,13 @@ _CTX = ssl.create_default_context()
 MAX_SCAN = 40
 # 每次固定回看多少份**营收公告**做重述体检
 DRIFT_BACK = 3
+# TWSE 已经发了某个月、EDGAR 上却一直等不到那份 6-K —— 拖过多少天才判定为故障。
+# 取 60 不是拍的：本模块自述的最坏端到端滞后是 33 天（2013-11 的营收 2014-01-02
+# 才上 EDGAR，那时 UMC 把整月公告攒成一份 6-K 月底才报），2024 年的最坏值是 14 天
+# （2024-10 → 2024-11-14），2025-05 起 15 个月逐月同日。60 天 ≈ 历史最坏值的两倍，
+# 所以就算 UMC 哪天退回按月攒报，这道护栏也不会在正常节奏里开火 —— 而它要抓的
+# 「版式变了、永远解析不出来」是**不会自愈**的，晚两个月喊也比永远不喊强。
+STALE_DAYS = 60
 
 _MIN_SUB = 20_000          # submissions JSON 实测 117KB
 _MIN_TXT = 5_000           # 单份 6-K 合并文本实测 20KB~2MB
@@ -269,11 +277,52 @@ def _filing_text(acc):
 
 
 _N = r'\(?\s*-?[\d,]+\s*\)?'
+# 行标签 'Net sales' 大小写不敏感：申报代理换个模板就可能写成 'Net Sales'，
+# 而这一份是**新**附件、EDGAR 上的旧件不会跟着变，所以历史照样解析得出来 ——
+# 于是坏法是「只有最新那个月读不到」，最难查的那一种。
 _ROW = re.compile(
-    rf'([A-Za-z0-9][A-Za-z0-9 \-]{{0,18}}?)\s*Net sales\s+({_N})\s+({_N})\s+'
+    rf'([A-Za-z0-9][A-Za-z0-9 \-]{{0,18}}?)\s*(?i:Net\s+sales)\s+({_N})\s+({_N})\s+'
     rf'({_N})\s*\(?\s*(-?[\d.]+)\s*%?\s*\)?\s*%?')
 _MARK = re.compile(r'This is to report the changes')
+# 表格起点。原来是 `seg.find('Sales volume (NT$ Thousand)')` 的裸字面量，
+# 大小写或空白只要动一格就整份公告读不出来。容错到大小写 + 任意空白。
+_TABLE_HEAD = re.compile(r'(?i)Sales\s+volume\s*\(\s*NT\$\s*Thousand\s*\)')
+# 表格下界。认不出时退回定长窗口，所以这条容错纯属白赚。
+_TABLE_END = re.compile(r'(?i)2\s*\)\s*Funds\s+lent')
 _HEAD_DATE = re.compile(r'([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})[^A-Za-z0-9]{0,4}$')
+
+# ── 「这份 6-K 里到底有没有一份月营收公告」的**独立于解析器**的判据 ──────────
+# 用途只有一个：_parse_announcement 读不出来时，分清「这份本来就不是营收公告」
+# （口径坑 5：一份 6-K 里常混着十几份别的公告，绝大多数月份的绝大多数 6-K 都不是）
+# 与「这份就是营收公告、只是版式变了我们没读懂」。后者必须炸，前者必须安静跳过。
+# 判据刻意比解析器**松**：解析器卡死四处字面量（_MARK 那句、表头、行标签、四个数
+# 加百分号），任何一处被申报代理重排都会静默漏月；下面这几条只要**还剩两条**就认。
+# 2026-08-26 拿最近 60 份真 6-K 实测：11 份营收公告四条信号全中（各出现 1~4 次），
+# 另外 49 份**一条都不中**（含 152~225KB 的年报类附件，它们不用 'Net sales' 这个词）。
+_SIG_STRONG = (
+    re.compile(r'(?i)net\s+sales'),          # 表格行标签
+    re.compile(r'(?i)sales\s*volume'),       # 表头 / 开篇那句的第 1 项
+)
+_SIG_WEAK = (
+    re.compile(r'(?i)NT\$\s*thousand'),      # 单位
+    re.compile(r'(?i)for the period of'),    # 「本次公告的是哪个期间」那句
+)
+# 至少要中几条（且其中至少一条来自 _SIG_STRONG）。_SIG_WEAK 里那两句英文太通用，
+# 单靠它们开火迟早会误伤别的公告，所以强信号是硬门槛。
+_SIG_MIN = 2
+# 金额格：营收表里两行各四个千元级数字。少于这个数的多半不是一张营收表。
+_SIG_BIGNUM = re.compile(r'\b\d{1,3}(?:,\d{3}){2,}\b')
+_SIG_BIGNUM_MIN = 4
+
+
+def _looks_like_announcement(flat):
+    """这份 6-K 的正文看着像不像一份月营收公告（判据见上面几个 _SIG_*）。"""
+    strong = sum(1 for r in _SIG_STRONG if r.search(flat))
+    if not strong:
+        return False
+    if strong + sum(1 for r in _SIG_WEAK if r.search(flat)) < _SIG_MIN:
+        return False
+    return len(_SIG_BIGNUM.findall(flat)) >= _SIG_BIGNUM_MIN
 
 
 def _num(s):
@@ -296,11 +345,12 @@ def _parse_announcement(flat, filing_date):
         # "...status of 1) Sales volume, 2) Funds lent to other parties, 3) ..."
         # 里就有一个，切下去会把整张表切掉（实测踩过，表现是「一份都解析不出来」）。
         # 表头 'Sales volume (NT$ Thousand)' 全 166 份公告逐字一致，用它定表格起点。
-        ts = seg.find('Sales volume (NT$ Thousand)')
-        if ts < 0:
+        th = _TABLE_HEAD.search(seg)
+        if th is None:
             continue
-        tail = seg[ts:]
-        cut = tail.find('2) Funds lent')
+        tail = seg[th.start():]
+        te = _TABLE_END.search(tail)
+        cut = te.start() if te else -1
         rows = _ROW.findall(tail[:cut if cut > 0 else 1800])
         if len(rows) < 2:
             continue
@@ -412,6 +462,44 @@ def _twse_latest():
     return None, None, None
 
 
+def _month_end_age(month):
+    """month（'YYYY-MM'）的月末到今天有多少天。"""
+    y, m = int(month[:4]), int(month[5:])
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    end = datetime.date(ny, nm, 1) - datetime.timedelta(days=1)
+    return (datetime.date.today() - end).days
+
+
+def _crosscheck_twse_stale(tw_month, newest_month):
+    """TWSE 已经发到某个月、6-K 侧却一直等不到它，**且已经拖过 STALE_DAYS**，就抛。
+
+    这是本模块唯一一条独立于 EDGAR 解析器的判据。它补的是 _scan 里那道对账够不着
+    的半边：那一道从「下载到的正文长什么样」查，遇上「公告根本没上 EDGAR」或者
+    「换了个我们连指纹都认不出的写法」时看不见；这一条从「别人已经发到哪个月了」
+    的反侧查。
+
+    ⚠ **方向与时限缺一不可，别把它简化成 `tw_month != newest_month` 就抛。**
+    · 方向：6-K 领先 TWSE 是**每个月的常态** —— 6-K 落在次月 4–10 日，TWSE 那张
+      全市场汇总表约次月 12 日才刷新，中间那 4–8 天两边天天不相等。update() 末尾
+      那句 warn 是双向的，正因为双向所以它**不能**抛。
+    · 时限：反过来 TWSE 领先也不必然是故障。2025-05 以前 UMC 把整月公告攒成一份
+      6-K 月底才报，EDGAR 最长滞后 33 天；真哪天退回那个节奏，无时限的版本会连着
+      几周天天 FAIL。STALE_DAYS 的取值与出处见该常量旁注。
+    """
+    want = _shift(newest_month, 1)            # 库里该有的下一个月
+    if tw_month < want:
+        return
+    age = _month_end_age(want)
+    if age <= STALE_DAYS:
+        return
+    raise UmcFetchError(
+        f'TWSE 已经发布到 {tw_month}，而 6-K 侧最新只到 {newest_month}；'
+        f'{want} 的月末已经过去 {age} 天（阈值 {STALE_DAYS} 天，见 fetch/umc.py '
+        'STALE_DAYS 旁注）。这不是发布时间差了 —— 要么那份 6-K 一直没上 EDGAR，'
+        '要么它上了但版式变到连 _looks_like_announcement 都认不出来。'
+        '本次不写入，请人工去 EDGAR 看一眼 UMC 最近的 6-K。')
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 对外的两个函数
 # ══════════════════════════════════════════════════════════════════════════
@@ -424,6 +512,7 @@ def _scan(ledger):
     """
     known_ytd = set(ledger.values())
     picked, seen_old = [], 0
+    dropped = []            # 看着像营收公告、却一行都没读出来的；循环末尾一起判
     for fdate, acc in _recent_6k()[:MAX_SCAN]:
         try:
             flat = _filing_text(acc)
@@ -433,12 +522,34 @@ def _scan(ledger):
         rec = _parse_announcement(flat, fdate)
         time.sleep(0.15)                       # SEC 限速 10 req/s，留足余量
         if rec is None:
+            # 绝大多数 6-K 本来就不是营收公告（口径坑 5），所以这里**不能**无条件
+            # 抛 —— 那会让每一次跑都 FAIL。但「下载下来了、看着就是那份公告、
+            # 却一行都没解析出来」是另一回事：那是版式变了，必须炸。
+            if _looks_like_announcement(flat):
+                dropped.append((fdate, acc))
             continue
         picked.append(rec)
         if rec['ytd'] in known_ytd:            # 这个月已入库
             seen_old += 1
             if seen_old >= DRIFT_BACK:
                 break
+
+    # ── 落库对账：挡住「公告版式变了 → 静默停在上个月」的那道闸 ──────────────
+    # 只在**读不懂的那份比读得懂的最新那份还新**时开火。这个方向限定不是多余的：
+    # 2025-05 以前 UMC 把整月公告攒成一份 6-K 报，翻得够深就会撞上那批老件的怪版式，
+    # 无条件开火等于给自己埋一颗随时间引爆的雷。而真正要抓的坏法恰好只发生在表头
+    # 那一侧 —— EDGAR 上的旧件不可变，改版只会出现在**最新**那几份里。
+    newest_ok = max((r['filing_date'] for r in picked), default='')
+    ahead = [f'{d} {a}' for d, a in dropped if d > newest_ok]
+    if ahead:
+        raise UmcFetchError(
+            f'比最新一份读得懂的营收公告（{newest_ok or "无"}）还新的 6-K 里，有 '
+            f'{len(ahead)} 份看着就是月营收公告却一行都没解析出来：{ahead[:3]}。'
+            '多半是公告的写法变了（表头 / 行标签 / 那句 "This is to report..."）——'
+            '这种坏法不会 FAIL、不会断档，只会让 fetch 干净地报 NOCHANGE 然后一直'
+            '挂旧数据，所以这里刻意抛。本次不写入，请打开那份 6-K 的 Exhibit 99 '
+            '对照 fetch/umc.py 口径坑 5 改 _TABLE_HEAD / _ROW。')
+
     picked.sort(key=lambda r: r['filing_date'])
     out, chain = [], dict(ledger)
     for rec in picked:
@@ -539,19 +650,18 @@ def update(series_dir, cache_dir=None):                            # noqa: ARG00
         ledger[month] = rec['ytd']
         added.append(month)
 
-    if added:
-        body.sort(key=lambda r: r[0])
-        with open(path, 'w', newline='', encoding='utf-8') as fh:
-            w = csv.writer(fh)
-            w.writerow(COLUMNS)
-            w.writerows(body)
-
-    # ── 第三源交叉校验：只告警，不阻断 ──────────────────────────────────
+    # ── 第三源交叉校验：金额对不上只告警，但「TWSE 领先且已经拖过头」要抛 ────
+    # ⚠ 这一段**刻意排在写盘之前**：里面有一条会抛的判据，而本仓的规矩是
+    #   「抛异常 = 本次不写入」。放在写盘之后就会出现「先落盘再报错」的半截状态。
     newest_month, newest_rec = got[-1]
     tw_month, tw_val, tw_ytd = _twse_latest()
+    if not tw_month:
+        print('[umc] ⚠ 护栏失效：TWSE OpenAPI 这一轮拿不到 2303 的当期数，'
+              '本次没有独立于 EDGAR 解析器的月份判据。')
     if tw_month:
         if tw_month != newest_month:
             print(f'[umc][warn] TWSE 最新月 {tw_month} 与 6-K 最新月 {newest_month} 不一致')
+            _crosscheck_twse_stale(tw_month, newest_month)
         else:
             if abs(tw_ytd - newest_rec['ytd']) > 1.0:
                 print(f'[umc][warn] {newest_month} 累计：6-K {newest_rec["ytd"]:,.0f} '
@@ -562,6 +672,13 @@ def update(series_dir, cache_dir=None):                            # noqa: ARG00
                                  _shift(newest_month, -1), 0))) > 1.0:
                 print(f'[umc][warn] {newest_month} 当月：TWSE {tw_val:,.0f} NT$K 与'
                       '累计差反算值不符')
+
+    if added:
+        body.sort(key=lambda r: r[0])
+        with open(path, 'w', newline='', encoding='utf-8') as fh:
+            w = csv.writer(fh)
+            w.writerow(COLUMNS)
+            w.writerows(body)
     return added
 
 

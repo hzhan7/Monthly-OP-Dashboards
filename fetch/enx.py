@@ -274,6 +274,7 @@ import collections
 import csv
 import datetime
 import io
+import json
 import os
 import re
 import time
@@ -1125,6 +1126,100 @@ def _identity(mon, rec, total, parts, tol=1e-9):
 # ══════════════════════════════════════════════════════════════════════
 # 对表自检：官方 latest 文件（**只比最新月这一列**，见口径坑 6）
 # ══════════════════════════════════════════════════════════════════════
+# latest 文件跑在 hist 文件前面，多少天之内还算「两份文件都在发布窗口里」。
+#
+# 依据是本模块 docstring「发布节奏」那一节的普查（2019-01 → 2026-06 共 90 个数据月，
+# 逐月找到它自己那期新闻稿，命中 90/90）：发布日落在**次月第 3 至第 13 天**。
+# 两份 xlsx 挂在同一个 CDN 目录下，所以最坏的**合法**背离就是 latest 走第 3 天、
+# hist 走第 13 天 —— 10 天。这里取一倍余量 20 天：宁可晚十天发现，也绝不能在某个
+# 发布日把一家本来好好的源打成 FAIL（每月假一次的警报，人很快就学会无视了）。
+# 20 天同时短于一个发布周期，所以真的停摆会在下一期发出来之前就被喊出来。
+_LATEST_AHEAD_GRACE_DAYS = 20
+# 背离是从哪天开始的，记在 cache 里（gitignore，tools/prune_cache.py 可能清掉它）。
+# 丢了这个文件只会让计时从头开始 = 晚一点发现，**永远不会**凭空造出一次 FAIL。
+# 这个不对称是刻意的：护栏失效的代价是漏报一阵子，护栏误报的代价是整家停更。
+_LATEST_SYNC_STATE = 'enx_latest_sync.json'
+
+
+def _read_latest_sync(cache_dir):
+    """读背离台账；读不到 / 读坏了一律当没有。绝不因为这个文件的毛病让抓取失败。"""
+    try:
+        with open(os.path.join(cache_dir, _LATEST_SYNC_STATE), encoding='utf-8') as f:
+            st = json.load(f)
+        return st if isinstance(st, dict) and st.get('first_seen') else None
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def _note_latest_sync(cache_dir, ahead, hist):
+    """记（或清）「latest 跑在 hist 前面」这件事，返回本轮的台账；出错一律当没记上。
+
+    ahead=None 表示两边同步、或 latest 反而落后、或判据本身没了 —— 三种都清台账：
+    只有「latest 明确领先」才是需要计时的那件事。
+
+    计时锚在 **hist 停在哪个月**，不是 latest 到了哪个月：hist 一直不动而 latest
+    每月往前走时，按 latest 记会每个月把时钟清零，那样一次永久停摆永远等不到超时。
+    """
+    path = os.path.join(cache_dir, _LATEST_SYNC_STATE)
+    try:
+        if ahead is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return None
+        today = datetime.date.today().isoformat()
+        old = _read_latest_sync(cache_dir)
+        first = old['first_seen'] if old and old.get('hist') == hist else today
+        st = {'hist': hist, 'latest': ahead, 'first_seen': first, 'last_seen': today}
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(st, f, ensure_ascii=False, sort_keys=True)
+        since = datetime.date(*map(int, first.split('-')))
+        st['days'] = (datetime.date.today() - since).days
+        return st
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def _guard_latest_stall(cache_dir, newest):
+    """两份官方文件已经背离太久 → 抛。这是本模块唯一一道**带记忆**的护栏。
+
+    没有它的时候，这件事长这样：官方改了 hist 的文件名，写死的直链还能下到一个再也
+    不更新的孤儿副本（_check_landing 只打警告、按设计不阻断），parse_workbook 与
+    _validate 在那份孤儿上照样全过（它结构好好的，只是永远停在某个月），update()
+    一个新月份都加不出来，monthly_run 干干净净地报 enx NOCHANGE。而 latest 文件还在
+    往前走，_crosscheck_latest_month 每天打一句「两边不同步，对表跳过」—— 那句话与
+    发布窗口里那一两天的正常时间差**一字不差**。连续失败十天与成功十天在日志里长得
+    一样，就是 README 说的第四类失败。加进来的那样东西是「这个背离已经站了多少天」。
+
+    三个条件都成立才炸，任何一个存疑都放过（宁可漏报）：
+      · 台账里记的 hist 月份就是这一轮解析出来的 newest —— 否则说明 hist 已经动过了；
+      · last_seen 是今天 —— 也就是**这一轮亲眼确认过**背离还在。latest 下不下来、
+        判据读不读得出，都会让这一条不成立，于是护栏自己让路，不会拿一条昨天的
+        记录去炸今天；
+      · 背离已经超过 _LATEST_AHEAD_GRACE_DAYS 天。
+    """
+    st = _read_latest_sync(cache_dir)
+    if not st or st.get('hist') != newest:
+        return
+    if st.get('last_seen') != datetime.date.today().isoformat():
+        return
+    try:
+        first = datetime.date(*map(int, st['first_seen'].split('-')))
+    except (TypeError, ValueError):
+        return
+    days = (datetime.date.today() - first).days
+    if days <= _LATEST_AHEAD_GRACE_DAYS:
+        return
+    raise EnxFetchError(
+        '官方 latest 文件已经出到 %s，而历史文件 %s 从 %s 起就一直停在 %s —— '
+        '第 %d 天了，超过 %d 天的宽限期。这个宽限期是按实测发布日（次月第 3–13 天）'
+        '的两倍留的，所以这已经不像发布窗口的时间差，更像历史文件被改名之后直链下到了'
+        '一个不再更新的孤儿副本（落地页检查按设计只警告不阻断）。拒绝写入，'
+        '请人工打开 %s 确认 %s 这个文件名还在，然后删掉 cache/%s 让计时重来'
+        % (st.get('latest'), HIST_NAME, st['first_seen'], newest, days,
+           _LATEST_AHEAD_GRACE_DAYS, LANDING_URL, HIST_NAME, _LATEST_SYNC_STATE))
+
+
 def _crosscheck_latest_month(data, newest, cache_dir):
     """拿官方算好的 ADV 撞我们自算的 ADV，返回一句人话说明。
 
@@ -1136,8 +1231,12 @@ def _crosscheck_latest_month(data, newest, cache_dir):
     不是一个口径，2025-11 之前会看到最高 23% 的假失配。当月两个基准重合，才可比。
 
     差得离谱（>1e-3）才抛异常：那种量级只可能是取错列或用错单位。
-    取不到文件、或 latest 的月份还没跟上，一律只打印不阻断 —— 主源自己的结构校验
-    与恒等式才是护栏，辅助源不该有权卡住整月发布。
+    取不到文件、判据读不出来、或 latest 的月份还没跟上，本函数一律只返回一句话、
+    不阻断 —— 主源自己的结构校验与恒等式才是护栏，辅助源不该有权卡住整月发布。
+
+    ⚠ 唯一的例外由 _guard_latest_stall 单独执行，不在本函数里：**latest 领先 hist**
+    这一支会把「背离从哪天开始」记进 cache（见 _note_latest_sync），站过宽限期才炸。
+    本函数只负责记账与措辞，谁都不要把这里的 return 当成「这条路永远不会 FAIL」。
     """
     try:
         path, _lm = _download(cache_dir, LATEST_NAME)
@@ -1153,8 +1252,31 @@ def _crosscheck_latest_month(data, newest, cache_dir):
                 mon_cell = '%04d-%02d' % (v.year, v.month)
                 break
         if mon_cell != newest:
-            return ('对表跳过：latest 文件的最新月是 %s，历史文件是 %s，两边不同步'
-                    % (mon_cell, newest))
+            # 原来这三种情况共用一句「两边不同步」。方向不一样，处置就不该一样：
+            if mon_cell is None:
+                # 判据本身没了（官方挪了 latest 的月份格）。不阻断 —— 辅助源不该有权
+                # 卡住整月发布 —— 但照 fetch/ice.py 的 _crosscheck_workbook_month
+                # 明说一句「今天没人对过表」，别让它和「对过表且一致」长得一样。
+                _note_latest_sync(cache_dir, None, newest)
+                return ('⚠ 护栏失效：latest 文件的 Equity Markets 表头里读不出最新月，'
+                        '这一轮没有独立于解析器的月份判据（官方可能挪了那一格）')
+            if mon_cell > newest:
+                # latest 跑在前面 = 历史文件可能卡住了。这一支要**计时**，
+                # 超过宽限期由 _guard_latest_stall 抛，见那里的推理。
+                st = _note_latest_sync(cache_dir, mon_cell, newest)
+                if not st:
+                    return ('对表跳过：latest 文件已到 %s，历史文件还停在 %s '
+                            '（背离台账写不进 cache，本轮不计时）' % (mon_cell, newest))
+                return ('对表跳过：latest 文件已到 %s，历史文件还停在 %s —— '
+                        '这个背离自 %s 起，今天是第 %d 天，连续超过 %d 天就会抛异常'
+                        % (mon_cell, newest, st['first_seen'], st['days'],
+                           _LATEST_AHEAD_GRACE_DAYS))
+            # latest 反而落后于历史文件：hist 领先不是「解析漏了月」的证据，
+            # 只是 47KB 那份还没刷新。只提示，不计时，并把台账清掉。
+            _note_latest_sync(cache_dir, None, newest)
+            return ('对表跳过：latest 文件的最新月是 %s，反而落后于历史文件的 %s，'
+                    '两边不同步' % (mon_cell, newest))
+        _note_latest_sync(cache_dir, None, newest)        # 两边同步 → 清掉计时
         # 'ADV Cash Market' 在 latest 里出现两次（笔数区一次、金额区一次），
         # 取金额区那一个：先定位 'TRANSACTION VALUE' 小节标题，再往下找。
         sec = None
@@ -1435,7 +1557,27 @@ def update(series_dir, cache_dir):
     sheets = open_sheets(path)
     data = parse_workbook(path, sheets)
     newest = _validate(data)
+
+    # ── 哨兵：已入库的月份在官方文件里消失就抛（fetch/msci.py update() 哨兵② 同款）──
+    # 这条查的是上面那道 latest 对表的**反侧**。对表从「官方另一份文件说到几月」那一侧
+    # 查，够不着这种坏法：hist 文件照常更新、结构也没变，只是现货 ADNV 那一列的写法
+    # 变了一点，最新那个月被 _cell_num 读成 None，于是 _validate 把 newest 往回退一个
+    # 月 —— 而 latest 文件此时多半也还没更新，对表看到的是「两边同步」，一切正常。
+    # 官方从不删已经发过的月份（口径坑 4 记的是**改数值**：cache/enx_restatements.csv
+    # 至今全是值级冲突，没有一条是整月消失），所以「入库过的月份现在解析不出来了」
+    # 只可能是我们这边读丢了。写成 max 对 max：官方真要缩短历史起点，那是老月份的事，
+    # 不该由这条来管。
+    stored_newest = max((r[0] for r in body), default='')
+    if stored_newest and newest < stored_newest:
+        raise EnxFetchError(
+            'series/enx.csv 里已经有到 %s，官方 %s 这一轮却只解析出到 %s —— '
+            '官方不删已发过的月份（重述只改数值，见口径坑 4），所以多半是 %s 那一列的'
+            '写法变了、最新月被读成空值，_validate 于是往回退了一个月。'
+            '拒绝写入，请对照 cache/%s 人工确认'
+            % (stored_newest, HIST_NAME, newest, ANCHOR, HIST_NAME))
+
     print('[enx] %s' % _crosscheck_latest_month(data, newest, cache_dir))
+    _guard_latest_stall(cache_dir, newest)
 
     # 断点台账每次都重算：它是从官方脚注原文抽的，官方一改脚注这里就跟着变。
     # 与 enx.csv 的落盘分开、且先写 —— 断点表是「怎么读这些数」的说明书，

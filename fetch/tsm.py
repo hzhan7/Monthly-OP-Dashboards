@@ -328,8 +328,56 @@ def _discover_xlsx_url(cache_dir):
     return href if href.startswith('http') else IR_ORIGIN + href
 
 
+# 年份格的**写法**容错 —— 放宽的是写法，不是「是不是年份」。
+# openpyxl 返回的类型取决于**存进单元格的值**，不是显示格式：一旦年份被写成文本
+# （手输时的前导撇号、或给年份挂一个脚注标记 "2027 *" / "2027 1"），原来那句
+# `isinstance(y, int)` 一票否决，整整一行 12 个月一起消失。
+# 脚注号与年份之间**必须隔一个空白或逗号**（`[\s,]+` 不是 `[\s,]*`），
+# 与 fetch/msci.py 的 _MONTH_RE 是同一条教训：写成 `*` 时 "20271" 会被读成
+# 年 2027 + 脚注 1，凭空捏造一个年份 —— 漏一行只是数据旧了，错一行是假数据。
+_YEAR_TXT = re.compile(r'^(\d{4})(?:[\s,]+[\d*†‡§¶]+)*$')
+
+
+def _year_cell(v):
+    """矩阵首格 → 年份 int；不像年份返回 None。写法容错见 _YEAR_TXT 旁注。"""
+    if isinstance(v, bool):                         # bool 是 int 的子类，先挡掉
+        return None
+    if isinstance(v, int):
+        y = v
+    elif isinstance(v, float) and float(v).is_integer():
+        y = int(v)                                  # 年份格被存成 2027.0 的情形
+    elif isinstance(v, str):
+        m = _YEAR_TXT.match(v.strip())
+        if not m:
+            return None
+        y = int(m.group(1))
+    else:
+        return None
+    return y if 1990 < y < 2100 else None
+
+
 def _parse_xlsx(path):
-    """解析 Consolidated sheet → {'YYYY-MM': NT$mn(float)}。"""
+    """解析 Consolidated sheet → {'YYYY-MM': NT$mn(float)}。
+
+    两道护栏，照 fetch/msci.py 的 parse() 抄的同一套，**别只留前一道**：
+      (a) 年份格按 _year_cell 容错（int / 整数 float / 文本年 / 带脚注的文本年）；
+      (b) **丢行对账**：首格没被认成年份、但该行 1..12 列里有 ≥3 个数值的行，
+          一律记进 dropped，循环末尾一起抛。
+
+    为什么 (b) 不能省：(a) 只认识**已经见过**的写法变体，下一种没见过的变体靠的是
+    (b)。而这张表比 MSCI 那张更险 —— 一行 = 一整年 12 个月，**新一年那行一出生
+    就是文本**时没有任何已入库月份消失，update() 那道「已入库月份不许从源里消失」
+    的反向哨兵完全看不见它；能抓住它的只有这一段。漏掉的表现是：解析照样成功、
+    max(rev_src) 悄悄停在去年 12 月、fetch 干干净净报 NOCHANGE，没有 FAIL、
+    没有断档、红点也不亮，页面就一直挂着旧数据。
+
+    阈值取 3 是为了不误伤说明行：本表的三种说明行（表头 'Net Revenue|Jan|…'、
+    '(In Millions of New Taiwan Dollars)'、'Note: Starting January 2013…'）
+    在 1..12 列上全是 None 或字符串，数值计数为 0，离 3 很远。
+    真正的将来风险是上游新增一行合法的汇总行（CAGR / Average 之类）且带 ≥3 个
+    月度数字 —— 那会变成每天硬 FAIL，届时要在这里加一条明确的白名单，
+    **不要**把阈值往上抬糊过去：抬阈值就是把 (b) 关掉。
+    """
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True)
     if 'Consolidated' not in wb.sheetnames:
@@ -337,15 +385,35 @@ def _parse_xlsx(path):
         raise RuntimeError('xlsx 里没有 Consolidated sheet，实际 sheet=%s' % wb.sheetnames)
     ws = wb['Consolidated']
     out = {}
+    dropped = []                                    # 长得像数据行、却没能落库的行
     for row in ws.iter_rows(values_only=True):
-        y = row[0]
-        if not isinstance(y, int) or not (1990 < y < 2100):
+        y = _year_cell(row[0] if row else None)
+        if y is None:
+            # 说明行本该在这里被安静丢掉。但 1..12 列上摆着一排数值的行不是说明行，
+            # 它就是一行数据，只是首格的年份写法我们没见过。记下来，循环后抛。
+            # 切片而不是逐格索引：窄表（max_column < 13）时切片不会 IndexError。
+            nums = [v for v in row[1:13]
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            if len(nums) >= 3:
+                dropped.append('%r（该行 1..12 列有 %d 个数值）' % (row[0], len(nums)))
             continue
-        for i in range(1, 13):                      # 第 1..12 列 = Jan..Dec，第 13 列是 Total，不要
-            v = row[i]
+        for i, v in enumerate(row[1:13], 1):        # 第 1..12 列 = Jan..Dec，第 13 列是 Total，不要
             if v is None or v == '':
                 continue
-            out[_mkey(y, i)] = float(v)
+            k = _mkey(y, i)
+            if k in out:
+                # 同一个月出现在两行 —— 静默覆盖会让其中一行凭空消失，而覆盖后的
+                # 结果长得完全正常。(a) 放宽了年份写法，这条就是它的配套：
+                # 一个多出来的「2026」文本行不许把真的 2026 行盖掉。
+                raise RuntimeError('Consolidated sheet 里 %s 出现两次，源异常：%s' % (k, path))
+            out[k] = float(v)
+    if dropped:
+        raise RuntimeError(
+            'Consolidated sheet 里有 %d 行长得像数据行却没能落库：%s'
+            '—— 首格的年份写法多半变了（文本年、前导撇号、脚注标记）。'
+            '一行就是一整年 12 个月，宁可整次失败也不静默漏年；'
+            '请对照 %s 确认写法后改 _YEAR_TXT / _year_cell'
+            % (len(dropped), '；'.join(dropped[:5]), path))
     if not out:
         raise RuntimeError('Consolidated sheet 解析出 0 行，版式可能变了：%s' % path)
     return out
@@ -410,6 +478,67 @@ def _twse_check(cache_dir):
     except Exception:
         return None
     return None
+
+
+#: TWSE 对账的宽限期：只有过了「该月次月第 N 天」才允许把分歧判成故障。
+#: 这个日子是本护栏**全部的安全边际**，收紧它就是在制造假警报。取值依据：
+#:   · 法定上限是次月 10 日（模块头「发布节奏」），TSMC 惯例踩着 10 日；
+#:   · 实测四个月的公告日 04/10、05/08、06/10、07/13 —— 最晚是第 13 天；
+#:   · 20 比实测最晚多留 7 天、比法定上限多留 10 天。
+#: 方向是刻意不对称的：xlsx 被冻住这件事晚十天发现，代价是页面多挂十天旧数据；
+#: 而在发布日当天误杀一次，代价是 README「新鲜度红点」那节写的那句 ——
+#: 每季度假一次的警报，人很快就学会无视了，最后整套护栏被人关掉。
+TWSE_CROSSCHECK_GRACE_DAY = 20
+
+
+def _crosscheck_twse_month(chk, newest, today=None):
+    """证交所自报的最新月 vs 本模块从 xlsx 解析出来的最新月，差着且过了宽限期就抛。
+
+    这是本模块唯一一条**独立于 TSMC 官网**的月份判据，同形先例是
+    fetch/cboe.py 的 _crosscheck_report_month 与 fetch/ice.py 的
+    _crosscheck_workbook_month。它防的是 _parse_xlsx 那两道护栏与 update() 的
+    消失哨兵三道**都看不见**的坏法：xlsx 整份被冻住 —— 版式没变、解析照样成功、
+    已入库月份一个都没少，只是最新那一行永远不再往下长。那种日子里 fetch 干干净净
+    报 NOCHANGE，与真的「这个月还没发」长得一模一样。
+
+    判据只有一条：`tm > newest`。series 的月份是 rev_src 的子集，所以证交所报的月
+    只要比 xlsx 的最新月还新，它必然也不在 series 里，不必再查一遍。
+
+    **宽限期不能省，也不能收紧**：TWSE 与 TSMC 不同批发布，中间有几十分钟到几小时
+    的时差（见 latest_month 的 docstring）；没有宽限期的版本会在每月发布日当天
+    把 TSM 打成 FAIL。宽限期内维持 print，与原来的行为一致。
+
+    chk 为 None（TWSE 自己抽风）时只打印「护栏失效」，**绝不阻断**：判据自己挂了
+    不能拖着 TSM 一起挂，否则 TWSE 的一次抽风就是 TSM 的一次停更。这一点与
+    ice._crosscheck_workbook_month 认不出文件名时的处置是同一个道理 ——
+    护栏掉了要让人看见，但不该把一个本来好好的源直接停摆。
+    """
+    if chk is None:
+        print('[tsm][warn] 护栏失效：TWSE OpenAPI 这一轮取不到，'
+              '本次没有独立于 TSMC 官网的月份判据（不阻断）')
+        return
+    tm = chk[0]
+    if tm <= newest:
+        return
+    y, mo = int(tm[:4]), int(tm[5:])
+    if not (1990 < y < 2100 and 1 <= mo <= 12):
+        # 判据自己解析出一个不成立的月份时同样只告警：宁可这一轮没有护栏，
+        # 也不能让 TWSE 那边的一次格式抽风把 TSM 打成 FAIL。
+        print('[tsm][warn] 护栏失效：TWSE 给的月份 %r 不成立，本轮不做月份对账' % tm)
+        return
+    y2, mo2 = (y, mo + 1) if mo < 12 else (y + 1, 1)
+    deadline = _dt.date(y2, mo2, TWSE_CROSSCHECK_GRACE_DAY)
+    if (today or _dt.date.today()) <= deadline:
+        print('[tsm][warn] TWSE 已出到 %s，本轮 xlsx 只解析到 %s —— %s 之前算发布时差，'
+              '明天这条 cron 会再试' % (tm, newest, deadline))
+        return
+    raise ValueError(
+        'TWSE OpenAPI 已经收到 2330 的 %s，本轮 TSMC 官方 xlsx 却只解析到 %s，'
+        '且已过宽限期（%s）。证交所手里有的月份 TSMC 自己的 xlsx 不可能还没有 —— '
+        '最可能是 xlsx 整份被冻住（IR 页挂着旧文件），也可能是矩阵版式变了导致'
+        '最新那一年整行没被认出来。拒绝写入，请人工看一眼 '
+        'cache/tsm_historical_monthly_revenue.xlsx 的最后一行'
+        % (tm, newest, deadline))
 
 
 # ── 源 4：新闻稿电头 = 官方公告日 ────────────────────────────────────────
@@ -879,6 +1008,9 @@ def update(series_dir, cache_dir):
     幂等：已有月份一律不重复追加。
     任何一列解析不出来（如缺去年同月基数、缺当月汇率）→ 抛异常，绝不写 NaN。
     发现上游重述（已入库月份的值对不上）→ 抛异常，交人判断。
+    已入库月份从 xlsx 里**整个消失** → 抛异常（消失哨兵，见下面那一支的注释）。
+    证交所已经收到、xlsx 却还没有的月份，过了宽限期 → 抛异常
+    （_crosscheck_twse_month，本模块唯一一条独立于 TSMC 官网的判据）。
     """
     rev_path = os.path.join(series_dir, REV_CSV)
     fx_path = os.path.join(series_dir, FX_CSV)
@@ -889,13 +1021,36 @@ def update(series_dir, cache_dir):
     # ── 营收 ──
     rev_fields, rev_rows = _read_csv(rev_path)
     have_rev = {r['month'] for r in rev_rows}
-    for r in rev_rows:                                   # 重述检测
+    # 下界卡 min(rev_src)：这份 xlsx 从 2006-04 起一直是全历史累积文件，但万一哪天
+    # 上游改成滚动窗口、把远古历史截掉，那不是解析漏了，不该 FAIL —— 下界正好吸收它。
+    rev_src_floor = min(rev_src)
+    for r in rev_rows:                                   # 重述检测 + 消失哨兵
         m = r['month']
         if m in rev_src:
             if abs(rev_src[m] - float(r['revenue_ntd_mn'])) > TOL_REV:
                 raise ValueError('上游重述：%s 官方 %.0f vs 已入库 %s (NT$mn)。'
                                  '本模块拒绝改写既有行，请人工确认后再决定。'
                                  % (m, rev_src[m], r['revenue_ntd_mn']))
+        elif m >= rev_src_floor:
+            # 「数值变了」与「整行没了」是两回事，处置也不同（同 fetch/msci.py 的
+            # update() 哨兵②）：前者上面那一支已经在管；后者不是源的正常行为 ——
+            # TSMC 从不删历史月，所以这多半是**我们**把那一行解析丢了。
+            # 它是 _parse_xlsx 那道丢行对账的补网，两道网的盲区不重叠：对账从
+            # 「文件里有什么」这一侧查，只看得见「首格不像年份、后面摆着一排数值」的行；
+            # 这里从「我们已知该有什么」的反侧查，连「整年那行被整块删掉」这种对账
+            # 看不见的坏法也能兜住。少了这一支，那种日子里已入库月份从 rev_src 里
+            # 整批消失，下面的重述循环 `if m in rev_src` 直接跳过、不比也不抛，
+            # new_rev_months 为空，fetch 干净地报 NOCHANGE。
+            raise ValueError('%s 在 series/%s 里，官方 xlsx 却解析不出这一个月'
+                             '（本轮解析区间 %s..%s）—— TSMC 不删历史，'
+                             '所以多半是解析漏了整整一年那一行。本次不写入，'
+                             '请对照 cache/tsm_historical_monthly_revenue.xlsx 人工确认'
+                             % (m, REV_CSV, rev_src_floor, max(rev_src)))
+
+    # ── 独立外部判据：证交所已经收到的月份，官方 xlsx 不可能还没有 ──
+    # 放在写盘之前：xlsx 冻住而汇率还有新月份的那一天，若先写 FX 再抛，这一家会
+    # 返回一串 FX 月份、状态显示 NEW（营收其实还是旧的），比纯 NOCHANGE 更难看出来。
+    _crosscheck_twse_month(_twse_check(cache_dir), max(rev_src))
 
     new_rev_months = sorted(m for m in rev_src if m >= SERIES_START and m not in have_rev)
     new_rev_rows = [{'month': m, 'revenue_ntd_mn': v, 'yoy_pct': y}

@@ -291,16 +291,114 @@ def _record_source_dates(series_dir, files, added):
 
 # ═══════════════════════ 索引页解析 ═══════════════════════
 
-def list_excel_files():
+# 索引页快照。**只留一份、每次覆盖**（不像 msci 那样按日期各存一份）：这个页面
+# 125KB 且天天抓，按日期存一年就是四十几 MB 的散文件，会把 tools/prune_cache.py
+# 报告末尾「未登记的散文件」那个阈值顶穿。留这一份只有一个用途 —— 下面三道护栏
+# 抛异常之后，人能立刻打开当时那份 HTML 看官方到底改成了什么样，而不是对着一句
+# 报错去猜。（这道护栏写出来之前，仓里一份索引页快照都没有。）
+INDEX_SNAPSHOT = 'hood_index_latest.html'
+
+# 锚点按「先切出整个 <a>，再分别取属性」两步来，不把 href 与 title 写死在同一条
+# 正则里 —— 写死就意味着官方把两个属性调个个儿、或者某一格漏了 title，整条链接
+# 直接消失，而消失是没有声音的。
+_A_RE = re.compile(r'<a\s([^>]*?)>(.*?)</a>', re.S | re.I)
+_ATTR_HREF = re.compile(r'href\s*=\s*"([^"]*)"', re.I)
+_ATTR_TITLE = re.compile(r'title\s*=\s*"([^"]*)"', re.I)
+# 容错版年份标题：只要 <h2> 的**可读文本**是四位年就算数，容得下
+# <h2><span>2027</span></h2> 这种嵌套改法。生产解析仍走下面那条按位置切分的
+# re.split（不动它），这条只服务护栏③。
+_H2_RE = re.compile(r'<h2[^>]*>(.*?)</h2>', re.S | re.I)
+_MON_IDX = {m.lower(): i + 1 for i, m in enumerate(MON)}
+
+
+def _text_of(frag):
+    """标签内文本 → 可读字符串：先剥嵌套标签，再解实体，再压空白。
+
+    三步缺一不可，分别对应索引页三种改法：锚文本被包成 <b>Jul</b>（原来的
+    `[^<]*` 整条匹配失败，那一格丢掉）、写成 `&nbsp;Jul`（strip() 看到的是原样
+    实体串，label[:3] 会变成 '&nb'）、以及换行缩进混进锚文本。
+    """
+    return re.sub(r'\s+', ' ', _unescape(re.sub(r'<[^>]+>', ' ', frag))).strip()
+
+
+def _month_of_label(label):
+    """锚文本 → 月序号 1..12，认不出返回 None。
+
+    大小写不敏感，也认全称（'January'[:3] == 'Jan'）。官方今天写的是 'Jan'，
+    但这十二格是人工逐月维护的，容错的成本是零、漏一格的代价是一个月的静默停更。
+    """
+    return _MON_IDX.get(label[:3].lower())
+
+
+def _year_groups(html):
+    """→ [(年份, 该年份组的原始 HTML)]，供护栏③ 用的**容错**版年份切分。
+
+    边界取「下一个 <h2> 开始处」而不是「下一个年份 <h2>」，免得最后一个年份组
+    把页脚（'Sign up for email alerts' 那一段）也吞进来。
+    """
+    marks = []
+    for m in _H2_RE.finditer(html):
+        y = re.fullmatch(r'(20\d\d)', _text_of(m.group(1)))
+        marks.append((int(y.group(1)) if y else None, m.start(), m.end()))
+    out = []
+    for i, (year, _s, e) in enumerate(marks):
+        if year is None:
+            continue
+        end = marks[i + 1][1] if i + 1 < len(marks) else len(html)
+        out.append((year, html[e:end]))
+    return out
+
+
+def _save_index_snapshot(cache_dir, html):
+    """存一份索引页原文。写失败只打印、不抛 —— 与 last_modified() 同一条规矩：
+    快照是给事后取证用的，不该把一次本来能成功的摄入拖成失败。"""
+    if not cache_dir:
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(os.path.join(cache_dir, INDEX_SNAPSHOT), 'w', encoding='utf-8') as f:
+            f.write(html)
+    except Exception as ex:                        # noqa: BLE001 —— 快照失败不算故障
+        print(f'  [hood] 索引页快照没写成 {type(ex).__name__}: {ex}（不影响本次抓取）')
+
+
+def _snap_hint(cache_dir):
+    return f'（本次快照 cache/{INDEX_SNAPSHOT}）' if cache_dir else ''
+
+
+def list_excel_files(cache_dir=None):
     """→ [{'period': Period('2026-06','M'), 'title': ..., 'url': ...}]，按月份升序。
 
     页面结构：<h2 class="h4">2026</h2> 起一个年份组，组里四个 <h3> 小节
-    （Press Release / PDF / Excel / Dashboard），每个小节 12 个 <a>，锚文本是 Jan…Dec。
+    （Press Release / PDF / Excel / Dashboard），每个小节 12 个 <li> 月份格，
+    锚文本是 Jan…Dec；**还没发的月份是空格子，压根没有 <a>**。
     年份只出现在组标题上，文件名里不一定有（'Q2'26 Earnings Supplement' 只有两位年），
     所以**年份必须从组标题取，不能从文件名猜**。
+
+    ═══ 三道护栏，防的是同一件事：某个月的链接在这里被静默丢掉 ═══
+    这十二格是官方**每月人工新增**的（一次加四条：PR / PDF / Excel / Dashboard），
+    所以最可能坏的恰恰是最新那一格，而且坏了不会有任何声音：out 里还留着几十条旧
+    链接，末尾 `if not out` 那道地板判据够不着；回到 update() 之后 want 为空、干净
+    返回 []，monthly_run 报 NOCHANGE。**连续十天这样，和连续十天「官方还没发」，
+    在日志里一模一样。** 三道分别是：
+      ① 容错匹配（_A_RE + _text_of + _month_of_label）—— 属性顺序变了、缺 title、
+         锚文本里套了标签、前面粘个 &nbsp;、月份写成大写或全称，原来这五种写法
+         每一种都会让整条链接凭空消失，现在都认。它只是把匹配面放宽，永远只会比
+         从前多认、不会少认。
+      ② 未落库锚点对账 —— Excel 小节里凡是指向 /static-files/ 却解析不出月份的
+         锚点，一律抛。这是**唯一够得着最新那一格**的网：update() 那道反向哨兵
+         只检查已入库的月份，按定义碰不到还没入库的新月（msci.parse() 里 `dropped`
+         那一段讲的是同一件事）。
+      ③ 年份组覆盖 —— 页面登记了某个年份、组里明明挂着 .xlsx，却一条都没解析
+         出来就抛。它管的是 ①② 都够不着的坏法：<h2>/<h3> 结构变了导致整个年份组
+         根本没进循环（比如年份被包成 <h2><span>2027</span></h2>）。
+    三道的盲区不重叠，这也是 msci 那边坚持解析侧与入库侧两张网都留着的理由。
     """
     html = fetch_bytes(INDEX_URL).decode('utf-8', 'replace')
+    _save_index_snapshot(cache_dir, html)
     out = []
+    unread = []            # Excel 小节里「是静态文件链接、却没解析出月份」的锚点
+    seen_years = set()     # 真解析出条目的年份，供护栏③ 比对
     # 按年份组切分；每组内再切出各小节
     for grp in re.split(r'<h2[^>]*>(?=\s*20\d\d\s*<)', html)[1:]:
         ym = re.match(r'\s*(20\d\d)\s*<', grp)
@@ -311,13 +409,58 @@ def list_excel_files():
             head = re.sub(r'<[^>]+>', '', sec.split('</h3>')[0]).strip()
             if 'excel' not in head.lower():
                 continue
-            for href, title, label in re.findall(
-                    r'<a href="(/static-files/[^"]+)"[^>]*title="([^"]*)"[^>]*>([^<]*)</a>', sec):
-                lab = label.strip()[:3]
-                if lab not in MON:
+            for attrs, inner in _A_RE.findall(sec):
+                h = _ATTR_HREF.search(attrs)
+                # 不指向静态文件的锚点（小节里的导航链接之类）本来就不是数据，
+                # 安静跳过 —— 护栏② 只对「确实是个文件、却读不出是哪个月」发作。
+                if not h or not h.group(1).startswith('/static-files/'):
                     continue
-                out.append({'period': pd.Period(f'{year}-{MON.index(lab) + 1:02d}', 'M'),
-                            'title': _unescape(title), 'url': BASE + href})
+                href = h.group(1)
+                label = _text_of(inner)
+                mon = _month_of_label(label)
+                if mon is None:
+                    unread.append((year, href, label))
+                    continue
+                t = _ATTR_TITLE.search(attrs)
+                # 缺 title 不再让整条链接消失：title 只拿去起 cache 文件名和记
+                # source_dates 台账，退化成锚文本或 uuid 一样唯一，不值得为它丢一个月。
+                out.append({'period': pd.Period(f'{year}-{mon:02d}', 'M'),
+                            'title': _unescape(t.group(1)) if t
+                                     else (label or href.rsplit('/', 1)[-1]),
+                            'url': BASE + href})
+                seen_years.add(year)
+
+    # ── 护栏②：未落库锚点对账 ──
+    # 先按 href 去重。同一个文件在同一格里被渲染两遍（文字链 + 图标链，IR 模板换
+    # 个皮肤就可能这样）时，图标那条剥完标签是空字符串、解析不出月份 —— 那不是漏
+    # 月，是同一个月的重复渲染。不去这个重，一次纯样式改动就能让 HOOD 天天 FAIL，
+    # 而这道网真正要抓的坏法（最新那一格的 href 谁也没认领）一个都不会被它放过。
+    known = {e['url'][len(BASE):] for e in out}
+    unread = [u for u in unread if u[1] not in known]
+    if unread:
+        raise RuntimeError(
+            f'Excel 小节里有 {len(unread)} 个静态文件链接解析不出月份：'
+            f'{[(y, lab) for y, _h, lab in unread[:5]]!r} —— 锚文本写法多半改了'
+            f'（原来是纯 "Jan"…"Dec"）。宁可整次失败也不静默漏月：这十二格是人工'
+            f'维护的，坏的往往正是最新那个月，而漏掉它不产生任何 FAIL。'
+            f'请人工打开 {INDEX_URL}{_snap_hint(cache_dir)} 核对写法，再改 _A_RE '
+            f'或 _month_of_label；官方若真在这一节挂了非月份的 Excel（Definitions、'
+            f'全年汇总、打包下载），在这里加白名单，别把这道对账删了')
+
+    # ── 护栏③：年份组覆盖 ──
+    # 判据刻意带「该组里确实挂着 .xlsx」这个前提，两处误伤都是它挡下的：每年年初
+    # 页面先建出空的新年份组（十二个格子全空）时不许 FAIL；四种格式虽说同批发布，
+    # PR/PDF/Dashboard 先挂上、Excel 晚几小时的窗口也是真实存在的，所以不能只看
+    # 组里有没有 /static-files/。**别把这个前提简化掉。**
+    for year, body in _year_groups(html):
+        if year in seen_years or '.xlsx' not in body.lower():
+            continue
+        raise RuntimeError(
+            f'索引页上有 {year} 年份组、组里挂着 .xlsx，却一条 Excel 链接都没解析'
+            f'出来 —— <h2>/<h3> 的结构多半改了，整个年份组没进循环。别的年份照常'
+            f'解析，所以这一次不会有任何其它症状：请人工打开 '
+            f'{INDEX_URL}{_snap_hint(cache_dir)} 核对年份组与小节标题')
+
     if not out:
         raise RuntimeError('索引页解析不出任何 Excel 链接 —— 页面结构可能改了，'
                            '先人工打开 ' + INDEX_URL + ' 核对')
@@ -332,7 +475,7 @@ def _unescape(s):
 
 def latest_month(cache_dir=None):
     """官方源当前最新月 "YYYY-MM"。抓不到直接抛异常（不返回 None 假装没更新）。"""
-    return str(list_excel_files()[-1]['period'])
+    return str(list_excel_files(cache_dir)[-1]['period'])
 
 
 # ═══════════════════════ Excel 解析 ═══════════════════════
@@ -495,13 +638,37 @@ def update(series_dir, cache_dir):
     真要它别报错就得放宽「缺列即失败」，那等于把无人值守链路唯一的安全网拆了。
     历史回填是一次性的、有人看着的活，走 build/basefill/hood_2021.py，别让日常任务去碰。
     """
-    files = list_excel_files()
+    files = list_excel_files(cache_dir)
     mcsv = os.path.join(series_dir, 'hood.csv')
     qcsv = os.path.join(series_dir, 'hood_q.csv')
     last_m = pd.Period(pd.read_csv(mcsv, dtype=str).iloc[-1, 0], 'M')
     last_q = pd.Period(pd.read_csv(qcsv, dtype=str).iloc[-1, 0], 'Q')
+
+    # ── 反向哨兵：已入库的最后一个月，必须在索引页上还找得到 ──
+    # 和 list_excel_files() 那三道方向相反，补的正是它们的盲区：那三道从「页面上
+    # 有什么」查，这一道从「我们已知该有什么」反查，连整页换模板、链接都在但一个
+    # 月份都对不上号这种坏法也兜得住。它不看 want，所以「官方还没发」时绝不会响。
+    #
+    # **只查 last_m 这一个月，别扩成 msci 那样查最近六个月。** 索引页是按年份组
+    # 累加的档案，但它只回溯到 2023 年（2026-08-26 实测：页面只登记 2023/2024/
+    # 2025/2026 四组），而 series/hood.csv 从 2021-01 起（build/basefill/hood_2021.py
+    # 一次性回填的）。往前多查几个月，就可能查到官方本来就没挂的年份上去，把一个
+    # 健康的抓取变成天天 FAIL。last_m 永远只有一两个月大，任何合理的滚动窗口都还
+    # 留着它 —— 这个「窄」是设计，不是偷懒。
+    if last_m not in {e['period'] for e in files}:
+        raise RuntimeError(
+            f'{last_m} 在 series/hood.csv 里，索引页却解析不出这一格 —— 官方不删'
+            f'历史月（那页是按年份累加的档案），所以多半是我们把整段解析丢了。'
+            f'本次不写入，请人工打开 {INDEX_URL}{_snap_hint(cache_dir)} 确认')
+
     want = [e['period'] for e in files if e['period'] > last_m]
     if not want:
+        # **空 want 是这个源大部分日子的正常状态，这里绝不能抛。**
+        # 平常月次月 9–13 日才发，季末月要等财报（2026-06 的数据 07/29 才挂），
+        # 之后那个月还被连带拖后 —— 一个月里有二十几天在这里干净返回 [] 是设计，
+        # 不是故障（见文件头「发布节奏」）。「悄悄不更新」那一类由上面的反向哨兵和
+        # list_excel_files() 的三道护栏拦，它们都不看 want，所以既拦得住漏月，
+        # 也不会误伤「还没发」。
         return []
 
     # 取**能覆盖缺口的最少文件**：Earnings Supplement 带全历史，独立月度带滚动 13 个月，
@@ -540,7 +707,7 @@ def update(series_dir, cache_dir):
 
 def verify_tail(series_dir, cache_dir, n=3):
     """用解析器重算 series CSV 最后 n 个期次，逐列比对，打印最大偏差。"""
-    files = list_excel_files()
+    files = list_excel_files(cache_dir)
     path = download(files[-1], cache_dir)
     m, q = parse_workbook(path)
     for csv_name, df, freq in [('hood.csv', m, 'M'), ('hood_q.csv', q, 'Q')]:

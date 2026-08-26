@@ -647,13 +647,85 @@ def _months_between(start, end):
 
 
 # ── 列表页发现 ──────────────────────────────────────────────────────────────
+# 扩展名写成 `\.xls[xm]?` 而不是写死 `\.xls`，是照 fetch/msci.py「容错正则」那一条：
+# 这两个正则**过于挑剔时不会报错，只会少认一期**。DBG 哪天把最新那一期换成 .xlsx，
+# 写死 .xls 的版本就只是少匹配一条，hits 仍然非空（还有二十多期老文件垫着），
+# `if not hits and page == 0` 那道闸压根不会响，于是那条快腿的最新月永远停在上个月，
+# 十天的失败与十天的成功在日志里长得一模一样。放宽之后换格式的那一期会被认出来、
+# 下下来、然后在 xlrd.open_workbook 那里**大声**失败 —— 那才是我们要的坏法。
+# （容错只挡住已经想得到的这一种变体，挡不住下一种；下一种靠
+#   _crosscheck_listing_month 的对账，别把这里当成唯一的护栏。）
 _EUREX_HIT = re.compile(
     r'<p class="search-result-date">([^<]+)</p>.*?'
-    r'href="([^"]*?/data/monthlystat_(\d{6})\.xls)"', re.S)
+    r'href="([^"]*?/data/monthlystat_(\d{6})\.xls[xm]?)"', re.S)
 _FWB_HIT = re.compile(
     r'<p class="search-result-date">([^<]+)</p>.*?'
-    r'href="([^"]*?/data/FWB_Monthly_Cash_Market_Statistics\.(\d{8})\.xls)"', re.S)
+    r'href="([^"]*?/data/FWB_Monthly_Cash_Market_Statistics\.(\d{8})\.xls[xm]?)"', re.S)
 _RESULT_BLOCK = re.compile(r'teasable-search-result-container')
+
+# 对账用的两条**独立于上面命名规则**的判据，见 _crosscheck_listing_month。
+# 前者只问「这一页上有没有工作簿是我们没解释的」，不预设它叫什么名字；
+# 后者是 Eurex 独有的孪生 pdf。
+_WORKBOOK_HREF = re.compile(r'/data/([^"/]+\.xls[xm]?)"', re.I)
+_EUREX_PDF_TWIN = re.compile(r'/data/monthlystat_(\d{6})\.pdf', re.I)
+
+
+def _crosscheck_listing_month(tag, html, hits, url):
+    """列表页首页的两道对账，形状照 fetch/cboe.py 的 _crosscheck_report_month 与
+    fetch/ice.py 的 _crosscheck_workbook_month：**判据不能来自解析器自己**。
+
+    这里防的是一类只在最新一期上发作、因而完全无声的坏法：DBG 只给**最新那一期**
+    改了文件名或换了扩展名，上面那两条 hit 正则于是少认一条。老的二十多期照样匹配，
+    索引非空、`if not hits` 不响、`_parse_eurex` / `_parse_fwb` 拿到的是能解析的旧文件、
+    `_require` 只看得见已经解析出来的记录 —— 整条链上没有一个人有机会发现最新月没了。
+    另一条腿还在正常出数时更糟：update() 照样返回新月份、这一轮报 UPDATED，
+    冻住的那几列却永远留空，比干净的 NOCHANGE 更难看出来。
+
+    ① 未解释的工作簿（两条腿都做，msci.parse() 的「行数对账」同款）
+       首页上凡是 `/data/*.xls|xlsx|xlsm` 的链接，都必须被本腿的 hit 正则解释掉。
+       2026-08-17 的缓存首页实测：Eurex 25 个工作簿链接（外加 25 个孪生 pdf，pdf
+       不算工作簿）、FWB 20 个，两边**全部**被解释，一个不多一个不少。所以改名、
+       改日期戳写法这类变体会在这里撞上，而不是安静地少一期。
+       误伤面写在明处：DBG 往这个集合里丢一份**与月度统计无关的 .xls**，本腿会天天
+       FAIL 到有人去看。取这个方向是因为两个集合（3848 / 4090756）都是单一用途的
+       统计文件集合，而「改名」比「掺进一份别的工作簿」更可能发生。
+
+    ② 孪生 pdf（只有 Eurex 有）
+       每期 monthlystat_YYYYMM.xls 旁边都挂一份同名 .pdf。它能当判据的关键是**方向**：
+       2026-08-17 缓存首页的 25 个月逐月实测，pdf 的挂出日比 xls 晚 0 到 9 天，
+       **一次都没有早过**。所以「pdf 已经出到某月而 xls 没有」不可能是发布窗口的
+       时间差，只可能是那一期的 xls 从我们的索引里掉了。反过来（xls 领先 pdf）是
+       每个月都会出现的正常状态，这里刻意不看那个方向。
+       pdf 一份都找不到时只喊「护栏失效」不阻断（照 ice.py 的写法）—— 官方停发 pdf
+       不该让一条本来好好的腿停摆，但必须让人看见判据掉了。
+    """
+    explained = {href.rsplit('/', 1)[-1] for _day, href, _stamp in hits}
+    unexplained = sorted({f for f in _WORKBOOK_HREF.findall(html)
+                          if f not in explained})
+    if unexplained:
+        raise Db1FetchError(
+            '%s 列表页首页上有 %d 个工作簿链接是本模块解释不了的：%s（%s）—— '
+            '本腿的 hit 正则只认得出 %d 个。官方多半改了文件名或日期戳写法；'
+            '这种改动只会让最新一期从索引里消失，不会报错，所以这里刻意炸掉。'
+            '拒绝写入，请人工看一眼 cache/db1_%s_p0.html'
+            % (tag, len(unexplained), unexplained[:5], url, len(explained), tag))
+
+    if tag != 'eurex':
+        return
+    twins = sorted(set(_EUREX_PDF_TWIN.findall(html)))
+    if not twins:
+        print('[db1] ⚠ 护栏失效：Eurex 列表页首页一份 monthlystat_*.pdf 都没有，'
+              '这一轮没有独立于 .xls 命名规则的月份判据。%s' % url)
+        return
+    newest_pdf = _month_of(twins[-1])
+    newest_xls = max(_month_of(stamp) for _day, _href, stamp in hits)
+    if newest_pdf > newest_xls:
+        raise Db1FetchError(
+            'Eurex 列表页首页的孪生 pdf 已经出到 %s，同月的 .xls 却没解析出来'
+            '（本腿最新只到 %s，%s）。实测 pdf 从来只比 xls 晚、不会早，所以这不是'
+            '发布窗口的时间差 —— 最可能是那一期工作簿改了名或换了格式，被本腿的'
+            'hit 正则漏掉了。拒绝写入，请人工看一眼 cache/db1_eurex_p0.html'
+            % (newest_pdf, newest_xls, url))
 
 
 def _listing(url_tmpl, host, hit_re, cache_dir, tag, all_pages):
@@ -678,6 +750,11 @@ def _listing(url_tmpl, host, hit_re, cache_dir, tag, all_pages):
         if not hits and page == 0:
             raise Db1FetchError(
                 '%s 列表页解析不到任何 .xls 直链，源站可能改版：%s' % (tag, url_tmpl % page))
+        if page == 0:
+            # 只在首页对账：首页按 freshness/sDate 降序，最新一期必在这里，而更早的
+            # 归档页混着 1998-2002 那 50 期只有 pdf 没有 xls 的月份（见上面收尾判据
+            # 那一段），拿它们去对账会天天误伤。
+            _crosscheck_listing_month(tag, html, hits, url_tmpl % page)
         for day, href, stamp in hits:
             key = _month_of(stamp)
             if key not in out:
@@ -1027,6 +1104,35 @@ def _require(rec, leg, month, where, only=None):
         raise Db1FetchError('%s（%s）缺列 %s —— 解析异常，拒绝写入' % (where, month, bad))
 
 
+def _guard_stored_leg(leg, latest, have, idx, anchor, listing_url):
+    """已经入库过的月份，官方列表页上必须还认得出来 —— 认不出就炸。
+    照 fetch/msci.py update() 哨兵② 的反侧判法。
+
+    上面 _crosscheck_listing_month 是从「这一页上有什么」那一侧查的，它有个盲区：
+    整站换命名规则之后，老文件会跟着一起改名，于是页面上一个「未解释的工作簿」都没有、
+    孪生 pdf 也可能同批消失，两道对账双双静音。这条从**我们已知该有什么**的反侧兜住它：
+    这条腿在 series/db1.csv 里最新的那个月，官方列表页上却排不出来了，说明索引在倒退。
+    官方归档只增不减（Eurex 首页常驻 25 期、FWB 常驻 20 期，见口径坑 9），
+    所以「倒退」不是源少发了，是我们把最新那一期读丢了。
+
+    判据刻意写成 max 对 max，**不能**写成「已入库的每个月都要在索引里」：
+    series/db1.csv 里 2016–2023 的现货月份是 build/basefill/db1_spot_2016.py 回填的，
+    官方 live 列表上压根没有（口径坑 9 的物理天花板），那种写法第一天就会炸。
+
+    anchor 取「只有这条腿自己那一期文件才会填的列」：Eurex 用 adv_eurex_total_contracts，
+    FWB 用 turnover_xetra_equities_eurbn（分资产类别只有各期自己的报告月有，
+    turnover_xetra_eurbn 会被「本年度逐月」块顺手填上，不能当这条腿的锚）。
+    """
+    stored = max((mon for mon, row in have.items() if row[idx[anchor]].strip()),
+                 default='')
+    if stored and latest < stored:
+        raise Db1FetchError(
+            '%s 列表页现在最新只排到 %s，而 series/db1.csv 里 %s 已经有到 %s 了'
+            '（%s）—— 官方归档只增不减，所以这不是源少发了，是最新那一期从索引里'
+            '掉了（改名？换扩展名？整站换了命名规则？）。拒绝写入，请人工看一眼列表页'
+            % (leg, latest, anchor, stored, listing_url))
+
+
 # ── 冲突台账 ────────────────────────────────────────────────────────────────
 def _record_conflicts(cache_dir, rows):
     """已有值 vs 本次解析值不一致 → 写 cache/db1_restatements.csv，**不覆盖 CSV**。
@@ -1209,6 +1315,8 @@ def update(series_dir, cache_dir):
     if not eu_idx:
         raise Db1FetchError('Eurex 列表页一期都没解析出来')
     eu_latest = max(eu_idx)
+    _guard_stored_leg('Eurex', eu_latest, have, idx, 'adv_eurex_total_contracts',
+                      EUREX_SEARCH % 0)
     need_eu = [m for m in _months_between(EUREX_START, eu_latest)
                if not (have.get(m) or [''] * len(header))[idx['adv_eurex_total_contracts']].strip()]
     # 最新一期**每次都重下**（不走缓存）：一是要取它自述的发布日，二是官方重述最常
@@ -1240,6 +1348,8 @@ def update(series_dir, cache_dir):
     if not fwb_idx:
         raise Db1FetchError('FWB 列表页一期都没解析出来')
     fwb_latest = max(fwb_idx)
+    _guard_stored_leg('FWB', fwb_latest, have, idx, 'turnover_xetra_equities_eurbn',
+                      FWB_SEARCH % 0)
     # 分资产类别列只有各期自己的报告月才有，所以用它判断「这一期下过没有」。
     # ⚠ 2016-01~2023-12 那段历史是 build/basefill/db1_spot_2016.py 回填的，
     #   不在 fwb_idx 里（官方只挂 20 期），所以这里永远只会看到 live 那 20 个月 ——

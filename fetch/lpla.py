@@ -133,6 +133,7 @@ update() 只追加 series 里没有的月份；已有月份一律不动（默认
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 import os
 import re
@@ -215,6 +216,45 @@ def _get(url, tries=3, timeout=60):
 _LEGACY_LABEL = re.compile(
     r'^Historical Monthly Activity through\s+([A-Z][a-z]+)\s+(\d{4})$', re.I)
 
+#: 现行标签的**容错**写法。原先写死 `Monthly Metrics` 与全拼月名，只认已经见过的那一种
+#: 写法；标题是官方逐期手打的（同一页上就躺着一条尾巴写成 '062118' 的、还有 5 条整个
+#: 年份都漏掉的），所以「下一期换个写法」不是假设而是这个源的既有行为。两处放宽：
+#:   · 月份除全拼外也认三字母缩写（_MON 这张表模块里早就有，此前从没被用过）；
+#:   · 'Monthly' 与 'Metrics' 之间允许多一个词（'Monthly Activity Metrics' 这类改写）。
+#: 放宽只是把**能想到的**变体接住；真正兜住想不到那些的是下面 _index_entries 里的
+#: 「未归类对账」——两者分工与 fetch/msci.py 的「容错正则 + 行数对账」完全同构：
+#: 正则只认识见过的变体，对账负责在出现没见过的变体时**响亮地失败**。
+_CURRENT_LABEL = re.compile(
+    r'^([A-Z][a-z]+)\s+(\d{4})\s+Monthly\s+(?:\S+\s+)?Metrics\b(.*)$')
+
+#: 「长得像本模块该管的文件」的判据，只用于未归类对账（见 _index_entries）。
+#: 刻意收得很窄：必须是 /static-files/ 的下载直链，且标题里带 'Monthly Metrics' /
+#: 'Monthly Activity' 的字面串，还得自报了月份或年份。窄是为了不误伤 ——
+#: LPL 在这一页上增删过整个文档族（'… Monthly Metrics Dashboard' 这一族 2019-07 起挂、
+#: 2023-01 停），将来再加一族是完全正常的行为，不该让 fetcher 天天 FAIL。
+#: 而新加的族只要还是 '<Mon> <Yr> Monthly Metrics <X>' 这个形状，就会被
+#: _CURRENT_LABEL 认出来、归进 'monthly' 桶，**根本走不到对账这一步**。
+#: 月名两侧都要 \b，否则 'mar' 会命中 'Marketing'、'may' 会命中 'Mayfair'，
+#: 把一份跟月度指标无关的文件误判成「该管却没管」的条目 —— 这道对账的每一次误伤
+#: 都是一整天的 FAIL，宁可判据窄一点。月名表直接沿用模块里已有的两张，不另抄一份。
+_METRICS_DOC = re.compile(r'monthly\s+(?:\S+\s+)?(?:metrics|activity)', re.I)
+_HAS_PERIOD = re.compile(
+    r'\b(?:19|20)\d{2}\b|\b(?:%s)\b'
+    % '|'.join(sorted(set(_MON) | set(_MON_FULL), key=len, reverse=True)), re.I)
+
+#: **标题缺年份的那 5 期**，按设计不接进任何通道（模块头「解析器覆盖范围」有交代：
+#: 它们实为 2019-07/08/10/11 与 2020-01，覆盖的月份早就在真值表里，period 只能下载后
+#: 从 PDF 标题反读，接进来只增加取错期的风险）。没有这张白名单，下面那道对账第一天
+#: 就会把这 5 条判成「认不出的条目」并且天天 FAIL —— 白名单不是补丁，是把
+#: 「我们知道它在、并且故意不要」这件事写进代码，好让对账只对**真的没见过**的东西发声。
+_YEARLESS_HIST_TITLES = (
+    'January Monthly Metrics Historical File',
+    'July Monthly Metrics Historical File',
+    'August Monthly Metrics Historical File',
+    'October Monthly Metrics Historical File',
+    'November Monthly Metrics Historical File',
+)
+
 
 def _index_entries(html_text, want='historical'):
     """从索引页 HTML 里抽出 (period 'YYYY-MM', 绝对 URL) 列表，按月份倒序。
@@ -223,37 +263,77 @@ def _index_entries(html_text, want='historical'):
     前两者的条目文本形如 'May 2026 Monthly Metrics Historical File' / 'May 2026 Monthly
     Metrics'，只差尾巴，所以必须精确区分，不能只 in 'Monthly Metrics'；
     'legacy' 是完全另一套写法，见上面 _LABELS 的实测统计。
+
+    ═══ 未归类对账（这道闸挡的是「不出声的失败」）═══
+    原先的写法是：认不出的 <a> 一律 `continue`，只有**一条都认不出**时才抛。于是只要
+    官方把**最新那一期**的标题改个写法（漏个年份、把 'Monthly Metrics' 写成
+    'Monthly Activity Metrics'、在年份后面加个破折号），这一条就被静默丢掉，
+    entries[0] 顺势变成上上期，update() 拿一份旧 PDF 解析 → 每个月份都已在 series 里
+    → 打印「无新增月份」→ 干干净净 NOCHANGE。**连续失败十天和成功十天，日志里一模一样**，
+    红点与断档都抓不到（它们只看已入库月份，看不见表尾少了一期）。
+    所以这里改成：凡是「长得像本模块该管的文件」（_METRICS_DOC + _HAS_PERIOD +
+    /static-files/ 直链）却一个桶都没进的条目，列出来抛 SourceError。
+    这与 fetch/msci.py parse() 里的行数对账是同一件事的两个现场：
+    **读不到不许不抛错**。判断「认没认出来」与 want 无关 —— want 只决定收进哪个桶。
     """
     if want not in ('historical', 'monthly', 'legacy'):
         raise ValueError('want 只能是 historical / monthly / legacy，给的是 %r' % want)
     out = {}
+    stray = []
+    yearless = set()
     for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html_text, re.S):
         href = m.group(1)
         txt = re.sub(r'<[^>]+>', ' ', m.group(2))
         txt = re.sub(r'&[a-z]+;', ' ', txt)
         txt = re.sub(r'\s+', ' ', txt).strip()
-        period = None
-        if want == 'legacy':
-            mm = _LEGACY_LABEL.match(txt)
-            if mm and _MON_FULL.get(mm.group(1).lower()):
-                period = '%s-%02d' % (mm.group(2), _MON_FULL[mm.group(1).lower()])
-        else:
-            mm = re.match(r'^([A-Z][a-z]+)\s+(\d{4})\s+Monthly Metrics(.*)$', txt)
-            if not mm:
-                continue
-            mon = _MON_FULL.get(mm.group(1).lower())
-            if not mon:
-                continue
-            tail = mm.group(3).strip().lower()
-            is_hist = tail.startswith('historical')
-            if (want == 'historical') != is_hist:
-                continue
-            period = '%s-%02d' % (mm.group(2), mon)
-        if period is None:
-            continue
         if not href.startswith('http'):
             href = BASE + href
+        period, known = None, False
+        legacy_m = _LEGACY_LABEL.match(txt)
+        cur_m = _CURRENT_LABEL.match(txt)
+        if legacy_m and _MON_FULL.get(legacy_m.group(1).lower()):
+            known = True
+            if want == 'legacy':
+                period = '%s-%02d' % (legacy_m.group(2), _MON_FULL[legacy_m.group(1).lower()])
+        elif cur_m:
+            word = cur_m.group(1).lower()
+            mon = _MON_FULL.get(word) or _MON.get(word)
+            if mon:
+                known = True
+                # 尾巴用**包含**而不是 startswith 判：官方把它写成 '(Historical File)'
+                # 或 '– Historical File' 时 startswith 就不成立，这一期会被错分进
+                # 'monthly' 桶，want='historical' 于是静默退回上上期 —— 又是一次
+                # 干净的 NOCHANGE。今天全页的尾巴只有 ''／'historical file'／
+                # 'dashboard'／'062118' 四种，包含判在这四种上与原判据逐条等价。
+                is_hist = 'historical' in cur_m.group(3).strip().lower()
+                if want != 'legacy' and (want == 'historical') == is_hist:
+                    period = '%s-%02d' % (cur_m.group(2), mon)
+        if not known and txt in _YEARLESS_HIST_TITLES:
+            known = True                      # 按设计跳过的那 5 期，见 _YEARLESS_HIST_TITLES
+            yearless.add(href)
+        if not known and '/static-files/' in href \
+                and _METRICS_DOC.search(txt) and _HAS_PERIOD.search(txt):
+            stray.append(txt)
+        if period is None:
+            continue
         out.setdefault(period, href)          # 同期重复时保留先出现的（页面按新→旧排）
+    if stray:
+        raise SourceError(
+            '索引页上有 %d 条挂在 /static-files/ 的条目长得像月度指标文件、却一个通道都没归进去：'
+            '%r。标题写法多半又变了（缺年份、月份缩写、多一个词、年份后加标点）—— '
+            '这种条目被静默丢掉的后果不是报错而是 entries[0] 退回上一期、'
+            'update() 干净地报「无新增月份」，所以宁可整次失败。'
+            '请对照 cache/lpla_monthly_results_index.html 确认写法后改 _CURRENT_LABEL；'
+            '若确认是官方新加的、本模块不要的文档族，让它能被 _CURRENT_LABEL 认出来'
+            '（尾巴不含 historical 就自动归进月度新闻稿那个桶），或补一条显式白名单。页面：%s'
+            % (len(stray), stray[:5], INDEX_URL))
+    if len(yearless) > len(_YEARLESS_HIST_TITLES):
+        raise SourceError(
+            '索引页上「标题缺年份」的 Historical File 有 %d 条，白名单只登记了 %d 条。'
+            '白名单是按标题全等匹配的，所以多出来的必然是**新挂的一期**——而白名单成立的'
+            '前提（那 5 期覆盖的月份早已在真值表里）对新的一期不成立，静默跳过它就是漏一期。'
+            '请人工确认这一条是哪个月，再决定接进哪个通道。页面：%s'
+            % (len(yearless), len(_YEARLESS_HIST_TITLES), INDEX_URL))
     if not out:
         raise SourceError('索引页里没找到任何 %s 条目，页面结构可能改了：%s' % (want, INDEX_URL))
     return sorted(out.items(), key=lambda kv: kv[0], reverse=True)
@@ -617,6 +697,113 @@ def release_date(cache_dir, month):
     return day, ev
 
 
+# ────────────────────────── 两道哨兵（挡"不出声的失败"）──────────────────────────
+# 上面 _index_entries 那道对账是从**页面有什么**这一侧查：认不出的条目要喊。
+# 下面两道从另外两侧查，盲区互不重叠 —— 三道一起，索引页那一层才算封住。
+
+def _crosscheck_source_not_regressed(src_month, existing, path, period):
+    """源自报的最新月**倒退到已入库月份之前**就炸。便宜的兜底，不需要任何额外请求。
+
+    防的是这一类：索引页最新那条被改了写法 / 被错分了桶，entries[0] 悄悄退回上上期，
+    于是我们下回来的是一份旧 PDF。它自己解析得干干净净、七列俱全、覆盖的每个月都已经
+    在 series 里，于是 update() 打印「无新增月份」返回 [] —— 缺列护栏、断档检查、
+    新鲜度红点全都不响，日志和真正没有新数据的那些天一模一样。
+    这道判据独立于解析器：不看 PDF 内容长什么样，只问「源给回来的期次比我们手里的旧吗」。
+
+    不会误伤源的正常前进：这张滚动表只往前走（季末月没有独立期，所以跨季时一次走两格），
+    src_month == max(existing) 是新数据出来之前的常态，只有**严格变旧**才抛。
+    真正会让它响一次的是官方撤下已发布的一期再重发 —— 那一次响亮的失败正是要的结果，
+    monthly_run 按家隔离，只这一家 FAIL。
+    """
+    if not existing:
+        return
+    newest_stored = max(existing)
+    if src_month < newest_stored:
+        raise SourceError(
+            '源倒退了：这一期 Historical File 自报最新月是 %s（索引标称 %s），'
+            'series/lpla.csv 里却已经有 %s。这张表只会往前走，所以最可能是索引页最新那条'
+            '标题改了写法、被 _index_entries 静默丢掉，entries[0] 退回了更早的一期'
+            '（后果是 update() 干净地报「无新增月份」，谁都不会发现）；'
+            '也可能是官方撤下重发。文件 %s。拒绝写入，请人工看一眼索引页。'
+            % (src_month, period, newest_stored, os.path.basename(path)))
+
+
+#: Historical File 允许比同期月度新闻稿晚出多少天，超过就判成"这一路停了"。
+#: 取值依据是模块头「发布节奏」记的两件事：两个 PDF 每期**同一批挂上去**（索引页上
+#: 2020-02 以来 52 期逐期成对，无一例外），而两期之间隔约一个月。所以真正的同批时差
+#: 是小时级，14 天是它的十几倍余量 —— 留这么宽是因为发布当天的抢跑（新闻稿先挂、
+#: Historical File 晚几分钟）绝不该把一整天的批次判 FAIL。同时 14 天又稳稳短于一个
+#: 发布周期，所以 Historical File 这一族真要是停更了，哨兵会在下一期新闻稿到来之前
+#: 就开始天天喊，不会被下一期"接上"而永远沉默。
+_HIST_LAG_TOLERANCE_DAYS = 14
+
+
+def _press_release_dateline(cache_dir, period):
+    """取 period 那一期**月度新闻稿**电头上的日期，返回 'YYYY-MM-DD'。
+
+    不走 release_date()：那个函数收的是**数据月**，会把季末月映射到下一期
+    （release_period），而这里手上已经是索引页上的**期次**本身，再映射一次就取错文件。
+    只此一处差别，别把两者合并。
+    """
+    text = _pdf_text(_fetch_release(cache_dir, period))
+    for pat in _DATELINE:
+        d = pat.search(text)
+        if d:
+            break
+    else:
+        raise ParseError('新闻稿电头里读不出 "<城市> – <Month> <D>, <Year> –"：%s 期' % period)
+    mon = _MON_FULL.get(d.group(1).lower())
+    if not mon:
+        raise ParseError('电头月份 %r 不认识：%s 期' % (d.group(1), period))
+    return '%s-%02d-%02d' % (d.group(3), mon, int(d.group(2)))
+
+
+def _crosscheck_press_release_lead(cache_dir, hist_period, verbose=True):
+    """拿**月度新闻稿那一路**当独立外部判据，对账 Historical File 这一路的最新期。
+
+    与 fetch/cboe.py 的 _crosscheck_report_month、fetch/ice.py 的
+    _crosscheck_workbook_month 同形：判据必须来自解析器之外，否则解析器认不出的东西，
+    对账一样认不出。这里的外部判据是同一页上**另一条通道**的最新期 —— 两个标题由官方
+    逐期分别手打，一处写错不会同时写错另一处。
+
+    为什么非要它：_crosscheck_source_not_regressed 只在源退到**已入库月份之前**才响，
+    而真正的坏法往往是「新那期从没进来过」—— 官方发了 M 月，Historical File 那条标题
+    写法一变就被丢掉，我们手里最新的仍是 M-1 期，src_month == max(existing)，
+    没有任何东西倒退，NOCHANGE 干干净净。这时新闻稿那一路已经走到 M，一对账就现形。
+
+    两条已知的误伤路径，都按房规处理，不靠"警告一下"糊过去：
+      · **发布当天抢跑**：新闻稿先挂、Historical File 晚几分钟。所以拿新闻稿电头上的
+        官方发布日算年龄，只有超过 _HIST_LAG_TOLERANCE_DAYS 才抛；抢跑当天只打印一行。
+      · **文档族退役**：'… Monthly Metrics Dashboard' 那一族 2019-07 起挂、2023-01 停，
+        官方确实会停掉整族。若 Historical File 这一族也停了，这道哨兵会天天 FAIL ——
+        那是对的：本模块的取数通道只有它，族没了就等于再也拿不到新数据，
+        必须有人来改，而不是让页面安静地挂着旧数字。
+    """
+    idx_path = os.path.join(cache_dir, 'lpla_monthly_results_index.html')
+    if not os.path.exists(idx_path):
+        return                                # 索引页还没落盘（只可能出现在直接调用时）
+    with open(idx_path) as f:
+        pr_period = _index_entries(f.read(), want='monthly')[0][0]
+    if pr_period <= hist_period:
+        return                                # 常态：两路同期
+    day = _press_release_dateline(cache_dir, pr_period)
+    age = (datetime.date.today()
+           - datetime.date(int(day[:4]), int(day[5:7]), int(day[8:10]))).days
+    if age <= _HIST_LAG_TOLERANCE_DAYS:
+        if verbose:
+            print('[lpla] 新闻稿已到 %s、Historical File 还停在 %s，'
+                  '但新闻稿是 %s 才发的（%d 天），在 %d 天容忍期内，先放行'
+                  % (pr_period, hist_period, day, age, _HIST_LAG_TOLERANCE_DAYS))
+        return
+    raise SourceError(
+        '月度新闻稿已经出到 %s（官方电头 %s，%d 天前），Historical File 这一路却还停在 %s。'
+        '两者每期同批发布，索引页上 2020-02 以来 52 期逐期成对，所以差这么久只有两种可能：'
+        'Historical File 那条标题改了写法被 _index_entries 丢掉，或者官方停掉了整个文档族。'
+        '本模块的取数通道只有 Historical File，两种情况都意味着**再也长不出新月份**，'
+        '而它的表现是每天干净地报「无新增月份」—— 所以这里拒绝写入并抛错。页面：%s'
+        % (pr_period, day, age, hist_period, INDEX_URL))
+
+
 # ────────────────────────── CSV 读写 ──────────────────────────
 
 def _read_series(csv_path):
@@ -676,6 +863,12 @@ def update(series_dir, cache_dir, revise=False, verbose=True):
     src_month = source_month(path)
     if verbose:
         print('[lpla] 源文件 %s（索引标称 %s，自述 %s）\n[lpla] %s' % (path, period, src_month, url))
+
+    # 三道哨兵里的后两道（第一道在 _index_entries 里）。都放在解析之前：
+    # 它们要挡的正是「解析得干干净净、只是解析的是上一期」这种没有红字的失败。
+    _crosscheck_source_not_regressed(src_month, existing, path, period)
+    _crosscheck_press_release_lead(cache_dir, period, verbose=verbose)
+
     parsed = parse_historical(path)
     if src_month not in parsed:
         raise ParseError('PDF 自述最新月 %s 不在解析出的月份里 %r' % (src_month, sorted(parsed)))

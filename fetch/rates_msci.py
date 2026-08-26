@@ -119,7 +119,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timezone
 
 CIK = 1408198
 CIK10 = '0001408198'
@@ -163,6 +163,33 @@ UNITS = {
 
 _MONTHS = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+
+# ── 静默失效的四道闸门用到的两个常数 ──────────────────────────────────
+#
+# 这个模块原来一处解析级的 raise 都没有：认不出表就 return {}，认不出附件就
+# continue，最后 rows() 照样吐出一份形状完美、只是**少最新一季**的结果。
+# fee_rates._validate 只查形状拦不住它，update() 发现没有新 key 就一行不写，
+# monthly_run 于是打印 `fee_rates NOCHANGE 无新季度` —— 连续失败十天和成功十天
+# 在日志里只差一行「跳过 …」，而那行在正常日子里也天天出现（2021-02-23 那份）。
+# 就是 README 第四类。下面四道判据分别从「该跳过吗」「这一份全吗」「最新一季到了吗」
+# 「中间断了吗」四个方向补网，形状照 fetch/msci.py 的三道护栏。
+
+# 已知良性的「不是季度业绩稿」的 Item 2.02 8-K：accession → 放行理由。
+# 白名单而不是无条件放行，是因为「解析不出任何东西」这件事有两种成因，
+# 而原来的 continue 把它们压成了同一个动作：一种是这份稿子本来就不是业绩稿
+# （十年 43 份里只有这一份），另一种是我们的解析器瞎了。
+# 十年才 1 份的基础概率，换「MSCI 换版式的当天就炸出来」，这笔账划得来。
+NON_EARNINGS_8K = {
+    '0001564590-21-007305':
+        '2021-02-23：分部口径重述（Burgiss / All Other - Private Assets），'
+        '只重列历史分部收入，既没有 Table 1A 也没有 AUM 表',
+}
+
+# 季末 → 新闻稿申报日的实测跨度：缓存里 42 份业绩稿**全部**落在 21-34 天。
+# 60 天给史上最慢的那份留了 26 天余量。
+# 别往 40 天调 —— 那只比实测最大值多 6 天，MSCI 随便滑一周就是一次假失败，
+# 而假失败的代价是整个 fee_rates 步骤当天判失败、六家的费率页都不重建。
+REPORT_LAG_DAYS = 60
 
 
 # ──────────────────────────── 网络 ────────────────────────────
@@ -433,6 +460,129 @@ def _own_quarter(revenue_cols):
 
 # ──────────────────────────── 汇总 ────────────────────────────
 
+def _reject_unexplained_skip(date, acc, why):
+    """判据①：一份 Item 2.02 的 8-K 解析不出东西时，只有白名单里的才准安静跳过。
+
+    原来这里是两条无条件 continue，它们各自都是一条**纯静默失效**通道：
+      · `fn is None`（SGML 头页里找不到 EX-99）—— 实测 43 份申报**没有一份**走到
+        这一支，文件头口径说明里「2021-04-27 那份没有 EX-99 附件」的例子已经过时
+        （那份有 a52418195ex99_1.htm）。也就是说这条路上一个合法用户都没有，
+        它只会在 _earnings_8ks 的 <TYPE>/<SEQUENCE>/<FILENAME> 正则被 EDGAR 改版
+        打断时亮起 —— 那一天它会**同时**吞掉全部申报，而上层只看到 NOCHANGE。
+      · 两张表都没解析出来 —— 版式变了（表头日期从 'Sep. 30, … 2026' 改成
+        '9/30/2026' 这一处就够）时，_columns() 是两张表唯一的入口，四条容错正则
+        会一起失效，于是最新那份稿子被当成「不是业绩稿」丢掉。
+
+    改成白名单之后，代价是**下一份**真正的非业绩 Item 2.02 8-K（分部重述、指引更新）
+    会让这个源天天失败，直到有人把 accession 加进 NON_EARNINGS_8K。所以这句话
+    必须写进报错里，让值班的人不用读代码就知道该干什么。
+    """
+    if acc in NON_EARNINGS_8K:
+        return
+    raise RuntimeError(
+        f'{date} 的 Item 2.02 8-K {acc} {why} —— 十年 43 份申报里只有一份是这样'
+        f'（见 NON_EARNINGS_8K），所以这大概率是解析器瞎了而不是 MSCI 发了份非业绩稿：'
+        f'表头日期写法变了？EX-99 的 SGML 头版式变了？'
+        f'拒绝返回一份「看起来完整、只是少最新一季」的结果。'
+        f'若核对后确认这份**真的**不是季度业绩稿，把 {acc!r} 连同理由加进 NON_EARNINGS_8K。')
+
+
+def _check_release_complete(date, acc, rev, aum, own):
+    """判据②：单份新闻稿的「缺列一律失败」（README 护栏 2，按份粒度）。
+
+    实测 42 份业绩稿全部满足：AUM 表 5 个季度列且每列都取到 Period-Average AUM，
+    收入表 2 列（Table 1A）或 3 列（Table 5 时代的 15 份），own 从来不是 None。
+    所以「一张表活着、另一张表瞎了」从来不是合法状态，它是解析失败。
+
+    这一支专治判据①够不着的**半瞎**：Table 1A 认不出、AUM 表还活着时，新的一季
+    会带着 4 个 metric 里的 2 个入库 —— update() 报告了新季度，顶层不是 NOCHANGE，
+    看起来像成功，而 asset_based_fee_revenue 和据它算的有效费率永远缺了那一期。
+
+    刻意**不查** METRIC_BP：disclosed_period_end_basis_point_fee_etf 在 2019-Q1 及
+    更早本来就没有（口径坑 4，那时官方印的是另一个口径的 'Avg. Basis Point Fee'，
+    本模块拒绝混），MSCI 哪天再把这行撤了也一样。要求它 = 上线第一天就炸。
+    """
+    bad = []
+    if len(aum) != 5:
+        bad.append(f'AUM 表解析出 {len(aum)} 个季度列（应 5）')
+    else:
+        no_avg = sorted(p for p, d in aum.items() if 'avg' not in d)
+        if no_avg:
+            bad.append(f'AUM 表这几列没取到 Period-Average AUM：{no_avg}')
+    if len(rev) not in (2, 3):
+        bad.append(f'收入表解析出 {len(rev)} 个季度列（Table 1A 应 2、Table 5 应 3）')
+    if own is None:
+        bad.append('认不出这份稿子自己报的是哪一季')
+    if bad:
+        raise RuntimeError(
+            f'{date} 的新闻稿 {acc} 解析残缺：{"；".join(bad)}。'
+            f'两张表要么一起活要么一起死，半张表说明版式变了 —— 宁可整次失败，'
+            f'也不能让新的一季只带着一半 metric 入库（那种坏法上层看着像成功）。')
+
+
+def _check_quarter_continuity(releases):
+    """判据④：各份稿子自报季度排起来不许断档 —— 中间一期整份消失的最后一道网。
+
+    判据①②盯的是「这一份对不对」，判据③盯的是「最新一季到没到」，三道都看不见
+    「2019-Q3 那份稿子从此再也解析不出来」这种坏法：它不影响最新一季，形状也正常，
+    只是历史上凭空少一期。与 fetch/msci.py update() 的断档检查同源。
+
+    只查**观测到的首尾之间**，不跟 START_FILING_DATE 比：submissions.json 的
+    recent 段被挤爆时序列会合法地从更晚开始（_earnings_8ks 已经为此单独告警），
+    拿固定起点去卡会把那个已知情况变成一次假失败。
+    """
+    owns = sorted({r['own'] for r in releases})
+    gaps = [(owns[i], owns[i + 1]) for i in range(len(owns) - 1)
+            if _qi(owns[i + 1]) - _qi(owns[i]) != 1]
+    if gaps:
+        raise RuntimeError(
+            f'自报季度序列断档：{gaps} —— 中间这些期的新闻稿要么没被发现，'
+            f'要么解析出来的季度认错了。拒绝返回一份中间有洞的历史。')
+
+
+def _quarter_end(period):
+    y, q = period.split('-Q')
+    m = int(q) * 3
+    return _date(int(y), m, 31 if m in (3, 12) else 30)
+
+
+def _due_quarter(today):
+    """按日历，今天最晚应该已经拿到哪一季（季末过去 REPORT_LAG_DAYS 天以上的最新一季）。"""
+    qi = today.year * 4 + (today.month - 1) // 3 + 1
+    while True:
+        p = f'{(qi - 1) // 4}-Q{(qi - 1) % 4 + 1}'
+        if (today - _quarter_end(p)).days > REPORT_LAG_DAYS:
+            return p
+        qi -= 1
+
+
+def _crosscheck_newest_quarter(releases, today=None):
+    """判据③：最新一季的绊线，判据是**日历**，不是 filings[-1]。
+
+    这是 fetch/rates_cme.py disclosures() 里那道 newest_ok 的同位物，但**刻意不抄
+    它的位置写法**：rates_cme 要求「最新一份 Item 2.02 8-K 必须吐出数据」，放到
+    MSCI 身上会在 2021-02-23 之后连续两个月天天失败 —— 那两个月里 filings[-1] 就是
+    那份合法的分部重述稿。所以这里换成外部判据：季末过去 REPORT_LAG_DAYS 天还没
+    拿到那一季，就是有问题。日历不经过解析器，和 fetch/cboe.py 的
+    _crosscheck_report_month、fetch/ice.py 的 _crosscheck_workbook_month 一个形状。
+
+    代价说在明处：MSCI 真的报晚了（超过季末 60 天），这一步会天天判失败，而
+    fee_rates.update() 已经把其余五家的新行写进 series/fee_rates.csv 才抛，
+    那些行要等到干净的一天才发布。这是 README 三条护栏认下的那笔交易。
+    """
+    if not releases:
+        raise RuntimeError('一份季度业绩稿都没解析出来')
+    today = today or datetime.now(timezone.utc).date()
+    due = _due_quarter(today)
+    newest = max(r['own'] for r in releases)
+    if _qi(newest) < _qi(due):
+        raise RuntimeError(
+            f'解析出来的最新一季是 {newest}，但按日历 {due} 早该到了'
+            f'（季末已过 {REPORT_LAG_DAYS} 天以上，而实测 MSCI 从来是季末后 21-34 天发稿）。'
+            f'要么最新那份新闻稿的版式变了被当成非业绩稿丢掉，要么 MSCI 真的推迟了披露。'
+            f'拒绝返回一份冻在 {newest} 的结果 —— 那种结果在上层就是一句 NOCHANGE。')
+
+
 def parse_all(cache_dir):
     """解析全部新闻稿。
 
@@ -443,6 +593,7 @@ def parse_all(cache_dir):
     releases, skipped = [], []
     for date, acc, fn in _earnings_8ks(cache_dir):
         if not fn:
+            _reject_unexplained_skip(date, acc, '的 SGML 头页里找不到 EX-99 附件')
             skipped.append((date, acc, 'EX-99 附件缺失'))
             continue
         text = _release_text(cache_dir, acc, fn)
@@ -451,10 +602,13 @@ def parse_all(cache_dir):
         if not rev and not aum:
             # 不是每份 Item 2.02 的 8-K 都是季度业绩稿。已知良性例子：
             # 2021-02-23 那份是分部口径重述（Burgiss / All Other - Private Assets），
-            # 只重列历史分部收入，没有 Table 1A 也没有 AUM 表。跳过是对的。
+            # 只重列历史分部收入，没有 Table 1A 也没有 AUM 表。跳过是对的 ——
+            # 但**只对白名单里的那一份**是对的，见 _reject_unexplained_skip。
+            _reject_unexplained_skip(date, acc, '既解析不出 Table 1A/Table 5，也解析不出 AUM 表')
             skipped.append((date, acc, '不是季度业绩稿（无 Table 1A / 无 AUM 表），跳过'))
             continue
         own = _own_quarter(sorted(rev, reverse=True))
+        _check_release_complete(date, acc, rev, aum, own)
         url = _url(acc, fn)
         releases.append({'date': date, 'acc': acc, 'url': url, 'own': own,
                          'n_rev': len(rev), 'n_aum': len(aum)})
@@ -471,6 +625,7 @@ def parse_all(cache_dir):
                 put(p, METRIC_AUM, d['avg'])
             if 'bp' in d:
                 put(p, METRIC_BP, d['bp'])
+    _check_quarter_continuity(releases)
     return {'obs': obs, 'releases': releases, 'skipped': skipped}
 
 
@@ -515,6 +670,7 @@ def rows(cache_dir):
     metric 名与 unit 写法与 series/fee_rates.csv 现有 MSCI 行完全一致。
     """
     parsed = parse_all(cache_dir)
+    _crosscheck_newest_quarter(parsed['releases'])
     picked = {k: _primary(v) for k, v in parsed['obs'].items()}
 
     out = []
