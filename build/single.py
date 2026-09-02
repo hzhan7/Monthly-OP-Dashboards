@@ -119,7 +119,7 @@ RATIO_FMT = {'pct0', 'pct1', 'pct2', 'pct0z', 'pp0', 'pp1'}   # 变化量走 pp/
 
 SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              'headline', 'groups', 'slow_cols', 'breaks', 'notes',
-             'decomp', 'ttm_yoy'}
+             'decomp', 'ttm_yoy', 'headline_style'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
@@ -136,8 +136,11 @@ GROUP_REQUIRED = {'zh', 'cols'}
 # 复算是硬的：残差为负（分项之和超过合计）一律 SpecError —— 那说明分子分母不是同一个
 # 口径，而图上只会画成一根更高的柱；残差为正且超过 `MIX_RESID_TOL` 却没给 `residual_zh`
 # 也一律 SpecError —— 那种图会声称「堆叠 = 100%」而实际不是，是一句静默的假话。
-MIX_KEYS = {'total', 'parts', 'granularity', 'total_col', 'weight_col',
-            'residual_zh', 'rhs_share', 'note', 'share_note'}
+# ⚠️ 这里**没有** granularity / total_col / weight_col。它们是 `ttm_yoy` 用来把日均列
+# 还原成当月合计、好滚 12 个月的；mix 的合计柱次轴是**单月同比**（当月对去年同月，
+# 本列除本列），一步还原都不需要。2026-09 从 MIX_KEYS 里删掉的时候三处一起删了 ——
+# 留着就是死配置，而死配置会让下一个人以为这张图做过什么它其实没做的事。
+MIX_KEYS = {'total', 'parts', 'residual_zh', 'rhs_share', 'note', 'share_note'}
 MIX_REQUIRED = {'total', 'parts'}
 
 #: 100% 堆叠的分段配色，**自下而上**按 `parts` 的声明顺序取；残差段永远在最上面、
@@ -204,6 +207,18 @@ TTM_REQUIRED = {'zh', 'granularity', 'level'}
 # 它只看得见 payload 的结构，看不见那句话对不对。所以做成**必填、无缺省**：
 # 有缺省就等于让下一个人默默继承上一家的粒度假设。
 GRANS = ('monthly_total', 'daily_avg')
+
+#: 头条列的开篇画法（spec 的 `headline_style`，缺省 `'band_yoy'` = 与从前逐字节相同）。
+#:
+#:   'band_yoy'  两张：①「全历史折线 + 近 3 年 P10/P90 分位带」②「单月同比柱」
+#:   'bar_yoy'   **一张**：全历史的水平值柱 + 次轴单月同比折线
+#:
+#: `'bar_yoy'` 是 2026-09 按页面所有者的指令加的：「柱状图和 yoy 的折线图要在一个图里」。
+#: ⚠️ **代价说清楚**：分位带在柱图上没有位置（引擎没有「柱 + 两条带 + 次轴线」这种
+#: 图型），所以选 `'bar_yoy'` 就等于把 P10/P90 那条常态区间从页面上拿掉 ——
+#: 汇总表的「3Y %ile」列还在（它不靠这张图），但页尾那句「Exhibit 2 的灰色分位带与它
+#: 同窗口同口径」会自动消失，不会留下一句指着不存在的图的话。
+HEADLINE_STYLES = ('band_yoy', 'bar_yoy')
 
 # 分解出来的那个**派生量**（= 金额 ÷ 数量）到底是什么，全仓有三类，含义互不相通：
 # 混用一套措辞会让读者把「订单碎片化」读成「价格下跌」，把「费率」读成「成交价」。
@@ -859,19 +874,9 @@ def _norm_mix(m, where):
     if rs == 'residual' and not m.get('residual_zh'):
         raise SpecError(f"{where} 的 rhs_share='residual' 但没有 residual_zh —— "
                         f'没有残差段就没有那条线可画')
-    gran = m.get('granularity')
-    if gran is not None and gran not in GRANS:
-        raise SpecError(f"{where} 的 granularity={gran!r} 只能是 {GRANS[0]!r} 或 "
-                        f"{GRANS[1]!r}（见 DECOMP_REQUIRED 上方的注释）")
-    if m.get('weight_col') and gran != 'daily_avg':
-        raise SpecError(f"{where} 声明 granularity={gran!r} 却给了 weight_col —— "
-                        f'当月合计再乘一次交易日数是错的')
     return {
         'total': str(m['total']),
         'parts': [str(x) for x in parts],
-        'granularity': gran,
-        'total_col': m.get('total_col'),
-        'weight_col': m.get('weight_col'),
         'residual_zh': str(m.get('residual_zh') or ''),
         'rhs_share': str(m.get('rhs_share') or ''),
         'note': str(m.get('note') or ''),
@@ -952,6 +957,11 @@ class Page:
                 'mix': _norm_mix(g['mix'], f'groups[{gi}]（{g["zh"]}）.mix')
                 if g.get('mix') else None})
 
+        self.headline_style = str(spec.get('headline_style') or 'band_yoy')
+        if self.headline_style not in HEADLINE_STYLES:
+            raise SpecError(f"headline_style={self.headline_style!r} 只能是 "
+                            f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）或 "
+                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）")
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
         self.ttm = [_norm_ttm(t, f'ttm_yoy[{i}]')
@@ -968,10 +978,7 @@ class Page:
                   for k in ('value_total_col', 'qty_total_col', 'weight_col') if d[k]]
                + [t['level']['col'] for t in self.ttm]
                + [t[k] for t in self.ttm for k in ('total_col', 'weight_col') if t[k]]
-               # mix 的 total / parts 引用的是 groups 里已声明的列（已在 allc 里），
-               # 这里只补它自己新引进的两条辅助列。
-               + [g['mix'][k] for g in self.groups if g['mix']
-                  for k in ('total_col', 'weight_col') if g['mix'][k]])
+               )    # mix 的 total / parts 引用的都是 groups 里已声明的列，已在 allc 里
         missing = sorted({c['col'] for c in allc if c['col'] not in have}
                          | {c for c in aux if c not in have})
         if missing:
@@ -1046,13 +1053,6 @@ class Page:
                     f'{where} 的分项 {bad_kind} 与合计 {m["total"]["zh"]} 一个是流量'
                     f'一个是存量 —— 流量按月累计发生、存量是某一天的截面，两者不能相加，'
                     f'堆出来的柱高没有指称')
-            if m['total']['stock'] and (m['granularity'] or m['total_col']
-                                        or m['weight_col']):
-                raise SpecError(
-                    f'{where} 的合计 {m["total"]["zh"]} 是存量列，却给了 '
-                    f'granularity / total_col / weight_col —— 那三个字段是给'
-                    f'「12 个月滚动合计」用的，而 12 个月末快照相加不指代任何量'
-                    f'（CONTRACT §6.1 第 4 条）。存量的次轴同比走点对点口径，无需还原')
             bad_ratio = [c['zh'] for c in [m['total']] + m['parts'] if self.is_ratio(c)]
             if bad_ratio:
                 raise SpecError(
@@ -1062,12 +1062,6 @@ class Page:
                     f'要么是点对点同比而比率的同比应当是**百分点差**；'
                     f'占比堆叠那一侧更直接 —— 几个比率相加不等于合计那个比率。'
                     f'要画比率就走常规的单列 gs_bar（`ex_single` 会按 pp 处理）')
-            if not m['total']['stock'] and not m['granularity']:
-                raise SpecError(
-                    f'{where} 的合计 {m["total"]["zh"]} 是流量列，必须给 granularity'
-                    f"（'monthly_total' = 列本身就是当月合计，'daily_avg' = 列是当月日均）"
-                    f'—— 次轴那条 12 个月滚动同比要先把柱还原成当月合计，'
-                    f'底座猜不出来，猜错就会在图注里印出一句关于口径的假话')
             # 本组自己声明了哪几列 —— `mix_pair` 拿它把「被吃掉的列」限定在本组内。
             # 跨组引用的语义是「借它的数画结构」，不是「替它把水平值也讲了」。
             g['declared'] = {c['col'] for c in g['cols']}
@@ -1373,6 +1367,47 @@ class Page:
             f'{xl[-1]} 读数 {unit_txt(cur, c)}，'
             f'{pos}。同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
             + ('纵轴从 0 起（不截轴）。' if zero_ok else '序列含负值，纵轴不强制从 0 起。')
+            + (self.brk_zh(hit, win) + '，线左边那段与右边不可比。' if hit else ''))
+        return ex
+
+    def ex_head_bar(self, n, c):
+        """`headline_style='bar_yoy'`：把 ①（全历史 + 分位带）与 ②（同比）并成**一张**。
+
+        全历史的水平值柱 + 次轴**单月**同比折线。窗口与 `ex_history` 逐字相同 ——
+        「首个有值月 → 末个有值月」的**逐月连续**整段（不是 dropna 后的索引：dropna 会把
+        中间缺的月从横轴上抹掉，相隔两个月的两点被并排画成相邻期，那是一根假时间轴）。
+
+        ⚠️ **分位带没了**，这是这个开关的代价，不是漏画：引擎没有「柱 + 两条带 + 次轴线」
+        这种图型，而带的上下沿与柱同量纲、画上去会被读成第三、第四根柱。
+        页尾那句「Exhibit N 的灰色分位带与汇总表同窗口同口径」由 `notes()` 按这张图在不在
+        自动收放，不会留下一句指着不存在的图的话。
+        """
+        s_ = self.ser(c)
+        fin = s_.dropna()
+        idx = list(self.df.index)
+        win = idx[idx.index(fin.index[0]):idx.index(fin.index[-1]) + 1]
+        v = s_.reindex(win).values.astype(float)
+        xl = [mlab(p) for p in win]
+        ratio = self.is_ratio(c)
+        rhs = yoy_rhs(s_, win, pct_series=ratio)
+        ex = bar_ex(n, f'{c["zh"]}：全历史水平值与单月同比', c, xl, v, rhs,
+                    ylab2=('pp y/y（单月）' if ratio else '% y/y（单月）'))
+        ex['full'] = True
+        ex['_cols'] = [c['col']]
+        if rhs:
+            self.log_yoy(n, 'mom_pp' if ratio else 'mom')
+        hit = self.mark_breaks(ex, win, [c])
+        ex['src_extra'] = 'Full disclosed history; the right-hand line is the single-month y/y'
+        ex['note'] = (
+            f'<b>本页的开篇图：一张图上同时给水平值与增速。</b>'
+            f'深蓝柱 = {c["zh"]}的水平值（{c["unit"]}，原始单位），'
+            f'横轴是<b>全部已披露历史</b> {xl[0]} → {xl[-1]}（{len(win)} 个月），'
+            f'比本页其余时序图（{mlab(pd.Period(WIN_FROM, freq="M"))} 起）长。'
+            + (f'金色折线（右轴）= <b>单月同比</b>（当月对去年同月）。'
+               if rhs else NO_YOY_NOTE)
+            + f'{xl[-1]} 读数 {unit_txt(v[-1], c)}，'
+              f'同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
+            + self.mom_cost_zh(c)
             + (self.brk_zh(hit, win) + '，线左边那段与右边不可比。' if hit else ''))
         return ex
 
@@ -1692,12 +1727,65 @@ class Page:
             eaten |= {c['col'] for c in m['parts']}
         return [e for e in (total, share) if e is not None], eaten & g['declared']
 
-    def ex_mix_total(self, n, gz, m):
-        """`mix` 的第一张：合计列的水平值柱 + 次轴同比。
+    def mom_cost_zh(self, c):
+        """单月同比的**代价**，拿这条序列自己实测 —— 只报数，不替它辩护。
 
-        次轴口径**由列的性质决定，不由排版偏好决定**（CONTRACT §6.1）：
-          · 流量 → 12 个月滚动合计的同比（默认口径，与 `ex_ttm` 同一套实现）；
-          · 存量 → 点对点同比（12 个月末快照相加不指代任何量，滚动合计对存量非法）。
+        CONTRACT §6.1 第 2 条：用单月同比必须在图注里说明为什么。本页的理由是
+        **页面所有者要求全页统一成单月口径**（一句可核对的事实，不是「看着更灵敏」）。
+        但只写理由不写代价等于把话说了一半 —— 单月同比同时被交易日数、假期与到期日的
+        月度形状、以及去年同月那一个数的高低推着走，毛刺可以大到与趋势符号相反。
+        所以这里把两种口径的差**量出来印上去**，让读者知道自己在读什么。
+
+        对照那一侧（12 个月滚动）只作参照、本页不画，按 12 个月**等权相加**算 ——
+        日均列上这是个近似（各月交易日数不同），但用来量「两种口径差多远」够了，
+        而且下面那句话会说明它是近似。算不出（历史不足 24 个月）就整段不印。
+        """
+        s_ = self.ser(c)
+        roll = s_.rolling(TTM_WIN, min_periods=TTM_WIN).sum()
+        b_all = (roll / roll.shift(12) - 1).values.astype(float) * 100
+        a_all = (s_ / s_.shift(12) - 1).values.astype(float) * 100
+        m = np.isfinite(a_all) & np.isfinite(b_all)
+        if int(m.sum()) < 24:
+            return ('<b>口径：本图次轴是单月同比</b>（当月对去年同月），'
+                    '全页统一 —— 页面所有者指定。本序列历史不足以与滚动口径对照，'
+                    '此处不报差异。')
+        a = np.where(m, a_all, np.nan)
+        b = np.where(m, b_all, np.nan)
+        idx = list(self.df.index)
+        ja = float(np.nanmax(np.abs(np.diff(a))))
+        jb = float(np.nanmax(np.abs(np.diff(b))))
+        i_ja = int(np.nanargmax(np.abs(np.diff(a))))
+        opp = int(np.nansum((a * b) < 0))
+        k_gap = int(np.nanargmax(np.abs(a - b)))
+        sd_a, sd_b = float(np.nanstd(a, ddof=1)), float(np.nanstd(b, ddof=1))
+        return (
+            f'<b>口径：本图次轴是<u>单月</u>同比</b>（当月对去年同月），全页统一 —— '
+            f'页面所有者指定，不是底座的默认口径（CONTRACT §6.1 把 {TTM_WIN} 个月'
+            f'滚动合计的同比定为流量的默认，单月要在标题里写明并在这里交代，两条都照办）。'
+            f'<b>代价用本序列自己实测</b>（{int(m.sum())} 个两种口径都算得出的月份，'
+            f'滚动那一侧只作对照、本页不画，按 {TTM_WIN} 个月等权相加算，'
+            f'日均列上是个近似）：单月同比的逐月标准差 {ppbp_abs(sd_a)}、'
+            f'滚动 {ppbp_abs(sd_b)}；相邻月最大跳变 {ppbp_abs(ja)}'
+            f'（{idx[i_ja]} → {idx[i_ja + 1]}）vs {ppbp_abs(jb)}；'
+            f'两者<b>符号相反</b>的月份 {opp} 个（占 {opp / int(m.sum()) * 100:.0f}%），'
+            f'差得最远的是 {idx[k_gap]}（单月 {nz_txt(f"{a[k_gap]:+.1f}")}% '
+            f'vs 滚动 {nz_txt(f"{b[k_gap]:+.1f}")}%）。'
+            f'⇒ <b>这条线要连着柱高一起读</b>：低基数月份它会被放大，'
+            f'单看它挑月份能把结论说成两个方向。')
+
+    def ex_mix_total(self, n, gz, m):
+        """`mix` 的第一张：合计列的水平值柱 + 次轴**单月**同比。
+
+        ⚠️ **这里曾经是 12 个月滚动同比，2026-09 按页面所有者的指令改成单月。**
+        CONTRACT §6.1 第 1 条把滚动定为流量的默认口径，第 2 条允许用单月但要求
+        「标题里写明 + 图注说明为什么」—— 两条都照办了：标题带「单月同比」四个字
+        （`tools/check_yoy_caliber.py` 的 R4 只认 title/ylab2/legend/yoy.name 这四处），
+        理由由 `mom_cost_zh()` 连同**实测代价**一起印在图注里。
+        理由是「页面所有者要求全页统一口径」——这是一句可核对的事实，不是
+        「看着更灵敏」那种被 §6.1 点名禁止的说法；而它的代价（毛刺、符号相反的月份）
+        必须同时印出来，不能只写结论。
+
+        存量列本来就走点对点同比（12 个月末快照相加不指代任何量），不受这次改动影响。
         """
         c = m['total']
         end = self.last_month(c)
@@ -1708,8 +1796,8 @@ class Page:
         v = self.vals(c, win)
         if self.flat0_skip(gz, [c], win, [v]):
             return None, f'{gz}：{c["zh"]} 窗口内恒为 0，合计柱不出'
+        rhs = yoy_rhs(self.ser(c), win)
         if c['stock']:
-            rhs = yoy_rhs(self.ser(c), win)
             # 标题里的「（存量，期末口径）」不是排版修辞：`tools/check_yoy_caliber.py`
             # 的 `_STOCK_TXT` 认这几个字，认到了才把 R1/R4（单月同比未声明）整条豁免掉 ——
             # 点对点同比正是存量的合法默认口径。措辞与 `ex_stock` 保持逐字相同。
@@ -1738,28 +1826,20 @@ class Page:
                 + (' ' + md_bold(m['note']) if m['note'] else ''))
             return ex, None
 
-        tot, how = self.monthly_total(c, m['total_col'], m['weight_col'],
-                                      m['granularity'], f'groups「{gz}」.mix')
-        rhs, rv, mo_yoy, ttm_ser = self.ttm_rhs(tot, win)
-        ex = bar_ex(n, f'{gz}：{c["zh"]} —— 水平值与 {TTM_WIN} 个月滚动同比',
-                    c, xl, v, rhs, ylab2=f'% y/y（{TTM_WIN}M 滚动）')
+        ex = bar_ex(n, f'{gz}：{c["zh"]} —— 水平值与单月同比', c, xl, v, rhs,
+                    ylab2='% y/y（单月）')
         if rhs:
-            self.log_yoy(n, 'ttm')
+            self.log_yoy(n, 'mom')
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
             f'深蓝柱 = {c["zh"]}的<b>水平值</b>（{c["unit"]}，原始单位，未做任何指数化）。'
             f'{self.win_zh(win)}。'
-            + (f'金色折线（右轴）= <b>{TTM_WIN} 个月滚动合计的同比</b>：'
-               f'先把最近 {TTM_WIN} 个月的量加成一个滚动合计，再与前 {TTM_WIN} 个月的'
-               f'同一口径比。滚动合计取自：{how}。'
+            + (f'金色折线（右轴）= <b>单月同比</b>（当月对去年同月，'
+               f'{c["col"]} 自己除自己，不换列、不做任何还原）。'
                if rhs else NO_YOY_NOTE)
-            + f'{xl[-1]} 水平值 {unit_txt(v[-1], c)}，'
-            + (f'滚动同比 {nz_txt(f"{rv[-1]:+.1f}")}%（单月同比 '
-               f'{nz_txt(f"{float(mo_yoy.reindex(win).values[-1]):+.1f}")}%，两者并列'
-               f'只为让读者看到差距，图上画的是前者）。'
-               if rhs and np.isfinite(rv[-1]) else '')
-            + self.ttm_spike_zh(mo_yoy, ttm_ser)
-            + self.bar_line_caliber_zh(c, m['total_col'], m['weight_col'], m['granularity'])
+            + f'{xl[-1]} 水平值 {unit_txt(v[-1], c)}，同比 {chg_txt(c, v)}、'
+              f'环比 {chg_txt(c, v, lag=1)}。'
+            + self.mom_cost_zh(c)
             + self.slow_tail([c])
             + (self.brk_zh(hit, win) + '。' if hit else '')
             + (' ' + md_bold(m['note']) if m['note'] else ''))
@@ -2797,10 +2877,15 @@ class Page:
         self.saw_group_lines = self.saw_group_heat = False
         self.decomp_report = []  # decomp 自检行同理，从零记
 
-        for c in self.head:                                   # ① 长历史 + 3Y 分位带
-            ex.append(self.ex_history(n, c)); n += 1
-        for c in self.head:                                   # ② 同比
-            ex.append(self.ex_yoy(n, c)); n += 1
+        if self.headline_style == 'bar_yoy':
+            # ①② 并成一张：全历史的水平值柱 + 次轴单月同比（见 HEADLINE_STYLES）。
+            for c in self.head:
+                ex.append(self.ex_head_bar(n, c)); n += 1
+        else:
+            for c in self.head:                               # ① 长历史 + 3Y 分位带
+                ex.append(self.ex_history(n, c)); n += 1
+            for c in self.head:                               # ② 同比
+                ex.append(self.ex_yoy(n, c)); n += 1
 
         # 「派生图没出成」的账本：③ 的 mix 也会往里记，所以要在 ③ 之前开。
         self.skipped = list(self.mix_skipped)
@@ -3100,12 +3185,22 @@ class Page:
                   '—— 放滚动值进去与列头自相矛盾）。'
                 + ('趋势判断看滚动折线，当月核对看单月读数，两者并存是分工不是疏忽。'
                    if mixed else ''))
+        _band_n = next((e.get('n') for e in (ex or []) if isinstance(e, dict)
+                        and e.get('kind') == 'lines'
+                        and 'P90' in str(e)), None)
         out.append(
             f'<b>汇总表读法。</b>「{pctile.WINDOW // 12}Y %ile」= 当月读数在最近 '
             f'{pctile.WINDOW} 个月中的分位，由全站唯一的 <code>build/pctile.py</code> 计算'
             f'（判据：把这一行的分位在近 24 个月里逐月回放，若 ≥70% 的月份钉在 0 或 100，'
-            f'该行对这一列没有区分度，留空）。Exhibit 2 的灰色分位带与它同窗口同口径。'
-            f'比率类指标的差异用 pp／bp，不用百分比的百分比变化。')
+            f'该行对这一列没有区分度，留空）。'
+            # ⚠️ 这句话原来无条件印着「Exhibit 2 的灰色分位带与它同窗口同口径」——
+            # `headline_style='bar_yoy'` 的页面上根本没有分位带那张图，那就是一句
+            # 指着不存在的图的话。改成按**真画出来的图**收放。
+            + (f'Exhibit {_band_n} 的灰色分位带与它同窗口同口径。' if _band_n else
+               '本页没有画分位带那张图（开篇图是「柱 + 次轴同比」，'
+               '带的上下沿与柱同量纲、画上去会被读成第三根柱），'
+               '所以这一列的分位只在本表里出现。')
+            + f'比率类指标的差异用 pp／bp，不用百分比的百分比变化。')
         if disp:
             # 「图上按百万、表里按张」这件事必须在页注里说一次。不说的话，读者拿 Exhibit
             # 里的 1.73 去对核对表的 1,729,208，会以为其中一处算错了。
