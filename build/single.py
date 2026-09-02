@@ -123,6 +123,65 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
+GROUP_KEYS = {'zh', 'cols', 'mix'}
+GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].mix —— 「总量柱 + 分项 100% 占比堆叠」两张图 ─────────────────────
+# 这个字段做的是 `groups[].cols` 里那几列**彼此独立**这条默认假设的例外：
+# 声明了 mix，就是声明「total 这一列 ≡ parts 各列之和（+ 可选残差）」这个**加总关系**。
+# docs/SINGLE_SPEC.md §2.1 原来写着「本套 SPEC 里没有『分部』这个概念，所以不产出
+# 堆叠图」—— 那句话现在只对**没写 mix 的组**成立：加总关系拿不出保证时确实不许堆，
+# 但拿得出的时候，把它写下来并让底座**逐月复算**（见 `Page.mix_frame`）比不画更好。
+#
+# 复算是硬的：残差为负（分项之和超过合计）一律 SpecError —— 那说明分子分母不是同一个
+# 口径，而图上只会画成一根更高的柱；残差为正且超过 `MIX_RESID_TOL` 却没给 `residual_zh`
+# 也一律 SpecError —— 那种图会声称「堆叠 = 100%」而实际不是，是一句静默的假话。
+MIX_KEYS = {'total', 'parts', 'granularity', 'total_col', 'weight_col',
+            'residual_zh', 'rhs_share', 'note', 'share_note'}
+MIX_REQUIRED = {'total', 'parts'}
+
+#: 100% 堆叠的分段配色，**自下而上**按 `parts` 的声明顺序取；残差段永远在最上面、
+#: 固定 `MIX_RESID_COLOR`。这 6 个就是本仓全部的数据色（RED 是断点与截轴离群值专用，
+#: 不做数据色），所以 5 个分项 + 1 段残差是这个图型的**硬上限**。
+#:
+#: **按分项数分别排，不是取同一条序列的前 n 个。** 理由是残差段永远接在最后一个分项
+#: 上面，于是「最后一个分项 → GRAY」这一对**随分项数换人**：取固定前缀
+#: `('NAVY','BLUE','MBLUE','GOLD','GREEN')` 时，2 段那档落到 BLUE→GRAY（1.31:1）、
+#: 4 段那档落到 GOLD→GRAY（1.20:1），而这两档恰恰是本仓真出过的形状。
+#: 下面每一档都是把 5 个数据色 + GRAY 的全排列跑一遍、在「MBLUE 与 GREEN 不许相邻」
+#: （对比度 1.07:1、灰度差 1.7%，docs/CHART_KINDS.md §3.6.1 记的雷区）这条约束下
+#: **最大化最小相邻对比度**得来的，相邻对比度（WCAG 相对亮度比，自下而上、末尾接 GRAY）：
+#:   1 段  NAVY                             | NAVY→GRAY 4.77
+#:   2 段  BLUE  NAVY                       | 6.30 / 4.77
+#:   3 段  MBLUE BLUE  NAVY                 | 2.62 / 6.30 / 4.77
+#:   4 段  MBLUE BLUE  GREEN NAVY           | 2.62 / 2.46 / 2.56 / 4.77
+#:   5 段  GOLD  NAVY  GREEN BLUE  MBLUE    | 3.98 / 2.56 / 2.46 / 2.62 / 1.99
+#: 不给残差段时最后那一对不存在，其余各对不变 —— 所以同一张表两种情形都够用。
+#: 重排之前先把上面这两条约束跑一遍，别凭「看着顺眼」调顺序。
+MIX_SEG_COLORS = {
+    1: ('NAVY',),
+    2: ('BLUE', 'NAVY'),
+    3: ('MBLUE', 'BLUE', 'NAVY'),
+    4: ('MBLUE', 'BLUE', 'GREEN', 'NAVY'),
+    5: ('GOLD', 'NAVY', 'GREEN', 'BLUE', 'MBLUE'),
+}
+MIX_RESID_COLOR = 'GRAY'
+#: 残差段「小到画不出来」的判据（占合计的 %）。
+#:
+#: 引擎在每两段之间留 1.5px 白缝（`assets/charts.js` 的 `hgt = … - (s ? 1.5 : 0)`），
+#: 而 100% 堆叠的绘图区高度在 260~280px 上下 ⇒ **占比低于 0.6% 的段，扣掉白缝之后
+#: 高度就是 0**：它照样占一格图例、照样在图注里占一段，但图上一个像素都没有。
+#: 这种段**不能删**（删了各段之和就不是 100，而图上仍写着「堆叠 = 100%」），
+#: 但必须在图注里说破 —— 否则读者会在图上找一段根本找不到的东西，
+#: 然后以为是自己看漏了。
+MIX_TINY_SEG_PCT = 0.6
+#: 残差 ÷ 合计 的上限：超过它就必须在 spec 里给残差段起名字。
+#: 取 1e-6 而不是 0：源表里几亿的加元金额相加会有 float64 舍入（实测 6e-05 CAD /
+#: 3e-14 相对），为那种量级逼 spec 写一句「其他」是噪声。
+MIX_RESID_TOL = 1e-6
+#: 100% 堆叠是 DENSE 图型（窗口内一个 null 都不许有，见 build/verify_pages.py 的 DENSE），
+#: 所以窗口只能**截**不能补。截完短于这个数就不出这张图 —— 十几根柱的占比图读不出趋势。
+MIX_MIN_MONTHS = 24
 
 # ── 量价分解（decomp）与滚动同比（ttm_yoy）──────────────────────────────
 # 两者共用一个前提：**「日均」列不能直接跨月相加**。各月立会日数在 18–23 天之间浮动，
@@ -584,6 +643,57 @@ def label_width(s):
     return int(min(150, max(44, math.ceil(w) + 8)))
 
 
+def share_txt(v):
+    """占比读数 → 字符串。一位小数，**但不许把它凑成 0.0% 或 100.0%**。
+
+    100% 堆叠里这两个端点是有语义的：印成 `100.0%` 等于宣称「这一段就是全部」，
+    而同一段图注两句之后还写着「有一段残差」—— 自相矛盾（实测 CRA 在 Aug-25 是
+    99.98657%，一位小数下印成 100.0%）。凑到端点的时候多给两位，让读者看得出它没到顶。
+    """
+    t = f'{v:.1f}'
+    if t in ('0.0', '100.0') and not (v == 0.0 or v == 100.0):
+        return f'{v:.3f}'
+    return t
+
+
+def axis_short(zh, cap=14):
+    """把段名收成能当**纵轴标题**用的短名。
+
+    纵轴标题是 `rotate(-90)` 竖排的，长度直接吃绘图区高度；引擎的 `fitVertical` 只会
+    缩字号，缩到下限还超就画到画布外，并压住卡片的图例与「表格」按钮
+    （实测：残差段叫「其他股指期货（SXM 迷你等，官方未单列）」时越出画布上缘 36.9px、
+    压住图例 172px²，`tools/visual_qa.py` 判 🔴）。
+    所以这里做两件事，都只动**轴标题**，图例与图注仍用全名：
+      ① 去掉末尾那对括号里的补充说明 —— 它解释的是「这一段包含什么」，那件事属于图注；
+      ② 还超长就截断加省略号。轴标题的职责是「这根轴是谁」，不是下定义。
+    """
+    t = re.sub(r'（[^（）]*）\s*$', '', str(zh)).strip()
+    return t if len(t) <= cap else t[:cap - 1] + '…'
+
+
+def nice_max(v):
+    """`stacked_dual` 右轴的上界取一个整刻度。
+
+    引擎把这个轴写死成 `ticks(0, rc.ymax || 60, 6)`、下界恒为 0（`assets/charts.js`），
+    所以能调的只有上界。与 `build/exchanges_eu.py` / `build/exchanges_na.py` 里那份
+    同名函数逐字同源 —— 三处都在给同一个写死的右轴挑刻度，改一处要想想另两处。
+    """
+    if not (isinstance(v, (int, float)) and np.isfinite(v)) or v <= 0:
+        return 1
+    step = 10 ** int(np.floor(np.log10(v)))
+    for k in (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0):
+        t = k * step
+        if v <= t:
+            # ⚠️ **这里不能写 `int(t)`。** `exchanges_eu.py` / `exchanges_na.py` 的两份
+            # 副本就是那么写的，而 `int()` 在 1.5 / 2.5 这两档上是**截断**：
+            # step==1 时 nice_max(1.2) 会返回 int(1.5)=1 —— 一个**比入参还小**的上界。
+            # 右轴用它当 ymax，比 ymax 大的点会被引擎顶到画布外，而且不报错。
+            # 那两份副本目前喂进去的值（40 / 80）落不到这两档上，所以没暴露；
+            # 本副本按整刻度取整、只在结果本来就是整数时才转 int。
+            return int(t) if (t >= 1 and float(t).is_integer()) else float(t)
+    return int(10 * step)
+
+
 # ══════════════════════════════ SPEC 校验 ══════════════════════════════
 def _check_keys(d, allowed, required, where):
     bad = sorted(set(d) - allowed)
@@ -712,6 +822,63 @@ def _norm_ttm(t, where):
     }
 
 
+def _norm_mix(m, where):
+    """一条 `groups[].mix` → 归一化 dict。这里只做**机械**校验，加总关系留给 Page 复算。
+
+    `total` / `parts` 写的是**列名**，不是列配置 —— 列配置只在 `groups[].cols` 里声明一次，
+    这里引用。理由是「一列只声明一次」：同一列若在两处各写一份 unit/fmt，
+    两份迟早会分叉，而分叉之后图与核对表会对同一个数印出两个单位，没有任何护栏会响。
+    """
+    if not isinstance(m, dict):
+        raise SpecError(f'{where} 必须是 dict，收到 {type(m).__name__}')
+    _check_keys(m, MIX_KEYS, MIX_REQUIRED, where)
+    parts = list(m['parts'])
+    if not parts:
+        raise SpecError(f'{where} 的 parts 一项都没有 —— 没有分项就没有占比可画')
+    if len(parts) != len(set(parts)):
+        raise SpecError(f'{where} 的 parts 里有重复列名 {parts} —— 同一列堆两次会让'
+                        f'各段之和超过合计，而图上只会画成一根更高的柱')
+    if str(m['total']) in parts:
+        raise SpecError(f'{where} 的 total={m["total"]!r} 同时出现在 parts 里 —— '
+                        f'合计不是自己的分项，堆进去各段之和会是合计的两倍')
+    # 分项段数上限跟着配色走（见 MIX_SEG_COLORS 上方那段）：残差段用的是它自己的
+    # GRAY，不占分项的配色位，所以上限就是配色表的长度。
+    if len(parts) not in MIX_SEG_COLORS:
+        raise SpecError(
+            f'{where} 有 {len(parts)} 个分项'
+            + ('（外加一个残差段）' if m.get('residual_zh') else '')
+            + f'，超过本图配色能分开的 {max(MIX_SEG_COLORS)} 段 —— '
+              f'请先在 spec 里把小项并进残差（docs/CHART_KINDS.md §3.6.1：'
+              f'分段一多就只能靠颜色区分，而数据色只有 6 个、RED 是断点专用色）')
+    rs = m.get('rhs_share')
+    if rs and rs != 'residual' and rs not in parts:
+        raise SpecError(
+            f'{where} 的 rhs_share={rs!r} 既不是 parts 里的列名，也不是字面量 '
+            f"'residual' —— 右轴那条线的语义是「把其中**一段**换个刻度重画一遍」，"
+            f'它不许是第四个量。可选：{parts + ["residual"]}')
+    if rs == 'residual' and not m.get('residual_zh'):
+        raise SpecError(f"{where} 的 rhs_share='residual' 但没有 residual_zh —— "
+                        f'没有残差段就没有那条线可画')
+    gran = m.get('granularity')
+    if gran is not None and gran not in GRANS:
+        raise SpecError(f"{where} 的 granularity={gran!r} 只能是 {GRANS[0]!r} 或 "
+                        f"{GRANS[1]!r}（见 DECOMP_REQUIRED 上方的注释）")
+    if m.get('weight_col') and gran != 'daily_avg':
+        raise SpecError(f"{where} 声明 granularity={gran!r} 却给了 weight_col —— "
+                        f'当月合计再乘一次交易日数是错的')
+    return {
+        'total': str(m['total']),
+        'parts': [str(x) for x in parts],
+        'granularity': gran,
+        'total_col': m.get('total_col'),
+        'weight_col': m.get('weight_col'),
+        'residual_zh': str(m.get('residual_zh') or ''),
+        'rhs_share': str(m.get('rhs_share') or ''),
+        'note': str(m.get('note') or ''),
+        'share_note': str(m.get('share_note') or ''),
+    }
+
+
 def _load_breaks(spec, series_dir):
     """`breaks` 归一化成 [{'month': Period, 'zh': str, 'col': str|None}]。
 
@@ -776,11 +943,14 @@ class Page:
                             f'共同最新月与发布门槛，条数一多就等于把最慢的那条当门槛')
         self.groups = []
         for gi, g in enumerate(spec['groups']):
-            _check_keys(g, {'zh', 'cols'}, {'zh', 'cols'}, f'groups[{gi}]')
+            _check_keys(g, GROUP_KEYS, GROUP_REQUIRED, f'groups[{gi}]')
             cols = [_norm_col(c, f'groups[{gi}].cols[{ci}]') for ci, c in enumerate(g['cols'])]
             if not cols:
                 raise SpecError(f'groups[{gi}]（{g["zh"]}）一列都没有')
-            self.groups.append({'zh': g['zh'], 'cols': cols})
+            self.groups.append({
+                'zh': g['zh'], 'cols': cols,
+                'mix': _norm_mix(g['mix'], f'groups[{gi}]（{g["zh"]}）.mix')
+                if g.get('mix') else None})
 
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
@@ -797,7 +967,11 @@ class Page:
                + [d[k] for d in self.decomp
                   for k in ('value_total_col', 'qty_total_col', 'weight_col') if d[k]]
                + [t['level']['col'] for t in self.ttm]
-               + [t[k] for t in self.ttm for k in ('total_col', 'weight_col') if t[k]])
+               + [t[k] for t in self.ttm for k in ('total_col', 'weight_col') if t[k]]
+               # mix 的 total / parts 引用的是 groups 里已声明的列（已在 allc 里），
+               # 这里只补它自己新引进的两条辅助列。
+               + [g['mix'][k] for g in self.groups if g['mix']
+                  for k in ('total_col', 'weight_col') if g['mix'][k]])
         missing = sorted({c['col'] for c in allc if c['col'] not in have}
                          | {c for c in aux if c not in have})
         if missing:
@@ -822,6 +996,101 @@ class Page:
         for g in self.groups:
             g['cols'] = [c for c in g['cols'] if c['col'] not in self.empty]
         self.groups = [g for g in self.groups if g['cols']]
+
+        # ── groups[].mix：列名 → 列配置，并把「被 mix 吃掉」的列记下来 ──────────────
+        #
+        # 引用而不是另写一份列配置（见 `_norm_mix` 的 docstring），所以这里要做三件事：
+        #   ① 名字必须指向**本 spec 已声明**的列 —— 拼错的列名会让整张图静默消失；
+        #   ② total 与 parts 必须同一个 `unit`、同一个 `stock` 档 —— 单位不同的两列相除
+        #      得到的「占比」没有指称，而流量与存量混堆等于把「一个月发生了多少」和
+        #      「月末剩下多少」加起来；
+        #   ③ 记下**本组自己**被吃掉的列名（`g['consumed']`）：它们的水平值由这一组的
+        #      「合计柱 + 占比堆叠」两张图交代，不再进本组的常规对比图，
+        #      否则同一批数在同一页上画两遍。
+        #      ⚠️ **按组算，不按全页算。** 曾经写成全页一个集合，后果是：某一组的 mix
+        #      跨组引用了另外几组的列当分项，那几组自己的水平值柱**整批消失**
+        #      （实测 tmx 的「MX 月末未平仓」mix 一加，SXF / 个股期权 / ETF 期权
+        #      三张存量柱当场没了）。跨组引用的语义是「借它的数画结构」，
+        #      不是「替它把水平值也讲了」—— 水平值仍归它自己那一组。
+        by_name = {c['col']: c for c in allc}
+        self.mix_skipped = []
+        for g in self.groups:
+            m = g.get('mix')
+            if not m:
+                continue
+            where = f'groups（{g["zh"]}）.mix'
+            miss = [x for x in [m['total']] + m['parts'] if x not in by_name]
+            if miss:
+                raise SpecError(
+                    f'{where} 引用了没有在本 spec 里声明的列 {miss} —— '
+                    f'mix 的 total/parts 写的是列名，列配置只在 groups[].cols 里声明一次'
+                    f'（headline 也算）。现有列名：{sorted(by_name)}')
+            gone = [x for x in [m['total']] + m['parts'] if x in self.empty]
+            if gone:
+                # 整列为空是「等数据」不是「spec 写错」，所以不硬失败：记账、这张图不出。
+                self.mix_skipped.append(f'{g["zh"]}：{"、".join(gone)} 整列为空，'
+                                        f'总量柱与占比堆叠都不出')
+                g['mix'] = None
+                continue
+            m['total'] = by_name[m['total']]
+            m['parts'] = [by_name[x] for x in m['parts']]
+            bad_unit = [c['zh'] for c in m['parts'] if c['unit'] != m['total']['unit']]
+            if bad_unit:
+                raise SpecError(
+                    f'{where} 的分项 {bad_unit} 与合计 {m["total"]["zh"]} 单位不同'
+                    f'（{m["total"]["unit"]}）—— 占比 = 分项 ÷ 合计，两边不同单位时'
+                    f'这个比值不指代任何东西')
+            bad_kind = [c['zh'] for c in m['parts'] if c['stock'] != m['total']['stock']]
+            if bad_kind:
+                raise SpecError(
+                    f'{where} 的分项 {bad_kind} 与合计 {m["total"]["zh"]} 一个是流量'
+                    f'一个是存量 —— 流量按月累计发生、存量是某一天的截面，两者不能相加，'
+                    f'堆出来的柱高没有指称')
+            if m['total']['stock'] and (m['granularity'] or m['total_col']
+                                        or m['weight_col']):
+                raise SpecError(
+                    f'{where} 的合计 {m["total"]["zh"]} 是存量列，却给了 '
+                    f'granularity / total_col / weight_col —— 那三个字段是给'
+                    f'「12 个月滚动合计」用的，而 12 个月末快照相加不指代任何量'
+                    f'（CONTRACT §6.1 第 4 条）。存量的次轴同比走点对点口径，无需还原')
+            bad_ratio = [c['zh'] for c in [m['total']] + m['parts'] if self.is_ratio(c)]
+            if bad_ratio:
+                raise SpecError(
+                    f'{where} 里 {bad_ratio} 是比率列（fmt ∈ {sorted(RATIO_FMT)}）—— '
+                    f'比率不许进 mix：合计柱的次轴要么是 12 个月滚动合计的同比'
+                    f'（比率不许做滚动合计，CONTRACT §6.1 第 5 条），'
+                    f'要么是点对点同比而比率的同比应当是**百分点差**；'
+                    f'占比堆叠那一侧更直接 —— 几个比率相加不等于合计那个比率。'
+                    f'要画比率就走常规的单列 gs_bar（`ex_single` 会按 pp 处理）')
+            if not m['total']['stock'] and not m['granularity']:
+                raise SpecError(
+                    f'{where} 的合计 {m["total"]["zh"]} 是流量列，必须给 granularity'
+                    f"（'monthly_total' = 列本身就是当月合计，'daily_avg' = 列是当月日均）"
+                    f'—— 次轴那条 12 个月滚动同比要先把柱还原成当月合计，'
+                    f'底座猜不出来，猜错就会在图注里印出一句关于口径的假话')
+            # 本组自己声明了哪几列 —— `mix_pair` 拿它把「被吃掉的列」限定在本组内。
+            # 跨组引用的语义是「借它的数画结构」，不是「替它把水平值也讲了」。
+            g['declared'] = {c['col'] for c in g['cols']}
+
+        # ── 同一列不许被画成两根柱 ────────────────────────────────────────────
+        # mix 的 total 走 `ex_mix_total`；没被本组吃掉的列走常规 `ex_single` / `ex_stock`。
+        # 两条路都会给同一列画一张柱图，而页面上看不出这是同一批数
+        # （标题里的组名不同）。跨组引用 total 时最容易撞上：合计列声明在 A 组、
+        # 被 B 组的 mix 当 total，而 A 组没把它吃掉，于是 A、B 各画一张。
+        totals = {g['mix']['total']['col'] for g in self.groups if g.get('mix')}
+        eaten_max = set()          # 按声明算的「最多能被吃掉」的列（保守上界）
+        for g in self.groups:
+            mm = g.get('mix')
+            if mm:
+                eaten_max |= ({mm['total']['col']} | {c['col'] for c in mm['parts']}) \
+                    & {c['col'] for c in g['cols']}
+        plain = {c['col'] for g in self.groups for c in g['cols']} - eaten_max
+        dup = sorted(totals & plain)
+        if dup:
+            raise SpecError(
+                f'{dup} 既是某条 mix 的 total（会画成合计柱），又在自己那一组里没有被'
+                f'吃掉（会再画一张常规柱）—— 同一列两根柱，页面上看不出是同一批数。'
+                f'要么把它移进声明 mix 的那一组，要么让它自己那一组的 mix 也引用它')
 
         # 窗口内恒为 0 的图由各 ex_* 自己判（flat0_skip），这里只开账本。
         self.flat0 = []
@@ -1197,6 +1466,7 @@ class Page:
         # 画出一条塌到零的假线，首尾为 null 还会 null.toFixed() 抛 TypeError、
         # 该卡片之后的 exhibit 全不渲染（docs/CHART_KINDS.md §1.2）。所以有缺口就换 lines。
         kind = 'lines_endlabels' if dense else 'lines'
+        self.saw_group_lines = True     # 页尾「图型选择规则」按真画出来的图措辞
         names = ' / '.join(c['zh'] for c in cols)
         ex = {
             'n': n, 'kind': kind, 'fmt': cols[0]['fmt'], 'xlabels': xl,
@@ -1247,6 +1517,7 @@ class Page:
             M.append(LN(yv))
         if not rows:
             return None
+        self.saw_group_heat = True      # 同上
         ex = {
             'n': n, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0',
             'title': f'{gz}：{len(rows)} 条序列 × 近 {len(win)} 个月同比',
@@ -1269,6 +1540,36 @@ class Page:
         return ex
 
     # ────────────────────── exhibit：存量列 ──────────────────────
+    def stock_tail0(self, ex, xl, v):
+        """已停产品的零尾巴：关掉柱顶标签并给出那句说明（就地改 `ex`，返回图注文字）。
+
+        窗口从 25 期拉到 2016-01 起之后，这类图**第一次出现**：BAX（CDOR，已停）
+        最后一个非零月是 2024-05，之后二十几个月恒为 0，而旧窗口（近 25 期）整段全零、
+        被 `flat0_skip` 整张跳过了 —— 也就是说这不是新问题，是**以前根本没画出来**。
+        现在它带着上百个月的真实历史回来了，该画；只是零尾巴上每格都印一个「0.0」，
+        与次轴那一年的「-100%」钉在同一条零线上叠字（实测重叠 106px²，超 🔴 门槛 60px²，
+        且两组标签分属柱与次轴、引擎的 thinLabels 只在组内抽稀，跨组不管）。
+        关掉柱顶标签而不是关掉这张图：零高度的柱上那个「0.0」本来就没有信息，
+        而上百个月的历史有。读数仍可走右上角「表格」视图。
+
+        ⚠️ 抽成公共方法是因为存量柱现在有**两个产地**：`ex_stock` 与
+        `ex_mix_total` 的存量分支。留两份的下场是其中一份忘了关标签 ——
+        同一页上两张同类图，一张干净一张叠字，而没有任何护栏会响。
+        """
+        tail0 = 0
+        for x in reversed(v):
+            if x is not None and np.isfinite(x) and x == 0:
+                tail0 += 1
+            else:
+                break
+        if tail0 < 12:
+            return ''
+        ex['bar_labels'] = False
+        return (f'<b>本序列已停更：最后一个非零月是 {xl[len(v) - tail0 - 1]}，'
+                f'其后 {tail0} 个月恒为 0。</b>零尾巴上的柱顶数值标签已关掉'
+                f'（零高度的柱上印「0」不带信息，却会与次轴同比的「-100%」'
+                f'钉在同一条零线上叠字）；逐格读数走右上角「表格」。')
+
     def ex_stock(self, n, gz, c):
         end = self.last_month(c)
         win = self.win_long(end)
@@ -1281,29 +1582,10 @@ class Page:
         if rhs:      # 存量的次轴同比是点对点口径（月末快照 vs 去年同月月末）
             self.log_yoy(n, 'stock')
         ex['src_extra'] = 'Period-end stock, not a flow'
-        # ── 已停产品的零尾巴：柱顶标签关掉，理由写进图注 ──────────────────────────
-        # 窗口从 25 期拉到 2016-01 起之后，这类图**第一次出现**：BAX（CDOR，已停）
-        # 最后一个非零月是 2024-05，之后 26 个月恒为 0，而旧窗口（近 25 期）整段全零、
-        # 被 `flat0_skip` 整张跳过了 —— 也就是说这张图不是新问题，是**以前根本没画出来**。
-        # 现在它带着 101 个月的真实历史回来了，该画；只是零尾巴上每格都印一个「0.0」，
-        # 与次轴那一年的「-100%」钉在同一条零线上叠字（实测重叠 106px²，超 🔴 门槛 60px²，
-        # 且两组标签分属柱与次轴、引擎的 thinLabels 只在组内抽稀，跨组不管）。
-        # 关掉柱顶标签而不是关掉这张图：零高度的柱上那个「0.0」本来就没有信息，
-        # 而 101 个月的历史有。读数仍可走右上角「表格」视图。
-        tail0 = 0
-        for x in reversed(v):
-            if x is not None and np.isfinite(x) and x == 0:
-                tail0 += 1
-            else:
-                break
-        if tail0 >= 12:
-            ex['bar_labels'] = False
+        tail0_zh = self.stock_tail0(ex, xl, v)
         hit = self.mark_breaks(ex, win, [c])
         ex['note'] = (
-            (f'<b>本序列已停更：最后一个非零月是 {xl[len(v) - tail0 - 1]}，'
-             f'其后 {tail0} 个月恒为 0。</b>零尾巴上的柱顶数值标签已关掉'
-             f'（零高度的柱上印「0」不带信息，却会与次轴同比的「-100%」钉在同一条零线上叠字）；'
-             f'逐格读数走右上角「表格」。' if tail0 >= 12 else '') +
+            tail0_zh +
             f'<b>存量（期末值）</b>，与本页其余「日均 / 当月合计」的流量列不是一回事：'
             f'流量按月累计发生，存量是某一天的截面，两者不能相加，跨币种换算时前者配月均'
             f'汇率、后者配月末汇率（本页只标注本币 {self.spec["ccy"]}，换算不在本页做）。'
@@ -1313,6 +1595,359 @@ class Page:
             + self.slow_tail([c])
             + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
+
+    # ────────────────────── exhibit：分项占比（groups[].mix）──────────────────────
+    #
+    # 一条 `mix` 出两张图，**顺序固定**：先「合计的水平值柱 + 次轴同比」，再「分项 100%
+    # 占比堆叠」。两张回答的是两个问题，合在一张图上必然要抢纵轴：
+    #   · 柱图回答「这门生意有多大、在不在长」；
+    #   · 占比图回答「结构往哪边走」—— 而占比最有价值的场合恰恰是「总量在涨、某一块的
+    #     占比反而在掉」，那正是绝对量图上看不出来的。
+    def mix_window(self, cols):
+        """合计与全部分项**都有值**的、以 `WIN_FROM` 为左界的末端连续窗口。
+
+        100% 堆叠是 DENSE 图型（`build/verify_pages.py` 的 `DENSE`）：窗口内一个 `null`
+        都不许有 —— JS 会把它当 0 参与堆叠，画出一根凭空矮一截的柱，而且不报错。
+        所以这里**只截不补**（同 `build/mrwin.py:26-30` 对 DENSE 的处理）：
+          · 右端取「最后一个各列都有值的月」—— 慢腿页每个月初都会有一格这种空
+            （本页头条已经发了、现货那半边还没发），那是正常状态不是故障；
+          · 左端取「末端连续段的起点」再与 `WIN_FROM` 取晚 —— 中间真有洞时从洞之后起算，
+            跨洞画等于把两段不相邻的历史画成相邻。
+        """
+        idx = list(self.df.index)
+        mask = np.ones(len(idx), dtype=bool)
+        for c in cols:
+            mask &= np.isfinite(self.ser(c).values.astype(float))
+        hits = np.flatnonzero(mask)
+        if not len(hits):
+            return None
+        j = int(hits[-1])
+        i = j
+        while i - 1 >= 0 and mask[i - 1]:
+            i -= 1
+        lo = pd.Period(WIN_FROM, freq='M')
+        while i < j and idx[i] < lo:
+            i += 1
+        return idx[i:j + 1]
+
+    def mix_cut_zh(self, cols, win):
+        """占比图的窗口为什么起止在这两个月 —— 逐列现算，不写死。
+
+        没有这半句，读者在一张比同页别的图短的占比图上无从判断「左边那几年去哪了」：
+        是源里本来就没有，还是我们挑了一段好看的。两种可能在图上长得一模一样。
+        """
+        lo = pd.Period(WIN_FROM, freq='M')
+        ends, firsts = {}, {}
+        for c in cols:
+            ends[c['zh']] = self.last_month(c)
+            ser = self.ser(c).dropna()
+            firsts[c['zh']] = ser.index[0] if len(ser) else None
+        bits = []
+        # ── 右端：只有当**确实有列还能往右走**时才需要解释 ──
+        later = [z for z, e in ends.items() if e is not None and e > win[-1]]
+        if later:
+            stops = [z for z, e in ends.items() if e == win[-1]]
+            bits.append(f'右端停在 {mlab(win[-1])}：{"、".join(stops)} 到此为止'
+                        f'（{"、".join(later)} 还有更晚的月份，但 100% 堆叠缺一列'
+                        f'整根柱就不成立，所以按最短的那条截）')
+        # ── 左端：三种可能，按判据分开说，不许含糊成一句「数据从这里开始」 ──
+        starts = [z for z, f in firsts.items() if f is not None and f == win[0]]
+        if win[0] == lo:
+            bits.append(f'左端起于全站统一的 {mlab(win[0])}（各图共同的左界）')
+        elif starts:
+            bits.append(f'左端起于 {mlab(win[0])}：{"、".join(starts)} 这个月才有第一个值')
+        else:
+            bits.append(f'左端起于 {mlab(win[0])}：再往前，合计与各分项并非月月都有值，'
+                        f'而 100% 堆叠是平滑图型、缺一格就把柱画塌，只能截不能补')
+        return '<b>窗口口径</b>：' + '；'.join(bits) + '。'
+
+    def mix_pair(self, n, g):
+        """一条 `mix` → ([合计柱图, 占比堆叠图], 本组被这两张图吃掉的列名集合)。
+
+        两张一起产出而不是各自成图，是为了让占比图能在图注里指名道姓地说
+        「绝对量看 Exhibit k」—— 图号是算出来的，写死会在增删图之后指到错的图上
+        （见 `log_yoy` 的 docstring 记的同一条教训）。
+        """
+        m, gz = g['mix'], g['zh']
+        total, why_t = self.ex_mix_total(n, gz, m)
+        # 合计柱没出（整列为空 / 窗口内恒为 0）时占比图顶上来占 n，图号不留洞。
+        share, why_s = self.ex_mix_share(n + (1 if total else 0), gz, m,
+                                         total_n=n if total else None)
+        for w in (why_t, why_s):
+            if w:
+                self.skipped.append(w)
+        if total is not None and share is not None:
+            # 图号是算出来的，两边互指都在这里回填 —— 写死会在增删图之后指到错的图上
+            # （`log_yoy` 的 docstring 记的是同一条教训）。
+            total['note'] += (f'各分项的构成见 Exhibit {share["n"]}（100% 占比堆叠）—— '
+                              f'本图只讲规模，那张只讲结构。')
+        # 「哪几列算被这一组吃掉了」跟着**真画出来的图**走，不跟声明走：
+        # 两张图各自都可能不出（合计整列为空、占比窗口不足 24 个月、某月合计 ≤0）。
+        # 按声明扣列的后果是那几列的图**整批消失**而页面上没有任何痕迹 ——
+        # 声明了一张画不出来的图，不该连带把本来画得出来的图也删掉。
+        eaten = set()
+        if total is not None:
+            eaten.add(m['total']['col'])
+        if share is not None:
+            eaten |= {c['col'] for c in m['parts']}
+        return [e for e in (total, share) if e is not None], eaten & g['declared']
+
+    def ex_mix_total(self, n, gz, m):
+        """`mix` 的第一张：合计列的水平值柱 + 次轴同比。
+
+        次轴口径**由列的性质决定，不由排版偏好决定**（CONTRACT §6.1）：
+          · 流量 → 12 个月滚动合计的同比（默认口径，与 `ex_ttm` 同一套实现）；
+          · 存量 → 点对点同比（12 个月末快照相加不指代任何量，滚动合计对存量非法）。
+        """
+        c = m['total']
+        end = self.last_month(c)
+        if end is None:
+            return None, f'{gz}：{c["col"]} 整列为空，合计柱不出'
+        win = self.win_long(end)
+        xl = [mlab(p) for p in win]
+        v = self.vals(c, win)
+        if self.flat0_skip(gz, [c], win, [v]):
+            return None, f'{gz}：{c["zh"]} 窗口内恒为 0，合计柱不出'
+        if c['stock']:
+            rhs = yoy_rhs(self.ser(c), win)
+            # 标题里的「（存量，期末口径）」不是排版修辞：`tools/check_yoy_caliber.py`
+            # 的 `_STOCK_TXT` 认这几个字，认到了才把 R1/R4（单月同比未声明）整条豁免掉 ——
+            # 点对点同比正是存量的合法默认口径。措辞与 `ex_stock` 保持逐字相同。
+            ex = bar_ex(n, f'{gz}：{c["zh"]}（存量，期末口径）—— 水平值与点对点同比',
+                        c, xl, v, rhs, ylab2='% y/y')
+            if rhs:
+                self.log_yoy(n, 'stock')
+            ex['src_extra'] = 'Period-end stock, not a flow'
+            tail0_zh = self.stock_tail0(ex, xl, v)
+            hit = self.mark_breaks(ex, win, [c])
+            ex['note'] = (
+                tail0_zh +
+                f'深蓝柱 = {c["zh"]}的<b>水平值</b>（{c["unit"]}，官方原始口径）。'
+                f'{self.win_zh(win)}。'
+                + (f'金色折线（右轴）= <b>点对点同比</b>（本月末 vs 去年同月末）。'
+                   f'<b>存量不做 {TTM_WIN} 个月滚动合计</b>：把 12 个月末的快照加起来'
+                   f'既不是「一年的量」（存量不累积）也不是「平均水平」（没除以 12），'
+                   f'那是一句关于自己算术的假话（CONTRACT §6.1 第 4 条）。'
+                   if rhs else NO_YOY_NOTE)
+                + f'{xl[-1]} {unit_txt(v[-1], c)}，'
+                + (f'同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
+                   if rhs else f'环比 {chg_txt(c, v, lag=1)}。')
+                + '<b>存量与本页的流量列不能相加</b>：流量按月累计发生，存量是某一天的截面。'
+                + self.slow_tail([c])
+                + (self.brk_zh(hit, win) + '。' if hit else '')
+                + (' ' + md_bold(m['note']) if m['note'] else ''))
+            return ex, None
+
+        tot, how = self.monthly_total(c, m['total_col'], m['weight_col'],
+                                      m['granularity'], f'groups「{gz}」.mix')
+        rhs, rv, mo_yoy, ttm_ser = self.ttm_rhs(tot, win)
+        ex = bar_ex(n, f'{gz}：{c["zh"]} —— 水平值与 {TTM_WIN} 个月滚动同比',
+                    c, xl, v, rhs, ylab2=f'% y/y（{TTM_WIN}M 滚动）')
+        if rhs:
+            self.log_yoy(n, 'ttm')
+        hit = self.mark_breaks(ex, win, [c])
+        ex['note'] = (
+            f'深蓝柱 = {c["zh"]}的<b>水平值</b>（{c["unit"]}，原始单位，未做任何指数化）。'
+            f'{self.win_zh(win)}。'
+            + (f'金色折线（右轴）= <b>{TTM_WIN} 个月滚动合计的同比</b>：'
+               f'先把最近 {TTM_WIN} 个月的量加成一个滚动合计，再与前 {TTM_WIN} 个月的'
+               f'同一口径比。滚动合计取自：{how}。'
+               if rhs else NO_YOY_NOTE)
+            + f'{xl[-1]} 水平值 {unit_txt(v[-1], c)}，'
+            + (f'滚动同比 {nz_txt(f"{rv[-1]:+.1f}")}%（单月同比 '
+               f'{nz_txt(f"{float(mo_yoy.reindex(win).values[-1]):+.1f}")}%，两者并列'
+               f'只为让读者看到差距，图上画的是前者）。'
+               if rhs and np.isfinite(rv[-1]) else '')
+            + self.ttm_spike_zh(mo_yoy, ttm_ser)
+            + self.bar_line_caliber_zh(c, m['total_col'], m['weight_col'], m['granularity'])
+            + self.slow_tail([c])
+            + (self.brk_zh(hit, win) + '。' if hit else '')
+            + (' ' + md_bold(m['note']) if m['note'] else ''))
+        return ex, None
+
+    def ex_mix_share(self, n, gz, m, total_n=None):
+        """`mix` 的第二张：分项占合计的比重，**100% 堆叠柱**（`stacked_dual`）。
+
+        **缺省不给右轴那条线**：占比型堆叠里各段之和恒为 100，段高本身就把每一块读出来了，
+        再拿其中一段换个刻度画一遍是同一个数说两遍（`build/CONTRACT.md` §3 的
+        `stacked_dual` 那一行、`docs/CHART_KINDS.md` §3.14 同一条）。
+        唯一的例外由 spec 的 `rhs_share` 显式打开，判据见下面那段注释。
+
+        **加总关系在这里逐月复算，不信 spec 的自述**：
+          · 残差为负（分项之和 > 合计）→ 硬失败。那说明分子分母不是同一个口径，
+            而图上只会画成一根更高的柱，没有任何护栏会响。
+          · 残差为正且超过 `MIX_RESID_TOL` 却没给 `residual_zh` → 硬失败。
+            那种图会声称「堆叠 = 100%」而实际不是。
+          · 声明了 `residual_zh` 而残差恒为 0 → 也硬失败：一条恒为 0 的「其他」段
+            会让读者以为存在一块查不到的业务。
+        """
+        tot_c, parts = m['total'], m['parts']
+        cols = [tot_c] + parts
+        win = self.mix_window(cols)
+        got = 0 if win is None else len(win)
+        if got < MIX_MIN_MONTHS:
+            return None, (f'{gz}：合计与全部分项都有值的连续窗口只有 {got} 个月'
+                          f'（不足 {MIX_MIN_MONTHS} 个月），占比堆叠不出 —— '
+                          f'100% 堆叠是 DENSE 图型，窗口只能截不能补')
+        tv = self.vals(tot_c, win)
+        pvs = [self.vals(c, win) for c in parts]
+        if float(np.min(tv)) <= 0:
+            k = int(np.argmin(tv))
+            return None, (f'{gz}：{tot_c["zh"]} 在 {mlab(win[k])} 为 '
+                          f'{fmt_val(tv[k], tot_c["fmt"])}（≤0），占比无定义，本图不出')
+        resid = tv - np.sum(pvs, axis=0)
+        rel = resid / tv
+        k_lo, k_hi = int(np.argmin(rel)), int(np.argmax(rel))
+        # 容差之内的**负**残差是几亿的数相减剩下的浮点噪声（实测 -1e-16 量级）。
+        # 不钳掉的话它会以两种方式上页面：图注里印出「窗口内在 -0.0%…」，
+        # 而引擎会给那一段画一个负高度的 rect（`Math.max(0, …)` 兜住了高度，
+        # 但 base[i] 已经被减过头，上面各段整体下移）。两者都不报错。
+        # 只钳容差之内的：真的超出容差就该在上面那两条硬失败里炸掉，不该被悄悄抹平。
+        if float(rel[k_lo]) < -MIX_RESID_TOL:
+            raise SpecError(
+                f'groups「{gz}」.mix：分项之和在 {mlab(win[k_lo])} **超过**合计 '
+                f'{abs(float(rel[k_lo])) * 100:.4g}%'
+                f'（{tot_c["zh"]} {fmt_val(tv[k_lo], tot_c["fmt"])} vs 分项之和 '
+                f'{fmt_val(float(tv[k_lo] - resid[k_lo]), tot_c["fmt"])}）—— '
+                f'子集关系不成立时占比大于 100%，而图上只会画成一根更高的柱。'
+                f'请核对两边是不是同一个口径，或者换一条真正是合计的列')
+        big = float(rel[k_hi])
+        if big > MIX_RESID_TOL and not m['residual_zh']:
+            raise SpecError(
+                f'groups「{gz}」.mix：{"、".join(c["zh"] for c in parts)} 之和'
+                f'并不等于 {tot_c["zh"]} —— 残差最大出现在 {mlab(win[k_hi])}，'
+                f'占合计 {big * 100:.4g}%（{fmt_val(float(resid[k_hi]), tot_c["fmt"])} '
+                f'{tot_c["unit"]}）。这张图会声称「堆叠 = 100%」，所以残差必须画出来：'
+                f"请给 mix 加一个 'residual_zh'，用它说清楚那一块是什么"
+                f'（官方未单列的品种？已停的旧合约？），别让它消失')
+        if big <= MIX_RESID_TOL and m['residual_zh']:
+            raise SpecError(
+                f'groups「{gz}」.mix 声明了 residual_zh={m["residual_zh"]!r}，'
+                f'但窗口内 {mlab(win[0])}–{mlab(win[-1])} 分项之和逐月恰等于合计'
+                f'（最大残差 {big * 100:.2g}%，在容差 {MIX_RESID_TOL:.0e} 之内）—— '
+                f'一条恒为 0 的「其他」段会让读者以为存在一块查不到的业务。请删掉它')
+
+        palette = MIX_SEG_COLORS[len(parts)]
+        segs = [(c['zh'], pvs[i] / tv * 100, palette[i]) for i, c in enumerate(parts)]
+        if m['residual_zh']:
+            segs.append((m['residual_zh'], np.maximum(resid, 0.0) / tv * 100,
+                         MIX_RESID_COLOR))
+        # 收尾自检：各段之和必须逐格等于 100。
+        # ⚠️ **单位要与 `MIX_RESID_TOL` 对齐**：那个阈值是**相对值**（残差 ÷ 合计），
+        # 而这里量的是**百分点**。曾经两边都写 1e-6，差了 100 倍 —— 相对残差落在
+        # 1e-8~1e-6 之间的月份，上面的硬失败放它过（在容差内），这里却会炸。
+        ssum = np.sum([sv for _z, sv, _c in segs], axis=0)
+        off = float(np.max(np.abs(ssum - 100.0)))
+        if not off <= MIX_RESID_TOL * 100 + 1e-9:
+            raise SpecError(f'groups「{gz}」.mix：各段之和偏离 100% 达 {off:.3e}pp'
+                            f'（上限 {MIX_RESID_TOL * 100:.0e}pp）—— 底座算错了')
+
+        ex = {
+            'n': n, 'kind': 'stacked_dual', 'height': 340, 'fmt': 'pct1', 'xrot': 90,
+            # 标题不写「{列名}的分项构成」：本仓的列名多半以拉丁字母收尾
+            # （「股指期货合计 ADV」「CGB（10 年）」），后面直接跟「的」会挤成「ADV的」。
+            # 把分母放进括号既避开了这个，又把「占谁的比重」摆在最显眼的位置。
+            'title': f'{gz}：各分项占比（分母 = {tot_c["zh"]}，堆叠 = 100%）',
+            'xlabels': [mlab(p) for p in win],
+            'ylab': f'% of {axis_short(tot_c["zh"], 18)}（堆叠 = 100%）',
+            'stacks': [{'name': zh, 'color': cc, 'values': LN(sv), 'label': False}
+                       for zh, sv, cc in segs],
+            'src_extra': ('Shares are computed as each component divided by the disclosed '
+                          'total on the same row; the stacks sum to 100% by construction'),
+        }
+        # ── 可选：把其中**一段**换个刻度在右轴上重画一遍 ────────────────────────
+        # 缺省不画（`build/CONTRACT.md` §3 的 `stacked_dual` 那一行：占比型堆叠里
+        # 各段之和恒为 100，段高本身已经把每一块读出来了，再画一遍是同一个数说两遍）。
+        # 例外只有一种，也正是 `/exchanges-eu/` Ex2 立这条例外的理由：某一段常年只占
+        # 几个百分点，在 0–100 的堆叠里它几个 pp 的变化根本量不出来。
+        # ⚠️ 这条线**不是第四个量**，`_norm_mix` 只许它指向 parts 里的一段或残差段。
+        rhs_line = ''
+        if m['rhs_share']:
+            k_r = (len(segs) - 1 if m['rhs_share'] == 'residual'
+                   else [c['col'] for c in parts].index(m['rhs_share']))
+            zh_r, sv_r = segs[k_r][0], segs[k_r][1]
+            # 线色不能与**任何一段**撞：polyline 无描边、画在柱之后，同色时它穿过那一段
+            # 整段看不见（`build/mrbase.py` 的 `_SEG_COLORS` 上方记着同一条实测教训）。
+            # 从前写死 GREEN，而 GREEN 现在进了 5 段那档的配色表 —— 那就是一颗定时炸弹。
+            used = {cc for _z, _v, cc in segs}
+            c_line = next((x for x in ('GREEN', 'GOLD', 'MBLUE', 'BLUE') if x not in used),
+                          None)
+            if c_line is None:
+                raise SpecError(
+                    f'groups「{gz}」.mix 要画右轴线，但 6 个数据色已经被 {len(segs)} 段'
+                    f'占满（{"、".join(sorted(used))}），没有一个色留给这条线 —— '
+                    f'同色的线穿过那一段整段看不见。要么去掉 rhs_share，'
+                    f'要么先把小分项并进残差')
+            ex['line'] = {'name': f'{zh_r}（RHS）', 'color': c_line, 'values': LN(sv_r),
+                          # 右轴下界被引擎写死成 0，只能调上界；留 15% 顶空免得线贴轴顶。
+                          'ymax': nice_max(float(np.max(sv_r)) * 1.15)}
+            ex['ylab2'] = f'{axis_short(zh_r)}，%（右，同一条序列换个刻度）'
+            rhs_line = (f'<b>右轴那条绿线不是新的量</b>：它就是「{zh_r}」这一段'
+                        f'换成 0–{ex["line"]["ymax"]}% 的刻度重画一遍 —— '
+                        f'这一段在 0–100 的堆叠里只占几个百分点，几 pp 的变化在那里量不出来。'
+                        f'柱顶上方那排绿色的百分比是它的读数（`assets/charts.js` 的 '
+                        f'thinLabels 会按密度抽稀，不是每一期都标；逐格读数走「表格」）。')
+        hit = self.mark_breaks(ex, win, cols)
+        rng = []
+        for zh, sv, _cc in segs:
+            lo_i, hi_i = int(np.argmin(sv)), int(np.argmax(sv))
+            rng.append(f'{zh} 最新 {share_txt(sv[-1])}%，窗口内在 {share_txt(sv[lo_i])}%'
+                       f'（{mlab(win[lo_i])}）到 {share_txt(sv[hi_i])}%（{mlab(win[hi_i])}）之间')
+        rz = ''
+        if m['residual_zh']:
+            # ⚠️ 这里**不许**写「它不是一条披露列」：底座只知道自己是拿减法算出来的，
+            # 不知道源表里有没有一条列恰好等于它（本仓就有这种情形 —— tmx 现货三张图的
+            # 残差逐月恰等于 Alpha-X & Alpha DRK，而那三条列同页另有自己的图）。
+            # 所以这里只说**能证明的**：它是算出来的。它到底是什么，由 spec 的
+            # `share_note` 逐家交代。
+            rz = (f'<b>最上面那段是<u>算出来的</u>残差，不是直接取自某一条列</b>：'
+                  f'残差 ≡ {tot_c["zh"]} − {"、".join(c["zh"] for c in parts)}，'
+                  f'本页把它叫作「{m["residual_zh"]}」。'
+                  f'窗口内它最大占到 <b>{big * 100:.2f}%</b>（{mlab(win[k_hi])}）、'
+                  f'最新 {float(rel[-1]) * 100:.2f}%。'
+                  f'把它画出来而不是删掉，是因为删掉之后各段之和就不是 100 了，'
+                  f'而图上仍会写着「堆叠 = 100%」。'
+                  + (f'⚠️ <b>但它在图上看不见</b>：最高的那个月也只占柱高 '
+                     f'{big * 100:.2f}%，而引擎在每两段之间留 1.5px 白缝，'
+                     f'低于 {MIX_TINY_SEG_PCT}% 的段扣完白缝高度就是 0。'
+                     f'图例里那一格与这段话是它在本图上仅有的痕迹，'
+                     f'逐月读数走卡片右上角的「表格」。'
+                     if big * 100 < MIX_TINY_SEG_PCT else ''))
+        else:
+            # 「最大偏差 0%，只是 float64 舍入」是自相矛盾的：恰为 0 就不是舍入。
+            # 两种情形分开说 —— 恒等式**精确**成立与「残差小到只剩浮点噪声」不是一回事。
+            gap = (f'逐月<b>分毫不差</b>，残差恰为 0' if big == 0.0 else
+                   f'最大偏差 {big * 100:.2g}%，只是 float64 舍入')
+            rz = (f'<b>没有残差段</b>：{"、".join(c["zh"] for c in parts)} 之和'
+                  f'在窗口内逐月恰等于{tot_c["zh"]}（{gap}），'
+                  f'所以这张图的分母没有任何一块落在名单之外。')
+        ex['note'] = (
+            f'<b>占比是现算的：分项 ÷ {tot_c["zh"]}</b>（同一行的两个数相除，'
+            f'不是各分项互相之间的比例）。{self.win_zh(win)}。'
+            + ('<b>本图是存量口径的占比</b>：分子分母都是月末快照，'
+               '读作「月末的未平仓/余额里各占多少」，不是「这个月新做了多少」。'
+               if tot_c['stock'] else '')
+            + f'<b>每根柱恒高 100%</b>，所以这张图只讲<b>结构</b>、一个字都没讲规模 —— '
+              f'柱高一样不代表那个月的量一样。'
+            + '；'.join(rng) + '。'
+            + rz
+            + ('<b>本图只有两段，两者互补</b>（和恒为 100%）：看其中一段的进退'
+               '就等于看另一段的反向进退，不是两个独立的量。'
+               if len(segs) == 2 else '')
+            + '<b>占比动了不等于哪一块变差了</b>：分母是合计，'
+              '一块绝对量原地不动、另一块猛涨，前者的占比照样往下走。'
+            # ⚠️ 合计的绝对量与**分项**的绝对量在两个地方，别混着指：
+            # 合计柱那张图只画合计那一条列，分项的水平值只在末尾核对表里。
+            + (f'<b>合计</b>的绝对量看 Exhibit {total_n}（合计柱）；' if total_n else '')
+            + '<b>各分项</b>的绝对量在末尾核对表里（本图一个绝对量都没画）。'
+            + rhs_line
+            + '段内不标数值：引擎的段内标签写死 6.6px 且只印整数，'
+              '压在深色段上会糊成一片；逐格读数走卡片右上角的「表格」。'
+            + self.mix_cut_zh(cols, win)
+            + self.slow_tail(cols)
+            + (self.brk_zh(hit, win) + '。' if hit else '')
+            + (' ' + md_bold(m['share_note']) if m['share_note'] else ''))
+        return ex, None
 
     # ────────────────────── exhibit：季节性 ──────────────────────
     def ex_season(self, n, c):
@@ -1875,27 +2510,13 @@ class Page:
                if ytd_info else '，无 YTD 桶（最新年已收官，或次年凑不出两侧对齐的月份）'))
         return ex, None
 
-    def ex_ttm(self, n, t):
-        """一条量的**水平值**（柱）+ **12 个月滚动合计的同比**（次轴金线）。
+    def ttm_rhs(self, tot, win):
+        """当月合计序列 → (次轴金线, 窗口内的滚动同比数组, 单月同比序列, 滚动同比序列)。
 
-        为什么次轴不画单月同比：单月同比同时被三件事推着走 —— 立会日数（18 vs 23 天，
-        差 28%）、假期与到期日的月度形状、以及去年同月那一个数本身的高低。三者叠加，
-        单月同比的毛刺可以大到与趋势符号相反。滚动 12 个月合计把这三件事全部抹平
-        （任意连续 12 个月都覆盖同样的日历与同样的到期周期），代价是转折点晚半年才显形。
-        毛刺到底有多大不靠引用别家的例子 —— 下面的图注用**这条序列自己**实测。
+        `tot` 由 `monthly_total()` 给出（口径怎么还原的由它交代）。整条同比都算不出来时
+        `rhs` 返回 None —— 引擎只看 `ex.yoy` 在不在就判双轴，值全是 null 时右轴量程会
+        退化成 [0, 1]，印出一列假刻度而金线一个点都没画（CONTRACT §6.3 最后一条）。
         """
-        c = t['level']
-        tot, how = self.monthly_total(c, t['total_col'], t['weight_col'],
-                                      t['granularity'], f'ttm_yoy「{t["zh"]}」')
-        end = self.last_month(c)
-        if end is None:
-            return None, f'{t["zh"]}：{c["col"]} 整列为空'
-        win = self.win_long(end)
-        xl = [mlab(p) for p in win]
-        v = self.vals(c, win)
-        if self.flat0_skip(t['zh'], [c], win, [v]):
-            return None, f'{t["zh"]}：窗口内恒为 0'
-
         roll = tot.rolling(TTM_WIN, min_periods=TTM_WIN).sum()
         ttm_yoy = (roll / roll.shift(12) - 1) * 100
         mo_yoy = (tot / tot.shift(12) - 1) * 100
@@ -1904,12 +2525,44 @@ class Page:
         if np.isfinite(rv).any():
             rhs = {'name': f'{TTM_WIN} 个月滚动合计的同比（RHS）', 'color': 'GOLD',
                    'yfmt': 'pct0', 'values': LN(rv)}
-        ex = bar_ex(n, f'{t["zh"]}：水平值与 {TTM_WIN} 个月滚动同比', c, xl, v, rhs,
-                    ylab2=f'% y/y（{TTM_WIN}M 滚动）')
-        if rhs:      # 次轴金线是滚动口径；短历史画不出金线时就没有滚动同比可点名
-            self.log_yoy(n, 'ttm')
-        hit = self.mark_breaks(ex, win, [c])
+        return rhs, rv, mo_yoy, ttm_yoy
 
+    def bar_line_caliber_zh(self, c, total_col, weight_col, gran):
+        """「柱与线是不是同一个口径」那一段 —— **由字段推导，不许无条件写死**。
+
+        这曾经是底座里第二句假话（见 `_CALIBER_CONFLICTS` 上方那段）。
+        柱画的是 `c` 这一列本身；线的滚动合计取自 `monthly_total()` 的结果。
+        两者是否**真的**不同口径，只由两件事决定：
+          (i)  这一列是不是日均（`gran`）——「已除过交易日数」这半句的真伪；
+          (ii) 滚动合计是不是换了一列 / 乘了权重（`total_col` ≠ 本列，或有 `weight_col`）。
+        SGX 的配置里两件事都不成立（月合计列、无 total_col、无 weight_col），
+        柱与线是同一列同一口径，印那句话既是假话、又与同段前半句「未做还原」自相矛盾。
+        """
+        same_col = (not total_col) or total_col == c['col']
+        line_recast = (not same_col) or bool(weight_col)
+        if gran == 'daily_avg' and line_recast:
+            return ('<b>柱与线的口径不同是有意的</b>：柱是<b>日均</b>（已除过交易日数，'
+                    '看的是「开市那天有多热」），线是<b>当月合计</b>的滚动同比'
+                    '（看的是「一整年的总量在不在长」）。两者不该相互印证到小数点后一位。')
+        if gran == 'daily_avg':
+            return ('<b>柱与线取自同一列</b>（' + f'<code>{c["col"]}</code>' + '，当月<b>日均</b>）：'
+                    '柱是水平值，线是它 12 个月滚动合计的同比。'
+                    '⚠️ 本页没有交易日权重列，这个滚动合计是把 12 个<b>日均</b>等权相加 —— '
+                    '不是当月合计的和，各月交易日数不同带来的差异消不掉。')
+        if line_recast:
+            return (f'<b>柱与线取自不同的列</b>：柱是 <code>{c["col"]}</code> 的水平值，'
+                    f'线的滚动合计取自 <code>{total_col}</code>。两列都是当月合计口径。')
+        return ('<b>柱与线取自同一列同一口径</b>（' + f'<code>{c["col"]}</code>' +
+                '，当月<b>合计</b>，未做任何还原）：柱是水平值，线是它 12 个月滚动合计的同比。'
+                '两者的差别只在「水平 vs 增速」，不在口径。')
+
+    def ttm_spike_zh(self, mo_yoy, ttm_yoy):
+        """两种同比的毛刺量级 —— 拿**这条序列自己**实测，一个数都不引别家的例子。
+
+        从 `ex_ttm` 里原样搬出来的，因为「总量柱 + 滚动同比」现在有两个产地
+        （`ex_ttm` 与 `ex_mix_total`）。搬而不抄：同一段实测文案在两处各写一份，
+        改一处漏一处的时候，页面上会出现两段读数互相矛盾的图注而没有任何护栏会响。
+        """
         # ── 毛刺量级：拿这条序列自己实测，两种同比只在**都有值**的月份上比 ──
         a_all, b_all = mo_yoy.values.astype(float), ttm_yoy.values.astype(float)
         m = np.isfinite(a_all) & np.isfinite(b_all)
@@ -1954,35 +2607,40 @@ class Page:
                 f'单月 {nz_txt(f"{a[k_gap]:+.1f}")}% 而滚动 {nz_txt(f"{b[k_gap]:+.1f}")}%。'
                 f'用单月同比，光是挑月份就能把结论说成两个方向。')
 
-        # 「柱与线口径不同」不许无条件印 —— 这曾经是底座里第二句假话。
-        # 柱画的是 level 列本身；线的滚动合计取自 monthly_total() 的结果。
-        # 两者是否**真的**不同口径，只由两件事决定：
-        #   (i)  level 列是不是日均（granularity）——「已除过交易日数」这半句的真伪；
-        #   (ii) 滚动合计是不是换了一列/乘了权重（total_col ≠ level 列，或有 weight_col）。
-        # SGX 的配置里两件事都不成立（月合计列、无 total_col、无 weight_col），
-        # 柱与线是同一列同一口径，印那句话既是假话、又与同段前半句「未做还原」自相矛盾。
-        same_col = (not t['total_col']) or t['total_col'] == c['col']
-        line_recast = (not same_col) or bool(t['weight_col'])
-        if t['granularity'] == 'daily_avg' and line_recast:
-            bar_line_caliber = (
-                '<b>柱与线的口径不同是有意的</b>：柱是<b>日均</b>（已除过交易日数，'
-                '看的是「开市那天有多热」），线是<b>当月合计</b>的滚动同比'
-                '（看的是「一整年的总量在不在长」）。两者不该相互印证到小数点后一位。')
-        elif t['granularity'] == 'daily_avg':
-            bar_line_caliber = (
-                '<b>柱与线取自同一列</b>（' + f'<code>{c["col"]}</code>' + '，当月<b>日均</b>）：'
-                '柱是水平值，线是它 12 个月滚动合计的同比。'
-                '⚠️ 本页没有交易日权重列，这个滚动合计是把 12 个<b>日均</b>等权相加 —— '
-                '不是当月合计的和，各月交易日数不同带来的差异消不掉。')
-        elif line_recast:
-            bar_line_caliber = (
-                f'<b>柱与线取自不同的列</b>：柱是 <code>{c["col"]}</code> 的水平值，'
-                f'线的滚动合计取自 <code>{t["total_col"]}</code>。两列都是当月合计口径。')
-        else:
-            bar_line_caliber = (
-                '<b>柱与线取自同一列同一口径</b>（' + f'<code>{c["col"]}</code>' +
-                '，当月<b>合计</b>，未做任何还原）：柱是水平值，线是它 12 个月滚动合计的同比。'
-                '两者的差别只在「水平 vs 增速」，不在口径。')
+        return spike
+
+    def ex_ttm(self, n, t):
+        """一条量的**水平值**（柱）+ **12 个月滚动合计的同比**（次轴金线）。
+
+        为什么次轴不画单月同比：单月同比同时被三件事推着走 —— 立会日数（18 vs 23 天，
+        差 28%）、假期与到期日的月度形状、以及去年同月那一个数本身的高低。三者叠加，
+        单月同比的毛刺可以大到与趋势符号相反。滚动 12 个月合计把这三件事全部抹平
+        （任意连续 12 个月都覆盖同样的日历与同样的到期周期），代价是转折点晚半年才显形。
+        毛刺到底有多大不靠引用别家的例子 —— 下面的图注用**这条序列自己**实测。
+        """
+        c = t['level']
+        tot, how = self.monthly_total(c, t['total_col'], t['weight_col'],
+                                      t['granularity'], f'ttm_yoy「{t["zh"]}」')
+        end = self.last_month(c)
+        if end is None:
+            return None, f'{t["zh"]}：{c["col"]} 整列为空'
+        win = self.win_long(end)
+        xl = [mlab(p) for p in win]
+        v = self.vals(c, win)
+        if self.flat0_skip(t['zh'], [c], win, [v]):
+            return None, f'{t["zh"]}：窗口内恒为 0'
+
+        rhs, rv, mo_yoy, ttm_yoy = self.ttm_rhs(tot, win)
+        ex = bar_ex(n, f'{t["zh"]}：水平值与 {TTM_WIN} 个月滚动同比', c, xl, v, rhs,
+                    ylab2=f'% y/y（{TTM_WIN}M 滚动）')
+        if rhs:      # 次轴金线是滚动口径；短历史画不出金线时就没有滚动同比可点名
+            self.log_yoy(n, 'ttm')
+        hit = self.mark_breaks(ex, win, [c])
+
+        spike = self.ttm_spike_zh(mo_yoy, ttm_yoy)
+
+        bar_line_caliber = self.bar_line_caliber_zh(
+            c, t['total_col'], t['weight_col'], t['granularity'])
         ex['note'] = (
             f'深蓝柱 = {c["zh"]}的<b>水平值</b>（{c["unit"]}，原始单位，未做任何指数化）。'
             f'近 {len(win)} 个月。'
@@ -2136,6 +2794,7 @@ class Page:
         newest = idx[-1]
         ex, n = [], 2
         self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
+        self.saw_group_lines = self.saw_group_heat = False
         self.decomp_report = []  # decomp 自检行同理，从零记
 
         for c in self.head:                                   # ① 长历史 + 3Y 分位带
@@ -2143,10 +2802,21 @@ class Page:
         for c in self.head:                                   # ② 同比
             ex.append(self.ex_yoy(n, c)); n += 1
 
-        stock_todo = []
+        # 「派生图没出成」的账本：③ 的 mix 也会往里记，所以要在 ③ 之前开。
+        self.skipped = list(self.mix_skipped)
+
         for g in self.groups:                                 # ③ 每组多列对比
-            flow = [c for c in g['cols'] if not c['stock']]
-            stock_todo += [(g['zh'], c) for c in g['cols'] if c['stock']]
+            # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」两张。
+            # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
+            # 也不该在阅读顺序上互相插队）。
+            eaten = set()
+            if g['mix'] and not g['mix']['total']['stock']:
+                pair, eaten = self.mix_pair(n, g)
+                for e in pair:
+                    ex.append(e); n += 1
+            # 被 mix 吃掉的列不再进常规对比图：它们的水平值由合计柱交代、
+            # 结构由占比堆叠交代，再画一遍是同一批数在同一页上出现两次。
+            flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
             # 单位不同的列不能共用一根轴（cboe 原 deck 的 Exhibit 9 把 2 : 15 : 64 三个
             # 量级画在同一根轴上，最小的那条振幅只占画布 0.9% —— 那条线是白画的）。
             # 所以按单位分桶，一桶一张图；分桶保持 spec 里的先后顺序。
@@ -2170,15 +2840,22 @@ class Page:
             if e is not None:
                 ex.append(e); n += 1
 
-        for gz, c in stock_todo:                              # ⑤ 存量列单独成图
-            e = self.ex_stock(n, gz, c)                       # 窗口内恒为 0 → None
-            if e is not None:
-                ex.append(e); n += 1
+        for g in self.groups:                                 # ⑤ 存量列单独成图
+            eaten = set()
+            if g['mix'] and g['mix']['total']['stock']:
+                pair, eaten = self.mix_pair(n, g)
+                for e in pair:
+                    ex.append(e); n += 1
+            for c in g['cols']:
+                if not c['stock'] or c['col'] in eaten:
+                    continue
+                e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
+                if e is not None:
+                    ex.append(e); n += 1
 
         # ⑥ 量价分解 与 ⑦ 滚动同比：**一律追加在最末**（核对表之前）。
         # 不能插在 ③ 里：图号一移，正文与图注里所有「见 Exhibit k」的交叉引用全错，
         # 而那种错不会报任何异常。新图型往后加，既有图号一个都不动。
-        self.skipped = []
         for d in self.decomp:
             e, why = self.ex_decomp(n, d)
             if e is None:
@@ -2343,16 +3020,39 @@ class Page:
                        f' 在 <code>series/{self.spec["csv"]}</code> 里没有对应行，'
                        f'已补成空行：图在缺口处断笔（不可比的相邻期不能连成一条线），'
                        f'平滑类图型自动降级为不平滑的折线。')
+        # 三个判据按**真画出来的图**算，不按 spec 声明算 —— 声明了一张画不出来的图
+        # 与「本页本来就没这种图」，在页面上长得一模一样，而这段话只该描述前者之外的事实。
+        # `ex_history` 出的头条长历史图也是 kind='lines'，所以「有没有多列折线组图」
+        # 不能靠扫 kind，改由 `ex_lines` / `ex_heat` 自己记账（见那两个函数）。
+        _has_lines = bool(getattr(self, 'saw_group_lines', False))
+        _has_heat = bool(getattr(self, 'saw_group_heat', False))
+        _has_mix = any(e.get('kind') == 'stacked_dual' for e in (ex or [])
+                       if isinstance(e, dict))
         out.append(
-            f'<b>图型选择规则（全部由底座按数据形状定，不逐家手调）。</b>'
-            f'① 同一张图上<b>只放同一单位</b>的列：量纲不同的列自动拆成各自成图 —— '
-            f'把 2 : 15 : 64 三个量级画在一根轴上，最小的那条振幅只占画布 1%，等于白画。'
-            f'② 一桶 1 列画柱图（水平值 + 次轴同比）、2–{MAX_LINES} 列画折线、'
-            f'超过 {MAX_LINES} 列改画热力矩阵：数据色只有 6 个，第 6 条线必然与别人同色。'
-            f'③ 折线在窗口内逐点稠密时用平滑的 lines_endlabels，有缺口时降级为不平滑的 '
-            f'lines —— 平滑图型会把 null 当 0，画出一条塌到零的假线还不报错。'
-            f'④ 热力矩阵画同比不画水平值：色标是全表共用的 5/95 分位，水平值量级差几十倍时'
-            f'会被最大的那列吃掉整条色标。')
+            # ⚠️ 这一段**只讲这一页真画过的那几条规则**。它原来是一段无条件文案，
+            # 开头写着「全部由底座按数据形状定」—— 而 `groups[].mix` 让 spec 也能
+            # 指定图型，同一段里还并列着几条这一页一张图都没命中的规则
+            # （tmx 现在一张折线组图、一张热力矩阵都没有）。
+            # 「页面上说的规则」与「页面上画的图」对不上，读者只会当成自己看漏了。
+            (f'<b>图型选择规则（'
+               + ('底座按数据形状定；声明了 mix 的组另由 spec 指定'
+                  if _has_mix else '全部由底座按数据形状定，不逐家手调')
+               + '）。</b>'
+               + '① 同一张图上<b>只放同一单位</b>的列：量纲不同的列自动拆成各自成图 —— '
+                 '把 2 : 15 : 64 三个量级画在一根轴上，最小的那条振幅只占画布 1%，等于白画。'
+               + (f'② 一桶 1 列画柱图（水平值 + 次轴同比）、2–{MAX_LINES} 列画折线、'
+                  f'超过 {MAX_LINES} 列改画热力矩阵：数据色只有 6 个，'
+                  f'第 6 条线必然与别人同色。' if _has_lines or _has_heat else
+                  '② 本页每一桶都只有一列（或整桶被 <code>mix</code> 收走），'
+                  '所以一张多列折线图都没有；多列时底座会按列数改画折线或热力矩阵。')
+               + ('③ 折线在窗口内逐点稠密时用平滑的 lines_endlabels，有缺口时降级为不平滑的 '
+                  'lines —— 平滑图型会把 null 当 0，画出一条塌到零的假线还不报错。'
+                  if _has_lines else '')
+               + ('④ 热力矩阵画同比不画水平值：色标是全表共用的 5/95 分位，'
+                  '水平值量级差几十倍时会被最大的那列吃掉整条色标。' if _has_heat else '')
+               + ('⑤ 声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
+                  '（次轴同比，流量走 12 个月滚动、存量走点对点）与分项的 100% 占比堆叠。'
+                  '各段之和逐月复算，对不上就不发页。' if _has_mix else '')))
         # ── 同比口径：从 yoy_log 账本现算，逐处点名（CONTRACT §6.1 第 3 条）──
         # 这段话为什么必须由底座生成、图号为什么必须派生，见 log_yoy 的 docstring。
         # 文案按类别分段拼装，只写账本里真有的类别 —— 页上没画滚动同比就绝不出现

@@ -98,7 +98,13 @@ MIN_KEEP = 0.0095        # 分量里最小的那条序列缩放后至少还有 2
 MAX_DEC = 3              # 引擎的格式器表只到 f3 / usd3（docs/CHART_KINDS.md §2）
 
 # 画原始量级数值的 kind。`grouped_bars`（同比）与 `heat_matrix`（同比）画的是百分数，
-# 不在此列；`stacked_dual` / `bridge_bar` 等本底座不产出，加进来之前先补 `_arrays()`。
+# 不在此列。
+#
+# `bridge_bar`（build/single.py 的 decomp）与 `stacked_dual`（同文件的 groups[].mix
+# 占比堆叠）现在**是**由底座产出的，但两者都**不该**进这张表，理由与百分数那两个一样：
+# 画在它们轴上的数本来就是「百分点」与「占合计的 %」，两位数量级，
+# 「百万分之几个百分点」不是人话。`_arrays()` 对它们返回 None，于是 `_needs` / `audit`
+# 一起跳过 —— 那是正确结果，不是漏接。**要给它们做缩放之前先想清楚缩的是什么。**
 SCALABLE = ('gs_bar', 'bars_labeled', 'lines', 'lines_endlabels', 'seasonality',
             'gs_line', 'gs_line_avg')
 # 比率格式器：百分数/百分点本来就是两位数量级，「百万分之几个百分点」不是人话，
@@ -347,8 +353,13 @@ def _efmt(v, name):
 def _margins(ex):
     """(W, M.l, M.r, band) —— `charts.js:535` 那段 margin 分支的复算。"""
     kind, n = ex.get('kind'), len(ex.get('xlabels') or [])
-    dual = (kind == 'gs_bar' and bool(ex.get('yoy'))) or \
-           (kind in ('bar_line_dual', 'stacked_dual'))
+    # `stacked_dual` 的右轴是**可选**的（2026-08-14 起，`line` 不给就退化成纯堆叠柱），
+    # 引擎的判据是 `rhsOf(ex)`（assets/charts.js 的 `dual`），所以这里也要看 `line` 在不在。
+    # 之前无条件当双轴算，右边距按 42/56 估而引擎实际用 14 —— band 被低估 28px/n，
+    # 后果是偏保守（过早升通栏、过早抽稀 x 标签），不报错也看不出来。
+    # build/single.py 的 groups[].mix 开始产出不带 `line` 的占比堆叠之后这条才有页面命中。
+    dual = (kind == 'gs_bar' and bool(ex.get('yoy'))) or kind == 'bar_line_dual' or \
+           (kind == 'stacked_dual' and bool(ex.get('line')))
     W = W_FULL if ex.get('full') else W_CARD
     m_r = (56 if ex.get('ylab2') else 42) if dual else (
         42 if kind in ('lines_endlabels', 'gs_line_avg', 'year_lines') else 14)

@@ -34,7 +34,7 @@
 | `qtr_bar`         | 季度柱 + 右轴 y/y                | `values[] line{}`          | 给 `line` 才有 | 268        |
 | `range_band`      | 区间带 + 实际值菱形              | `lo[] hi[] actual[]`       | 否             | 268        |
 | `seasonality`     | 灰=同月均值 / 蓝=实际，配对柱    | `base{} actual{}`          | 否             | 268        |
-| `stacked_dual`    | 堆叠柱（+ 可选的右轴百分比线）   | `stacks[]` `line{}`可选    | **总是**       | 268        |
+| `stacked_dual`    | 堆叠柱（+ 可选的右轴百分比线）   | `stacks[]` `line{}`可选    | 给 `line` 才有 | 268        |
 | `year_lines`      | 每年一条线叠在 12 格上           | `series[] highlight`       | 否             | 268        |
 
 画布最终高 = `height || 默认高` + x 标签带（`xrot=90` → 48、`45` → 36、`0` → 22）。
@@ -413,17 +413,23 @@ Ex2 的堆叠段 / `mix` 的 100% 堆叠段 / `hist` 的分部线三张图共用
   表格视图里那一行、以及柱顶那 28% 的留白（它本来是给右轴线的逐点标签用的）一并消失，
   左轴改成 `0 .. 堆叠总高 ×1.06`。
   什么时候不该给：**占比型堆叠**（各段之和恒为 100）里段高本身就把每一块读出来了，
-  再拿其中一段换个刻度画一遍是同一个数说两遍；只有两块业务时更是如此（两段互补，
-  看一段就等于看另一段）。段数多、最矮那块难量时，右轴线才有增量 ——
-  `/exchanges-eu/` Ex2 三家份额那张就是这种，它的 `ylab2` 也照实写着「同一条序列换个刻度」。
+  再拿其中一段换个刻度画一遍是同一个数说两遍。
+  ⚠️ **判据是「最矮那一段在 0–100 的堆叠里量不量得出来」，不是段数。**
+  段数只是它的代理，而且会失准两次：两段业务各占四五成时（ase / guc 的 Ex5）
+  线是纯冗余，该去掉；两段里有一段常年 99%+ 时（`/tmx/` Ex12 的
+  SXF vs 其余股指期货，最矮那段 0.04%~5.9%）线反而是这张图的**全部内容**。
+  给了线就在 `ylab2` 里照实写「同一条序列换个刻度」（`/exchanges-eu/` Ex2 的措辞），
+  别让读者当成第四个量。
 - 左轴强制 `0 .. 堆叠总高 ×1.28`（无 `line` 时 ×1.06）；右轴强制 `0 .. line.ymax`
   （**缺省 60**，给了 `line` 就几乎一定要显式给 `ymax`）。
   ⚠️ **右轴下界写死成 0（`r0 = 0`），右轴线含负值的图不能用这个 kind** ——
   负值点会被顶到轴外，画面不报错，读者只会读到「这条线从没转过负」。
   要「堆叠柱 + 会转负的次轴线」，走 `gs_bar` 的 `stacks` + `yoy`（§3.6.1 / §3.6.2）。
-- `line.values` 的**数值标签硬编码成 `toFixed(1) + '%'`**，表格视图里也硬编码 `pct1`；
-  堆叠段的表格格式硬编码 `f0c`（千分位整数）。⇒ 右轴那条线必须是「百分数的数值」
-  （41.5 表示 41.5%），堆叠段必须是能按整数读的量。
+- `line.values` 的**数值标签硬编码成 `toFixed(1) + '%'`**，表格视图里也硬编码 `pct1`
+  ⇒ 右轴那条线必须是「百分数的数值」（41.5 表示 41.5%）。
+  **堆叠段的表格格式跟着 `ex.fmt` 走**（2026-08-14 起；不声明才退回 `f0c`）——
+  占比型堆叠请显式写 `fmt: 'pct1'`，不写会被截成整数。
+  ⚠️ 段**内**那个标签（`label: true`）仍然硬编码 `comma(v, 0)`，只印整数、不跟 `fmt`。
 - `label: true` 才在段内写数值（字号 6.6px，段高 < 8px 时自动不写）。
 - **不支持截轴**（截一段堆叠柱等于把总量画错）；`values` 必须逐点稠密。
 - 份额堆叠带的用法：把「1 − Σ 已知家」的残差做成最后一个 GRAY 段，并在 `note` 里
@@ -478,7 +484,8 @@ Ex2 的堆叠段 / `mix` 的 100% 堆叠段 / `hist` 的分部线三张图共用
 | `seasonality`                                                               | **开**（只标 actual）          | `bar_labels: false` 关 |
 | `range_band`                                                                | **开**（只标 actual）          | `bar_labels: false` 关 |
 | `grouped_bars`                                                              | **关**                         | `bar_labels: true` 开  |
-| `bars_labeled` `gs_bar` `gs_line` `gs_line_avg` `stacked_dual` `year_lines` | 恒开，无开关                   | —                      |
+| `bars_labeled` `gs_bar` `gs_line` `gs_line_avg` `year_lines`                | 恒开，无开关                   | —                      |
+| `stacked_dual`                                                              | **逐段**，缺省关               | 段上写 `label: true` 开 |
 | `bar_line` `bar_line_dual` `lines` `diverging_bars` `heat_matrix`           | 恒关（`lines` 用 `end_label`） | —                      |
 
 `gs_bar` 给了 `stacks` 时柱顶那个数**仍然是总额**（`values[i]`），不是任何一段 ——
@@ -495,7 +502,7 @@ Ex2 的堆叠段 / `mix` 的 100% 堆叠段 / `hist` 的分部线三张图共用
 | `diverging_bars` 图例     | `Reported > Core（油汇顺风）` / `Reported < Core（油汇拖累）` | ✗ 只能换 kind                    |
 | `diverging_bars` 表格列名 | `Reported − Core`                                             | ✗                                |
 | `stacked_dual` 右轴点标签 | `值.toFixed(1) + '%'`                                         | ✗（数值必须是百分数）            |
-| `stacked_dual` 表格格式   | 段 = `f0c`、线 = `pct1`                                       | ✗                                |
+| `stacked_dual` 表格格式   | 线 = `pct1`；**段跟着 `ex.fmt` 走**（不声明才退回 `f0c`）     | 段可绕（给 `fmt`），线 ✗         |
 | `qtr_bar` 未满季图例      | `QTD (2 of 3 months)`                                         | ✗（`legend` 只改完整季那条）     |
 | `gs_bar` 均线图例         | `Prior 12mo Avg.`                                             | 给 `yoy` 就没有这条              |
 | `gs_bar` 单系列图例方块   | 浅蓝 `BLUE` + `ex.legend`                                     | 给 `stacks` 就换成逐段方块，`ex.legend` 不再进图例（仍是表格总额行名） |

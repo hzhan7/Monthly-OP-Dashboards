@@ -37,8 +37,8 @@
 
 双轴图（`bar_line_dual` / `qtr_bar` / `grouped_bars` / `gs_bar` 的右轴）的
 `line`（或 `gs_bar` 的 `yoy`）对象上还有一个 `zero_base`。
-（`bar_line` 是**单轴**，给了也不起作用；`stacked_dual` 有右轴但量程被写死成 0–`ymax`，
-同样不吃这个字段。）
+（`bar_line` 是**单轴**，给了也不起作用；`stacked_dual` 的右轴是**可选**的，
+给了 `line` 才有，而且量程被写死成 0–`ymax`，同样不吃这个字段。）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|

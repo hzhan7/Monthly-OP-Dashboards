@@ -85,6 +85,41 @@ TMX 合计并没有因此消失：它是第三张图（三分法）的 **bench**
 逐年的三项实测数字由 `_three_factor()` 在 import 期从 CSV 现算，写进图 B 的图注，
 一个都不写死。
 
+━━ 图列：每一组都是「合计柱 + 分项 100% 占比堆叠」两张 ━━
+2026-09 改版。用户给的两条原则：
+  1. 月度数据尽量画**柱状图**，并在同一张图上叠一条同比折线；
+  2. 像旧 Ex4 那样「合计 + 期货/期权」的组，先给合计一张柱 + 同比，再给分项一张占比图。
+
+落地方式是底座新增的 `groups[].mix`（`build/single.py`，spec 驱动、不含任何
+`if ticker == 'tmx'`）：声明 `total` 与 `parts` 两个**列名**，底座就出两张图 ——
+合计那张是 `gs_bar` + 次轴同比，分项那张是 `stacked_dual` 的 100% 堆叠。
+同比口径不是排版偏好，由列的性质定（CONTRACT §6.1）：
+流量走 **12 个月滚动合计同比**（默认口径，无需在标题里辩护），
+存量走**点对点同比**（12 个月末快照相加不指代任何量）。
+
+于是本页除了三张年度量价分解（`decomp`）与季节性之外，**再没有多列折线对比图**：
+原来那几张 `lines_endlabels` 全部变成「柱 + 占比」两张一对。
+（**这里不数张数** —— 本文件抬头那段就记着「段数写死一次就要错一次」的教训，
+改版前的张数要看 `git show HEAD~1:data/tmx.js`，不是看这句话。）
+
+⚠️ 加总关系由底座**逐月复算**，spec 说了不算：分项之和超过合计直接硬失败；
+少于合计而没给 `residual_zh` 也硬失败（那种图会声称「堆叠 = 100%」而实际不是）；
+给了 `residual_zh` 而残差恒为 0 同样硬失败（一条恒为 0 的「其他」段会让读者
+以为存在一块查不到的业务）。本页只有 MX 衍生品 ADV 那一条的残差恰为 0
+（期货 + 期权 ≡ 合计），其余各条都必须给残差段。
+**这里不写「本页有几条 mix」** —— 条数是数出来的，写死一次就要过期一次；
+要当期数字就 `python3 -c "import …; print(sum(1 for g in SPEC['groups'] if g.get('mix')))"`。
+
+⚠️ **有两条 mix 跨组引用了别处声明的列**，这是 `mix` 刻意允许的（total/parts 写的是
+**列名**，列配置只在 `groups[].cols` 里声明一次 —— 写两份 unit/fmt 迟早分叉）：
+  · 「MX 期权：个股与 ETF 构成」那组的**合计**是 `mx_adv_options_contracts`，
+    它声明在最上面那组（在那里它是「期货 vs 期权」的一个分项）；
+  · 「MX 月末未平仓」那组的五个**分项**分别声明在后面各自的组里。
+
+⚠️ 跨组引用**不吃掉**被引用那一列在它自己那一组里的图：借它的数画结构，
+不等于替它把水平值也讲了。所以 SXF / 个股期权 / ETF 期权三张存量柱照常出
+（底座按「这一组真画出来了哪两张图」逐组算被吃掉的列，见 `Page.mix_pair`）。
+
 ━━ 有意不上页面的其他列 ━━
 · mx_adv_index_options_contracts —— 最后一个非零月是 2020-10，此后逐月为 0
   （具体多少个月由 `_zero_tail()` 现算，写进页尾 notes）。一条归零五年多的死线不提供信息。
@@ -620,9 +655,13 @@ _NOTE_TTM_MX = (
     '<b>柱与线的口径不同是有意的。</b>柱是 <code>mx_adv_contracts</code>（当月日均，'
     '官方直接发布），线的滚动合计取自 <code>mx_volume_contracts</code>（当月合计，'
     '同样官方直接发布）—— 两者谁也不从谁推。'
+    # ⚠️ 这里原来写死着「每年 9 月与 11 月两者不等」——本文件 `_tday_mismatch_zh()` 的
+    # docstring 白纸黑字记着那句话是假的（9 月只是零星几次，另有 10 月与 12 月各一次）。
+    # 同一页上一处现算、一处写死，写死那处迟早与自己打架，所以这里也改成现算。
     '<b>本页不给 weight_col：</b>series/tmx.csv 里有 <code>trading_days_rates</code> 与 '
-    '<code>trading_days_equity</code> **两套**交易日（每年 9 月与 11 月两者不等），'
-    '而 MX 合计横跨利率与股票两侧，没有哪一套是对的。既然官方直接发布了当月合计，'
+    '<code>trading_days_equity</code> **两套**交易日（'
+    + (_TDAY_MISMATCH or '两者并非逐月相等') +
+    '），而 MX 合计横跨利率与股票两侧，没有哪一套是对的。既然官方直接发布了当月合计，'
     '就用它，不做还原。'
 )
 
@@ -639,6 +678,194 @@ _NOTE_TTM_SPOT = (
 )
 
 
+# ── groups[].mix 那几张 100% 占比图的图注 ──────────────────────────────────
+# 底座的图注已经把「各段最新/窗口内极值」「残差最大占多少、在哪个月」这些**数**印全了
+# （见 build/single.py 的 ex_mix_share），所以下面这几段只补底座**算不出来**的那一半：
+# 那块残差到底是什么、为什么会有、读的时候容易在哪里读错。凡是要报数的地方一律现算。
+
+
+def _idx_opt_lead():
+    """股指期权在「期权合计 − 个股 − ETF」那一段里当主体的月份数 → (命中数, 可比月数)。
+
+    这句话原来写的是「那一段里最大的一块是股指期权」—— **实测是假的**：
+    窗口内只有个位数月份成立（下面这个函数现算的就是它）。写死一次就要错一次，
+    所以改成现算，并且把「不是主体」这个结论直接印在图注里。
+    算不出返回 (None, 0)，调用方退回不带数字的说法。
+    """
+    hit = tot_n = 0
+    for r in _rows():
+        if r.get('month', '') < '2016-01':
+            continue
+        t = _num(r, 'mx_adv_options_contracts')
+        eq = _num(r, 'mx_adv_equity_options_contracts')
+        etf = _num(r, 'mx_adv_etf_options_contracts')
+        ix = _num(r, 'mx_adv_index_options_contracts')
+        if None in (t, eq, etf, ix) or not t:
+            continue
+        tot_n += 1
+        if ix >= (t - eq - etf) - ix:
+            hit += 1
+    return (hit, tot_n) if tot_n else (None, 0)
+
+
+_IDX_OPT_LEAD = _idx_opt_lead()
+
+
+#: 图窗左端。与 `build/single.py` 的 `WIN_FROM` 是同一个月 —— 本文件只拿它给**图注**
+#: 定描述范围（哪个月起算残差），不参与任何绘图。两处不同步的后果是图注说的窗口
+#: 与图上画的窗口对不上，所以改一处要看另一处。
+_WIN_FROM = '2016-01'
+
+
+def _resid_first_zh(tot, parts, tol=1e-6, since=_WIN_FROM):
+    """**图窗内**残差（合计 − 各分项）第一次超出 `tol`（相对）的月份 → (月份, 窗口首月)。
+
+    ⚠️ 两条都踩过：
+      ① 原来扫的是**全序列**，于是对 MX 那几列返回 2002-01（序列的第一行），
+         而图注紧接着写「在那之前合计恰等于各分项之和」—— 2002-01 之前一个月都没有，
+         那是一句关于不存在的时段的断言。现在只扫图窗，并把窗口首月一起返回，
+         由调用方判断「残差是不是一进窗口就在」。
+      ② `tol` 与底座的 `MIX_RESID_TOL` 对齐（1e-6）。用更严的 1e-9 会让图注说
+         「自 X 月起有残差」而底座那边压根不认为有 —— 同一页两个口径。
+    """
+    first = None
+    for r in _rows():
+        if r.get('month', '') < since:
+            continue
+        t = _num(r, tot)
+        ps = [_num(r, c) for c in parts]
+        if t is None or not t or any(p is None for p in ps):
+            continue
+        if first is None:
+            first = r['month']
+        if abs(t - sum(ps)) / abs(t) > tol:
+            return r['month'], first
+    return None, first
+
+
+def _since_resid(tot, parts, tail):
+    m, first = _resid_first_zh(tot, parts)
+    if m and first and m > first:
+        return (f'这一段自 <b>{m}</b> 才出现 —— 从图窗左端 {first} 到那之前，'
+                f'合计逐月恰等于各分项之和；' + tail)
+    if m:
+        return f'这一段在整个图窗（{first or "起点未知"} 起）里一直在；' + tail
+    return '官方没有说明这一段是什么，所以本页只叫它「其他」，不猜。' + tail
+
+
+_NOTE_MIX_MX = (
+    '<b>这是本页唯一一张不需要「其他」段的占比图。</b>m-x.ca 的月度表把 MX 的日均成交'
+    '只分成期货与期权两栏，两栏之和逐月恰等于合计（底座在构建时逐月复算，对不上就不出图）。'
+    '<b>两段互补的代价要记住</b>：期货占比抬头与期权占比回落是同一个事实的两种写法，'
+    '不是两条独立的证据。'
+)
+
+_NOTE_MIX_STIR = (
+    '<b>这张图就是 CDOR → CORRA 换代本身。</b>在两条绝对量线上只看得见「一条掉到 0、'
+    '另一条长出来」；放进同一个 100% 的盘子里，才看得出这是一次<b>此消彼长的换手</b>，'
+    '而不是短端利率业务归零又凭空长出一个新产品。'
+    + _since_resid('mx_adv_stir_futures_contracts',
+                   ('mx_adv_bax_contracts', 'mx_adv_cra_contracts'),
+                   '官方在月度表里没有为它单开一栏，所以本页只叫它「其他短端利率合约」。')
+)
+
+_NOTE_MIX_STIR_OI = (
+    '<b>与上面那张 ADV 占比图读法相同，但口径是存量。</b>ADV 那张回答「这个月的成交'
+    '在哪个合约上」，这张回答「月末还挂着的仓位在哪个合约上」——'
+    '换代期间后者滞后于前者（旧合约的仓位要等到期才消失），两张并读才看得出迁移的节奏。'
+    + _since_resid('mx_oi_stir_futures_contracts',
+                   ('mx_oi_bax_contracts', 'mx_oi_cra_contracts'),
+                   '官方没有为它单开一栏，本页只叫它「其他短端利率合约」。')
+)
+
+_NOTE_MIX_BOND = (
+    '<b>三档久期的此消彼长是这张图的全部内容。</b>CGB（10 年）/ CGF（5 年）/ CGZ（2 年）'
+    '之和几乎就是国债期货合计，残差是官方未单列的其余合约（LGB 等）。'
+    '⚠️ <b>张数占比不是利率风险占比。</b>本图按<b>张数</b>算，而'
+    '<code>series/contract_specs.csv</code> 的 MX_BOND 行记着同一条：同样名义额下'
+    '2 年期与 10 年期的 DV01 差 5 倍以上（久期约 1.9 年 vs 约 8 年）。'
+    '所以这张图读的是「成交张数落在哪一档久期上」，不是「利率风险落在哪一档」——'
+    '后者要 DV01 或久期加权，而月度成交报表里没有久期字段。'
+)
+
+_NOTE_MIX_BOND_OI = (
+    '<b>本页残差最大的一张 —— 而那一段是本仓的<u>管道</u>边界，不是官方的<u>披露</u>边界。</b>'
+    '<code>series/tmx.csv</code> 里只有 <code>mx_oi_cgb_contracts</code> 一条国债期货的'
+    '未平仓列，所以这张图只能画成「CGB + 其余」。'
+    '⚠️ <b>别把它读成「官方没披露 CGF / CGZ 的未平仓」。</b>m-x.ca 那份月度 xlsx 的 '
+    '<code>MONTH END OPEN INTEREST</code> 是一个<b>列块</b>、横跨所有产品行'
+    '（fetch/tmx.py 口径坑 8 逐档量过列块位置），CGF 与 CGZ 的行就在那里 —— '
+    '本页正在用的 CGF / CGZ <b>ADV</b> 取的就是同一批行。'
+    '只是 <code>fetch/tmx.py</code> 的 <code>MX_SPEC</code> 没有为这两档登记 oi 那一格，'
+    '所以库里没有。要把这一段拆开得先在抓取层补两列并回补历史，那是另一件事。'
+    '这张图仍然该画：只看 CGB 的绝对量，读者无从知道它在国债期货未平仓里只占一半上下；'
+    '画成「CGB + 其余」之后，连这条边界本身也一并摆到了台面上。'
+    '⚠️ 那一段里各档具体是多少，本页给不出来，别去估。'
+)
+
+_NOTE_MIX_INDEX = (
+    '<b>这张图的读数是「SXF 有多独占」，不是「谁在抢 SXF 的份额」。</b>'
+    'SXF（S&P/TSX 60 期货）常年占股指期货 ADV 的九成以上，剩下那一小段是官方未单列的'
+    '其余股指合约（SXM 迷你等）。占比高在这里只说明「加拿大的股指期货成交几乎全部集中在'
+    '一张合约上」，不说明它打赢了谁 —— MX 是这些合约的唯一挂牌地。'
+)
+
+_NOTE_MIX_OPT = (
+    '<b>分母是 MX 期权 ADV 合计，它同时是本页第一张占比图里的「期权」那一段。</b>'
+    '两张图串起来读：第一张说期权在整个 MX 里占多少，这一张说期权内部个股与 ETF 各占多少。'
+    '<b>「其他期权」那一段本页拆不开，而且它不是股指期权。</b>'
+    'm-x.ca 的月度表在期权侧至少还有两节 ——「短端利率期权」'
+    '（<code>Short-Term Interest Rate Options</code>，<code>fetch/tmx.py</code> 的 '
+    '<code>MX_SECTIONS</code> 里登记着它）与「股指期权」，而 '
+    '<code>series/tmx.csv</code> 只入库了后者。'
+    + ((f'实测股指期权并不是这一段的主体：{_IDX_OPT_LEAD[1]} 个可比月里只有 '
+        f'{_IDX_OPT_LEAD[0]} 个月它大过这一段的其余部分。')
+       if _IDX_OPT_LEAD[0] is not None else
+       '（本次未能从 CSV 算出它在这一段里的占比。）')
+    + f'而它最后一个非零月是 {_zero_tail("mx_adv_index_options_contracts")[0] or "（未知）"}、'
+      f'此后连续 {_zero_tail("mx_adv_index_options_contracts")[1]} 个月为 0，'
+      '所以本页也没有为它单开一条线（一条归零多年的死线不提供信息）。'
+      '⇒ 这一段是<b>本仓的管道边界</b>，不是官方的披露边界；'
+      '它具体由哪几类期权构成，本页给不出来，别去估。'
+)
+
+_NOTE_MIX_FUT = (
+    '<b>这张回答「MX 是一家做什么的交易所」。</b>它与第一张占比图（期货 vs 期权）'
+    '是同一条线索的下一层：那张说期货占 MX 的量的多少，这张说期货那一块里'
+    '利率（短端 + 国债）、股指、个股各占多少。'
+    '<b>本页几乎每一张 MX 图都是这四块里某一块的放大</b>，先看这张再往下读会省不少力气。'
+    '⚠️ <b>张数占比不是收入占比也不是风险占比</b>：不同合约的费率与合约乘数差着数量级'
+    '（一张 CGB 期货的面值 C$100,000，一张个股期货是 100 股 × 股价），'
+    '本图只按张数算。'
+)
+
+_NOTE_MIX_OI_ALL = (
+    '<b>这张图回答「MX 的持仓压在哪个产品上」，而 Exhibit 里的合计柱只回答「一共多少」。</b>'
+    '五段自下而上是两条利率腿（短端利率、国债期货）、股指期货 SXF，再往上是两条股票期权腿'
+    '（个股期权、ETF 期权）—— 这条上下分界就是「利率 vs 股票」。'
+    '<b>本页最值得看的结构位移在这张图上</b>：ETF 期权与个股期权这两段的相对高低'
+    '在窗口内整个翻了过来（各段的窗口极值与出现月份见上一段，那些数逐月现算）。'
+    '<b>⚠️ 未平仓是存量，跨产品直接比高低要小心</b>：不同合约的一张「未平仓」代表的'
+    '经济敞口差着数量级（一张 CGB 期货的面值 C$100,000，一张个股期权的名义值是'
+    '100 股 × 股价），本图只按<b>张数</b>算，读作「持仓张数落在哪个产品上」，'
+    '不是「风险敞口落在哪个产品上」。'
+    '<b>最上面那段残差是本仓没有单列的那几档</b>（个股期货、股指期权等）——'
+    'm-x.ca 的月度表里 <code>MONTH END OPEN INTEREST</code> 是一个横跨所有产品行的列块，'
+    '这几档的行就在那里，只是 <code>fetch/tmx.py</code> 的 <code>MX_SPEC</code> 没有'
+    '为它们登记 oi 那一格。所以这一段同样是<b>本仓的管道边界</b>，不是官方的披露边界。'
+)
+
+_NOTE_MIX_SPOT = (
+    '<b>残差那一段就是 Alpha-X & Alpha DRK，但「2023-11 之前它是 0」的含义要说清楚。</b>'
+    '不是这两个盘口在那之前没有成交，而是 <b>TMX 合计这个口径当时不含它们</b>'
+    '（合计自 2023-11 起才纳入，图上那条红色竖虚线标的就是这件事）。'
+    '所以跨 2023-11 读这张图时，各段占比的<b>分母变大过一次</b>，'
+    'TSX / TSXV / Alpha 三段会被机械地压低一点点 —— 压多少由那一段自己的高度给出。'
+    '<b>这三档不是在抢同一批订单流。</b>TSX 是主板、TSXV 是创业板、Alpha 是另一个撮合盘口，'
+    '标的与上市层级都不同；这张图读作「加拿大现货成交的场所构成」，不是市场份额之争。'
+)
+
+
 # 断点标签**必须短**：它竖排画在断点线上，而断点线的全长就是绘图区高度
 # （charts.js：`y1 = M.t`、`y2 = M.t + ph`，标签再按 `fitVertical(bel, ph - 6, 7)` 收缩），
 # 正中间还钉着柱值标签，上下两段各只剩其中一截。
@@ -648,6 +875,8 @@ _NOTE_TTM_SPOT = (
 #     235 那半**是错的**：它按 `H = 268 + round(26×(FS−1))` 算，可 Exhibit 6 是
 #     lines_endlabels、spec 侧给了 `height = LINE_H_ENDLABEL`（build/single.py），
 #     `H = opt.height + …`，ph 实际在 327px 上下，比另外三张还高。
+#     ⚠️ 这两处 Exhibit 号是**改版前**（2026-09 的 groups[].mix 之前）的编号，
+#     记的是当时量到的证据，照新编号改一遍会让证据与它对应的图对不上 —— 别改。
 # 要点是几何而不是某个数：`ph = H − M.t − M.b`，其中 H 随 `opt.height` 与字号 FS
 # （assets/charts.js 的 FS_MIN/FS_MAX）变、M.t 随「有没有截轴」在 fscale(14) 与
 # fscale(30) 之间跳。哪张图剩多少，照那三个式子现算，别抄一个数下来。
@@ -718,12 +947,18 @@ SPEC = {
 
     'groups': [
         # 合计与期货 / 期权三条同为 contracts/day，**必须放在同一组**。
-        # 分成两组的代价不是排版：底座对「一个单位桶里只有一列」的组画 gs_bar，
-        # 而 gs_bar 的次轴是**单月同比**。tools/check_yoy_caliber.py 实测本页
-        # 「MX 日均成交」曾有 2 个月与 12 个月滚动口径**符号相反**
-        # （单月 −1.2% 而滚动 +17.0%）—— 读者从图上看不出该信哪一个。
-        # 三条同轴之后这张变成 lines，不再有次轴同比；MX 的滚动同比改由末尾
-        # 'ttm_yoy' 那张专图给（口径写在标题里）。
+        #
+        # ⚠️ 这条约束还在，但**理由换过一次**，别照着旧理由改回去：
+        # 旧理由（2026-09 之前）是「拆成两组的话，只剩一列的那组会走 gs_bar，
+        # 而 gs_bar 的次轴是**单月同比** —— tools/check_yoy_caliber.py 实测本页
+        # 「MX 日均成交」曾有 2 个月与 12 个月滚动口径**符号相反**（单月 −1.2% 而
+        # 滚动 +17.0%），读者从图上看不出该信哪一个」。那条理由现在**不成立了**：
+        # 下面这个 `mix` 让合计走的是「柱 + **12 个月滚动**同比」（口径由
+        # `granularity` / `total_col` 决定，与原来末尾那张 ttm_yoy 专图逐字同源），
+        # 单月同比根本不出现。
+        # 新理由是加总关系：`mix` 的 total 与 parts 必须能逐月对得上账
+        # （底座在 `ex_mix_share` 里复算，对不上就硬失败），而「同一组、同一单位」
+        # 正是这条关系成立的前提 —— 分到两组等于把它们声明成彼此独立的序列。
         {'zh': 'MX 衍生品 ADV' + _since('mx_adv_contracts'), 'cols': [
             {'col': 'mx_adv_contracts', 'zh': '日均成交',
              'unit': 'contracts/day', 'fmt': 'f0c'},
@@ -731,7 +966,36 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_adv_options_contracts', 'zh': '期权 ADV',
              'unit': 'contracts/day', 'fmt': 'f0c'},
-        ]},
+         ], 'mix': {
+            'total': 'mx_adv_contracts',
+            'parts': ['mx_adv_futures_contracts', 'mx_adv_options_contracts'],
+            # 柱是当月日均（官方直接发布），次轴那条 12 个月滚动同比的合计取自
+            # mx_volume_contracts（官方直接发布的当月合计）—— 两者谁也不从谁推。
+            'granularity': 'daily_avg',
+            'total_col': 'mx_volume_contracts',
+            'note': _NOTE_TTM_MX,
+            'share_note': _NOTE_MIX_MX}},
+
+        # 个股期货从「个股与 ETF 期权」里拆出来，落在这一组里 —— 它是**期货**不是期权，
+        # 进不了那张期权占比图的分母，而在这里它正好是「期货 ADV」的四个分项之一。
+        # 本组的合计 `mx_adv_futures_contracts` 声明在最上面那组（在那里它是
+        # 「期货 vs 期权」的一个分项），跨组引用即可。
+        #
+        # 这一对与 Exhibit 4/5 是**同一条线索的下一层**：4/5 说 MX 的量里期货占多少，
+        # 这一对说期货那一块里利率、股指、个股各占多少 —— 也就是「MX 到底是一家做什么的
+        # 交易所」。四个分项之和与合计的残差实测在千分之二以内（官方未单列的其余期货）。
+        {'zh': '期货 ADV：按产品拆', 'cols': [
+            {'col': 'mx_adv_share_futures_contracts', 'zh': '个股期货 ADV',
+             'unit': 'contracts/day', 'fmt': 'f0c'},
+         ], 'mix': {
+            'total': 'mx_adv_futures_contracts',
+            # 顺序 = 自下而上：两条利率腿在下、股票腿在上，与「利率 vs 股票」对齐，
+            # 和「MX 月末未平仓」那张的分段顺序是同一条业务分界。
+            'parts': ['mx_adv_stir_futures_contracts', 'mx_adv_bond_futures_contracts',
+                      'mx_adv_index_futures_contracts', 'mx_adv_share_futures_contracts'],
+            'granularity': 'daily_avg',
+            'residual_zh': '其他期货（官方未单列）',
+            'share_note': _NOTE_MIX_FUT}},
 
         # 当月合计单独一列、单位 contracts/month，本表里没有第二条同单位的列可以同轴，
         # 所以它注定是 gs_bar + 单月同比。**口径写进组名**（组名会进图题）：
@@ -748,10 +1012,21 @@ SPEC = {
         #   画滚动窗口同比在数值上完全正确 —— 错的只是**把它叫「合计」**
         #   （12 个月末未平仓相加不指代任何真实的量）。要平滑就走
         #   `yoy.ttm_mean_yoy(s, kind)` 并写成「12 个月滚动**均值**同比」。
+        # 本组只声明合计那一条列，五个分项都引用自后面各自的组 —— mix 的 total/parts
+        # 写的是**列名**，跨组引用即可。五段 + 一段残差正好用满本仓全部 6 个数据色，
+        # 是 `MIX_SEG_COLORS` 的硬上限；再多一档就得先在这里把小块并进残差。
         {'zh': 'MX 月末未平仓（存量，期末口径）', 'cols': [
             {'col': 'mx_oi_contracts', 'zh': '月末未平仓',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
-        ]},
+         ], 'mix': {
+            'total': 'mx_oi_contracts',
+            # 顺序 = 自下而上的堆叠顺序：两条利率腿在下、股票期权两腿在上，
+            # 与「利率 vs 股票」这条业务分界对齐，读者不用在图上跳着找。
+            'parts': ['mx_oi_stir_futures_contracts', 'mx_oi_bond_futures_contracts',
+                      'mx_oi_sxf_contracts', 'mx_oi_equity_options_contracts',
+                      'mx_oi_etf_options_contracts'],
+            'residual_zh': '其他（个股期货、股指期权等，本仓未单列）',
+            'share_note': _NOTE_MIX_OI_ALL}},
 
         # 本页第二重要的一张：基准利率换代时旗舰合约的整体搬迁。
         {'zh': '短端利率 ADV：BAX → CORRA 迁移', 'cols': [
@@ -761,7 +1036,12 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_adv_cra_contracts', 'zh': 'CRA（CORRA）',
              'unit': 'contracts/day', 'fmt': 'f0c'},
-        ]},
+         ], 'mix': {
+            'total': 'mx_adv_stir_futures_contracts',
+            'parts': ['mx_adv_bax_contracts', 'mx_adv_cra_contracts'],
+            'granularity': 'daily_avg',
+            'residual_zh': '其他短端利率合约（官方未单列）',
+            'share_note': _NOTE_MIX_STIR}},
 
         {'zh': '短端利率月末未平仓', 'cols': [
             {'col': 'mx_oi_stir_futures_contracts', 'zh': '短端利率合计',
@@ -770,7 +1050,14 @@ SPEC = {
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'mx_oi_cra_contracts', 'zh': 'CRA（CORRA）',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
-        ]},
+         ], 'mix': {
+            # 存量的 mix 不给 granularity / total_col / weight_col：那三个是给
+            # 「12 个月滚动合计」用的，而 12 个月末快照相加不指代任何量（CONTRACT §6.1
+            # 第 4 条）。存量柱的次轴走点对点同比，底座自己认得。
+            'total': 'mx_oi_stir_futures_contracts',
+            'parts': ['mx_oi_bax_contracts', 'mx_oi_cra_contracts'],
+            'residual_zh': '其他短端利率合约（官方未单列）',
+            'share_note': _NOTE_MIX_STIR_OI}},
 
         {'zh': '国债期货 ADV', 'cols': [
             {'col': 'mx_adv_bond_futures_contracts', 'zh': '国债期货合计',
@@ -781,14 +1068,29 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_adv_cgz_contracts', 'zh': 'CGZ（2 年）',
              'unit': 'contracts/day', 'fmt': 'f0c'},
-        ]},
+         ], 'mix': {
+            'total': 'mx_adv_bond_futures_contracts',
+            'parts': ['mx_adv_cgb_contracts', 'mx_adv_cgf_contracts',
+                      'mx_adv_cgz_contracts'],
+            'granularity': 'daily_avg',
+            'residual_zh': '其他国债期货（LGB 等，官方未单列）',
+            'share_note': _NOTE_MIX_BOND}},
 
         {'zh': '国债期货月末未平仓', 'cols': [
             {'col': 'mx_oi_bond_futures_contracts', 'zh': '国债期货合计',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'mx_oi_cgb_contracts', 'zh': 'CGB（10 年）',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
-        ]},
+         ], 'mix': {
+            'total': 'mx_oi_bond_futures_contracts',
+            'parts': ['mx_oi_cgb_contracts'],
+            # 本页残差最大的一块，而且它**本来就该这么大**：官方只单列了 CGB 的未平仓，
+            # CGF / CGZ / LGB 三档的 OI 在 m-x.ca 的月度表里根本没有列
+            # （`head -1 series/tmx.csv` 里确实没有 mx_oi_cgf_/mx_oi_cgz_）。
+            # 不画这张图 = 读者只看得到 CGB 的绝对量，无从知道它在国债期货未平仓里
+            # 只占一半上下；画成「CGB + 其余」正好把这件事说清楚。
+            'residual_zh': 'CGF / CGZ / LGB 等（官方只单列 CGB 的未平仓）',
+            'share_note': _NOTE_MIX_BOND_OI}},
 
         {'zh': '股指期货', 'cols': [
             {'col': 'mx_adv_index_futures_contracts', 'zh': '股指期货合计 ADV',
@@ -797,20 +1099,45 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_oi_sxf_contracts', 'zh': 'SXF 月末未平仓',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
-        ]},
+         ], 'mix': {
+            # SXF OI 是存量、不进这张流量占比图（单位与口径都不同），
+            # 它照旧单独成一张存量柱图。
+            'total': 'mx_adv_index_futures_contracts',
+            'parts': ['mx_adv_sxf_contracts'],
+            'granularity': 'daily_avg',
+            'residual_zh': '其他股指期货（SXM 迷你等，官方未单列）',
+            # SXF 常年占九成半以上，两段的信息全在那一小段残差上，而它在 0–100 的堆叠里
+            # 只有几个像素高 —— 右轴那条线就是把它换个刻度重画一遍。
+            'rhs_share': 'residual',
+            'share_note': _NOTE_MIX_INDEX}},
 
-        {'zh': '个股与 ETF 期权', 'cols': [
+        # ⚠️ 组名说的是**分母**，不是这两条分项：本组的 mix 把整条「期权 ADV」当合计，
+        # 而个股与 ETF 只是它的两个分项（另有一段拆不开的残差，见 _NOTE_MIX_OPT）。
+        # 组名进图题，写成「个股与 ETF 期权」会让人以为期权合计 = 个股 + ETF。
+        # 合计列 `mx_adv_options_contracts` 声明在最上面那组（它在那里是「期货 vs 期权」
+        # 占比图的一个分项）—— mix 的 total/parts 写的是**列名**，引用即可，
+        # 不在这里再写一份列配置（两份 unit/fmt 迟早分叉）。
+        {'zh': 'MX 期权：个股与 ETF 构成', 'cols': [
             {'col': 'mx_adv_equity_options_contracts', 'zh': '个股期权 ADV',
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'mx_adv_etf_options_contracts', 'zh': 'ETF 期权 ADV',
              'unit': 'contracts/day', 'fmt': 'f0c'},
-            {'col': 'mx_adv_share_futures_contracts', 'zh': '个股期货 ADV',
-             'unit': 'contracts/day', 'fmt': 'f0c'},
+         ], 'mix': {
+            'total': 'mx_adv_options_contracts',
+            'parts': ['mx_adv_equity_options_contracts', 'mx_adv_etf_options_contracts'],
+            'granularity': 'daily_avg',
+            'residual_zh': '其他期权（本仓未入库的那几节）',
+            'share_note': _NOTE_MIX_OPT}},
+
+        # 两条期权未平仓单独成组：它们是存量，与上面那张 ADV 占比图不同口径也不同单位，
+        # 而且官方没有发「期权未平仓合计」，凑不出分母，所以这一组不带 mix。
+        {'zh': '个股与 ETF 期权月末未平仓', 'cols': [
             {'col': 'mx_oi_equity_options_contracts', 'zh': '个股期权月末未平仓',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'mx_oi_etf_options_contracts', 'zh': 'ETF 期权月末未平仓',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
         ]},
+
 
         # ── 以下全是慢腿（2021-08 起，比 MX 晚一档发布）────────────────
         {'zh': '加拿大现货成交额' + _since('tsx_value_cad', '慢腿'), 'cols': [
@@ -822,7 +1149,17 @@ SPEC = {
              'unit': 'C$bn/month', 'fmt': 'f1', 'scale': 1e-9},
             {'col': 'alpha_value_cad', 'zh': 'TSX Alpha',
              'unit': 'C$bn/month', 'fmt': 'f1', 'scale': 1e-9},
-        ]},
+         ], 'mix': {
+            'total': 'tmx_all_value_cad',
+            'parts': ['tsx_value_cad', 'tsxv_value_cad', 'alpha_value_cad'],
+            # 三条现货列本身就是当月合计（量级见页尾那条现算的举例），不做任何还原。
+            'granularity': 'monthly_total',
+            'residual_zh': 'Alpha-X & Alpha DRK（2023-11 起计入合计）',
+            # 成交**额**这一张（而不是股数/笔数那两张）要右轴线：按金额算 TSX 常年占
+            # 八成半到九成半，其余三档被压在顶上不到 15pp 里，谁在动完全量不出来。
+            # 挑 TSX Alpha 而不是别的两段：它是三者里最大、也是唯一有明显结构位移的一档。
+            'rhs_share': 'alpha_value_cad',
+            'share_note': _NOTE_MIX_SPOT}},
 
         {'zh': '加拿大现货成交股数' + _since('tsx_volume_shares', '慢腿'), 'cols': [
             {'col': 'tmx_all_volume_shares', 'zh': 'TMX 合计',
@@ -833,7 +1170,13 @@ SPEC = {
              'unit': 'bn shares/month', 'fmt': 'f2', 'scale': 1e-9},
             {'col': 'alpha_volume_shares', 'zh': 'TSX Alpha',
              'unit': 'bn shares/month', 'fmt': 'f2', 'scale': 1e-9},
-        ]},
+         ], 'mix': {
+            'total': 'tmx_all_volume_shares',
+            'parts': ['tsx_volume_shares', 'tsxv_volume_shares', 'alpha_volume_shares'],
+            'granularity': 'monthly_total',
+            'residual_zh': 'Alpha-X & Alpha DRK（2023-11 起计入合计）',
+            'note': _NOTE_TTM_SPOT,
+            'share_note': _NOTE_MIX_SPOT}},
 
         {'zh': '加拿大现货成交笔数' + _since('tsx_transactions', '慢腿'), 'cols': [
             {'col': 'tmx_all_transactions', 'zh': 'TMX 合计',
@@ -844,7 +1187,12 @@ SPEC = {
              'unit': 'mn trades/month', 'fmt': 'f1', 'scale': 1e-6},
             {'col': 'alpha_transactions', 'zh': 'TSX Alpha',
              'unit': 'mn trades/month', 'fmt': 'f1', 'scale': 1e-6},
-        ]},
+         ], 'mix': {
+            'total': 'tmx_all_transactions',
+            'parts': ['tsx_transactions', 'tsxv_transactions', 'alpha_transactions'],
+            'granularity': 'monthly_total',
+            'residual_zh': 'Alpha-X & Alpha DRK（2023-11 起计入合计）',
+            'share_note': _NOTE_MIX_SPOT}},
 
         {'zh': '月末指数点位' + _since('tsx_composite_close', '慢腿'), 'cols': [
             {'col': 'tsx_composite_close', 'zh': 'S&P/TSX Composite',
@@ -960,27 +1308,16 @@ SPEC = {
          'note': _NOTE_SHARE},
     ],
 
-    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
-    # 两条腿各给一张：MX 衍生品（2002-01 起，本页最长）与加拿大现货（2021-08 起）。
-    'ttm_yoy': [
-        {'zh': 'MX 衍生品成交量',
-         # mx_adv_contracts 是当月**日均**（官方直接发布，不是本仓算的）。
-         'granularity': 'daily_avg',
-         'level': {'col': 'mx_adv_contracts', 'zh': '日均成交',
-                   'unit': 'contracts/day', 'fmt': 'f0c'},
-         # 官方同时发布当月合计，直接拿它滚 12 个月 —— 比「日均 × 交易日」可信，
-         # 而且本表的两套交易日列（rates / equity）谁也不能单独代表 MX 合计。
-         'total_col': 'mx_volume_contracts',
-         'note': _NOTE_TTM_MX},
-
-        {'zh': 'TMX 合计现货成交股数',
-         'granularity': 'monthly_total',
-         'level': {'col': 'tmx_all_volume_shares', 'zh': '当月成交股数',
-                   'unit': 'bn shares/month', 'fmt': 'f2', 'scale': 1e-9},
-         # 不给 total_col / weight_col：level 那一列本身就是当月合计，
-         # 底座直接拿它滚 12 个月，柱与线同口径。
-         'note': _NOTE_TTM_SPOT},
-    ],
+    # ══ 为什么没有 'ttm_yoy' 段 ═════════════════════════════════════════════
+    # 曾经有两条：「MX 衍生品成交量」与「TMX 合计现货成交股数」，都是
+    # 「水平值柱 + 12 个月滚动同比」。2026-09 改版之后这两张图**原样**由
+    # `groups[].mix` 的第一张（合计柱）产出：
+    #   · MX 那条 → 最上面那组的 mix（total=mx_adv_contracts、
+    #     total_col=mx_volume_contracts，与原来逐字相同，_NOTE_TTM_MX 也搬了过去）；
+    #   · 现货那条 → 「加拿大现货成交股数」那组的 mix（total=tmx_all_volume_shares、
+    #     granularity='monthly_total'，同样把 _NOTE_TTM_SPOT 搬了过去）。
+    # 留在 'ttm_yoy' 里会画出**第二张一模一样的图**（底座把 ttm_yoy 追加在全部
+    # exhibit 之后，不会去重），所以在这里删掉，而不是在底座里加一条去重规则。
 
     'notes': [
         _SEG
