@@ -15,8 +15,15 @@
   而这个别名永远指向最新一期。文件名里的月份反过来可以当作「官方最新月」的
   旁证，但真值仍以表内数据为准（见 latest_month 的实现）。
 
-  站点走 Akamai，但**没有** JS challenge / 验证码：普通 urllib + 常规 UA
-  即可直取，无需浏览器登录态。因此本模块可无人值守运行。
+  站点走 Akamai，会拦掉普通 urllib / 裸 curl（不是 JS challenge / 验证码，也不需要
+  登录态）—— 通道实测表见 download() 上方那一段。所以本模块仍可无人值守运行，
+  前提是走对通道。
+
+  ⚠ **别把判据写窄成「按 TLS 指纹 / JA3 拦」。** 2026-09-02 实测只能排除 UA
+  （裸 curl、假 Chrome UA、urllib 三种 UA 都是 403），而能过的 curl_cffi / nscurl
+  一次同时改掉了 TLS 指纹、HTTP2 SETTINGS、头集合、头顺序四类变量，**没做单变量
+  隔离**，所以只能说判据落在这四类的并集里。写窄了会诱使下一个人只换 TLS 栈、
+  或给回落腿塞自定义头，那会重新挂掉。（同理见 fetch/ndaq.py 的 B 组一段。）
 
 ────────────────────────────────────────────────────────────────────────────
 发布节奏
@@ -120,6 +127,8 @@ import datetime as _dt
 import email.utils
 import os
 import re
+import subprocess
+import tempfile
 import urllib.request
 import zipfile
 from zoneinfo import ZoneInfo
@@ -130,8 +139,19 @@ import pandas as pd
 SRC_URL = 'https://cmegroupinc.gcs-web.com/monthly-volume'
 CACHE_NAME = 'cme_monthly_volume.xlsx'
 
-# 常规桌面 UA。Akamai 对默认的 Python-urllib UA 不友好，换成浏览器 UA 即可，
-# 不需要 cookie / referer / 登录态。
+# 常规桌面 UA。**只给通道 3（urllib）用，别拿它去覆盖 curl_cffi / nscurl 的 UA。**
+#
+# 这行原来的注释写着「Akamai 对默认 Python-urllib UA 不友好，换成浏览器 UA 即可」——
+# 2026-09-02 起这句已经不成立，而且它把因果说反了。实测（同一台机、同一分钟）：
+#   urllib + 这个假 Chrome UA  -> 0.2 秒就 403
+#   urllib + 默认 Python-urllib UA -> 挂 31 秒后 RemoteDisconnected（连响应都不给）
+# 两条都进不来，所以换 UA 从来不是解法 —— UA 已被实测排除出判据（连裸 curl 用它
+# 自己的 UA 也是 403）。至于判据到底是什么，**不要收窄**：见文件头那段，只能断言
+# 落在 TLS 指纹 / HTTP2 指纹 / 头集合 / 头顺序四类的并集里。
+# （两种拒法的耗时不同（0.2 s vs 31 s）只说明拒的方式不同，推不出「谁更刺眼」这种机制，
+#  别把它写成因果。）
+# 仍然不要给 curl_cffi 手工塞这个 UA：impersonate 是把 UA 连同其它三类配成一整套的，
+# 手工塞一个就可能自相矛盾；给 nscurl 塞则会毁掉 Apple 自己那套（两者现在都能过）。
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36')
 
@@ -216,7 +236,195 @@ class FetchError(RuntimeError):
     """源不可达 / 结构变了 / 数据不完整 —— 一律显式抛，绝不静默写 NaN。"""
 
 
-# ── 下载 ────────────────────────────────────────────────────────────────────
+# ── 下载：三条通道 ──────────────────────────────────────────────────────────
+# 2026-09-02 起源站开始拦 urllib（此前一直直取得到）。当天实测的通道表：
+#
+#   通道                         结果                              耗时
+#   urllib + 假 Chrome UA        403                               0.2s
+#   urllib + 默认 UA             RemoteDisconnected（连接被掐）     31s
+#   裸 curl / curl + 假 UA       403                               —
+#   curl_cffi(impersonate=chrome) 200 / 2,225,967B / PK 魔数        2.3s
+#   nscurl（不改 UA）             200 / 2,225,967B / PK 魔数        12.9s
+#
+# 两条能过的通道，字节数完全一致，所以确认是**传输层被拦**，不是源站变了。
+#
+# 顺序为什么是 curl_cffi -> nscurl -> urllib：
+#   1. curl_cffi 打头，理由有三：快 5.6 倍（2.3s vs 12.9s，无人值守链路里 41 个源
+#      逐个串起来，这个差不是零）；`r.headers` 直接就是响应头字典，而 nscurl 只能
+#      把头 dump 成文本再由我们解析（多一层会出错的手工活，见 _nscurl_headers）；
+#      以及全仓既有范式就是它打头（fetch/hood.py:194 的 fetch_bytes 同序）。
+#   2. nscurl 垫第二，正是因为它零第三方依赖 —— 那是**兜底**该有的性质，不是打头
+#      该有的性质（同 hood.py 对 _via_nscurl 的定位）。curl_cffi 是 pip 包，
+#      哪天升 Python 装不上、或 venv 换了，它就没了；nscurl 是 macOS 自带，跑不掉。
+#      它用延迟 import，所以没装 curl_cffi 也能直接走到这条。
+#   3. urllib 收尾，纯粹是「墙哪天撤了就还能用零依赖路径」的候补 —— 它今天必挂，
+#      但挂得很便宜（0.2s）。放最后而不是最前，是因为放最前每一次跑都要先吐一条
+#      403 当开场白，把真正的失败原因埋进噪声里。
+#
+# ⚠ nscurl 的一个坑（实测，不是推测）：**它对 404 也 exit 0**，并且把那张 404 的
+# HTML 原样写进 -o 指定的文件。所以 `subprocess.run(check=True)` 根本不构成成功
+# 判据（hood.py 那份就只判了 check=True + 非空）。这里必须从 -D dump 出来的状态行
+# 里读 HTTP 状态码，否则一张拦截页会被当成 xlsx 收下 —— 那正是 PK 魔数判据存在的
+# 理由，而多一道状态码判据能让报错说得出「是被拦了」而不是只说「开头不是 PK」。
+
+
+def _norm_headers(pairs):
+    """响应头 -> 全小写键的 dict。三条通道各自的 header 容器大小写规矩不一样
+    （nscurl dump 出来的是 `Last-Modified`、`content-security-policy` 混排），
+    统一压平，免得某天某条通道悄悄取不到 Last-Modified 而我们毫无察觉。"""
+    return {str(k).lower(): str(v) for k, v in pairs}
+
+
+def _meta(status, headers, via):
+    h = _norm_headers(headers)
+    return {
+        'status': status,
+        'via': via,
+        'ctype': h.get('content-type', '').lower(),
+        'disp': h.get('content-disposition', ''),
+        'lastmod': h.get('last-modified', ''),
+    }
+
+
+def _via_curl_cffi(url):
+    """通道 1：curl_cffi 用真 Chrome 的 TLS/HTTP2 指纹发包，Akamai 放行。
+
+    只加 Accept-Language，**不加 User-Agent** —— impersonate='chrome' 已经把 UA
+    连同指纹配成一套了，手工再塞一个就可能自相矛盾（见 _UA 旁注）。
+    延迟 import：没装 curl_cffi 也要能落到通道 2。
+    """
+    from curl_cffi import requests as cr
+    r = cr.get(url, impersonate='chrome', timeout=120,
+               headers={'Accept-Language': 'en-US,en;q=0.9'})
+    r.raise_for_status()
+    return r.content, _meta(r.status_code, r.headers.items(), 'curl_cffi')
+
+
+def _nscurl_headers(text):
+    """解析 nscurl -D 的 dump -> (状态码, [(k, v)])。
+
+    只认**最后一个**响应块：nscurl 默认跟随重定向（-L 是它的默认行为），跳一次就
+    dump 两段头，取第一段会拿到 301 的 Last-Modified（如果有的话），那就是给发布日
+    喂了一个来自错误响应的时间戳。所以每见到一行 'HTTP/' 就把已收集的清空重来。
+    """
+    status, pairs = None, []
+    for line in text.splitlines():
+        line = line.rstrip('\r')
+        if line.upper().startswith('HTTP/'):
+            parts = line.split(None, 2)
+            status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+            pairs = []                       # 新的一段响应，前一段整段作废
+            continue
+        if ':' in line:
+            k, v = line.split(':', 1)
+            pairs.append((k.strip(), v.strip()))
+    return status, pairs
+
+
+def _via_nscurl(url):
+    """通道 2：macOS 自带 nscurl 走 NSURLSession，TLS 指纹是 Apple 的，Akamai 放行。
+
+    零第三方依赖，是 curl_cffi 装不上/被墙时的兜底。用 -D 把响应头落到临时文件，
+    这样这条通道也拿得到 Content-Disposition 和 Last-Modified —— 后者是发布日的
+    唯一证据（见 _publish_date），拿不到头的通道不配当这个模块的下载通道。
+    同样**不改 UA**：默认的 NSURLSession UA 与它自己的指纹是一致的，改了反而露馅。
+    """
+    fd_b, body = tempfile.mkstemp(suffix='.bin', prefix='cme_')
+    os.close(fd_b)
+    fd_h, hdr = tempfile.mkstemp(suffix='.hdr', prefix='cme_')
+    os.close(fd_h)
+    try:
+        subprocess.run(['/usr/bin/nscurl', '-D', hdr, '--output', body, url],
+                       check=True, capture_output=True, timeout=300)
+        with open(hdr, encoding='utf-8', errors='replace') as f:
+            status, pairs = _nscurl_headers(f.read())
+        with open(body, 'rb') as f:
+            blob = f.read()
+    finally:
+        for p in (body, hdr):
+            os.path.exists(p) and os.unlink(p)
+    # 见上面那条 ⚠：exit 0 什么都不代表，状态码才算数。
+    if status is None:
+        raise RuntimeError(f'nscurl 的 -D dump 里读不出状态行（{len(blob)}B 正文）')
+    if status != 200:
+        raise RuntimeError(f'nscurl 拿到 HTTP {status}（exit 0 不代表成功）')
+    if not blob:
+        raise RuntimeError('nscurl 返回空文件')
+    return blob, _meta(status, pairs, 'nscurl')
+
+
+def _via_urllib(url):
+    """通道 3：零依赖候补。今天必挂（403），留着是等墙哪天撤了。
+
+    timeout 压到 60 而不是原来的 120：这是最后一条通道，它只在前两条都挂了之后才
+    跑，那时整个任务已经注定失败，没有理由再多等一分钟；而实测默认 UA 那种「掐连接」
+    的挂法本来就要耗掉 31 秒。
+    """
+    req = urllib.request.Request(url, headers={
+        'User-Agent': _UA,
+        'Accept': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,'
+                   'application/vnd.ms-excel,*/*'),
+    })
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read(), _meta(r.status, r.headers.items(), 'urllib')
+
+
+_CHANNELS = (_via_curl_cffi, _via_nscurl, _via_urllib)
+
+
+def _fetch_xlsx(url):
+    """逐条降级取 xlsx，返回 (blob, meta)。全挂就抛一条把所有原因串起来的 FetchError。
+
+    「拿到了东西但不是 xlsx」分两种，处置完全不同 —— 这就是任务书要的
+    「区分被拦与源站换了格式」：
+
+      · 像 HTML（ctype 含 html，或正文以 '<' 开头）-> **拦截页**。拦截是冲着
+        「你这条通道的指纹」来的，换一条指纹再试完全可能过，所以记下原因、继续降级。
+      · 不像 HTML（比如 \\xd0\\xcf\\x11\\xe0 的老 .xls、或一片纯文本 CSV）-> **源站
+        换了格式**。这跟指纹无关，换通道只会把同一份新格式文件再下三遍，
+        然后吐一条「三条通道全挂」的假象。所以当场抛，并且把话说明白。
+
+    判据仍以 PK 魔数为准（xlsx 就是 zip），比看 Content-Type / 状态码硬 ——
+    拦截页也可以带一个 200 和一个漂亮的 ctype。
+    """
+    errs = []
+    for fn in _CHANNELS:
+        try:
+            blob, meta = fn(url)
+        except Exception as e:                 # noqa: BLE001 —— 通道失败要继续试下一条
+            errs.append(f'{fn.__name__}: {type(e).__name__}: {e}')
+            continue
+
+        if blob.startswith(b'PK\x03\x04'):
+            if fn is not _CHANNELS[0]:
+                # 主通道死了但兜底活着 —— 数据没事，可这是「下一次可能就全挂」的
+                # 预警。不喊的话，等 nscurl 也挂的那天，日志里连一句铺垫都没有。
+                print(f'[cme] ⚠ 主通道 {_CHANNELS[0].__name__} 没成，'
+                      f'降级到 {meta["via"]} 才拿到 xlsx。前序失败：{errs}')
+            return blob, meta
+
+        head = blob[:200].decode('utf-8', 'replace')
+        looks_html = ('html' in meta['ctype'] or blob.lstrip()[:1] == b'<')
+        if looks_html:
+            errs.append(f'{fn.__name__}: HTTP {meta["status"]} 但正文是 HTML 拦截页'
+                        f'（{len(blob)}B, Content-Type={meta["ctype"]!r}）: {head!r}')
+            continue
+        raise FetchError(
+            f'{fn.__name__} 通道 HTTP {meta["status"]} 正常返回了 {len(blob)} 字节，'
+            f'但开头不是 xlsx 的 PK\\x03\\x04 魔数，也不像 HTML 拦截页'
+            f'（Content-Type={meta["ctype"]!r}，开头 200 字节: {head!r}）。'
+            '这不是被墙 —— 被墙给的是 HTML 或干脆不给。最可能是**源站换了文件格式**'
+            '（老式 .xls 的魔数是 \\xd0\\xcf\\x11\\xe0，CSV 则是纯文本）。'
+            '换通道对这种情况没有意义，所以当场停：请人工打开 SRC_URL 看一眼，'
+            '确认后改 parse() 的读法，别让它继续按 xlsx 解。')
+
+    raise FetchError(
+        f'CME IR xlsx 下载失败，{len(_CHANNELS)} 条通道全挂: {url}\n  '
+        + '\n  '.join(errs)
+        + '\n  （源站走 Akamai，urllib 必 403；curl_cffi 与 nscurl 都进不来时'
+          '多半是墙升级了，见 download() 上方通道表）')
+
+
 def download(cache_dir, max_age_hours=6.0):
     """把最新 xlsx 抓到 cache_dir，返回 (路径, 官方文件名)。
 
@@ -240,32 +448,28 @@ def download(cache_dir, max_age_hours=6.0):
                     name = f.read().strip()
             return path, name
 
-    req = urllib.request.Request(SRC_URL, headers={
-        'User-Agent': _UA,
-        'Accept': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,'
-                   'application/vnd.ms-excel,*/*'),
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            ctype = (r.headers.get('Content-Type') or '').lower()
-            disp = r.headers.get('Content-Disposition') or ''
-            lastmod = r.headers.get('Last-Modified') or ''
-            blob = r.read()
-    except Exception as e:                                    # noqa: BLE001
-        raise FetchError(f'CME IR xlsx 下载失败: {SRC_URL} -> {e!r}') from e
-
-    # 站点没挂验证码，但万一哪天挂了，返回的会是 HTML challenge 页而不是 xlsx。
-    # 用魔数判定（xlsx 是 zip，PK\x03\x04）比看 Content-Type 更硬。
-    if not blob.startswith(b'PK\x03\x04'):
-        head = blob[:200].decode('utf-8', 'replace')
-        raise FetchError(
-            f'返回的不是 xlsx（Content-Type={ctype}）。很可能源站加了拦截页。'
-            f' 开头 200 字节: {head!r}')
+    # PK 魔数判据与「拦截页 vs 换格式」的分流都在 _fetch_xlsx 里，走到这里
+    # blob 已经确定是 xlsx 了。
+    # 注意别叫它 meta —— 上面那个 meta 是 .name 旁文件的路径，同名会把它冲掉。
+    blob, resp = _fetch_xlsx(SRC_URL)
+    lastmod = resp['lastmod']
 
     name = ''
-    m = re.search(r'filename="?([^";]+)"?', disp)
+    m = re.search(r'filename="?([^";]+)"?', resp['disp'])
     if m:
         name = m.group(1).strip()
+
+    # Last-Modified 是发布日的唯一证据（见 _publish_date）。缺了它数据照样是好的，
+    # 所以这里不抛 —— 抛了就是为了一个台账字段把整月数据挡在门外，不成比例，
+    # 而且本模块早就为「发布日未记」设计了正当路径（_record_publish_date 会打印原因）。
+    # 但**不能不吭声**：那条打印只在「最新月刚好这轮入库」时才走得到，NOCHANGE 的
+    # 日子里一个空 .lastmod 是彻底静默的，然后某天发布日就那么缺了半句抬头。
+    # 所以在写盘这一刻当场喊 —— 与 _crosscheck_name_month 丢失判据时的处置同款
+    # （那里也是 print '⚠ 护栏失效' 而不是抛）。
+    if not lastmod:
+        print(f'[cme] ⚠ 护栏失效：{resp["via"]} 通道的响应里没有 Last-Modified 头，'
+              '这一期的发布日将无从判定（.lastmod 会写成空文件）。'
+              '若持续如此，说明这条通道拿不全响应头，应当换通道而不是接受它。')
 
     with open(path, 'wb') as f:
         f.write(blob)
