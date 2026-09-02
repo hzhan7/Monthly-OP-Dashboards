@@ -310,10 +310,13 @@ def compose_brief(ALL, acc, eq, cr, mg, ann, nn, dart, td, opt, fut, stk):
     「峰值停在哪个月」下月重跑都会自己变。
 
     ═══ IBKR 独有，别家不能照抄 ═══
-      · `ann_dart_acct` 的分母是 **cleared** 账户，而 `darts` 含 non-cleared，
-        两者不同源。所以文中保留「cleared」一词，且全篇不做 darts ÷ accounts
-        这类跨口径除法（讲这个推导误差的是 Total client DARTs 那张双轴图的图注 ——
-        **不写死图号**：那张图已经被改号／挪位置两次了）。
+      · `ann_dart_acct` 与 `darts` **分子不同源**：前者只数 IBKR 自清算的订单
+        （"cleared" 修饰的是 DARTs，不是账户 —— 两者的分母都是全部客户账户，
+        10-K 把 Total Accounts 与 cleared customer accounts 当同一个数印）；
+        后者含 execution-only 客户的单。所以文中保留「cleared」一词，
+        且全篇不做 darts ÷ accounts 这类跨口径除法。
+        ⚠ 这里从前写的是「分母是 cleared 账户」，2026-09 查证为**错**（见 Total client
+        DARTs 那张双轴图的图注）；禁令本身保留，依据换成分子。
       · `net_new` 的 2025-03 / 2025-09 一次性调整（见 ADJ）是 IBKR 专有，
         排名一律按**还原口径**算，句子里必须写「（还原口径）」。
       · R3 日历护栏在这里成立，是因为 opt/fut/stk 三列是**当月合计**。
@@ -813,6 +816,24 @@ def main():
     # 断点索引现算且**允许算不出**：`ALL.index()` 找不到就 ValueError，整个 routine 硬失败
     # 退出，页面永久停更（build/lpla.py 就是栽在这上面）。断点不在轴上就不给 break_at，
     # 同时把图注里「红色虚线」那句一并省掉：图注只许声称图上真有的东西。
+    # ── Exhibit 5 图注要用的三样，一律现算 ────────────────────────────────
+    # ① **一条与推导式完全无关的独立复算**：用新闻稿的 Average Order Size 反推订单数
+    #    （股数÷每单股数 + 期权张数÷每单张数 + 期货张数÷每单张数，再÷当月交易日）。
+    #    这条路一次都不碰 ann_dart_acct、也不碰账户数，却与推导 cleared DARTs 吻合到
+    #    百分之一以内 —— 这是「推导式本身没错，缺口在分子口径」最硬的一条证据。
+    _cl_on_pw = cleared_all[[ALL.index(m) for m in PWIN]]
+    _xcheck = prod_d / _cl_on_pw * 100
+    _xc_med = float(np.nanmedian(_xcheck))
+    _xc_lo, _xc_hi = float(np.nanmin(_xcheck)), float(np.nanmax(_xcheck))
+    # ② 逐年覆盖率（= 100 − 本线），用来定位「哪两年下了台阶」——年份**现算**，不手写：
+    #    手写「2019 前后」会把读者引向 IBKR LITE，而实测台阶落在 2018 年年中到 2019 年初。
+    _cov_yr = {y: float(np.nanmean(100 - noncl_all[[i for i, k in enumerate(ALL) if k[:4] == y]]))
+               for y in sorted({k[:4] for k in ALL})}
+    _cov_yrs = sorted(_cov_yr)
+    _drops = sorted(((_cov_yr[a] - _cov_yr[b], a, b)
+                     for a, b in zip(_cov_yrs, _cov_yrs[1:])), reverse=True)[:2]
+    _drop_txt = '、'.join(f'{a}→{b}（−{d:.1f}pp）' for d, a, b in sorted(_drops, key=lambda t: t[1]))
+
     BRK_M = '2025-01'
     brk = ALL.index(BRK_M) if BRK_M in ALL else None
     brk_note = '（红色虚线右侧与左侧不可直读）' if brk is not None else ''
@@ -828,34 +849,66 @@ def main():
                 'yfmt': 'f0c'},
         'line': {'name': 'Share of total client DARTs not captured by implied cleared (RHS)',
                  'color': 'GREEN', 'values': LN(noncl_all), 'yfmt': 'pct0'},
-        # 需求：把右轴那条线是什么讲清楚。前两句先回答「我在看什么」，再谈画法与保留意见。
-        'note': ('柱是公司<b>每月直接披露</b>的 Total Client DARTs —— 全部客户合计的日均交易笔数，'
-                 '官方原文口径，一步推导都没有。'
-                 f'右轴那条线回答另一件事：<b>Exhibit {_n_cl} 那根推导出来的 cleared DARTs，'
-                 f'够不着这个披露总量的百分之几</b>。当期披露 {dart_all[-1]:,.0f}k 笔/日、'
-                 f'推导 cleared {cleared_all[-1]:,.0f}k 笔/日，两者相差 '
-                 f'{dart_all[-1] - cleared_all[-1]:,.0f}k，占总量 {noncl_all[-1]:.1f}% —— '
-                 '就是线右端那个点。'
-                 f'<b>为什么画补数而不画比值本身</b>：cleared ÷ total 全区间只在 '
-                 f'{_cov_lo:.0f}%–{_cov_hi:.0f}% 之间走，而本图型的右轴强制含 0 —— '
-                 f'一条 {_cov_lo:.0f}–{_cov_hi:.0f} 的线钉在 0–100 的轴上就是贴顶的一条平线，'
-                 f'看不出任何变化；补数是 {100 - _cov_hi:.0f}%–{100 - _cov_lo:.0f}%，'
-                 '在同一根轴上摊得开。两者互为 100 减，信息量完全一样。'
-                 '<b>线往上走意味着什么</b>：披露总量里推导 cleared 够不着的那一块在变大。'
-                 '经济上有两个来源，本图<b>分不开</b>：'
-                 '① 真正的非自清算流量 —— 走 omnibus / introducing broker 通道进来、由对方清算的'
-                 '交易，IBKR 计入 Total Client DARTs 但不进 cleared 口径；'
-                 '② 纯推导误差 —— 推导式用的是<b>总账户数</b>，而官方那个 per-account 指标的分母是 '
-                 '<b>cleared 账户</b>；只要 cleared 账户占总账户的比例本身在往下走，'
-                 '这条线就会自己往上抬，一笔非 cleared 交易都不用多。'
-                 '<b>它不是什么</b>：不是清算失败率或未交收比例（与 settlement 无关）；'
-                 '不是市场份额或客户流失；也不是公司披露过的任何一个数（一条腿披露、'
-                 '一条腿推导，这个比值没有官方版本）。'
-                 'cleared/total 的逐年均值：'
-                 + '、'.join(f'{y} {np.nanmean(1 - noncl_all[[i for i, k in enumerate(ALL) if k[:4] == y]] / 100):.3f}'
+        # ⚠ 这段图注被返工过一次。第一版**内容是全的**，但排成了一堵四百字的连续中文，
+        #   而且第一句讲的是柱、定义落在第二句 —— 用户读完仍然问「这个指标是什么意思」。
+        #   所以现在的规矩：**定义放第一句、算式与当期代入紧跟其后、每一节用 <br> 断开**。
+        #   信息一个字没减，只是让「我在看什么」这一问在第一行就有答案。
+        'note': ('<b>右轴那条绿线：公司披露的交易笔数里，本页那根推导出来的 cleared DARTs '
+                 '够不着的那一块，占披露总量的百分之几。</b>'
+                 f'<br><b>算式</b>：线 = 1 − 推导 cleared DARTs ÷ 披露 Total Client DARTs。'
+                 f'当期代入 —— 披露 {dart_all[-1]:,.0f}k 笔/日，推导 cleared {cleared_all[-1]:,.0f}k 笔/日，'
+                 f'差 {dart_all[-1] - cleared_all[-1]:,.0f}k；'
+                 f'{dart_all[-1] - cleared_all[-1]:,.0f} ÷ {dart_all[-1]:,.0f} = {noncl_all[-1]:.1f}%，'
+                 '就是线右端那个点。线越高 = 推导值离披露值越远。'
+                 '<br><b>两条腿分别是什么</b>：柱是公司<b>每月直接披露</b>的 Total Client DARTs '
+                 '（全部客户合计的日均交易笔数，官方原文口径，一步推导都没有）；'
+                 f'线的分子来自 Exhibit {_n_cl} 那根<b>推导值</b>'
+                 '（官方披露的 Cleared Avg. DART per Account 年化值 ÷ 252 个交易日 × '
+                 '期初期末账户总数的平均值，非公司披露）。'
+                 '<b>2017 年之前这个比值有官方版本</b>：IBKR 当年在季度 8-K 的 BROKERAGE '
+                 'STATISTICS 表里把 Cleared DARTs 与 Total Customer DARTs 并排印出来，'
+                 '一直印到 1Q2017；此后不再拆分披露，本页的推导才成为唯一来源。'
+                 '<br><b>线往上走意味着什么</b>：披露总量里推导 cleared 够不着的那一块在变大 —— '
+                 '<b>那就是 IBKR 执行但不由自己清算的那部分客户订单</b>。公司在 10-K 里把客户'
+                 '二分得很干净：cleared customers 用 IBKR 的执行<b>与清算</b>；'
+                 'non-cleared customers「including trading firms that provide liquidity in our ATS, '
+                 'use our trade execution services while clearing with another prime broker or a '
+                 'custodian bank」。后者的单进 Total Client DARTs，不进 cleared 口径。'
+                 f'<br><b>这不是推导误差</b>：另有一条与推导式<b>完全无关</b>的算法能对上 —— '
+                 f'用新闻稿的 Average Order Size 反推订单数（三大产品成交量 ÷ 每单规模 ÷ 当月交易日，'
+                 f'既不碰人均年化 DART、也不碰账户数），它是推导 cleared DARTs 的 '
+                 f'{_xc_med:.1f}%（{PXL[0]}–{PXL[-1]} 中位，区间 {_xc_lo:.0f}%–{_xc_hi:.0f}%），'
+                 f'同时也比披露总量低一成多。两条互不相干的路径给同一个答案。'
+                 '推导式剩下的近似只有三条、合计一两个百分点，且都不随时间走：'
+                 '账户数取期初期末两点（假设月内线性）、官方人均值只印整数、'
+                 '年化按 252 天折算。<b>换成当月实际交易日反而会算出「推导值大于披露总量」的月份</b>，'
+                 '所以 252 是对的，不要改。'
+                 '<br><b>它不是什么</b>：不是清算失败率、也不是未交收比例（与 settlement 无关）；'
+                 '不是市场份额、也不是客户流失。'
+                 '<b>更正一处本页从前的说法</b>：这里曾写着「官方那个 per-account 指标的分母是 '
+                 'cleared 账户，所以用总账户数反推会有系统性误差」—— <b>那是错的</b>。'
+                 'IBKR 的 10-K 把 Total Accounts 与 cleared customer accounts 当同一个数印'
+                 '（FY2025：正文「approximately 4.4 million cleared customer accounts」、'
+                 'MD&A 表「Total Accounts 4,399」千户），non-cleared 客户是机构交易公司、'
+                 '本来就不计进账户数；且 2010–2017 年公司同时印过 Cleared DARTs 与 Total Accounts，'
+                 '用<b>总账户数</b>复算它自印的 per-account 值，十几个季度误差都在 1% 以内。'
+                 f'<br><b>为什么画「够不着的那一块」而不直接画覆盖率</b>：覆盖率'
+                 f'（cleared ÷ total）全区间只在 {_cov_lo:.0f}%–{_cov_hi:.0f}% 之间走，'
+                 '而本图型的右轴强制含 0 —— 一条 '
+                 f'{_cov_lo:.0f}–{_cov_hi:.0f} 的线钉在 0–100 的轴上就是贴着轴顶的一条平线，'
+                 f'看不出任何变化；取补数之后是 {100 - _cov_hi:.0f}%–{100 - _cov_lo:.0f}%，'
+                 '在同一根轴上摊得开。两者互为 100 减，信息量完全一样，'
+                 '要读覆盖率就拿 100 减这条线。'
+                 '<br><b>覆盖率的逐年均值</b>（= 100% 减本线）：'
+                 + '、'.join(f'{y} {np.nanmean(1 - noncl_all[[i for i, k in enumerate(ALL) if k[:4] == y]] / 100) * 100:.1f}%'
                             for y in ['2016', '2019', '2022', '2024', '2025', ylast])
-                 + '——2019 前后降过一档，2019-2024 六年横盘，2025 起再降一档并保持，'
-                   '<b>疑似口径/分类变更，未经公司确认</b>' + brk_note + '。'),
+                 + f' —— 逐年看下过两次台阶：{_drop_txt}。'
+                 + '（<b>注意不是 IBKR LITE</b>：LITE 2019-09 上线，而第一次下台阶在那之前就走完了；'
+                 '公司自己披露 LITE 当时只有约 1 千笔/日、占当月 DARTs 的 0.1%，量级差两个数量级。）'
+                 '<b>疑似口径/分类变更，未经公司确认</b>' + brk_note + '。'
+                 '<br><b>推导值有过官方对照</b>：2016-01 至 1Q2017 公司按季单独披露过 Cleared DARTs，'
+                 '与本页同期推导出的覆盖率逐季相差不到 1pp —— 这条线在有官方数可对的那几年是准的，'
+                 '2017 年以后才没得对。'),
     })
     if brk is not None:
         # 断点与图注那句话绑在一起给：给了 brk_note 就必须给 break_at，反之亦然，
