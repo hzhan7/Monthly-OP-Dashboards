@@ -1,5 +1,12 @@
 # LSEG（London Stock Exchange Group，LSE: LSEG）—— 四路月度数据源核查
 
+> ⚠️ **2026-09 追记**：本文是 2026-08-07（形状类数字 2026-08-19 重测）的核查存档，正文未改。
+> 其中涉及**同比口径**与 `ttm_*` 那套接口的三处已被 2026-09 的改口径推翻 —— 全站同比一律
+> 用**单月**（当月 ÷ 去年同月 − 1）；`/lseg/` 页上（以及除 §6.2 那五张点名例外之外的
+> 每一页上）一条 12 个月滚动合计的同比都不画。逐处追记见
+> 正文（LCH 历史深度那节、§「已知的」第 5、7 条），新规矩见 `build/CONTRACT.md` §6。
+> URL、HTTP 行为、行列数、四路降级规则这些实测结论不受影响。
+
 核查日期 **2026-08-07**（形状类数字于 **2026-08-19** 重测，见下方追记）· slug `lseg` ·
 抓取代码 `fetch/lseg.py` + 四个 part 模块
 `fetch/lseg_{orderbook,primary,tradeweb,lch}.py` · 页面配置 `build/specs/lseg.py` ·
@@ -453,6 +460,13 @@ CreationDate 记的是重新导出的时间。但同日生成的还有 2026-02 �
 12 期连 13 期的点对点同比都算不出，24 期的 TTM 同比只有一个点、不成线。**
 所以 LCH 的 18 列本轮一律只画水平值，且绝不进 headline。跑满一年后自然长到 24 期。
 
+> ⚠️ **2026-09 追记**：「24 期的 TTM 同比只有一个点、不成线」这半句已经作废 —— 2026-09 起
+> `/lseg/` 页上不画 12 个月滚动合计的同比，TTM 同比在这一页上不再是任何一张图的候选口径
+> （`build/CONTRACT.md` §6；全站仍有 §6.2 点名的五张滚动例外，但都在别的页上，
+> 而且都不是折线）。**结论本身不变**：SwapClear / RepoClear 只有 12 期，连 13 期
+> 的单月同比都算不出来，这 18 列仍然只画水平值；只是今天的判据只剩「够不够 13 期」一条，
+> 比当时宽松，跑满一年后这些列就能画单月同比了。
+
 **官方免费口径下不存在更深的月度历史**，四条路都核过、都是死路 [A·转抄]：
 LSEG IR「Trading Statistics」页只是把三个 volumes 页链回去、自己不带任何 LCH 数据文件；
 SwapClear 的 "Volume Data Products" 子页写着 "as far back as 2011" 但那是**收费数据产品**
@@ -625,6 +639,12 @@ after prior postings; historical volumes are periodically updated."
      `_FLOW_PAT` 认的是 `trades`），方向在安全侧（`ttm()` 抛 CaliberError 而不是给错数）。
    **不许改 `build/yoy.py`** —— `CONTRACT.md` §6 明写 `classify()` 只是建议，
    有疑问时由调用方显式传 kind。
+
+   > ⚠️ **2026-09 追记（指路更新，本条的做法不变）**：新版 §6 整节重写后不再有
+   > 「`classify()` 只是建议」这句话，别去 §6 找它 —— 它现在写在 `build/yoy.py::classify()`
+   > 自己的 docstring 里（「存量优先，拿不准判存量」）。**本条要求的动作照旧且更要紧**：
+   > 横截面页接 lseg 的列必须显式传 `kind`，因为 §6.1 第 2、4 条把 kind 直接绑成了公式
+   > （STOCK 走点对点、RATIO 走百分点差），判错 kind 仍然是不报错的错。
 6. **`EARLY_BY` 必须写成元组。** 取值处是 `EARLY_BY.get(t, (EARLY, EARLY))[1 if qe else 0]`，
    写成裸整数会在下标那步 TypeError，**崩掉的是整轮 `monthly_run`，不只是这一家**
    （`fetch/enx.py` 已经踩过一次）。
@@ -633,6 +653,13 @@ after prior postings; historical volumes are periodically updated."
    实测残差：Tradeweb `ADV × blended 天数 vs 月成交额` 2.5e-4、
    orderbook `ADV × 交易日 vs 月合计` 9.1e-4 —— 两条腿都远超阈值，原因是官方自己就把 £m
    四舍五入到整数、把 blended 天数印到 2 位小数。
+
+   > ⚠️ **2026-09 追记**：这一条里的 `ttm_yoy` 那一半已被推翻 —— 该字段 2026-09 改名
+   > `level_yoy`、次轴改画单月同比，`granularity` / `total_col` / `weight_col` 三个键
+   > 一起删了（单月同比连「把日均还原成当月合计」这一步都不需要）；现在给 `level_yoy`
+   > 带上其中任何一个都会**硬失败**（`build/single.py::_norm_level_yoy`）。
+   > `decomp` 那一半仍然成立，逐月对账与 1e-6 阈值照旧，实测残差也照旧。
+   > 见 `build/CONTRACT.md` §6.4 与 `docs/SINGLE_SPEC.md` §1.4。
 8. **`series/lseg_breaks.csv` 不存在，`breaks` 是空的**，这是刻意的。三处已知口径变化
    （Turquoise 改名、Tradeweb 2024-12 分母重述、订单簿的 `UK order book` → `LSE Order Book`
    标签切换 —— 后者原写「订单簿起点 2021-01」，2026-08-19 起点已前推到 2016-01，

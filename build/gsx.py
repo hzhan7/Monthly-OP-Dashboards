@@ -11,9 +11,19 @@
   month_box       JPM AXP Fig3         逐日历月箱线图 + 当年/去年标记
   heat_matrix     JPM AXP Fig4         月 x 年热力矩阵
   long_line       GS HKEX Ex1          超长历史单序列折线 + 末端数据标签 + 最新点红圈
-  summary_table   GS Monthly Ex1       汇总表 本月|上月|去年同月|12M均值 ‖ MoM|YoY|vs12M均值（后三列红绿着色）
+  summary_table   GS Monthly Ex1       汇总表 本月|上月|去年同月 ‖ m/m|y/y|近 3 年分位（后三列红绿着色）
 
 页面：A4 竖版，2 列 x 3 行 = 6 exhibit/页。
+
+同比口径：本模块画的每一条 y/y 都是**单月**（`qtr_bar` 是单季度）口径 —— 本期 ÷ 去年
+同期 − 1。`lvl_bar` / `chg_line` / `rev_bar_yoy` / `qtr_bar` / `zscore_panel` 五处一律
+如此，没有一处做 12 个月滚动合计，与 `build/CONTRACT.md` §6「全站同比只有一种口径：
+单月同比」同向。要往这里加图型的人注意：**不要**在本模块里新开一条滚动合计的同比线，
+那是契约明令不画的东西。
+比率序列的同比走**百分点差**（CONTRACT §6.1 第 4 条），本模块只有两处走得了：
+`lvl_bar(pct_series=True)` 与 `summary_table` 的 `pp` / `abs` 模式。**`chg_line` 没有
+比率分支**，`kind='yoy'` 一律按比值算 —— 别拿它画费率、占比、逾期率，那会印出
+「百分比的百分比变化」。现有五处调用全是量与余额，没有一处是比率。
 """
 import os
 import datetime as _dt
@@ -687,12 +697,18 @@ def zscore_panel(deck, df, rows, ttl, source, *, lookback=36, extra='', h_scale=
     ■ 柱子 = 相对过去 lookback 期**分布**的 z（读数 - 均值）/ 标准差
     ◆ 菱形 = 相对过去 lookback 期**趋势线**的 z（读数 - 趋势外推值）/ 残差标准差
 
-    为什么要两个：高增长标的的同比本身在爬坡，滚动均值被旧数据拖低，
+    为什么要两个：高增长标的的同比本身在爬坡，窗口均值被旧数据拖低，
     单看柱子会把「趋势照常延续」误报成「异常」。两者背离本身就是结论。
     比率类不做去趋势 —— 那类指标本来就均值回复，外推趋势是错的。
 
-    ⚠️ 月度同比读数相邻高度重叠（共享 11 个月），自相关通常 0.6-0.8，
-    有效样本量远小于 lookback。图注里会标出实际有效样本，σ 只能当粗略刻度。
+    ⚠️ 这里的同比是**单月**同比（`pct_change(12)`，本月 ÷ 去年同月，CONTRACT §6.1
+    第 1 条）。它的相邻两期**不共享任何月份**（第 i 期取 i 与 i−12，第 i+1 期取
+    i+1 与 i−11）—— 会共享 11 个月的是 12 个月滚动合计的同比，而本仓一条都不画，
+    别把那套说法套到这条线上。**但不重叠不等于独立**：水平序列本身有持续性，
+    一轮行情会连着几个月同向偏离去年同期，同比读数照样高度自相关
+    （实测本仓 624 条月度序列的单月同比，一阶自相关中位 0.72、四分位 0.53–0.89）。
+    所以有效样本量仍然远小于 lookback。图注里标的那个有效样本是拿**本窗口实测的**
+    一阶自相关折算的，不是写死的经验值；σ 只能当粗略刻度。
     """
     ax = deck.ax(full_width=True, h_scale=h_scale)
     bb = ax.get_position()
@@ -776,7 +792,9 @@ def zscore_panel(deck, df, rows, ttl, source, *, lookback=36, extra='', h_scale=
             f'Diamond: the same reading against the trailing TREND line — when growth is itself '
             f'accelerating the flat mean sits too low and the bar overstates. Divergence between '
             f'the two means trend continuation, not news. Rates use the level, no trend line. '
-            f'Overlapping y/y windows are autocorrelated: effective sample only {ne}.')
+            f'y/y is single-month (this month vs the same month a year ago); consecutive '
+            f'readings share no months, but the level series is persistent so they are still '
+            f'autocorrelated — effective sample only {ne}.')
     if extra:
         note += '  ' + extra
     elif dropped:
@@ -1063,11 +1081,15 @@ def long_line(deck, s_full, ttl, source, *, dec=0, unit='', money='', extra='',
     return ax
 
 
-# ──────────────────── Exhibit 1：GS 汇总表（本月 vs 上月/去年/12M均值） ────────────────────
+# ──────────────────── Exhibit 1：GS 汇总表（本月 vs 上月/去年同月/近 3 年分位） ────────────────────
 def summary_table(deck, df, rows, ttl, source, *, extra='', h_scale=1.0):
     """rows: [(group|None, label, col, dec, pct, money, invert)]
     group 为 str 时插入一条板块分隔条；invert=True 表示该指标下降为好（着色反转）。
-    列：本月 | 上月 | 去年同月 | 12M Avg. ‖ m/m | y/y | vs 12M Avg.
+    列：本月 | 上月 | 去年同月 ‖ m/m | y/y | 3Y %ile
+
+    GS 原件的「12M Avg.」与「vs 12M Avg.」两列**这里没有**，理由写在下面 heads 那行
+    旁边。`y/y` 是**单月**口径（本月 ÷ 去年同月，跨 12 期取值），不是 12 个月滚动
+    合计之比 —— 表上一列滚动量都没有。
     """
     ax = deck.ax(full_width=True, h_scale=h_scale)
     ax.axis('off')

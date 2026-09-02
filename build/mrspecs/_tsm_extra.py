@@ -630,6 +630,22 @@ def exhibits(ds, spec, n0, R):
     # ── ⑦ 背書保證全史 ──────────────────────────────────────────────────
     go = d['guar_out']
     ap = float(d['gua']['approved_total_k'].iloc[-1]) / 1e6
+    # 「连续 N 个月在外余额为零」那一句**现算**，不写死：原文写的是「连续 77 个月
+    # （2006-09 至 2013-01）」，实测在今天的 series/tsm_guarantees.csv 上确实是这一段，
+    # 但它是一句关于数据的断言 —— 档案一回补或一重述就过期，而没有任何东西会报错。
+    # 这一段在本图窗口（自 go.index[0] 起）**之外**，所以要读整列而不是读 go。
+    # ⚠️ 原文写的是「连续 77 个月（2006-09 至 2013-01）」—— 那两个数是**核准數**
+    #    （approved_total_k）那一列的零段，而本图画的是**在外余额**
+    #    （outstanding_total_k）。同一张 CSV 的两列，句子挂错了列：在外余额上最长的
+    #    连续零段是另一段（现算，见下）。两列的零段本来就该不一样 ——
+    #    核准了额度不等于用掉，这正是本图注下面那句「别拿核准數代替本图」说的事。
+    _oz = d['gua']['outstanding_total_k']
+    _zrun = _zmax = 0
+    _z0 = _z1 = None
+    for _i, (_p, _v) in enumerate(_oz.items()):
+        _zrun = _zrun + 1 if _v == 0 else 0
+        if _zrun > _zmax:
+            _zmax, _z0, _z1 = _zrun, _oz.index[_i - _zrun + 1], _p
     ex.append(base(
         n=nxt(), kind='gs_line', height=300,
         title='Guarantees outstanding to subsidiaries（背書保證在外余额）',
@@ -638,8 +654,13 @@ def exhibits(ds, spec, n0, R):
         values=L(go.values), src_extra=_S_GUAR,
         note=('海外子公司自己借钱发债、母公司出具背書保證，所以这条线是'
               '<b>海外建厂融资规模的代理变量</b>。'
-              '台积电曾<b>连续 77 个月（2006-09 至 2013-01）担保余额为零</b> —— '
-              '那不是缺数据，当时的 6-K 上写的就是 "Endorsements and guarantees: None."。'
+              + (f'台积电曾<b>连续 {_zmax} 个月（{mlab(_z0)} 至 {mlab(_z1)}）'
+                 f'担保余额为零</b> —— '
+                 '那不是缺数据，当时的 6-K 上写的就是 "Endorsements and guarantees: None."。'
+                 if _zmax >= 12 else
+                 '这条序列早年有过整段为零的月份 —— 那不是缺数据，'
+                 '当时的 6-K 上写的就是 "Endorsements and guarantees: None."。')
+              + 
               '这条序列的存在本身就是海外扩产这件事的证据。'
               f'窗口自 {mlab(go.index[0])} 起：那是在外数第一个不间断的月份，'
               '更早的申报版式没有「在外余额」这一栏，接上去等于把缺口静默补平。'

@@ -1,5 +1,7 @@
 /* ==========================================================================
-   通用看板页渲染器 —— 12 家公司共用这一份。
+   通用看板页渲染器 —— **所有**子页共用这一份，权威名单在 build/roster.py 的 GROUPS。
+   这里不写死家数：原文写的是「12 家公司共用这一份」，页数一扩它就成了假话，
+   而没有任何东西在守这个数字。要知道有几页，读 roster.py 的 GROUPS 或 data/roster.js。
 
    为什么是「一份渲染器 + 每家一个 data/<t>.js」而不是「每家一个页面脚本」：
    COST 与 IBKR 各自独立成仓时，页面脚本是写死在 index.html 里的，两份长得八成像但
@@ -34,8 +36,10 @@
   function el(id) { return document.getElementById(id); }
   function set(id, text) { var n = el(id); if (n) n.textContent = text; }
 
-  /* ── 顶部导航：12 家 + 2 张横截面页。roster 由 build_all.py 生成，
-        带各家的数据月份，停更的一眼看得出来（不靠人记）。 ── */
+  /* ── 顶部导航：所有子页 + 横截面页，名单与分行由 build/roster.py 的 GROUPS 定。
+        roster 带各家的数据月份，停更的一眼看得出来（不靠人记）。
+        原文写的是「12 家 + 2 张横截面页。roster 由 build_all.py 生成」——
+        前半随页数扩张成了假话，后半那个文件在本仓根本不存在（生成器是 build/roster.py）。 ── */
   function nav() {
     var R = window.ROSTER;
     if (!R) return '';

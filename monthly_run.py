@@ -41,6 +41,23 @@
 它们的故障在页面上是**看不见**的（fx 只让换算偏一点、mops_remarks 只让七页少一句
 引文与一列），末行是唯一的故障信号。
 
+## 四道体检闸门（2026-09 补接了后三道；任何一道不过 = 整轮不发，末行 FAILED）
+
+preflight（跑在下载之前，查的都是**配置与代码**，与本轮数据无关）:
+    build/check_specs.py    定基名义额的常数表（原本就接着）
+    build/test_guards.py    payload_guard / brief 两条护栏的单元测试
+收尾（34 页全部生成完、commit 之前，查的是**产物** `data/*.js`）:
+    build/verify_pages.py         页面壳取得到、payload 合法且自洽
+    tools/check_yoy_caliber.py    同比口径（CONTRACT §6.6）—— 🔴 才算不过，🟡 只打印
+
+分界线是「查配置/代码」还是「查产物」：后两道在 preflight 阶段只能看到**上一轮**的
+`data/*.js`，在那儿跑证明不了这一轮。逐条理由与代价写在各自的调用处。
+仓库里还有三个自测/校验脚本**没有**接进来，别把上面那四道读成「全站闸门都自动跑了」:
+`build/verify_base_prices.py`（联网下 4MB 官方文件，它自己的文件头就明写「不进 cron」）、
+`tools/visual_qa.py`（每页都要用 headless Chrome 真渲染一遍；本轮没量过它的耗时）、
+`build/test_pools.py`（纯标准库、实测 0.06s，位置和 test_guards 一模一样，接得进来 ——
+接后三道那一轮只改了这三个调用点，它就仍然只能靠人手敲）。
+
 护栏保持不变，且仍然是「宁可不发也不发错」:
   · 提交范围只有 `data/` 与 `series/`；这两个目录以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
   · 任何一家的 fetch 解析出缺列 / 月份对不上，由该家的 fetch 模块抛异常 → 记 FAIL，不写数据
@@ -60,6 +77,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -402,6 +420,44 @@ def report_registry():
         print(f'    · {m}')
     print('    删一家要动五个地方，清单见 docs/CRON_WIRING.md')
     print(bar)
+
+
+def run_gate(name, cmd, quiet_on_pass=False):
+    """跑一道闸门子进程，把它的输出原样转印出来，返回它的退出码。
+
+    ## 为什么是子进程，而不是像 check_specs 那样 import 着跑
+
+    check_specs 能被 import 是因为它的 `main(argv)` 收参数、也不自己 exit。另外三道不行：
+    `build/test_guards.py` 走 `unittest.main()`（自己 sys.exit），
+    `build/verify_pages.py` 与 `tools/check_yoy_caliber.py` 的 `main()` 都直接读 `sys.argv`
+    （在本进程里跑会吃到 monthly_run 自己的 --only / --dry-run）。隔进子进程还顺带买到
+    一条：check_yoy_caliber 要拉起 pandas + numpy 并全量读 series/*.csv，
+    它自己崩掉时带不走这一轮已经跑完的部分。
+
+    ## 为什么不能用 sh()
+
+    sh() 失败时只在异常里带 stderr 的末 400 字，而这三道闸门的**逐条诊断全打在 stdout**。
+    用 sh() 接等于「拦是拦住了，但看不见拦在哪一条」—— 那正是本仓最忌讳的那种日志。
+
+    ## quiet_on_pass
+
+    通过时只印末尾三行（各闸门自己的计数汇总）。**只给「没有『不致命但要看』那一档」
+    的闸门用**：verify_pages 的 WARN 与 check_yoy_caliber 的 🟡 都印在输出中段，
+    对它们开这个开关就等于由调用方把那一档吞掉。
+    """
+    # 闸门脚本被删掉时**不静默跳过**：python3 找不到文件会以退出码 2 结束，调用方照样
+    # 记 FAIL（实测输出就是那行 "can't open file ... No such file"）。这和 builder() 的
+    # 「找不到生成器就跳过」刻意相反 —— 那边跳过是因为删一家是正常操作，
+    # 这边一道闸门消失了必须响，「闸门被悄悄删掉」正是它自己要防的那类事。
+    t0 = time.time()
+    r = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True)
+    lines = (r.stdout + r.stderr).rstrip().splitlines()
+    if r.returncode == 0 and quiet_on_pass:
+        lines = [x for x in lines if x.strip()][-3:]
+    print(f'── 闸门 {name} —— 退出码 {r.returncode}，{time.time() - t0:.1f}s ──')
+    for ln in lines:
+        print(f'  {ln}')
+    return r.returncode
 
 
 # 本脚本自己会写、也自己会提交的路径。护栏与提交范围必须用同一份清单 ——
@@ -1182,6 +1238,31 @@ def main():
         print('FAILED specs 规格表体检未通过（逐条错误见上），拒绝在这个状态下发布')
         sys.exit(1)
 
+    # preflight 的第二道：build/test_guards.py —— payload_guard 与 brief 两条护栏的单元测试。
+    # 它此前也没有任何自动调用方（与 check_specs 接进来之前一模一样的处境）。
+    #
+    # 为什么放在这里而不是收尾：它查的是**代码**，不是这一轮的数据。payload_guard 是每个
+    # builder 写文件前必过的那一道，它的 nan/inf 正则一旦被改松，这一轮 28 家会把
+    # `$nanbn` 之类的格式化残骸写进 data/*.js —— 浏览器照渲染、退出码照样 0。这种故障
+    # 不该等抓完 28 家、生成完 34 页才发现；放在下载之前，人改完重跑的代价最小。
+    #
+    # 硬拦而不是告警，与 check_specs 同一条理由：护栏坏了还继续发，等于这一轮的每一页
+    # 都没有护栏。代价是「那天 28 家都不更新」，但 preflight 阶段还没抓任何东西，
+    # 没有半写的 series/ 要人工回滚。
+    #
+    # 两条已知边界，写下来免得下一个人以为它比实际强：
+    #   · 它的 B 组（拿 data/*.js 里已发布的 brief 原文重过一遍 render()）与 D 组
+    #     （series/mops_remarks.csv 的每条备注原文）都是语料驱动的，而 preflight 时那两份
+    #     语料还是**上一轮**的 —— 本轮新抓到的备注要到下一轮 preflight 才被过一遍。
+    #   · 也正因为语料驱动，某家公司填了一条越界的备注原文会在这里硬拦整轮。那不是误报
+    #     （D 组那两条用例本来就是「该重新审视上限」的信号），但要知道它拦得住整轮。
+    if run_gate('test_guards（payload_guard / brief 单元测试）',
+                [sys.executable, os.path.join(HERE, 'build', 'test_guards.py')],
+                quiet_on_pass=True) != 0:   # 通过时逐条 "ok" 是纯噪声，且它没有 🟡 那一档
+        print('FAILED payload_guard / brief 护栏单元测试未通过（逐条见上），'
+              '拒绝在护栏坏掉的状态下生成本轮页面')
+        sys.exit(1)
+
     todo = [t for t in a.only.split(',') if t] or TICKERS
     bad = [t for t in todo if t not in TICKERS]
     if bad:
@@ -1225,6 +1306,56 @@ def main():
     # 陈旧列审计：这一轮唯一「即使 28 家全 NOCHANGE 也照样开口」的检查。
     # 上面每一家的 NOCHANGE 都只说明「今天没抓到新的」，说明不了「这一列还活着」。
     audit_stale_cols()
+
+    # ── 收尾闸门：产物体检（34 页全部生成完之后、commit 之前）─────────────────
+    # 这两道与 preflight 那两道的分界线是「查配置/代码」还是「查产物」：
+    # check_specs 查常数表、test_guards 查护栏代码，都与本轮数据无关，所以能提前跑；
+    # verify_pages 与 check_yoy_caliber 查的是 data/*.js 本身，preflight 阶段那些文件
+    # 还是上一轮的产物 —— 在那儿跑只能证明上一轮没坏，证明不了这一轮。
+    #
+    # 放在 commit 之前而不是之后：它们要拦的两类缺陷都是「不报错、发得出去、看不出错」——
+    # 数组比 xlabels 长的那几点画不出来但照样参与纵轴量程（图被压扁，没有任何提示），
+    # 一条画着 12 个月滚动口径的同比线读者只会当成单月（CONTRACT §6 全站只认单月）。
+    # 本仓第一条规矩是「宁可不发也不发错」，所以这两道报硬错时整轮不发。
+    #
+    # ⚠️ 代价说清楚：一页坏 → 当天 34 页都不更新，而不是只跳过那一页。这与上面「一家失败
+    # 不中止全局」看着相反，其实是同一条原则的两侧：逐家隔离处理的是「某家的新数据没抓到」
+    # （那家保持自己的旧数据，首页红点看得出旧），这里处理的是「已经生成出来的产物是错的」
+    # （发出去看不出错）。没有做成逐页放行，是因为两道闸门给的都是整份报告，要按页拆结论
+    # 就得解析它们的输出 —— 它们各有主、行文随时会改，那种耦合比它省下的可用性贵。
+    #
+    # ⚠️ 退出码分不出「判据报了硬错」与「判据自己崩了」（Python 未捕获异常也是 1）。
+    # 所以上面 run_gate 把两道闸门的完整输出原样转印：崩了会有 traceback，读日志的人
+    # 一眼分得开，但**脚本分不开**，调度器看到的都是 FAILED。
+    #
+    # 即使 28 家全 NOCHANGE 也照跑（与 audit_stale_cols 同一条理由）：NOCHANGE 只说明
+    # 今天没抓到新数据，说明不了 data/*.js 此刻是对的 —— 有人手改过一页、或上一轮留下的
+    # 错产物，只有每轮真跑一次才会被发现。实测两道合计约 5 秒（verify_pages 0.9s、
+    # check_yoy_caliber 全站 4.0s），相对 28 家抓取可以忽略，不值得为省它做增量优化。
+    #
+    # check_yoy_caliber 跑全站而不是只跑本轮重建的那几页（它支持 `--page`，只跑一页
+    # 0.7s、全站 4.0s，差 3.3 秒）：它的 R5 判的是 §6.2 白名单上那几张图还在不在、
+    # 还自不自称滚动口径，而那几页这一轮多半根本没重建 —— 只扫重建过的页会让 R5 常年不响。
+    # 两道都不传 `--json`，所以不会往仓库里落产物、不会弄脏 PUBLISH 之外的路径。
+    #
+    # --dry-run 也照拦（与 guard_dirty_tree / sync_with_origin 在 dry-run 下只告警**不同**）：
+    # 那两处降级是因为它们查的是「发布这件事的前提」，而 dry-run 本来就不发布；
+    # 这两道查的是产物，而产物在 dry-run 里是**真生成出来的** —— 试跑要能回答
+    # 「正式跑会不会被拦」，降成告警就答不了了。
+    gate_fail = []
+    # verify_pages 不加参数 = 用它自己的默认：HTTP 段只抓它默认名单里那 5 张横截面页的壳
+    # 与静态资源，payload 段扫全部 data/*.js。默认由它自己定，这里不替它挑。
+    if run_gate('verify_pages（页面壳 + payload 结构）',
+                [sys.executable, os.path.join(HERE, 'build', 'verify_pages.py')]) != 0:
+        gate_fail.append('verify_pages')
+    if run_gate('check_yoy_caliber（同比口径，CONTRACT §6.6）',
+                [sys.executable, os.path.join(HERE, 'tools', 'check_yoy_caliber.py')]) != 0:
+        gate_fail.append('check_yoy_caliber')
+    # 两道都跑完再判，不在第一道失败时短路：一次跑出全部问题，人只需要修一遍、重跑一次。
+    if gate_fail:
+        print(f'FAILED 产物闸门未通过（{"、".join(gate_fail)}；逐条见上），'
+              f'本轮生成的 data/*.js 不提交、不推送')
+        sys.exit(1)
 
     def nothing():
         """「没有任何东西可发布」的统一出口 —— 有失败就必须让调度器看见。"""

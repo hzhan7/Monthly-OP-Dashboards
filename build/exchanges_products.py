@@ -75,6 +75,29 @@
 所以跨池的规模、增长、动量三张图一律**不含它**，它单独一张图并在图注写明原因。
 这同样是「宁可少一条线，也不要把两种口径混进一根轴」。
 
+━━━━━━━━━━━━━ 六、同比口径：单月，而且必须说出来 ━━━━━━━━━━━━━
+本页的同比一律是**单月同比**（当月 ÷ 去年同月 − 1），算术走 `build/yoy.py` 的
+`mom_yoy()` —— 全站唯一实现，本文件不另写一份（CONTRACT §6.1 第 1 条；`fn_index_aum`
+那一池是存量，按第 2 条走点对点，落到算术上是同一个式子）。
+**页上没有任何一处画 12 个月滚动合计的同比**：滚动口径只作为「换口径的代价」
+在动量矩阵的图注里以数字出现（§6.1 第 3 条要求逐图印，统计量一律由
+`yoy.caliber_diff()` 出，窗口取矩阵画出来的那几个月；可比月不足
+`yoy.MIN_DIAG_MONTHS` 的行照实说量不出来，不硬编数字）。
+
+这一节 2026-09 才补上，补的是一个**只看页面的读者会中招**的缺口：在此之前
+subtitle / headline / 图注 / 页尾**一处都没有**说过本页画的是哪种同比，而首页
+「横截面」那一排里与本页并排的 `exchanges12` 恰恰是 CONTRACT §6.2 点名**保留
+12 个月滚动口径**的页。两页并排、一页明写滚动一页什么都不说，读者默认会读成同口径。
+所以口径声明现在落在读者看得到的四处：subtitle、汇总表的 note、动量矩阵的
+title / legend / note、页尾「口径与方法说明」；「与 exchanges12 不可跨页比高低」
+这一句同时出现在 subtitle、动量矩阵图注与页尾那条里。
+
+⚠️ **换实现时逐点复算过，一个数都没变**：本页 47 条序列（7 个池的合计、各成员的
+定基名义额与张数原列、矩阵那 13 行）拿 `pct_change(12) * 100` 与
+`mom_yoy(…, FLOW)` 各算一遍，max|差| = 0.0、NaN 位置逐点一致；写出的热力矩阵
+逐格相同。本页的序列里既没有零基期、也没有基期变号的月份，两者掩码上的差异用不上。
+换过来是为了「同比怎么算」这个判断只留一处，不是为了改数。
+
 数据源（只读 series/*.csv）：
   series/cme.csv  db1.csv  tmx.csv  enx.csv  cboe.csv  ice.csv  asx.csv   各家月度成交
   series/contract_specs.csv   乘数与 2019-01 基期价格（唯一权威）
@@ -93,6 +116,9 @@ import pandas as pd
 import axisfmt
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用
+import yoy as YOY    # 同比口径的**唯一实现**（build/yoy.py）：单月同比与口径对比诊断一律走它。
+                     # 别名大写只是为了不与本文件里 `_st['yoy']` 这个键名读串
+                     # （build/exchanges_apac.py 用的是同一个别名）。
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -111,7 +137,12 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 MIN_SHARE_MEMBERS = 2    # 少于两家可呈现成员的池不成其为横截面，整池不画
-MIN_POOL_MONTHS = 36     # 一个池的共同窗口短于 36 个月不画（同比 + 分位都要）
+MIN_POOL_MONTHS = 36     # 一个池的共同窗口短于 36 个月不画。**绑定条件是 3Y 分位**
+#                          （近 36 个月百分位），不是同比：单月同比只要 13 期就有第一个
+#                          点（本页的同比一律走 yoy.mom_yoy(…, yoy.FLOW)，从来不是滚动合计）。
+#                          原注写「同比 + 分位都要」，读起来像是同比也要 36 个月 ——
+#                          不对，而且 2026-09 全站改单月之后更不对。门槛保持 36 不动：
+#                          它由分位定，与本轮口径改动无关。
 MIN_POOLS = 3            # 全页可画的池少于这个数就不发（一两个池不构成「标的轴」）
 MAX_POOL_LAG = 2         # 某池的最新月比最快的池落后超过这么多个月 → 该池出局，
 #                          不让一个停更的池把整页的共同最新月拖回去
@@ -256,8 +287,8 @@ _CSV = {}
 def read_csv(name):
     """series/<name> → 连续周期索引的 DataFrame（读不到返回 None）。
 
-    reindex 成连续期：原始文件中间缺月时，pct_change(12) 会按**位置**移 12 行，
-    算出来的「同比」其实跨了 13 个月而完全看不出来。
+    reindex 成连续期：原始文件中间缺月时，单月同比的 `shift(12)`（`yoy.mom_yoy` 内部）
+    会按**位置**移 12 行，算出来的「同比」其实跨了 13 个月而完全看不出来。
     """
     if name in _CSV:
         return _CSV[name]
@@ -470,7 +501,11 @@ for _st in POOL_STATE:
     _st['gser'] = {m['key']: s.reindex(_st['idx']) for m, s in _st['growth']}
     _st['share_pct'] = ({k: v / _st['tot'] * 100 for k, v in _st['ser'].items()}
                         if _st['has_share'] else {})
-    _st['yoy'] = (_st['tot'].pct_change(12) * 100).reindex(_st['idx'])
+    # 单月同比（当月 ÷ 去年同月 − 1）。CONTRACT §6.1 第 1 条：流量走 yoy.mom_yoy(…, FLOW)，
+    # 全站只有 build/yoy.py 这一份实现。本页此前写的是 `pct_change(12) * 100`，
+    # 算术相同（2026-09 换过来时把本页 47 条序列逐点复算过，max|diff| = 0.0、NaN 位置一致），
+    # 换过来是为了让「近零基数 / 基期为零 / 基期变号」这几种掩码与全站同一套。
+    _st['yoy'] = YOY.mom_yoy(_st['tot'], YOY.FLOW).reindex(_st['idx'])
     _b = float(_st['tot'].get(BASE_P, np.nan))
     if not ok(_b) or _b == 0:
         skip(f'池 {_st["p"]["id"]} 在基期 {BASE_MONTH} 没有有效合计，指数化算不了')
@@ -499,8 +534,8 @@ for _st in POOL_STATE:
         if _legs[0]['src'] != 'contracts' or len(_m['contracts_col']) != 1:
             continue
         _raw = to_series(get_col(_m['csv'], _m['contracts_col'][0])).reindex(_st['idx'])
-        _a = (_s.reindex(_st['idx']).pct_change(12) * 100).dropna()
-        _b2 = (_raw.pct_change(12) * 100).dropna()
+        _a = YOY.mom_yoy(_s.reindex(_st['idx']), YOY.FLOW).dropna()
+        _b2 = YOY.mom_yoy(_raw, YOY.FLOW).dropna()
         _both = _a.index.intersection(_b2.index)
         if not len(_both):
             continue
@@ -560,6 +595,33 @@ BASE_UNIT_TXT = (
     f'<b>主口径 = 定基名义额</b> = 张数 × 乘数 × 锁死的 {mlab(BASE_P)} 基期价格，'
     f'汇率同锁 {mlab(BASE_P)}（USD bn/日）。价格项与汇率项都是常数 ⇒ '
     '每条序列的增长率与它的张数增长率<b>恒等</b>，图上没有标的涨跌、也没有汇率漂移。')
+
+# ── 同比口径的声明块 ────────────────────────────────────────────────────────
+# 本页从前 subtitle / headline / 图注 / 页尾**一处都没有**说过自己画的是哪种同比。
+# 那在别的页只是不够漂亮，在本页会直接误导：首页「横截面」那一排里与它并排的
+# `exchanges12` 是全站唯一整页保留 12 个月滚动口径的页（CONTRACT §6.2 点名保留），
+# 读者从首页点进来两页并排看，一页明写滚动、一页什么都不说，默认就会读成同口径。
+# 所以口径声明要出现在读者看得到的四处：subtitle（那里只能用纯文本，见下）、
+# 汇总表的 note、动量矩阵自己的 title / legend / note、页尾「口径与方法说明」；
+# 下面这两个串在后两处逐字复用，subtitle 那一处另写纯文本版。
+MOM_TXT = (
+    '<b>口径：本页的同比一律是<u>单月</u>同比</b>（当月 ÷ 去年同月 − 1）—— 全站统一，'
+    '<b>页面所有者指定</b>（<code>build/CONTRACT.md</code> §6 抬头引了原话）。'
+    '成交量这类流量序列按 §6.1 第 1 条走，指数挂钩 AUM 那种存量序列按第 2 条走点对点 —— '
+    '两条落到算术上是同一个式子。图上那几处走全站唯一实现 '
+    '<code>build/yoy.py</code> 的 <code>mom_yoy()</code>，本文件不另写一份；'
+    '汇总表那一列是同一个式子直接落在表里 —— 它旁边就摆着本月与去年同月两个水平值，'
+    '读者可以逐行自己除。'
+    '<b>本页没有任何一处画 12 个月滚动合计的同比</b> —— 滚动口径只在下面那段'
+    '实测代价里以数字出现。')
+
+SIB12_TXT = (
+    '⚠ <b>首页与本页并排的 <code>exchanges12</code>（12 家总览）不是这个口径，'
+    '两页的同比读数不能互相比高低。</b>那一页在 <code>build/CONTRACT.md</code> §6.2 的'
+    '例外名单上，<b>整页保留 12 个月滚动合计</b>的同比'
+    '（§6.2 同时要求它在自己的副标题里声明这个口径）；'
+    '本页是单月。同一个月、同一家交易所，两种口径能差多远，'
+    '就是上面那段实测里「符号相反的成员月」量的那件事。')
 
 
 def denom_txt(st):
@@ -711,10 +773,16 @@ def summary():
                  + '<b>各池之间的水平值可以放进同一根轴，但占比不能横着读</b>：'
                    '每个池的分母是它自己的成员之和，池与池之间的分母是两回事。'
                    '占比与其变化用 pp/bp（绝对值不足 1pp 时写 bp），水平值的变化用百分比。'
+                 + f'<b>「y/y」这一列 = 本月 ÷ 去年同月 − 1，即<u>单月</u>同比</b>'
+                   f'（占比那几行走百分点差）；三列水平值 {mlab(CUR)} / {mlab(PRV)} / '
+                   f'{mlab(YAG)} 就摆在旁边，读者可以逐行自己除。'
+                   '本页任何一处都没有 12 个月滚动合计的同比。'
                  + (f'<b>张数口径的行（{"、".join(CO_LABELS)}）只有增长有意义</b>：'
                     '它不进任何池合计，也不进占比的分子或分母。'
                     if CO_LABELS else '')
-                 + '3Y %ile = 该读数在最近 36 个月里高于多少百分比的观测，'
+                 # 窗口现读 pctile.WINDOW，不写死 36：这一列的窗口由那份实现定，
+                 # 它一改，这句话就是页面上一个没人会发现的假数。
+                 + f'3Y %ile = 该读数在最近 {pctile.WINDOW} 个月里高于多少百分比的观测，'
                    '判据与留空规则由全站唯一实现 <code>build/pctile.py</code> 给出。'
                  + blank_txt),
     }
@@ -779,8 +847,11 @@ ex.append({
     'ylab': f'index, {mlab(BASE_P)} = 100',
     'series': [{'name': pshort(s['p']), 'color': POOL_COLOR[s['p']['id']],
                 'values': L(s['index'].reindex(IDX).values)} for s in BASE_POOLS],
-    'src_extra': ('Each pool is the sum of its presentable members, converted at fixed '
-                  'Jan-2019 contract prices and FX, then rebased'),
+    # 基期月现读 BASE_P，不写死「Jan-2019」：BASE_MONTH 一改，这句英文就是假的
+    # （而它是本页唯一一处把基期写成英文长格式的地方，改起来最容易被漏掉）。
+    'src_extra': (f'Each pool is the sum of its presentable members, converted at fixed '
+                  f'{MONTHS[BASE_P.month - 1]}-{BASE_P.year} contract prices and FX, '
+                  f'then rebased'),
     'note': ('<b>本页的第一个问题：同一套宏观环境下，各类标的的周期是不是错位的。</b>'
              '定基名义额把乘数、基期价格与汇率都变成常数之后，'
              '这几条线的斜率第一次可以直接比 —— 差别只来自成交量本身。'
@@ -795,31 +866,101 @@ ex.append({
              + (ICE_SCOPE if has_energy_ice([s['p']['id'] for s in BASE_POOLS]) else '')),
 })
 
-# ── Ex4：成员 × 近 24 个月的同比动量矩阵（张数口径成员在这里是完全合法的） ──
-_hm_rows, _hm_lab, _hm_note_ids = [], [], []
+# ── Ex4：成员 × 近 24 个月的**单月**同比动量矩阵（张数口径成员在这里是完全合法的） ──
+# 口径：CONTRACT §6.1 第 1 条，流量走 yoy.mom_yoy(…, FLOW)。每一格就是「这个月 ÷
+# 去年同月 − 1」，所以这张图同时也在 §6.3 的图型豁免表上（横轴按月铺开、格内本来
+# 就是单月读数）—— **豁免的是「必须把『单月』写进标题」那条机检，不是 §6.1 第 3 条
+# 那笔代价**：契约 §6.1 第 3 条把本图逐字点名在「真欠账」那一档里，写法是
+# 「在图注里报总体、并点名最毛刺的那一条」，不是逐行报一遍。下面就是那笔账。
+_hm_rows, _hm_lab, _hm_note_ids, _hm_src = [], [], [], []
 for st in BASE_POOLS:
     for m, _s in st['share']:
         _hm_lab.append(f'{pshort(st["p"])}·{mshort(m)}')
-        _hm_rows.append((st['ser'][m['key']].pct_change(12) * 100))
+        _hm_src.append(st['ser'][m['key']])
         _hm_note_ids.append(st['p']['id'])
     for m, _s in st['growth']:
         _hm_lab.append(f'{pshort(st["p"])}·{mshort(m)}(张)')
-        _hm_rows.append((st['gser'][m['key']].pct_change(12) * 100))
+        _hm_src.append(st['gser'][m['key']])
         _hm_note_ids.append(st['p']['id'])
+_hm_rows = [YOY.mom_yoy(s, YOY.FLOW) for s in _hm_src]
 _hm_cols = list(IDX[-HEAT_MONTHS:])
 _hm_matrix = [L(r.reindex(_hm_cols).values) for r in _hm_rows]
 _hm_flat = [v for row in _hm_matrix for v in row if v is not None]
 _hm_neg = sum(1 for v in _hm_flat if v < 0)
+
+
+def _mom_cost_txt():
+    """§6.1 第 3 条要的那段：换单月口径的代价，用本图这几条序列自己实测。
+
+    统计量一律由 `yoy.caliber_diff()` 出（窗口 = 图上画出来的那几个月，图外的历史
+    读者根本看不到），本文件不自己算标准差、不自己数符号相反的月份。
+    ⚠ 可比月不足 `yoy.MIN_DIAG_MONTHS` 的行**照实说量不出来**，不硬编数字 ——
+    一条 2026 年才进池的腿，两种口径的交集可能只有几个月。
+    """
+    good, thin = [], []
+    for _lab, _s in zip(_hm_lab, _hm_src):
+        d = YOY.caliber_diff(_s, YOY.FLOW, win=_hm_cols)
+        if d['n'] >= YOY.MIN_DIAG_MONTHS and ok(d['std_mom']) and ok(d['std_ttm']):
+            good.append((_lab, d))
+        else:
+            thin.append(_lab)
+    if not good:
+        return ('<b>换单月口径的代价这一轮量不出来</b>：本图每一行两种口径都有值的月份'
+                f'都不足 {YOY.MIN_DIAG_MONTHS} 个，'
+                f'<code>build/yoy.py</code> 的 <code>caliber_diff()</code> 报不出比例。'
+                '按契约（§6.1 第 3 条）这也是一种付账 —— 它同样是拿本图的序列实测出来的，'
+                '结论是「差异量不出来」，不是「没有差异」。')
+    sm = [d['std_mom'] for _l, d in good]
+    st_ = [d['std_ttm'] for _l, d in good]
+    rt = [d['std_ratio'] for _l, d in good]
+    wlab, wd = max(good, key=lambda kv: kv[1]['std_mom'])
+    jrows = [(lab, d) for lab, d in good if d['maxjump_mom']]
+    jlab, jd = max(jrows, key=lambda kv: kv[1]['maxjump_mom'][0]) if jrows else (None, None)
+    n_cell = sum(d['n'] for _l, d in good)
+    n_opp = sum(d['opposite_n'] for _l, d in good)
+    return (
+        f'<b>换单月口径的代价，用动量矩阵那 {len(good)} 条序列自己实测</b>'
+        f'（窗口 = 矩阵画出来的这 {len(_hm_cols)} 个月；每条只取两种口径都算得出的月份，'
+        f'样本先对齐；统计量由 <code>build/yoy.py</code> 的 <code>caliber_diff()</code> 出）：'
+        f'逐月标准差单月 <b>{min(sm):.1f}–{max(sm):.1f}pp</b>，'
+        f'对照的 {YOY.TTM_WIN} 个月滚动口径 {min(st_):.1f}–{max(st_):.1f}pp'
+        f'（放大 {min(rt):.1f}–{max(rt):.1f} 倍）。'
+        f'<b>最毛刺的一行是 {wlab}</b>：单月标准差 {wd["std_mom"]:.1f}pp、'
+        f'滚动 {wd["std_ttm"]:.1f}pp，相邻月跳变中位 {wd["medjump_mom"]:.1f}pp '
+        f'vs {wd["medjump_ttm"]:.1f}pp。'
+        + (f'矩阵内相邻月最大跳变 <b>{jd["maxjump_mom"][0]:.0f}pp</b>'
+           f'（{jlab}，{mlab(jd["maxjump_mom"][1])} → {mlab(jd["maxjump_mom"][2])}）'
+           + (f'；同一行、同一窗口内，滚动口径的最大跳变只有 '
+              f'{jd["maxjump_ttm"][0]:.0f}pp（{mlab(jd["maxjump_ttm"][1])} → '
+              f'{mlab(jd["maxjump_ttm"][2])}，不必是同一对月份）。'
+              if jd['maxjump_ttm'] else '。')
+           if jlab else '')
+        + f'这 {n_cell} 个「成员 × 月」里，两种口径<b>符号相反的有 {n_opp} 个'
+          f'（{n_opp / n_cell * 100:.0f}%）</b>。'
+        + (f'另有 {len(thin)} 行（{"、".join(thin)}）两种口径都有值的月份不足 '
+           f'{YOY.MIN_DIAG_MONTHS} 个、或统计量算不出来，<b>差异在这几行上量不出来</b>，'
+           f'没进上面那组数 —— 照实说，不硬编一个数字。' if thin else '')
+        + '⇒ <b>每一格要连着该成员自己的水平值一起读</b> —— 汇总表里每一行都摆着'
+          '本月 / 上月 / <b>去年同月</b>三个水平值，而去年同月正是这一格的分母：'
+          '它低的时候格子会被放大，单挑一格能把结论说成两个方向。'
+        + f'对照的 {YOY.TTM_WIN} 个月滚动口径<b>只在这段文字里以数字出现，'
+          f'本页一条线、一格都不画</b>。')
+
+
+MOM_COST_TXT = _mom_cost_txt()
 ex.append({
     'n': nxt(), 'kind': 'heat_matrix', 'full': True,
-    'title': f'Growth momentum, y/y by member — last {len(_hm_cols)} months',
+    'title': f'Growth momentum, single-month y/y by member — last {len(_hm_cols)} months',
     'rows': _hm_lab,
     'cols': [mlab(p) for p in _hm_cols],
     'matrix': _hm_matrix,
-    'fmt': 'pct0', 'legend': '成交量同比（定基名义额口径，张数腿标「张」）',
+    'fmt': 'pct0',
+    'legend': '成交量单月同比（当月 ÷ 去年同月 − 1；定基名义额口径，张数腿标「张」）',
     'cell_h': 19, 'row_lab_w': 104, 'row_head': '池 · 成员',
     'src_extra': ('Rows are grouped by product pool; a contracts-only leg is marked so — '
-                  'its growth rate is identical to the notional growth rate by construction'),
+                  'its growth rate is identical to the notional growth rate by construction. '
+                  'Every cell is a single-month y/y: this month over the same month a year '
+                  'earlier, no rolling window anywhere'),
     'note': ('<b>行按池分组，所以同一类标的在不同法域的周期错位可以横着一行行读。</b>'
              '同一个池里两行同时红或同时绿 = 这一类标的的周期在两个法域是同步的；'
              '一红一绿 = 错位，那正是本页最想让人看见的东西。'
@@ -830,6 +971,7 @@ ex.append({
              f'其中 <b>{_hm_neg} 个</b>是负的 —— '
              '<b>颜色只在本图内部可比</b>，与页面上任何别的图的颜色没有关系；'
              '读数一律以格内数字为准。格内取 0 位小数。'
+             + MOM_TXT + MOM_COST_TXT + SIB12_TXT
              + (ICE_SCOPE if has_energy_ice(_hm_note_ids) else '')),
 })
 
@@ -1077,6 +1219,30 @@ def _share_tier_txt():
                if 'none' in tiers else ''))
 
 
+# ── 「同比出现在哪几张图上」现读已经建好的 exhibit，不写死图号 ────────────────
+# 判据 = 图题 / 图例 / 右轴标题里出现同比字样。这三处正是 CONTRACT §6.1 第 1 条
+# 要求把口径写进去的地方（判据脚本的 R4 也只认这几处），所以一张不在这三处提同比的
+# 图，本来就不该是同比图。CONTRACT §6.5 记着「散文里存图号」这条病：中间插一张图，
+# 写死的「Exhibit 4」当场就指着别的图。
+_YOY_EX = [e['n'] for e in ex
+           if any(k in (str(e.get('title', '')) + str(e.get('legend', ''))
+                        + str(e.get('ylab2', ''))).lower()
+                  for k in ('y/y', 'yoy', '同比'))]
+
+# ── 「哪几家连交易日列都没有」这句话现读 series/*.csv，不写死名单 ────────────
+# 写死的后果：哪天某家补了这一列，页面上仍然点着它的名。判据 = 表头有没有任何
+# 一列的列名含 `trading_days`（与 build/yoy.py 第 ⑥ 节的清点方式逐字相同）。
+def _no_daycol_txt():
+    src = sorted({m['csv'] for s in POOL_STATE for m, _ in s['share'] + s['growth']})
+    none = [c[:-4].upper() for c in src
+            if not [k for k in (read_csv(c).columns if read_csv(c) is not None else [])
+                    if 'trading_days' in k]]
+    if not none:
+        return '本页每一个成员文件都带交易日列，但各家的拆法互不相同'
+    return ('本页各成员的交易日列口径互不相同，而 '
+            + '、'.join(none) + f' 这 {len(none)} 家一列都没有')
+
+
 NOTES = [
     f'<b>发布门槛：各池的共同最新月。</b>本页统一截到 <b>{mlab(LATEST)}</b>，'
     f'即 {len(POOL_STATE)} 个可画池里最慢那个的最新月。'
@@ -1117,6 +1283,34 @@ NOTES = [
        + '、'.join(f'{lab} {gap:.1e}pp（{n} 个月）' for lab, n, gap in IDENT_ROWS) + '。'
        '多腿成员不在这项自检里 —— 各腿的常数不同，合计的增长率本来就不等于任一原列的增长率。'
        if IDENT_ROWS else '本轮没有可做恒等式自检的单腿成员。'),
+
+    # ── 页尾口径条：本页的同比是哪一种，以及它与并排那一页的关系 ──────────────
+    # 与动量矩阵的图注、subtitle 用的是同一批串（MOM_TXT / MOM_COST_TXT / SIB12_TXT），
+    # 三处不可能走样。「同比出现在哪几张图上」这句全称断言由 _YOY_EX 现算，图号也现读 ——
+    # 写死的话，中间插一张图或再加一张同比图，这句话当场就是假的。
+    MOM_TXT
+    + (f'在本页它出现在 {len(_YOY_EX)} 张 exhibit 上（'
+       + '、'.join(f'<b>Exhibit {n}</b>' for n in _YOY_EX)
+       + '，每一格就是一个月的单月同比），另加汇总表的「y/y」一列'
+         '（占比那几行走百分点差）与抬头那一行的 y/y。'
+       if _YOY_EX else
+       '本轮没有一张 exhibit 画同比，同比只出现在汇总表的「y/y」一列'
+       '（占比那几行走百分点差）与抬头那一行的 y/y。')
+    + f'定基名义额的价格项与汇率项都是常数，所以这几处的同比与各成员<b>张数</b>的'
+      f'单月同比恒等（上一条那个 {IDENT_MAX:.2e} pp 的自检量的就是它）。'
+    + MOM_COST_TXT
+    + SIB12_TXT
+    + f'⚠ 两句配套的实现细节，免得上面的话被读成别的东西：'
+      f'① <b>流量池的同比建在<u>日均</u>序列上</b>'
+      f'（{"、".join(sorted({s["p"]["unit"] for s in BASE_POOLS}))}），不建在月度合计上 —— '
+      f'当月与去年同月的交易日数不同，月度合计的同比会带一块纯日历效应，'
+      f'而日均口径把它直接除掉了。{_no_daycol_txt()}，'
+      f'跨家乘回交易日在本页根本做不到。'
+    + (f'② <b>存量池（{"、".join(pshort(s["p"]) for s in STOCK_POOLS)}）的同比是点对点</b>：'
+       f'把 12 个月的期末快照加起来不是任何东西 —— 既不是「一年的量」也不是「平均水平」，'
+       f'所以它本来就没有第二种口径可选（§6.1 第 2 条），也不在上面那段代价的分母里'
+       f'（那笔账只对换过口径的流量列付）。' if STOCK_POOLS else
+       f'② 本轮没有存量池在场，本页的同比全是流量列的。'),
 
     _share_tier_txt()
     + NO_MKT_SHARE
@@ -1276,11 +1470,16 @@ payload = {
                  # 「<b>…</b>」的字面量。要强调只能靠措辞，不能靠 HTML。
                  f'主口径 = 定基名义额（锁 {mlab(BASE_P)} 价格与汇率）· '
                  f'占比一律是池内占比，分母 = 本池成员之和 · '
+                 # 口径声明（CONTRACT §6）。并排的 exchanges12 是 §6.2 名单上保留
+                 # 滚动口径的页，两页并排而只有一页写着，读者会默认它们同口径。
+                 f'同比口径 = 单月同比（当月 ÷ 去年同月 − 1；不是 12 个月滚动合计，'
+                 f'与首页并排的 exchanges12 口径不同，两页不可比高低）· '
                  '版式仿 Goldman Sachs GIR · 仅图，无评论'),
     'headline': (f'自 {mlab(BASE_P)} 累计增长：'
                  + '、'.join(f'{pshort(s["p"])} '
                              f'{pct(float(s["index"][CUR]) - 100, 0)}' for s, _v in _g_rows)
-                 + f' · y/y（{mlab(CUR)}）：'
+                 # 抬头是全页曝光最高的一行 —— 口径必须写在这里，而不是只写在图注里。
+                 + f' · 单月 y/y（{mlab(CUR)} 比 {mlab(YAG)}）：'
                  + '、'.join(f'{n} {pct(v)}' for n, v in _yoy_now)
                  + ' · 独占度：' + _top_line
                  + ' · 分母 = 各自池内成员之和，不是行业总量'),

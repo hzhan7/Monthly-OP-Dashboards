@@ -815,8 +815,12 @@ POOLS = [
                        '否则每月看板一刷新都像是 Cboe 抓挂了'
                        '（docs/verify/verify_ice.md §5.3）。'
                        'MIAX 的 rpc_multilist_options_usd 实测只有 2025-01–2026-06 共 '
-                       '**18** 个月（2026-07 因滞后为空）⇒ 2026-12 之前做不了同比、'
-                       '做不了指数化'),
+                       '**18** 个月（2026-07 因滞后为空）⇒ 做不了指数化。'
+                       '⚠️ 这里原来还写着「2026-12 之前做不了同比」—— 那是按 **24 个月**'
+                       '（12 期滚动合计 + 12 期比较）算出来的日期，而 2026-09 起全站同比'
+                       '改成单月（CONTRACT §6），只要 13 期就有第一个点。'
+                       '这一列 2025-01 起算，2026-01 就已经有同比了；'
+                       '何况 RPC 是比率，按 §6.1 第 4 条走百分点差，本来也不做滚动合计'),
         },
         'excluded': [
             ('tmx', 'BOX 只有季度数据（series/tmx_box_q.csv：box_volume_mncontracts / '
@@ -868,7 +872,10 @@ POOLS = [
              ],
              'contracts_col': ['vol_us_options_mmcontracts'],
              'note': '⚠ 只有 19 个月（IR PDF 每月原地替换，历史只在 Wayback 而本机硬禁）。'
-                     '2026-12 之前做不了同比。篮子常数含指数期权，假设写进规格表 evidence'},
+                     '⚠️ 原来这里写「2026-12 之前做不了同比」，那是 **24 个月**滚动口径'
+                     '算出来的日期；2026-09 全站改单月（CONTRACT §6）后只要 13 期，'
+                     '这一列已经够。'
+                     '篮子常数含指数期权，假设写进规格表 evidence'},
             {'key': 'miax', 'disp': 'MIAX', 'color': 'GRAY', 'csv': 'miax.csv',
              'start': '2015-04', 'in_share': True,
              'chain': miax_multilist_legs(),

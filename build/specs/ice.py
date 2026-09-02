@@ -437,16 +437,20 @@ _NOTE_TTM_FO = (
         if _SPLITMAX is not None else
         '分项之和与合计因此有一个系统性差。'))
     + '硬挑一套乘回去，会给一半的量配错权重，而图上完全看不出来。'
-    '⇒ 这里让底座按<b>等权</b>相加，并在上面那段话里把这个偏差说出来。'
-    '<b>滚动同比对这件事天然更耐受</b>：任意连续 12 个月覆盖同一套日历，'
-    '而单月同比里那截「今年这个月比去年多开几天市」的差是消不掉的。'
+    '<b>⇒ 2026-09 起这件事在本图上整个消失了</b>：金线改成本列自己的<b>单月同比</b>'
+    '（日均 ÷ 去年同月日均），既不做滚动合计、也就不需要把日均还原成当月合计，'
+    '一条交易日列都用不上。'
+    '⚠️ 代价是另一头：日均口径除掉的是「本月开了几天」，'
+    '除不掉「去年同月那一个数本身高不高」—— 图注后面那段实测就是量这个的。'
 )
 
 _NOTE_TTM_CASH = (
-    '<b>这一张有正确的交易日列可用</b>（<code>trading_days_us_equities</code>，'
-    '就是官方拿来算这条 ADV 的那一列除数），所以线的滚动合计是把日均精确还原成'
-    '当月合计之后再滚 12 个月，柱与线口径不同是有意的：'
-    '柱回答「开市那天有多热」，线回答「一整年的总量在不在长」。'
+    '<b>柱与线取自同一列</b>（<code>adv_nyse_us_cash_handled_mnsh</code>，当月日均）：'
+    '柱是水平值，金线是它自己的<b>单月同比</b>，拿这根柱除以 12 根柱之前那根就是'
+    '线上这一点。日均口径本身已经把「这个月多开了几天市」除掉了。'
+    '⚠️ 2026-09 之前本图的金线是 12 个月滚动合计的同比，用 '
+    '<code>trading_days_us_equities</code>（官方拿来算这条 ADV 的那一列除数）'
+    '把日均精确还原成当月合计再滚 —— 改单月口径后那一步不再需要。'
     '⚠️ handled ≠ matched：handled 含 ICE 为客户路由到别家撮合的量，'
     'matched 才是本所自己撮合的。市场份额只能用 matched 算'
     '（见「NYSE 美股现货：本所量 vs 全市场分母」那一组）。'
@@ -487,6 +491,76 @@ _NOTE_TTM_CASH = (
 #    去 `$` 之后 Exhibit 12（期权 RPC，2 位小数）落进预算、不再叠字；
 #    Exhibit 15（现货 RPC）「0.041」= 20.0px 仍超 2.7px —— 3 位有效数字最短就是这么宽，
 #    再窄只能降位或改用官方没发过的单位（美分），两条都比这处叠字更坏，所以留着。
+#
+# 5) ⚠️ **上面 3) 4) 两条只谈排版。2026-09 之前 fmt 还<u>顺带决定同比口径</u>，
+#    而那一层上一版一个字没写 —— 本轮把口径这一层拆出来，并把它写在这里。**
+#    CONTRACT §6.1 第 4 条：比率序列的同比一律走**百分点差**（RPC 从 0.24 到 0.25
+#    是 +1bp，不是 +4.2%）。本页 8 条 `rpc_*` 与 5 条 `share_*` 都是比率列
+#    （`yoy.classify()` 对这 13 个列名全部返回 'ratio'）。
+#    改之前底座判比率只有一行 `c['fmt'] in RATIO_FMT`（pct*/pp*），于是 share 五列
+#    （pct1，在名单里）走对了百分点差，RPC 八列（f2 / f3，不在名单里）走的是
+#    「百分比的百分比变化」—— 差别只在 fmt，不在数据、不在图型。
+#    实测被翻掉的三处：Exhibit 12（NYSE 期权 RPC）Jul-26 印 **−20.0%**、
+#    Exhibit 15（现货 RPC，每 100 股）Jul-26 印 **+13.9%**、
+#    Exhibit 9（RPC 滚动三月均热力矩阵）整张 6 行格内都是 %。
+#    2026-09 起底座的判据是 `build/single.py` 的 `col_is_ratio()`，三级：
+#    ① spec 显式 `'ratio': True/False` → ② `fmt ∈ RATIO_FMT` →
+#    ③ `yoy.classify()` 判成比率 **且** `unit` 也是比率的量纲。
+#    **本页 13 列全部由 ②③ 覆盖，一条 `'ratio'` 都不用写**：share 五列走 ②，
+#    RPC 八列走 ③（`USD/contract` 与 `USD/100 shares` 都是「每一个可数活动单位」）。
+#    ⚠️ **这个差的单位是钱，不是 pp/bp —— 2026-09-03 又改了一次，两轮都记下来。**
+#    比率的同比走**差**（§6.1 第 4 条），这一步一直没变；但**差的单位跟着分子走**：
+#    本页 8 条 `rpc_*` 的分子是美元，差出来仍然是美元/张，把它叫 1bp 是换了个量在说话。
+#    NYSE 期权 RPC 从 0.05 掉到 0.04 是**跌了五分之一**，而「−1bp」读起来是万分之一 ——
+#    只看页面的读者会把一次 20% 的单位经济下滑读成一次可以忽略的波动。
+#    今天底座对这一档单列了轴标题与措辞（`build/single.py` 的 `unit_is_money_ratio()`
+#    / `money_diff_txt()` / `rhs_ylab2()`）：
+#      · 右轴标题 `USD/contract, y/y 差`、序列名 `y/y (USD/contract, RHS)`；
+#      · 图注与汇总表印 **Exhibit 12 Jul-26 同比 −0.01 USD/contract**
+#        （0.04 vs 去年同月 0.05）、**Exhibit 15 +0.005 USD/100 shares**
+#        （0.041 vs 0.036）；
+#      · Exhibit 9 那张 RPC 矩阵同理：图例改成「同比（USD/contract 的差）」、
+#        格内格式从 `pp1` 换成 `f2`（`pp1` 会把 +0.12 美元/张印成「+0.1pp」）。
+#    ⚠️ **payload 里的数一格没动**：仍是 `yoy.mom_yoy(s, yoy.RATIO)` 的差，
+#    改的只是单位名与展示格式 —— `tools/check_yoy_caliber.py` 的回源复算认的是那些数。
+#    （两轮之前这里还写过「Exhibit 15 是 +1bp」，那个 +1 不是四舍五入是**浮点残差**：
+#     底座当时把 bp 一律按 `:+.0f` 取整，而 `0.041 - 0.036` 在双精度里是
+#     0.0050000000000000044，掐着 0.5bp 的进位线往上翻了一格；同为 0.005 的
+#     `0.040 - 0.035` 落在线的另一侧，会印成「0bp」。后来底座改成按量级给小数位
+#     （`_bp_dec`），它变成「+0.5bp」；再后来单位整个换成钱，这一档对本页
+#     8 条 RPC 列**不再适用** —— `_bp_dec` 今天服务的是本页 5 条 `share_*`
+#     那种真·百分点比率。）
+#    ⚠️ 于是 `unit` 这一栏在本页变成**承重的**：把 `USD/contract` 改写成量纲白名单
+#    认不出的写法（例如只写 `USD`），③ 当场失效，这几列的同比会静默翻回 %。
+#    要改单位就同时补上 `'ratio': True`。
+#    ⚠️ **仍然不许拿改 fmt 去碰口径。** RPC 的量纲是 USD/contract 不是百分数：
+#    配 pct* 既推翻 3) 的「小数位等于官方发的位数」，也会被底座那道比率量纲体检
+#    （pct* 列最大绝对值须 > 1.5，而 `rpc_nyse_equity_options_usd` 全历史最大 0.18）
+#    当场硬失败挡下。
+#    ⚠️ **右轴刻度这一半也在底座解决了，别再往回改。** `pp` 族在
+#    `assets/charts.js` 的 FMT 表里只有 pp0 / pp1 两档，而本页 RPC 的差是
+#    0.01~0.06 这个量级 —— pp1 会把 Exhibit 12 的右轴印成一列「0.0pp」，
+#    而且那个「pp」本身就是假单位。所以钱这一档在 `yoy_rhs()` 里直接取纯数字族
+#    `f0`（随后由 axisfmt 升到 f2 / f3），单位交给右轴标题与图注；
+#    真·百分点比率仍走 `pp_yfmt()`（它按引擎的刻度算法试算，1 位小数分不开刻度时
+#    才换族）。所以 Exhibit 12 的右轴是「−0.06 … +0.03」、
+#    Exhibit 15 是「−0.020 … +0.010」
+#    （2026-09-03 本机按 `axisfmt.ticks` 实测，数据到 2026-07；刻度随数据走，
+#     这里存的是那一天那个窗口的读数，不是一条恒成立的断言）。
+#    图注与汇总表里那句「同比 −0.01 USD/contract」走的是 `money_diff_txt()`：
+#    位数从该列自己的 `fmt` 起（官方发几位就是几位），只有在那个位数上四舍五入
+#    成零、而差又不是零时才往下补位。
+#
+# 6) `oi_rates_kcontracts` 是 `yoy.classify()` 的一个**假阳性**，本页唯一一个：
+#    列名里有 `rates` 就被判成 'ratio'，可它是**存量**列（月末净 OI，
+#    13,040~50,770 k contracts，spec 里已标 'stock': True）。
+#    判据要是无条件相信 classify()，Exhibit 23（未平仓合约·利率）的次轴会从
+#    「% y/y」翻成「pp y/y」、画出一条几万「pp」的线 —— 而 `is_ratio` 在
+#    `build/single.py` 里排在 `c['stock']` 前面，存量那一支根本轮不到。
+#    今天挡住它的是 `col_is_ratio()` 第 ③ 级里的 `unit_is_ratio()`：本列的 unit 是
+#    `k contracts`，没有「每一个可数活动单位」那种分母，量纲这一票投的是「不是比率」。
+#    **所以这一列的 `unit` 也是承重的**，别为了好看改写它；真要改，同时写死
+#    `'ratio': False`。本页其余 5 条 `oi_*` 不受影响（classify 直接判存量）。
 
 SPEC = {
     'ticker': 'ice',
@@ -552,6 +626,9 @@ SPEC = {
             {'col': 'oi_energy_kcontracts',            'zh': '能源',     'unit': 'k contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'oi_ag_metals_kcontracts',         'zh': '农产品与金属', 'unit': 'k contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'oi_financials_kcontracts',        'zh': '金融',     'unit': 'k contracts', 'fmt': 'f0c', 'stock': True},
+            # ⚠️ 这一列的列名里有 `rates`，`yoy.classify()` 因此把它误判成 'ratio' ——
+            #    它是存量（月末净 OI）。挡住这个假阳性的是 unit（`k contracts`
+            #    不是比率量纲）；改 unit 会让 Exhibit 23 的次轴翻成「pp y/y」。见第 6 条。
             {'col': 'oi_rates_kcontracts',             'zh': '利率',     'unit': 'k contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'oi_other_financials_kcontracts',  'zh': '股指与 FX', 'unit': 'k contracts', 'fmt': 'f0c', 'stock': True},
         ]},
@@ -559,6 +636,18 @@ SPEC = {
         # ── RPC：滚动三月均，美元/张。与 Cboe 的 RPC 不同，ICE **不滞后**
         #    （2026-07 期 rpc_energy 已填），所以不进 slow_cols。
         #    但正因如此，任何 ICE vs Cboe 的 RPC 并排图，ICE 那条每月都会多伸出一格。
+        #    ⚠️ 「滚动三月均」是 ICE 自己在表内脚注里的**披露口径**，是对<u>水平值</u>的
+        #    平滑，与同比口径无关 —— 修同比不许动它。
+        #    ⚠️ 这六列都是比率列，本组画成 Exhibit 9 那张热力矩阵。2026-09 起格内
+        #    已经是**差**而不是 (a/b−1)×100（`col_is_ratio()` 第 ③ 级：
+        #    classify → 'ratio'，unit `USD/contract` 是比率量纲）。
+        #    ⚠️ **2026-09-03 再改一次：这个差的单位是钱，不是百分点。**
+        #    这六列的分子是美元，当月减去年同月得到的仍然是美元/张 ——
+        #    矩阵的 `fmt` 因此是 `f2`、图例是「同比（USD/contract 的差）」
+        #    （`ex_heat()` 按 `unit_is_money_ratio()` 选；从前选的是 `pp1` /
+        #    「同比（百分点差 pp）」，会把 +0.12 美元/张印成「+0.1pp」）。
+        #    六列同为「分子是钱」的比率、不会与量列或百分点比率混色标 ——
+        #    真混了底座会 SpecError，不会静默画错。
         {'zh': '单位经济：每张收入（RPC，滚动三月均）', 'cols': [
             {'col': 'rpc_commodities_usd',       'zh': '大宗商品', 'unit': 'USD/contract', 'fmt': 'f2'},
             {'col': 'rpc_energy_usd',            'zh': '能源',     'unit': 'USD/contract', 'fmt': 'f2'},
@@ -577,6 +666,12 @@ SPEC = {
              'unit': 'k contracts/day', 'fmt': 'f0c'},
             {'col': 'share_nyse_equity_options', 'zh': 'NYSE 份额（官方直接给）',
              'unit': '%', 'fmt': 'pct1', 'scale': 100},
+            # 比率列。f2 不在 RATIO_FMT 里，靠 `col_is_ratio()` 第 ③ 级认出来
+            # （classify → 'ratio'，且 unit `USD/contract` 是比率量纲）——
+            # 所以 Exhibit 12 的金线画的是**差**，与同组上一列（份额，pct1）同口径；
+            # 但两者的**单位不同**：份额的差是百分点（pp/bp），RPC 的差是
+            # USD/contract（分子是钱）。2026-09 之前它走的是 (a/b−1)×100，
+            # 详见上方「为什么 fmt 这么选」第 5 条。
             {'col': 'rpc_nyse_equity_options_usd', 'zh': 'NYSE 期权 RPC',
              'unit': 'USD/contract', 'fmt': 'f2'},
         ]},
@@ -594,6 +689,7 @@ SPEC = {
              'unit': 'mn shares/day', 'fmt': 'f0c'},
             {'col': 'share_nyse_us_cash_matched', 'zh': 'NYSE 全美 matched 份额',
              'unit': '%', 'fmt': 'pct1', 'scale': 100},
+            # 同上：比率列配 f3，靠 unit `USD/100 shares` 走第 ③ 级（见第 5 条）。
             {'col': 'rpc_nyse_us_cash_usd_per100sh', 'zh': '现货 RPC（每 100 股）',
              'unit': 'USD/100 shares', 'fmt': 'f3'},
             {'col': 'adv_tapeA_consolidated_mnsh', 'zh': 'Tape A 全市场',
@@ -647,26 +743,27 @@ SPEC = {
     # 📌 'decomp' 刻意留空：本表没有任何一条成交金额列，rpc_* 是费率不是价。
     # 完整理由与机器判据见 _NO_DECOMP_NOTE（它进了下面 notes 的第一条）。
 
-    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # ══ 水平值 + 次轴单月同比 ════════════════════════════════════════════════
     # 两条头条各一张。两条 level 列在 groups 里都落在多列同轴的图里
-    # （能源/金融 ADV 那几组、以及 tape 那一大组），不是单桶 gs_bar ⇒ 不与任何图重复。
-    'ttm_yoy': [
+    # （能源/金融 ADV 那几组、以及 tape 那一大组），不是单桶 gs_bar
+    # ⇒ 不与任何一张**单桶 gs_bar** 重复。
+    # ⚠️ 但这两条正是**头条列**，头条各自自带一张 grouped_bars 的「：单月同比」——
+    #   2026-09 改口径之后那两张的柱与这里两条的金线**逐点同源**（改口径前一张单月、
+    #   一张滚动，各有各的用处）。底座 `ex_level_yoy` 的护栏只拦「level_yoy ∩ groups
+    #   单列桶」，拦不到头条这条路；要不要合并成一张由页面所有者定。
+    'level_yoy': [
+        # 两条都是官方原表直接发的 ADV（当月日均）。次轴是**本列自己的单月同比**，
+        # 所以本页那两套互不相同的交易日列（trading_days_commod / _rates /
+        # _us_equities）一条都用不上 —— 从前要用它们，是因为滚动 12 个月合计非得先把
+        # 日均还原成当月合计不可，而总 ADV 横跨商品与金融两侧，哪一套日历都不能代表它。
         {'zh': 'ICE 衍生品成交量',
-         'granularity': 'daily_avg',      # 官方原表发的就是 ADV
          'level': {'col': 'adv_futures_options_kcontracts', 'zh': '衍生品总 ADV',
                    'unit': 'k contracts/day', 'fmt': 'f0c'},
-         # ⚠ 刻意**不给** weight_col：本表有 trading_days_commod 与 trading_days_rates
-         #   两套交易日，而总 ADV 横跨商品与金融两侧，没有哪一套能单独代表它。
-         #   硬挑一套会给一半的量配错权重，而图上完全看不出来。
-         #   底座会因此在图注里印一段 ⚠️ 等权相加的说明 —— 那句话是真的，别去掩盖。
          'note': _NOTE_TTM_FO},
 
         {'zh': 'NYSE 美股现货成交股数',
-         'granularity': 'daily_avg',
          'level': {'col': 'adv_nyse_us_cash_handled_mnsh', 'zh': 'NYSE handled ADV',
                    'unit': 'mn shares/day', 'fmt': 'f0c'},
-         # 这一条有唯一正确的交易日列：美股现货只有一套日历。
-         'weight_col': 'trading_days_us_equities',
          'note': _NOTE_TTM_CASH},
     ],
 

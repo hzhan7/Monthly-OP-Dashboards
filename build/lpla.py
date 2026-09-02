@@ -27,6 +27,17 @@ import json
 import math
 import os
 
+# 「全站同比只有单月」这句话在页面上必须带 §6.2 那五张例外 —— 不带的话，读者从本页翻到
+# /exchanges-apac/ Exhibit 5（标题就写着「12 个月滚动合计的同比」）会当场撞上一句假话。
+# 这一段三页共用同一份措辞，改一处要三处一起改（本仓没有跨文件的共用图注模块）。
+EXC_ZH = (
+    '本页与全站绝大多数页只有这一种口径 —— 页面所有者定的（CONTRACT §6 抬头引了原话）。'
+    '⚠️ <b>「全站」有五张明文例外</b>（§6.2 点名保留 12 个月滚动合计口径，都不是折线：'
+    '<code>/exchanges-apac/</code> 的 Exhibit 5 与 15、<code>/exchanges12/</code> 的 Exhibit 4、7、8）'
+    ' —— 翻到那两页时口径与本页不同，不要跨页比高低。'
+    '本页上一条 12 个月滚动合计的同比都不画。'
+)
+
 import numpy as np
 import pandas as pd
 
@@ -431,26 +442,65 @@ def yoy_series(s, idx, pct_series=False, lag=12):
     return out.reindex(idx)
 
 
-# ────────────────── 12 个月滚动合计同比（流量类的默认口径）──────────────────
-# 单月同比的分母是**去年那一个月**。NNA 是流量，月度分布带季节性与大额单笔的时点噪音，
-# 分母越小同一笔绝对变化被放大得越狠 —— 这不是业务信号，是除法的性质。
-# 本页实测（对齐到两种口径都算得出的同一批月份）：有机 NNA 的单月同比标准差是滚动口径的
-# 6.1 倍，读数区间 −88%~+1,600% vs −51%~+104%，25 个可比月里 12 个月符号相反。
-# 原来正因为「−88%~+1,600% 读不出东西」，Exhibit 3 干脆一条同比线都不画；
-# 换成滚动口径之后它变成一条能读的线，所以本轮把它加回来了。
+# ────────────────── 同比口径：数值实现一律走 build/yoy.py ──────────────────
+# ⚠ **2026-09 的口径改动**：本页流量类（Exhibit 3 有机 NNA、Exhibit 4 年化有机增速）
+# 次轴的金线从「12 个月滚动合计同比」改成**单月同比**（当月 ÷ 去年同月 − 1；
+# Exhibit 4 是比率，取百分点差）。理由是一句可核对的事实 ——
+# **页面所有者要求全站统一成单月口径**（CONTRACT §6 抬头引了原话），不是「看着更
+# 灵敏」那种 §6.1 第 3 条点名禁止的说法。改完之后 CONTRACT §6 本身也翻了面：
+# §6.1 第 1 条现在写的就是「流量序列用单月同比，走 yoy.mom_yoy(s, yoy.FLOW)」，
+# 并把「柱与线取自同一列、读者能自己核对」列为它的决定性好处；
+# §6.2 那张「所有者点名保留滚动」的例外表里**没有本页**。
+# 要照办的是 §6.1 第 3 条：每一张画**流量**同比的图都得印出单月口径的**代价**
+#（该条自己把范围限定在流量：只有流量列换了口径，存量与比率没有可对照的滚动口径）
+# （逐月标准差、相邻月最大跳变带月份、符号相反的月份数），由 mom_cost_note() 现算。
+# 图例名与 ylab2 里带「单月」（tools/check_yoy_caliber.py 的 R4 只认
+# title / ylab2 / legend / 序列名这四处）。
 #
-# ⚠ 一条更正（2026-08-07）：早先本文件写过「存量不许做滚动合计，因为 12 个月末值
-# 相加不是任何东西」。前半句对、**后半句推不出「存量只能点对点」**：Σ12/Σ12′ 里的
-# 除数约掉，12 个月滚动**合计**比恒等于 12 个月滚动**均值**比（共享模块 build/yoy.py
+# 代价不隐瞒也不复述：单月同比的分母是**去年那一个月**，NNA 是流量，月度分布带季节性与
+# 大额单笔的时点噪音，分母越小同一笔绝对变化被放大得越狠 —— 这不是业务信号，是除法的
+# 性质。⚠ 具体的标准差倍数、读数区间、相邻月最大跳变、符号相反的月份数**一律由
+# mom_cost_note() 拿本序列现算写进图注**，本注释里不写死数字（写死一次就过期一次）。
+# 滚动口径仍然算，但只作**对照**（roll_yoy_series），图上不画。
+#
+# ⚠ 一条更正（2026-08-07，仍然成立）：早先本文件写过「存量不许做滚动合计，因为 12
+# 个月末值相加不是任何东西」。前半句对、**后半句推不出「存量只能点对点」**：Σ12/Σ12′
+# 里的除数约掉，12 个月滚动**合计**比恒等于 12 个月滚动**均值**比（共享模块 build/yoy.py
 # 实测两者差 2.3e-14），而「去年一整年的平均客户资产 vs 前年」是个真实存在的量。
 # 错的只是**「合计」这个名字**。所以存量**可以**平滑（走 yoy.ttm_mean_yoy，
-# 文案必须写「12 个月均值同比」），本页仍保留点对点，理由由**本序列实测**给出 ——
-# 客户现金就是最硬的一条：换成均值口径标准差反而从 9.2pp 涨到 13.1pp。
+# 文案必须写「12 个月均值同比」），本页仍保留点对点，**主因是结构性的**：均值口径按构造
+# 滞后约半年、回答的是「去年一整年的平均水平」而不是「现在相对去年此刻」。
+# ⚠ 这里从前写的是「客户现金就是最硬的一条：换成均值口径标准差反而变大」——**那是假的**，
+# 而且被同一页 Exhibit 9 自己的图注当场证伪（图注是现算的，印出来是均值口径更平滑）。
+# 哪条序列换了口径更吵、哪条更稳，一律由 stock_keep_note / caliber_stats 现算，
+# 注释与散文里都不写死方向。
 # 比率序列另说：12 个月的比率做算术平均本身没有意义（每个月分母不同），
 # yoy.ttm_mean_yoy 对 RATIO 直接抛 CaliberError，那是一条真的硬约束。
+def mom_yoy_series(s, idx):
+    """单月同比（%）—— 流量类**图上画的就是这一条**。实现走共享模块，本文件不另写一份。"""
+    return yoy.mom_yoy(s, yoy.FLOW).reindex(idx)
+
+
 def roll_yoy_series(s, idx):
-    """12 个月滚动合计同比（%）—— 流量类。数值实现走共享模块，本文件不另写一份。"""
+    """12 个月滚动合计同比（%）—— 流量类的**对照**口径，2026-09 起本页不再画它。
+
+    留着不是摆设：mom_cost_note() 要拿它量出「换成单月口径的代价是多少」，
+    汇总表表注与页尾口径说明里的并排读数也来自它。数值实现走共享模块。
+    """
     return yoy.ttm_yoy(s, yoy.FLOW).reindex(idx)
+
+
+def pp_yoy_series(s, idx):
+    """**比率**序列的单月同比 = 百分点差（pp）。数值实现走共享模块，本文件不另写一份。
+
+    `yoy.mom_yoy(kind=RATIO)` 的定义就是 v − v.shift(12)（按索引对齐，缺月留 NaN）。
+    ⚠ 这个薄壳是**必需的**，不是顺手包的：下面 `bar()` 有一个叫 `yoy` 的关键字参数，
+    在那个函数体里 `yoy` 是个 bool，模块名被遮住 —— 同一页的 mom_yoy_series /
+    roll_yoy_series / mean_yoy_series 三个壳也是为这件事存在的。
+    ⚠ 也**不能**改用本页的 `yoy_series(..., pct_series=True)` 代替：那个函数先 dropna
+    再按位置取 lag=12，序列中间缺月时「12 期之前」就不再是「去年同月」。
+    """
+    return yoy.mom_yoy(s, yoy.RATIO).reindex(idx)
 
 
 def mean_yoy_series(s, idx):
@@ -463,20 +513,83 @@ def mean_yoy_series(s, idx):
     return yoy.ttm_mean_yoy(s, yoy.STOCK).reindex(idx)
 
 
+def flow_stats(s, idx):
+    """**流量列**的两口径实测对比 —— 统计量整段由 `yoy.caliber_diff()` 出，本页不自己算。
+
+    CONTRACT §6.4 白纸黑字：「`yoy.caliber_diff()` 已经先取交集再比，别自己写」。
+    对齐、逐月标准差、相邻月最大跳变、符号相反的月份，四样全部取自它返回的那一个
+    dict —— 与 `build/single.py::mom_cost_zh()`、`build/yoy.py::describe()` 拿的是
+    同一个来源，页面上这几处印的「逐月标准差」因此是同一个统计量的同一个定义。
+
+    ⚠ caliber_diff 的相邻月跳变只量「相邻两个月**都在交集里**」的那些对（它的
+    docstring 明写：跨过一个空洞的「跳变」不是跳变）。下面 `caliber_stats()` 里那份
+    自写的 `_jump` 做不到这一点 —— 交集有洞时它会把洞两侧接起来当成一次跳变。
+
+    caliber_diff 不返回读数区间与当期并排值（它是诊断器，不是取数器），这两样在下面
+    按它给出的**同一批月份**补齐 —— 补的是取值，不是统计量。
+    """
+    d = yoy.caliber_diff(s, yoy.FLOW, win=list(idx))
+    keep = list(d['months'])
+    if len(keep) < 3:
+        return None
+    A = mom_yoy_series(s, keep).astype(float)
+    B = roll_yoy_series(s, keep).astype(float)
+
+    def _at(j):
+        """caliber_diff 的 (跳变值, 前一月, 后一月) → 本页图注要的 (值, 「X → Y」)。
+        CONTRACT §6.1 第 3 条要求带月份 —— 一个光秃秃的「最大跳变 N pp」读者没法
+        回到图上去核，带上月份就能。"""
+        return (float(j[0]), f'{mlab(j[1])} → {mlab(j[2])}') if j else (float('nan'), '')
+
+    _jm, _jm_at = _at(d['maxjump_mom'])
+    _jr, _jr_at = _at(d['maxjump_ttm'])
+    return {'n': d['n'], 'sd_m': d['std_mom'], 'sd_r': d['std_ttm'],
+            'jump_m': _jm, 'jump_r': _jr, 'jump_m_at': _jm_at, 'jump_r_at': _jr_at,
+            'flips': [(mlab(p), float(a), float(b)) for p, a, b in d['opposite']],
+            'lo_m': float(A.min()), 'hi_m': float(A.max()),
+            'lo_r': float(B.min()), 'hi_r': float(B.max()),
+            'cur_m': float(A.iloc[-1]), 'cur_r': float(B.iloc[-1]),
+            'first': keep[0], 'last': keep[-1]}
+
+
 def caliber_stats(mono, roll, idx):
     """两种口径的实测对比。返回 None 表示可比月份不足 3 个。
 
     ⚠ **必须先对齐到两种口径都算得出的同一批月份**：滚动口径天然少掉头 12 个月，
     不对齐就是拿两个不同样本比波动，样本效应会伪装成口径效应。
+
+    ⚠ **为什么这一份没有并进 `yoy.caliber_diff()`**：它只对 `kind=FLOW` 做两口径对比，
+    其余两种 kind 的滚动侧一律返回 None（存量做滚动**合计**非法、比率连合法的对照
+    口径都没有）。而本页要比的另外两对恰恰不是 FLOW：
+      · 存量对 12 个月滚动**均值**同比（`stock_keep_note`，走 yoy.ttm_mean_yoy）；
+      · 由流量推导的比率，对「分子分母各自滚动 12 个月再相除」的那条比率
+        （`bar(pct_series=True, roll_col='organic_growth_roll')`）—— 那条不是 12 个月
+        比率的算术平均，共享模块里没有它。
+    所以这两对只能在这里算。**但估计量必须与共享模块同一个**：下面用的是样本标准差
+    （`ddof=1`）。共享模块那边写成 `np.nanstd(x, ddof=1)`，这里写成 pandas 的
+    `.std(ddof=1)` —— keep 已经把非有限值滤干净，两种写法逐值相同（实测差 0.0）——
+    这里曾经写的是 `ddof=0`，于是同一个词「逐月标准差」在站上有了两种定义。两者之比
+    恒为 sqrt((n−1)/n)，与数据无关。纯流量列不走这里，走上面的 flow_stats()。
     """
     A, B = mono.reindex(idx), roll.reindex(idx)
     keep = [p for p in idx if np.isfinite(A.loc[p]) and np.isfinite(B.loc[p])]
     if len(keep) < 3:
         return None
     A, B = A.loc[keep].astype(float), B.loc[keep].astype(float)
-    jump = lambda x: float(np.abs(np.diff(x.values)).max()) if len(x) > 1 else float('nan')
-    return {'n': len(keep), 'sd_m': float(A.std(ddof=0)), 'sd_r': float(B.std(ddof=0)),
-            'jump_m': jump(A), 'jump_r': jump(B),
+
+    def _jump(x):
+        """相邻月最大跳变 **与它落在哪两个月**。CONTRACT §6.1 第 3 条要求带月份 ——
+        一个光秃秃的「最大跳变 N pp」读者没法回到图上去核，带上月份就能。"""
+        if len(x) < 2:
+            return float('nan'), ''
+        d = np.abs(np.diff(x.values))
+        i = int(np.argmax(d))
+        return float(d[i]), f'{mlab(keep[i])} → {mlab(keep[i + 1])}'
+
+    _jm, _jm_at = _jump(A)
+    _jr, _jr_at = _jump(B)
+    return {'n': len(keep), 'sd_m': float(A.std(ddof=1)), 'sd_r': float(B.std(ddof=1)),
+            'jump_m': _jm, 'jump_r': _jr, 'jump_m_at': _jm_at, 'jump_r_at': _jr_at,
             'flips': [(mlab(p), float(A.loc[p]), float(B.loc[p]))
                       for p in keep if A.loc[p] * B.loc[p] < 0],
             'lo_m': float(A.min()), 'hi_m': float(A.max()),
@@ -485,20 +598,43 @@ def caliber_stats(mono, roll, idx):
             'first': keep[0], 'last': keep[-1]}
 
 
-def roll_note(st, unit='%'):
-    """「本图的次轴为什么是滚动 12 个月合计同比」——数字全部现算自本页序列。"""
+def mom_cost_note(st, unit='%'):
+    """「本图的次轴为什么是单月同比、代价是多少」——数字全部现算自本页序列。
+
+    CONTRACT §6：全站同比只有单月一种，页面所有者定的（§6 抬头引了原话），
+    页上一条 12 个月滚动合计的同比都不画。§6.1 第 3 条要求**每一张画流量同比的图**
+    都印出单月口径的代价，用这条序列自己实测，报三样：逐月标准差、相邻月最大跳变
+    （**带月份**）、两种口径符号相反的月份数 —— 这里三样都给，另加读数区间。
+    同一条还明令**不许写「看着更灵敏」**，也**不许说「滚动口径更好但我们没用」**：
+    图注要说的是代价，不是替页面上不存在的那条线背书。所以下面只报数。
+    ⚠ **「同源」这个词以前在这里是含混的，现在把两件事分开写**：
+      · **措辞**与 build/hood.py 的同名函数、build/single.py 的 mom_cost_zh() 同源 ——
+        三处照着 §6.1 第 3 条同一份要求写，句子结构一样，但字是各写各的。
+      · **统计量**：`st` 从哪儿来，决定它同不同源。纯流量列走 `flow_stats()`，数字整段
+        出自 `yoy.caliber_diff()`，与 `mom_cost_zh()` / `yoy.describe()` **同一个来源**；
+        由流量推导的比率（`pct_series=True`，对照侧是 roll_col 那条自己滚出来的比率）
+        caliber_diff 根本不比，走 `caliber_stats()` 自己算，但用的是同一个估计量
+        （样本标准差 ddof=1）。上一版 caliber_stats 用的是 ddof=0，措辞同源、
+        统计量不同源，那时这句话只是半句真话。
+    """
+    how = ('本月读数 − 去年同月读数，出<b>百分点差</b>' if unit == 'pp'
+           else '本月 ÷ 去年同月 − 1')
+    head = (f'右轴金色折线为 <b>单月同比</b>（{how}）。'
+            + EXC_ZH +
+            f'§6.1 第 1 条同时给了它一个可核对的好处：<b>柱与线取自同一列</b> —— '
+            f'拿这根柱和 {yoy.LAG} 根柱之前那根一比，就是线上这一点，读者能自己验算。')
     if st is None:
-        return ('右轴为 <b>12 个月滚动合计同比</b>（本年 12 个月合计 ÷ 上年同 12 个月合计 − 1），'
-                '不是单月同比。本序列两种口径都算得出的月份不足 3 个，暂不给对比数字。')
+        return head + '本序列两种口径都算得出的月份不足 3 个，此处暂不给代价数字。'
     ratio = st['sd_m'] / st['sd_r'] if st['sd_r'] else float('nan')
-    t = (f'右轴金色折线为 <b>12 个月滚动合计同比</b>'
-         f'（本年 12 个月合计 ÷ 上年同 12 个月合计 − 1），不是单月同比。'
-         f'理由是实测的：把两种口径<b>对齐到同一批月份</b>后'
-         f'（{mlab(st["first"])}–{mlab(st["last"])}，{st["n"]} 个月），单月同比标准差 '
-         f'{st["sd_m"]:,.1f}pp 是滚动口径 {st["sd_r"]:,.1f}pp 的 {ratio:,.1f} 倍，'
+    t = (head + f'<b>代价按 §6.1 第 3 条用本序列自己实测印出来</b>：把两种口径'
+         f'<b>对齐到同一批月份</b>后（{mlab(st["first"])}–{mlab(st["last"])}，'
+         f'{st["n"]} 个月；滚动那一侧只作对照、本页不画），'
+         f'单月同比标准差 {st["sd_m"]:,.1f}pp、'
+         f'滚动口径 {st["sd_r"]:,.1f}pp（放大 {ratio:,.1f} 倍），'
          f'读数区间 {st["lo_m"]:+,.0f}{unit}~{st["hi_m"]:+,.0f}{unit} vs '
          f'{st["lo_r"]:+,.0f}{unit}~{st["hi_r"]:+,.0f}{unit}，'
-         f'相邻月最大跳变 {st["jump_m"]:,.0f}pp vs {st["jump_r"]:,.0f}pp')
+         f'相邻月最大跳变 {st["jump_m"]:,.0f}pp（{st["jump_m_at"]}）'
+         f' vs {st["jump_r"]:,.0f}pp')
     if st['flips']:
         w = max(st['flips'], key=lambda f: abs(f[1] - f[2]))
         t += (f'，其中 {len(st["flips"])} 个月两种口径<b>符号相反</b> —— '
@@ -507,18 +643,31 @@ def roll_note(st, unit='%'):
     else:
         t += '，本窗口内两种口径没有符号相反的月份。'
     t += (f'当期并排：单月 {st["cur_m"]:+,.1f}{unit}、滚动 {st["cur_r"]:+,.1f}{unit}'
-          f'（差 {abs(st["cur_m"] - st["cur_r"]):,.0f}pp）。柱本身是当月读数，没有改。')
+          f'（差 {abs(st["cur_m"] - st["cur_r"]):,.0f}pp）。柱本身是当月读数，没有改。'
+          f'⇒ <b>这条金线要连着柱高一起读</b>：低基数月份它会被放大，'
+          f'单看它挑月份能把结论说成两个方向。')
     return t
 
 
-def stock_keep_note(s, idx, what):
+#: 每张存量图的两口径实测结果，键是那张图画的列名。页尾口径条要引其中一条时，
+#: **引的就是这个对象**，不是照着同一个公式再算一遍 —— 上一轮页尾与 Exhibit 9 当场
+#: 打架（页尾说客户现金换成均值口径「标准差反而更大」，同一页的图注印的正好相反），
+#: 起因就是两处各说各的。同源之后，图窗一改、数据一动，两处只能一起变。
+STOCK_CAL: dict = {}
+
+
+def stock_keep_note(s, idx, what, col=None):
     """**存量**序列保留点对点（单月）同比的理由 —— 事实要说对，数字要现算。
 
     对照口径用 12 个月滚动**均值**同比（yoy.ttm_mean_yoy），不是「合计」——
     对存量，「12 个月合计」不指代任何真实的量，是个假名字；而均值口径
     （去年一整年的平均余额 vs 前年）是合法的，所以不换口径必须给实测理由。
+
+    `col` 只用来登记到 STOCK_CAL：页尾要复述哪一条，就从那里取同一个 st。
     """
     st = caliber_stats(yoy.mom_yoy(s, yoy.STOCK), mean_yoy_series(s, idx), idx)
+    if col is not None:
+        STOCK_CAL[col] = st
     base = (f'右轴仍是<b>点对点（单月）同比</b>。{what}'
             '存量并非不能平滑 —— 合法的平滑口径是 <b>12 个月滚动均值同比</b>'
             '（去年一整年的平均余额 vs 前年；数值上等同于滚动合计比，除数约掉了），'
@@ -568,18 +717,19 @@ def compose_brief(months, tot, adv, bro, cash, cashp, og, nna_ex, nnaa, nnab):
     每个数字都当场从序列算，**一处硬编码都没有**：新高月计数、名次、「N 个月最低」、
     峰值停在哪个月、并表后经过几个月，下月重跑全部自己变。
 
-    ═══ 与 2026-08 同比口径改造（CONTRACT §6）的关系（移植时的口径适配）═══
-    本页 Exhibit 3 / 4 的右轴金线已改画 **12 个月滚动合计同比**，而 brief 排在
-    headline 之下、Exhibit 1（汇总表）之上 —— 汇总表的 m/m、y/y 列按 §6.2 豁免、
-    保留单月，所以本段引用 m/m / y/y 时**与汇总表同口径（单月）**，读者可与表逐格
-    对上；代价是措辞：凡出现同比字样一律写明「单月」（§6.1 第 2 条的正文版），
-    不得让读者拿这句去对 Exhibit 3 / 4 的滚动金线。本页的存量图（Ex2/9/12/15）与
-    比率图（Ex10/16）右轴本来就是单月口径，brief 的现金 / 资产同比与它们反而同口径。
+    ═══ 与同比口径的关系（CONTRACT §6；2026-09 全站统一成单月之后）═══
+    本页 Exhibit 3 / 4 的次轴金线 2026-09 按页面所有者的指令从 **12 个月滚动合计同比**
+    改成 **单月同比**；存量图（Ex2/9/12/15）与比率图（Ex10/16）本来就是单月。
+    汇总表的 m/m、y/y 列一直是单月，所以 brief、汇总表、图上的金线现在**三者同口径**，
+    读者可以互相对照。措辞不因此放松：凡出现同比字样仍一律写明「单月」
+    （CONTRACT §6 + tools/check_yoy_caliber.py 的 R4 都要求口径写明）——
+    页面上还印着滚动口径的**对照读数**（Exhibit 3 / 4 的
+    图注、汇总表表注、页尾口径条），不标口径的话读者一样会拿错数去对。
     单月读数只作**位置与基数**陈述（排名 / 反号 / 恒等式），不作趋势断言 ——
     R4 恒等式里的两个同比逐一标「单月」：恒等式两边必须同口径，混一个滚动进去
-    恒等式本身就破了；落点句锚定「较去年同月」，趋势归 Exhibit 3 / 4 的滚动口径。
-    （本地 2026-08 起 df 上还多了滚动比率的派生列 organic_growth_roll —— 它是比率
-    不是存量，本函数按位置收显式参数、不扫列名，R1 峰值扫描按构造就碰不到它。）
+    恒等式本身就破了；落点句锚定「较去年同月」，趋势归年化有机增长率。
+    （df 上的派生列 organic_growth_roll 现在只作图注里的对照 —— 它是比率不是存量，
+    本函数按位置收显式参数、不扫列名，R1 峰值扫描按构造就碰不到它。）
 
     ═══ 定性词一律由当场算出的量决定分支（写死措辞 + 算出来的数字 = bug）═══
     「只有 / 信息量低 / 内部搬家 / 被摊薄」这些词全部挂在 if 上，而不是预设方向：
@@ -687,9 +837,10 @@ def compose_brief(months, tot, adv, bro, cash, cashp, og, nna_ex, nnaa, nnab):
     #    R2 明写：m/m 与 y/y 反号、或上月处在全样本前三高时，**必须**同句给基数说明。
     #    那一句要挂在两个分支上 —— 只接「谷底反弹」分支的话，下个月环比一转负就会
     #    印出一句光秃秃的「环比 -X%」，正是 R2 点名要拦的误读，而且不会报错。
-    #    这里的 m/m 与 y/y 都是**单月**口径（B.base_effect），与 Exhibit 1 汇总表同口径、
-    #    可逐格对上；本页 Exhibit 3 的右轴是 12 个月滚动合计同比，凡「同比」措辞必须标
-    #    「单月」（CONTRACT §6），否则读者会拿这句去对那条金色折线。
+    #    这里的 m/m 与 y/y 都是**单月**口径（B.base_effect），与 Exhibit 1 汇总表、
+    #    以及 Exhibit 3 的次轴金线（2026-09 起也是单月）同口径、可逐格对上。
+    #    凡「同比」措辞仍必须标「单月」（CONTRACT §6）：页面上还印着滚动口径的对照读数，
+    #    不标口径读者一样会拿错数去对。
     be = B.base_effect(nna_ex, i)
     nf = int(np.sum(np.isfinite(og)))
     r_prev = B.rank_of(-og, i - 1) if i >= 1 else None
@@ -775,7 +926,7 @@ def compose_brief(months, tot, adv, bro, cash, cashp, og, nna_ex, nnaa, nnab):
     #    「分子分母同比双涨 → 被摊薄」这半句就已经拦住，删的是补充不是论据。
     #    这里的两个同比也是**单月**口径（B.per_unit，本月 ÷ 去年同月），措辞逐一标
     #    「单月」（CONTRACT §6）：恒等式两边必须同口径，混一个滚动进去恒等式就破了。
-    #    本页存量图（Ex2/9）右轴本来就是单月同比，这两个数与图上读数反而同口径；
+    #    本页存量图（Ex2/9）次轴本来就是单月同比，这两个数与图上读数同口径；
     #    落点句锚定「较去年同月」，只讲位置不作趋势断言 —— 趋势归 Exhibit 3 / 4。
     pu = B.per_unit(cash, tot, i, scale=100.0)
     ny, dy = pu.get('num_yoy'), pu.get('den_yoy')
@@ -915,16 +1066,21 @@ def main():
 
     def bar(n, col, title, legend, ylab, fmt, note, pct_series=False,
             window=W25, xl=XL25, breaks=None, brk_note='', extra=None,
-            yoy=True, ylab2=None, roll=True, roll_col=None, keep_why=None):
+            yoy=True, ylab2=None, flow=True, roll_col=None, keep_why=None):
         """gsx.lvl_bar → 网页 gs_bar（柱 + 每柱数值 + 次轴 y/y 折线）。
 
-        `roll=True`（流量类的默认）次轴画 <b>12 个月滚动合计同比</b>；
-        `roll=False`（存量 / 期末口径）保留单月同比 —— 12 个月末值相加不是任何东西。
+        **次轴一律画单月同比**（2026-09 起，按页面所有者的指令全站统一），
+        `flow` 只决定**为什么是单月**这句话怎么写：
+        `flow=True`（流量类）→ mom_cost_note：口径是所有者指定的，代价（与滚动口径的
+        标准差之比、读数区间、相邻月最大跳变、符号相反的月份）由本序列现算印出；
+        `flow=False` + `pct_series=True` → ratio_keep_note（比率不许做滚动均值，硬约束）；
+        `flow=False` + 其余 → stock_keep_note（存量可以做滚动**均值**，不做的理由由实测给出）。
         口径判断只在调用点写一次，图例标签、图注、实测对比都由这里按同一个开关生成，
         这样「图例上写的口径」与「实际算的口径」不可能分叉。
 
         `roll_col` 给比率序列用：比率的滚动口径不是把比率加起来，而是分子分母各自
-        滚动 12 个月再相除（本页只有 organic_growth_roll 一条）。
+        滚动 12 个月再相除（本页只有 organic_growth_roll 一条）。2026-09 之后它
+        **不再进图**，只作 mom_cost_note 的对照那一侧。
 
         yoy=False 只留给「同比本身没有意义」的序列，退回 Prior-12mo 均线 + y/y 气泡。
         """
@@ -933,25 +1089,38 @@ def main():
               'title': title, 'ylab': ylab, 'legend': legend,
               'values': L(window[col].values)}
         if yoy:
-            mono = yoy_series(df[col], window.index, pct_series)
+            # 单月同比 mono：流量类走共享模块 mom_yoy_series（口径的唯一实现）；
+            # 比率取**百分点差**，对照那一侧也走共享模块（yoy.mom_yoy(kind=RATIO) 的定义
+            # 就是 v − v.shift(12)）—— 这里原先手写 `src - src.shift(12)`，数值一样，
+            # 但那是同一个口径的第二份实现。存量仍走本页的 yoy_series()（它比 mom_yoy
+            # 多一道近零基数护栏，这次改动不碰存量）。rl 是**对照**那一侧，只进图注不进图。
             if pct_series:
+                mono = yoy_series(df[col], window.index, True)
                 src = df[roll_col] if roll_col else df[col]
-                rl = (src - src.shift(12)).reindex(window.index)
-            else:
+                rl = pp_yoy_series(src, window.index)
+            elif flow:
+                mono = mom_yoy_series(df[col], window.index)
                 rl = roll_yoy_series(df[col], window.index)
-            yv = rl if roll else mono
-            cal = ('y/y (pp, 12M roll, RHS)' if pct_series else 'y/y (12M roll, RHS)') if roll \
-                else ('y/y (pp, 单月, RHS)' if pct_series else 'y/y (单月, RHS)')
+            else:
+                mono = yoy_series(df[col], window.index)
+                rl = roll_yoy_series(df[col], window.index)
+            yv = mono
+            cal = 'y/y (pp, 单月, RHS)' if pct_series else 'y/y (单月, RHS)'
             ex['ylab2'] = ylab2 or cal.replace(', RHS', '')
             ex['yoy'] = {'name': cal, 'color': 'GOLD', 'values': L(yv.values),
                          'yfmt': 'pp1' if pct_series else 'pct0'}
             u = 'pp' if pct_series else '%'
-            if roll:
-                why = roll_note(caliber_stats(mono, rl, window.index), u)
+            if flow:
+                # 纯流量列的统计量走共享模块（CONTRACT §6.4：caliber_diff 已经先取交集
+                # 再比，别自己写）；pct_series 那一支比的是「本页自己滚出来的那条比率」，
+                # caliber_diff 不比这一对，只能自己算 —— 两条路的估计量相同，见两个函数。
+                _st = (caliber_stats(mono, rl, window.index) if pct_series
+                       else flow_stats(df[col], window.index))
+                why = mom_cost_note(_st, u)
             elif pct_series:
                 why = ratio_keep_note(keep_why or title)
             else:
-                why = stock_keep_note(df[col], window.index, keep_why or title)
+                why = stock_keep_note(df[col], window.index, keep_why or title, col)
             note = (note or '') + why
         else:
             ex['avg12'] = avg_prior12(s)
@@ -992,22 +1161,27 @@ def main():
         return exd
 
     # ── Exhibit 2：Total client assets（gsx.lvl_bar, 主窗口, dec=2, $tn）──
-    # 存量：月末余额，次轴保留单月同比（roll=False）。
+    # 存量：月末余额，次轴保留单月同比（flow=False）。
     ex.append(bar(2, 'total_tn', 'Total client assets', 'Total client assets',
                   'Total client assets ($tn)', 'f2',
                   f'原 deck 的 gsx.lvl_bar（dec=2、单位 $tn）。柱为月末客户资产总额。'
                   f'<b>窗口 {WSPAN}</b>：原 deck 写死「近 25 个月」，序列回补到 {df.index[0]} '
                   f'之后改成日历常量 {WIN_FROM} 起（右端跟着数据最新月走）。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25, roll=False,
+                  breaks=BK25, brk_note=BN25, flow=False,
                   keep_why='客户资产是<b>月末存量</b>。'))
 
     # ── Exhibit 3：Organic net new assets（gsx.lvl_bar, 主窗口, dec=1, $bn）──
-    # 这张原来一条同比线都不画，理由是「单月同比在本窗口内 −88%~+1,600%，读不出东西」——
-    # 那个理由针对的是**单月**口径，不是「同比本身没意义」。换成 12 个月滚动合计同比之后
-    # 读数区间收到两位数，线就能读了，所以本轮把它加回来（口径变了，结论跟着变，
-    # 不能因为上一版写过一句「本页只有这一张不画」就一直不画）。
-    _ST3 = caliber_stats(yoy_series(df['nna_ex'], W25.index),
-                         roll_yoy_series(df['nna_ex'], W25.index), W25.index)
+    # 这张图的同比线经历过三个状态，图注里要把话说全，不能只留最后一句：
+    #   ① 更早的版本一条同比线都不画，理由是「单月同比在本窗口内三位数摆动，读不出东西」；
+    #   ② 2026-08 换成 12 个月滚动合计同比，读数区间收到两位数，线就加回来了；
+    #   ③ 2026-09 按**页面所有者的指令**改回单月同比（全站统一口径）。
+    # 于是 ① 里那个「读不出东西」的毛病又回来了 —— 这不是没人注意到，是所有者的取舍：
+    # 口径统一优先于单张图的可读性。所以图注必须同时印出**当初的理由**与**现在的代价**
+    # （区间、标准差、跳变、符号相反的月份），由 mom_cost_note() 拿本序列现算，
+    # 不许只写「按指令改成单月」了事。
+    # 有机 NNA 是流量列，统计量因此走共享模块（CONTRACT §6.4：caliber_diff 已经先取
+    # 交集再比，别自己写）—— 这张图注引的读数区间与下面那段代价里的标准差，来源同一。
+    _ST3 = flow_stats(df['nna_ex'], W25.index)
     _acq_big = '、'.join(f'{lab} {mlab(p)} ${ACQ[str(p)]:,.1f}bn' if str(p) in ACQ
                         else f'{lab} {mlab(p)}'
                         for p, lab in ACQ_BREAKS if p in W25.index)
@@ -1017,14 +1191,19 @@ def main():
                   + (f'（窗口内最大的几笔：{_acq_big}；NPH 是 Dec-17 起分批导入）。'
                      if _acq_big else '。')
                   + '并购导入按公司披露的拆分逐月扣除，不整月置零。'
-                  '<b>本轮把次轴同比加回来了</b>：上一版不画，理由是实算的单月同比在本窗口内'
+                  '<b>这条次轴金线的口径变过两次，两次都记在这里</b>：更早的版本一条同比线'
+                  '都不画，理由是实算的单月同比在本窗口内'
                   + (f'介于 {_ST3["lo_m"]:+,.0f}% 与 {_ST3["hi_m"]:+,.0f}% 之间'
                      if _ST3 else '在三位数以上') +
-                  '，一条贴零的直线加一根冲天尖峰；但那是<b>单月口径</b>的毛病，不是同比的。'
-                  '改成 12 个月滚动合计同比之后读数区间'
-                  + (f'收到 {_ST3["lo_r"]:+,.0f}%~{_ST3["hi_r"]:+,.0f}%'
+                  '，一条贴零的直线加一根冲天尖峰；2026-08 曾换成 12 个月滚动合计同比，'
+                  '读数区间'
+                  + (f'落在 {_ST3["lo_r"]:+,.0f}%~{_ST3["hi_r"]:+,.0f}%'
                      if _ST3 else '收敛到两位数') +
-                  '，右轴不再被单点撑爆，线本身能读了。'
+                  '。<b>2026-09 按页面所有者的指令统一成单月口径</b>（全站只此一种），'
+                  '上面那个宽区间因此又回到图上 —— 记在这里不是为了替谁辩护，'
+                  '而是因为这正是本图该交代的<b>代价</b>（CONTRACT §6.1 第 3 条），'
+                  '完整数字见下面「口径」那一段里本序列自己的实测。'
+                  '<b>所以这条线必须连着柱高一起读。</b>'
                   'GS 规矩 1「流量不算百分比」针对的是<b>环比</b>与单月同比；'
                   '年化有机增长率（Exhibit 4）仍是读流量趋势的首选。',
                   breaks=BKN, brk_note=BNN))
@@ -1055,9 +1234,11 @@ def main():
                   'Organic NNA x 12 / prior month-end assets, the GS convention; acquired '
                   'assets stripped out using the disclosed split。' + _lag4 +
                   '比率序列的同比用百分点差（GS 规矩 2），所以右轴单位是 pp。'
-                  '<b>柱是当月年化率，右轴换成了滚动口径的同比</b>：右轴画的是'
-                  '「滚动 12 个月有机 NNA ÷ 12 个月前的月末客户资产」这条比率的百分点差，'
-                  '不是当月年化率的百分点差。' + YOY_NOTE +
+                  '<b>柱是当月年化率，右轴是同一条当月年化率的单月百分点差</b>'
+                  '（本月年化率 − 去年同月年化率）。'
+                  '⚠ 2026-09 之前这里画的是另一条序列：「滚动 12 个月有机 NNA ÷ 12 个月前的'
+                  '月末客户资产」这条比率的百分点差；现按所有者指令改成单月，那条滚动比率'
+                  '只留作图注里的对照，<b>不进图</b>。' + YOY_NOTE +
                   '本图右轴同比跨零、左轴柱值恒正，两轴零点对齐的代价可能超过阈值，'
                   '届时引擎改为两轴独立缩放并在绘图区左上角标出（红色斜体）。',
                   window=W4, xl=XL4, breaks=BK4, brk_note=BN4,
@@ -1219,11 +1400,13 @@ def main():
     # 客户现金同样跨并表：2025-07 $49.5bn → 2025-08 $52.7bn（+6.5% m/m，2018 年以来
     # 8 个 8 月里最大的一个），Commonwealth 把客户现金一起带了进来。原先这一族
     # （Ex9/10/13/17）一条断点线都没画，而页面 notes 却声称「凡是跨这一期读的图都画了」。
-    # 存量：月末余额。本页实测里最有说服力的一条反例 —— 强行做滚动合计标准差反而变大。
+    # 存量：月末余额，次轴保留单月同比（flow=False）。换成 12 个月均值同比之后是更稳
+    # 还是更吵，由 stock_keep_note 现算印在图注里 —— 这里从前写的是「本页实测里最有说服力
+    # 的一条反例：强行做滚动合计标准差反而变大」，与图注现算出来的方向相反，是假话。
     ex.append(bar(9, 'client_cash_usdbn', 'Client cash balances', 'Client cash balances',
                   'Client cash ($bn)', 'f1',
                   '月末客户现金余额（含银行存款 sweep）。' + QNOTE + '。' + YOY_NOTE,
-                  breaks=BKC, brk_note=BNC, roll=False,
+                  breaks=BKC, brk_note=BNC, flow=False,
                   keep_why='客户现金是<b>月末存量</b>。'))
 
     # ── Exhibit 10：Client cash as % of client assets（gsx.lvl_bar, pct_series）──
@@ -1234,7 +1417,7 @@ def main():
                   '两位小数标签会横向叠成一片（引擎只能把它们抽稀掉一半），两位小数见本图的'
                   '「表格」视图与末尾核对表。分子分母跨并表同时跳，'
                   '断点两侧的占比不可直读。' + YOY_NOTE,
-                  pct_series=True, breaks=BKC, brk_note=BNC, roll=False,
+                  pct_series=True, breaks=BKC, brk_note=BNC, flow=False,
                   keep_why='客户现金 ÷ 客户资产（两个月末存量之比）'))
 
     # ── Exhibit 11：NNA by quarter（gsx.qtr_bar, win=14）──
@@ -1281,7 +1464,7 @@ def main():
                 f'只剩 {len(ok_yoy)} 个可比点、彼此还不相邻，连不成一条可读的线，'
                 f'而且其中最大的一个仍有 {worst:.0f}%，画出来照样是「一根尖峰加一条贴零的直线」。'
                 '换成滚动口径也救不了：滚动窗口一样会把那两笔并表整整背 12 个月。'
-                '季度趋势请读 Exhibit 3（有机 NNA 的 12 个月滚动合计同比）、'
+                '季度趋势请读 Exhibit 3（有机 NNA 的<b>单月</b>同比，已扣除并购导入）、'
                 'Exhibit 4 与 Exhibit 18 的年化有机增速，'
                 '各季 NNA 合计与并表金额见本图的「表格」视图与末尾核对表。'
                 + (BNQ + '。' if BNQ else ''),
@@ -1291,7 +1474,7 @@ def main():
     ex.append(bar(N_ADVISORY, 'advisory_assets_usdbn', 'Advisory assets', 'Advisory assets',
                   'Advisory assets ($bn)', 'f0c',
                   '月末 advisory 口径客户资产。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25, roll=False,
+                  breaks=BK25, brk_note=BN25, flow=False,
                   keep_why='advisory 资产是<b>月末存量</b>。'))
 
     # ── Exhibit 13：Implied client-cash revenue（gsx.lvl_bar, 主窗口）──
@@ -1300,7 +1483,7 @@ def main():
                   'f0c', BR_NOTE + '。<b>推导值，非公司披露</b>，验证见 Exhibit 14。'
                   '规模基数是月末客户现金，因此与 Exhibit 9 一样跨并表跳升、'
                   '也一样承接 Apr-2019 的客户现金口径变更。' + YOY_NOTE,
-                  breaks=BKC, brk_note=BNC, extra=FEE_Q_NOTE, roll=False,
+                  breaks=BKC, brk_note=BNC, extra=FEE_Q_NOTE, flow=False,
                   keep_why='它名义上是「每月多少收入」的流量，但 = <b>月末</b>客户现金 × '
                            '季度净收益率 ÷ 12，规模基数是存量、行为跟着存量走，'
                            '所以按<b>期末存量</b>处理。'))
@@ -1349,7 +1532,7 @@ def main():
     ex.append(bar(N_BROKERAGE, 'brokerage_assets_usdbn', 'Brokerage assets', 'Brokerage assets',
                   'Brokerage assets ($bn)', 'f0c',
                   '月末 brokerage 口径客户资产。' + YOY_NOTE,
-                  breaks=BK25, brk_note=BN25, roll=False,
+                  breaks=BK25, brk_note=BN25, flow=False,
                   keep_why='brokerage 资产是<b>月末存量</b>。'))
 
     # ── Exhibit 16：Advisory share of client assets（gsx.lvl_bar, pct_series）──
@@ -1362,7 +1545,7 @@ def main():
                   '每一笔整体并表都直接改变了业务口径的构成（NPH 与 Atria 偏 brokerage、'
                   'Waddell & Reed 与 Commonwealth 偏 advisory），断点两侧的占比不可直读。'
                   + YOY_NOTE,
-                  pct_series=True, breaks=BK25, brk_note=BN25, roll=False,
+                  pct_series=True, breaks=BK25, brk_note=BN25, flow=False,
                   keep_why='advisory 资产 ÷ 总客户资产（两个月末存量之比）'))
 
     # ── Exhibit 17：Client cash（gsx.long_line，全序列；标题年份现算）──
@@ -1447,16 +1630,19 @@ def main():
         matrix.append(row)
     ex.append({
         'n': 19, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct1',
-        # 标题里必须写「单月」：热力矩阵按定义是逐格月度读数，而本页别处已改用滚动口径。
-        # 这张图豁免于「换滚动」那条规矩 —— 逐格波动与季节形状就是它的题眼，
-        # 平滑掉等于把这张图唯一的信息抹掉；但豁免不等于可以不写清楚画的是哪个口径。
+        # 标题里必须写「单月」：热力矩阵按定义是逐格月度读数，读者才知道格子里那个数
+        # 是怎么算的。这张图属 CONTRACT §6.3 的图型豁免（heat_matrix 每一格本来就是
+        # 一个月）—— 逐格波动与季节形状就是它的题眼。
+        # ⚠ 2026-09 起本页别处的次轴也统一成单月口径，旧稿那句「不是 Exhibit 4 右轴的
+        # 滚动口径」已经不成立，下面的图注跟着改掉了 —— 别再写回去。
         'title': 'Annualised organic growth rate — 单月年化 (%)',
         'rows': [str(y) for y in yrs9],
         'cols': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
                  'Nov', 'Dec'],
         'matrix': matrix, 'legend': 'Annualised organic growth, 单月', 'row_head': '年',
-        'note': '格内是<b>单月</b>年化增速（当月有机 NNA x 12 ÷ 上月末资产），'
-                '不是 Exhibit 4 右轴的滚动口径 —— 逐格的季节形状正是这张图要看的东西。'
+        'note': '格内是<b>单月</b>年化增速的<b>水平值</b>（当月有机 NNA x 12 ÷ 上月末资产），'
+                '不是同比 —— Exhibit 4 的柱画的是同一条序列，它的次轴则是这条序列的'
+                '单月同比（百分点差）。逐格的季节形状正是这张图要看的东西。'
                 'Green = faster organic asset gathering; acquired assets removed using the '
                 f'disclosed split（{min(ACQ)} 起逐笔扣除，见页尾「有机口径」一条）。'
                 '色标取全部有限值的 5/95 分位，离群月不会把整表压平。'
@@ -1521,9 +1707,9 @@ def main():
             blank_rows.append((label, pctile.why_blank(vals) or '样本不足'))
         return {'label': label, 'cells': cells}
 
-    # 汇总表的 y/y 列**不换口径**：它恒等于表内算术「本月 ÷ 去年同月」，读者拿第一列
-    # 除第三列就能验算。换成滚动口径之后这一步会得出另一个数，表内自相矛盾比口径混用更糟。
-    # 改为在组标题上把口径写死，并在表注里把两种口径的当期读数并排现算印出。
+    # 汇总表的 y/y 列一直是单月口径：它恒等于表内算术「本月 ÷ 去年同月」，读者拿第一列
+    # 除第三列就能验算。2026-09 各图次轴也改成单月之后，这一列与图上的金线**同口径**了 ——
+    # 但组标题上的口径标注不能因此省掉，表注里也仍要把滚动口径的对照读数并排印出。
     _GS = '　·　y/y 列 = 单月口径（本月 ÷ 去年同月）'
     sum_rows = [
             # srow() 有副作用（往 blank_rows 里登记留空原因），所以必须在 summary 之前跑完
@@ -1547,26 +1733,56 @@ def main():
             srow('% of client assets', 'cash_pct_assets', 2, 'pp', pct=True),
     ]
     # 两种口径的当期读数：现算，供表注与页尾口径说明并排印出。
-    # 不并排印，读者拿表里的 y/y 去核 Exhibit 3 的次轴必然对不上，还以为哪边算错了。
-    _mo3 = yoy_series(df['nna_ex'], df.index)
+    # 表里的 y/y 与 Exhibit 3 的次轴现在同口径（都是单月），并排印的目的因此变了 ——
+    # 不再是「别拿这个去核那个」，而是把被换掉的那个口径的读数一并交代清楚，
+    # 让读者自己看得到「换分母能换出多大一个差」。
+    _mo3 = mom_yoy_series(df['nna_ex'], df.index)
     _rl3 = roll_yoy_series(df['nna_ex'], df.index)
-    _og_m = df['organic_growth_ex'] - df['organic_growth_ex'].shift(12)
-    _og_r = df['organic_growth_roll'] - df['organic_growth_roll'].shift(12)
+    # 年化有机增速是**比率**，同比取百分点差，走共享模块（yoy.mom_yoy(kind=RATIO)）——
+    # 原先手写 `x - x.shift(12)`，数值与它逐月相同，但那是同一个口径的第二份实现。
+    _og_m = pp_yoy_series(df['organic_growth_ex'], df.index)
+    _og_r = pp_yoy_series(df['organic_growth_roll'], df.index)
 
     def _lastf(s):
         s = s.dropna()
         return float(s.iloc[-1]) if len(s) else None
 
     _CAL = [t for t in (
-        (f'有机 NNA（Exhibit 3 画滚动）：单月 {_lastf(_mo3):+,.1f}% / '
-         f'滚动 12 个月 {_lastf(_rl3):+,.1f}%'
+        (f'有机 NNA（Exhibit 3 次轴画的是单月那个）：单月 {_lastf(_mo3):+,.1f}% / '
+         f'滚动 12 个月（对照，本页不画）{_lastf(_rl3):+,.1f}%'
          f'（差 {abs(_lastf(_mo3) - _lastf(_rl3)):,.0f}pp）'
          if _lastf(_mo3) is not None and _lastf(_rl3) is not None else ''),
-        (f'年化有机增长率（Exhibit 4，比率取 pp 差）：单月 {_lastf(_og_m):+,.2f}pp / '
-         f'滚动 12 个月 {_lastf(_og_r):+,.2f}pp'
+        (f'年化有机增长率（Exhibit 4 次轴画的是单月那个，比率取 pp 差）：'
+         f'单月 {_lastf(_og_m):+,.2f}pp / '
+         f'滚动 12 个月（对照，本页不画）{_lastf(_og_r):+,.2f}pp'
          f'（差 {abs(_lastf(_og_m) - _lastf(_og_r)):,.1f}pp）'
          if _lastf(_og_m) is not None and _lastf(_og_r) is not None else ''),
     ) if t]
+    # ── 页尾口径条里「客户现金那一条实测」现算 ──────────────────────────────
+    # ⚠ 这里从前是一句写死的散文：「最硬的一条是客户现金（Exhibit 9）：换成 12 个月
+    # 均值同比标准差反而更大」。**那是假的**，而且被同一页 Exhibit 9 自己的图注当场
+    # 证伪 —— 那条图注是现算的，印出来的是「均值口径确实更平滑」。更早的版本还带着
+    # 两个写死的读数（9.2pp → 13.1pp，那是 25 个月窗口时代的数），上一轮把数删了、
+    # 把结论留下了，于是页面上只剩一句读者无法当场核对的假话。
+    # 现在这一段与该图图注**取自同一个 st 对象**（STOCK_CAL 由 stock_keep_note 登记），
+    # 两个数一并印出来，方向由数据决定：翻面了句子跟着翻。
+    _cash_st = STOCK_CAL.get('client_cash_usdbn')
+    if not _cash_st:
+        _CASH_CAL_TXT = '<b>逐图实测印在各图图注里</b>（本轮客户现金两种口径可比的月份不足 3 个）。'
+    else:
+        _cash_r = (_cash_st['sd_m'] / _cash_st['sd_r']) if _cash_st['sd_r'] else float('nan')
+        _CASH_CAL_TXT = (
+            '<b>「换成均值就更吵」不是理由，逐图实测就印在各图图注里</b> —— 客户现金'
+            f'（Exhibit 9）这一条与该图图注同一批月份、同一个统计量：对齐后 '
+            f'{_cash_st["n"]} 个月，点对点同比标准差 {_cash_st["sd_m"]:,.1f}pp、'
+            f'12 个月均值同比 {_cash_st["sd_r"]:,.1f}pp（{_cash_r:,.2f} 倍），'
+            + ('<b>均值口径在这条序列上反而更吵</b>。'
+               if _cash_r < 1 else
+               '<b>均值口径确实更平滑</b>；本页不换它，靠的是上面那条结构性的理由，'
+               '不是波动。')
+            + '（本站从前在这里写的是「客户现金换成均值口径标准差反而更大」，'
+              '与该图图注当场打架，现按实测改正。）')
+
     # 表注里「哪几行留空、为什么」现算，不写死行名 —— 序列一变，写死的名单就是假话
     _why = {}
     for lab, why in blank_rows:
@@ -1585,10 +1801,11 @@ def main():
                 '（100 或 0），这一列对该行就没有区分度，留空。'
                 + (f'本期留空：{_bl}。它们的强弱读 m/m 与 y/y。' if _bl else '本期没有留空的行。')
                 + '<br><b>本表的 y/y 列是「单月口径」= 本月 ÷ 去年同月 − 1，'
-                '与 Exhibit 3 / 4 右轴的滚动口径不同。</b>不改它是刻意的：这一列恒等于'
-                '表内算术（第一列 ÷ 第三列），读者可以直接验算；换成滚动口径之后这一步'
-                '会得出另一个数，表内自相矛盾比口径混用更糟。'
-                + (f'当期两种口径并排现算 —— {"；".join(_CAL)}。' if _CAL else ''),
+                '与各图次轴现在<b>同一个口径</b>（2026-09 起全站统一，页面所有者指定）。</b>'
+                '这一列同时恒等于表内算术（第一列 ÷ 第三列），读者可以直接验算。'
+                'Exhibit 11（季度 NNA）没有同比线，本页因此不再有第二种同比口径。'
+                + (f'被换掉的那个口径（12 个月滚动合计）本页只算不画，当期读数并排现算 '
+                   f'—— {"；".join(_CAL)}。' if _CAL else ''),
     }
 
     # ── 末尾核对表（官方原始单位，未换算）──
@@ -1659,18 +1876,19 @@ def main():
     acq_txt = ('，含 ' + '、'.join(acq_in12) + '；'
                f"剔除近 12 个月已披露的并购导入约 {pm(y_tot_ex, 1, '%')}"
                if acq_in12 and acq12 > 0 else '')
-    # 抬头的每个 y/y 都带口径标签：本页有三种同比口径，一个光秃秃的「y/y」在这里
-    # 等于误导（读者会拿它去核图上的次轴，然后对不上）。抬头里的两项都是**存量**，
-    # 单月同比在存量上是合法口径，所以标「单月」而不是改成滚动。
-    # 有机 NNA 的滚动口径读数补进来 —— 它才是 Exhibit 3 右轴画的那个数。
-    _hl_r3 = _lastf(_rl3)
+    # 抬头的每个 y/y 都带口径标签：光秃秃的「y/y」等于误导（读者会拿它去核图上的次轴）。
+    # ⚠ 2026-09 起有机 NNA 这一项也报**单月**同比 —— 上一版报的是 12 个月滚动合计，
+    # 理由写在旁边：「它才是 Exhibit 3 右轴画的那个数」。图改成单月之后那条理由自己就把
+    # 这里改了：仍报滚动就会与图上那条金线对不上，而抬头是多数人唯一会读的一行。
+    # 客户资产与客户现金两项本来就是存量的点对点同比，不受影响。
+    _hl_m3 = _lastf(_mo3)
     headline = (f"客户资产 ${float(latest['total_assets_usdbn']):,.1f}bn"
                 f"（{pm(y_tot, 1, '%')} y/y·单月{acq_txt}）"
                 f" · 总 NNA ${float(latest['nna_total_usdbn']):,.1f}bn，"
                 f"有机 ${float(latest['nna_ex']):,.1f}bn"
-                + (f"（{pm(_hl_r3, 1, '%')} y/y·12M滚动，"
+                + (f"（{pm(_hl_m3, 1, '%')} y/y·单月，"
                    f"年化有机增速 {og_now:.1f}%，前 12 个月均值 {og_avg:.1f}%）"
-                   if _hl_r3 is not None else
+                   if _hl_m3 is not None else
                    f"（年化有机增速 {og_now:.1f}%，前 12 个月均值 {og_avg:.1f}%）")
                 + ' · Brokerage NNA '
                 + ('-' if float(latest['nna_brokerage_usdbn']) < 0 else '+')
@@ -1861,47 +2079,65 @@ def main():
             '<b>GS 规矩 1：流量不算百分比。</b>这条规矩针对的是<b>环比</b>与<b>单月同比</b>：'
             'NNA 是流量，拿上个月或去年那一个月当分母都没有经济含义。'
             '汇总表里给的是绝对变化（$bn），趋势请读「年化有机增长率」= 当月 NNA × 12 / '
-            '上月末客户资产，或 Exhibit 3 右轴的 12 个月滚动合计同比。'
+            '上月末客户资产。'
+            '⚠ <b>Exhibit 3 的次轴 2026-09 起画的正是这条规矩点名的单月同比</b> —— '
+            '页面所有者要求全站统一成单月口径，这条 GS 规矩因此在本页被覆盖了一半：'
+            '同比线照画，但读它必须连着柱高一起看，代价（区间、跳变、与滚动口径符号相反的'
+            '月份）由该图图注拿本序列现算印出。趋势判断仍以年化有机增长率为准。'
             'Exhibit 11（季度 NNA）仍然没有同比线，但理由不同 —— 它画的是 as-reported 总 NNA，'
             f'窗口内 {len(bad_q)} 个季度被并购导入污染，换哪种口径都不可比。',
 
-            # ── 同比口径：本页有三种，逐处点名 ──
+            # ── 同比口径：2026-09 全站统一成单月之后，本页只剩一种 ──
             # 「点名」不是客套：读者在同一页上看到两个都叫 y/y 的有机 NNA 读数，
-            # 没人告诉他分母不同，他只会以为哪里算错了。
-            '<b>⚠ 同比口径：本页有三种，逐处点名。</b>'
-            '(1) <b>12 个月滚动合计同比</b>（本年 12 个月合计 ÷ 上年同 12 个月合计 − 1）—— '
-            'Exhibit 3（有机 NNA）与 Exhibit 4（年化有机增速，取滚动比率的 pp 差）的右轴。'
-            '<b>流量类一律用这个口径。</b>'
-            + (f'实测（对齐到两种口径都算得出的同一批月份，{_ST3["n"]} 个月）：有机 NNA 的'
+            # 没人告诉他分母不同，他只会以为哪里算错了。现在分母统一了，但**为什么**
+            # 统一、代价是什么，仍然要逐处交代 —— 尤其是流量那两张，它们是被改过来的。
+            '<b>⚠ 同比口径：本页现在只有<b>一种</b>—— 单月同比（本月 ÷ 去年同月 − 1；'
+            '比率序列取<b>百分点差</b>）。</b>'
+            'Exhibit 2 / 3 / 4 / 9 / 10 / 12 / 13 / 15 / 16 的次轴金线、Exhibit 1 汇总表的 '
+            'y/y 列、Exhibit 19 热力矩阵的逐格读数、以及顶部 headline 与 brief 里标明「单月」'
+            '的同比，全部是这一个口径，彼此可以逐格对上。'
+            '<b>其中流量类的两张（Exhibit 3 有机 NNA、Exhibit 4 年化有机增速）是 2026-09 才从'
+            f'「{yoy.TTM_WIN} 个月滚动合计同比」改过来的，理由是页面所有者要求全站统一成'
+            '单月口径</b>（CONTRACT §6 抬头引了原话）—— 一句可核对的指令，'
+            '不是「看着更灵敏」（§6.1 第 3 条点名禁止的说法）。'
+            '§6.1 第 1 条同时给了单月口径一个可核对的好处：<b>柱与线取自同一列</b>，'
+            f'拿一根柱和 {yoy.LAG} 根柱之前那根一比就是线上那一点，读者能自己验算。'
+            '<b>代价按 §6.1 第 3 条一并印出，不只写结论</b>'
+            + (f'：对齐到两种口径都算得出的同一批月份（{_ST3["n"]} 个月），有机 NNA 的'
                f'单月同比标准差 {_ST3["sd_m"]:,.1f}pp 是滚动口径 {_ST3["sd_r"]:,.1f}pp 的 '
-               f'{_ST3["sd_m"] / _ST3["sd_r"]:,.1f} 倍，相邻月最大跳变 '
+               f'{_ST3["sd_m"] / _ST3["sd_r"]:,.1f} 倍，读数区间 '
+               f'{_ST3["lo_m"]:+,.0f}%~{_ST3["hi_m"]:+,.0f}% vs '
+               f'{_ST3["lo_r"]:+,.0f}%~{_ST3["hi_r"]:+,.0f}%，相邻月最大跳变 '
                f'{_ST3["jump_m"]:,.0f}pp vs {_ST3["jump_r"]:,.0f}pp，'
-               f'{len(_ST3["flips"])} 个月两种口径符号相反。' if _ST3 else '')
-            + '(2) <b>点对点（单月）同比</b>（本月 ÷ 去年同月 − 1）—— Exhibit 2 / 9 / 10 / 12 / '
-            '13 / 15 / 16 的右轴，Exhibit 1 汇总表的 y/y 列，以及 Exhibit 19 热力矩阵的逐格读数。'
-            '顶部「本月读数怎么读」一段（brief）的 m/m 与凡标明「单月」的同比也同属这一口径、'
-            '与汇总表可逐格对上 —— 不要拿那几句去对 Exhibit 3 / 4 的滚动金线。'
+               f'{len(_ST3["flips"])} 个月两种口径符号相反。' if _ST3 else '。')
+            + '滚动那一侧本页<b>只算不画</b>，两条图注与本条里的并排读数都出自它。'
+            + '<b>存量与比率类（Exhibit 2 / 9 / 12 / 13 / 15 与 Exhibit 10 / 16）不受这次改动'
+            '影响</b>：单月本来就是它们唯一（或唯一合法）的口径，不是选出来的。'
             '<b>这里要更正一句本站从前的说法</b>：「存量不能做滚动，所以只能点对点」是<b>错的</b> —— '
             'Σ12/Σ12′ 里的除数约掉，12 个月滚动合计比恒等于 12 个月滚动<b>均值</b>比，'
             '而「去年一整年的平均客户资产 vs 前年」是个真实存在、可以核对的量。'
             '假的只是<b>「合计」这个名字</b>（12 个月末余额相加不指代任何东西）。'
-            '所以存量<b>可以</b>平滑，本页仍用点对点，理由由各图图注里的<b>实测</b>给出。'
-            '最硬的一条是客户现金（Exhibit 9）：换成 12 个月均值同比，标准差从 9.2pp '
-            '涨到 13.1pp（反而更吵），还多出几个符号相反的月份 —— 具体数字印在该图图注里。'
-            'Exhibit 10 / 16 是另一回事：它们是<b>比率</b>，12 个月的占比做算术平均'
+            '所以存量<b>可以</b>平滑，本页仍用点对点，<b>主因是结构性的</b>：'
+            '均值口径按构造滞后约半年、回答的是「去年一整年的平均水平 vs 前年」，'
+            '而这几张图要回答的是「现在相对去年此刻」。'
+            + _CASH_CAL_TXT
+            + 'Exhibit 10 / 16 是另一回事：它们是<b>比率</b>，12 个月的占比做算术平均'
             '本身就没有意义（每个月分母不同），要一年的平均占比必须分母加权 —— '
             '那是真正的硬约束，共享模块 <code>build/yoy.py</code> 会直接抛错。'
-            '(3) <b>季度合计</b> —— Exhibit 11 按日历季汇总（无同比线，理由见该图）。'
-            + (f'当期各口径并排现算：{"；".join(_CAL)}。' if _CAL else '')
-            + '<b>热力矩阵（Exhibit 19）与逐年对照图（Exhibit 18）不换口径</b>：'
-            '逐格 / 逐月的季节形状就是那两类图的题眼，平滑掉等于把它们唯一的信息抹掉；'
-            '标题里已写明画的是「单月」读数。',
+            '<b>Exhibit 11（季度 NNA，按日历季汇总）不画单月同比</b>：'
+            '它画的是 as-reported 总 NNA，被并购导入污染到换哪种口径都不可比，理由见该图。'
+            + (f'当期读数并排现算：{"；".join(_CAL)}。' if _CAL else '')
+            + '<b>热力矩阵（Exhibit 19）</b>属 CONTRACT §6.3 的图型豁免：'
+            'heat_matrix 每一格本来就是一个月的读数，与这次口径改动无关；'
+            '标题里已写明画的是「单月」年化增速。'
+            '<b>逐年对照图（Exhibit 18）根本不画同比</b>，它画的是每个日历年年内的'
+            '累计路径，不进口径这条规矩。',
 
             '<b>次轴同比取代了 12 个月均线。</b>原 deck 的 <code>gsx.lvl_bar</code> 在右轴画'
             '金色同比折线，其 docstring 写明「均线只是把柱子再平滑一遍、不带新信息，'
             '同比才回答『相对去年这个月是好是坏』」。网页版此前一律画成均线，本轮改回同比：'
             'Exhibit 2/3/4/9/10/12/13/15/16 现在画的都是次轴 y/y（比率序列用 pp），不再画均线，'
-            '口径写在各图的图例名与 ylab2 里（<code>12M roll</code> / <code>单月</code>）。'
+            '口径写在各图的图例名与 ylab2 里（一律 <code>单月</code>，见上一条）。'
             '副作用是双轴要对齐零点 —— 同比跨零而柱恒正时，左轴基线会被拉进负区，'
             '代价超过引擎阈值时改为两轴独立缩放并在绘图区左上角用红色斜体标出。',
             '<b>3Y %ile 的判据。</b>与全站其余各页共用同一份实现'
@@ -1954,8 +2190,13 @@ def main():
             '保留 $。'
             '(3) 原 deck 长历史图末端的红色虚线圈没有网页等价元素，改由末点数值标注'
             '（Exhibit 8/17 已补上）与表格视图读数。'
-            '(4) Exhibit 11 撤掉了原 deck 的右轴季度同比、Exhibit 3 保留均线不画同比'
-            '（理由见 GS 规矩 1 那一条）。'
+            # ⚠ 这一句被抓到过一次说假话：它写着「Exhibit 3 保留均线不画同比」，而
+            #   Exhibit 3 自 2026-08 起就画同比、并且**没有**均线（`bar()` 的 avg12 分支
+            #   只在 yoy=False 时才走）—— 一条被同一份 payload 当场证伪的断言。
+            #   现在只留 Exhibit 11 那一半（它确实没有同比线），Exhibit 3 的口径沿革
+            #   写在该图自己的图注与「同比口径」那一条里。
+            '(4) Exhibit 11 撤掉了原 deck 的右轴季度同比（理由见该图图注：'
+            '并购导入把可比季度打散了）。'
             '(5) 本引擎强制两轴零点同高，原 deck 的 matplotlib 不对齐 —— 右轴序列跨零'
             '而左轴柱恒正的图，左轴基线会被拉到零下（金额/占比本身不会为负）；'
             f'本期这样的是 Exhibit {"、".join(str(i) for i in DUAL_NEG)}，'

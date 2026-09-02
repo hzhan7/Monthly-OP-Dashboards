@@ -81,7 +81,7 @@ def _column_census():
 def _fd_reconcile():
     """撞一次「Eurex 工作簿口径 × 交易日」与「集团台账口径月成交量」。
 
-    这不是好奇：ttm_yoy 的 `total_col` 一旦填了 vol_fd_total_contracts，
+    这不是好奇：旧 ttm_yoy 的 `total_col` 一旦填了 vol_fd_total_contracts，
     底座会拿它与 `adv × weight` 逐月对账，超过 1e-6 就硬失败。
     所以「为什么不填」这句话的依据必须量出来，不能靠形容词。
 
@@ -455,32 +455,36 @@ _NO_DECOMP_NOTE = (
 )
 
 _NOTE_TTM_EUREX = (
-    '<b>柱是当月日均、线是当月合计的同比，两者口径不同是有意的。</b>'
-    '柱回答「开市那天有多热」（官方工作簿自己就发 Daily average，不是本仓算的）；'
-    '线回答「一整年的总量在不在长」——'
-    '<code>adv_eurex_total_contracts × trading_days_eurex</code> 还原成当月合计再滚 12 个月。'
-    '<b>为什么不用台账口径的 <code>vol_fd_total_contracts</code> 当合计列</b>：'
-    '那是<b>另一套并行口径</b>（含 ETC / 农产品 / 贵金属），与 Eurex 工作簿永不互校。'
-    + ((f'本页在 import 期撞过一次：{_FDN} 个可比月里，'
-        f'「ADV × 交易日」与台账合计的相对偏差<b>中位 {_FDMED:.2e}、最大 {_FDMAX:.2e}</b>，'
-        f'远超底座对账阈值 1e-6 —— 填进去会直接硬失败，而那正是那道护栏该干的事。'
-        if _FDMAX is not None else
-        '两者的偏差远超底座对账阈值 1e-6，填进去会直接硬失败。'))
-    + '<b>⚠️ 交易日用的是 <code>trading_days_eurex</code> 不是 '
+    '<b>柱与线取自同一列</b>（<code>adv_eurex_total_contracts</code>，'
+    '官方工作簿自己发的 Daily average，不是本仓算的）：柱是水平值，'
+    '金线是它自己的<b>单月同比</b> —— 拿这根柱除以 12 根柱之前那根就是线上这一点。'
+    '<b>因为柱是日均，「这个月多开了几天市」这一层已经在柱里除掉了</b>，'
+    '同比自然也不含它。'
+    '⚠️ 2026-09 之前本图的金线是 12 个月滚动合计的同比，为此要先拿 '
+    '<code>× trading_days_eurex</code> 把日均还原成当月合计；改单月口径后'
+    '这一步整个消失，下面两处旧坑因此也一并作废，记在这里免得有人再走一遍：'
+    '<b>① 不能用台账口径的 <code>vol_fd_total_contracts</code> 当合计列</b> ——'
+    '那是<b>另一套并行口径</b>（含 ETC / 农产品 / 贵金属），与 Eurex 工作簿永不互校'
+    + ((f'；{_FDN} 个可比月里「ADV × 交易日」与台账合计的相对偏差'
+        f'<b>中位 {_FDMED:.2e}、最大 {_FDMAX:.2e}</b>，远超底座对账阈值 1e-6。'
+        if _FDMAX is not None else '，偏差远超底座对账阈值 1e-6。'))
+    + '<b>② 交易日必须用 <code>trading_days_eurex</code> 而不是 '
       '<code>trading_days_cash</code></b>'
     + ((f'：两套日历在 {_CALN} 个可比月里有 <b>{_CALDIFF}</b> 个不等'
         if _CALN else '：两套日历并不总是相等')
-       + '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关），'
-         '互相顶替会把还原出来的当月合计算错。')
+       + '（德国统一日与圣灵降临节周一 Eurex 开、Xetra 关）。'
+         '这两条现在都不影响本图 —— 它一条交易日列都不用了。')
 )
 
 _NOTE_TTM_CASH = (
     '<b>柱与线取自同一列</b>（<code>turnover_cash_total_eurbn</code>，当月<b>合计</b>），'
     '所以这里没有任何「日均还原成合计」的步骤 —— 也正因为如此，'
     '这张图不受 <code>trading_days_cash</code> 是慢腿列的影响。'
-    '<b>为什么现货这条尤其需要滚动</b>：德国现货的月度形状被复活节、'
-    '圣灵降临节与年末假期推着走，各月交易日数在 18–23 天之间浮动，'
-    '「当月合计」的单月同比里有一大截只是日历差。任意连续 12 个月覆盖同一套日历。'
+    '<b>⚠️ 但这一列是「当月合计」，所以日历差留在同比里</b>：德国现货的月度形状被'
+    '复活节、圣灵降临节与年末假期推着走，各月交易日数在 18–23 天之间浮动，'
+    '本图的单月同比里有一截只是「今年这个月比去年多开 / 少开了几天市」，'
+    '读的时候要把它减掉再判断量本身的方向。'
+    '（同页 Eurex 那张的柱是<b>日均</b>，天然不含这一层 —— 两张图要分开读。）'
     '⚠️ 这一列是<b>集团台账口径</b>的现货合计（2010-01 起深史），与 FWB 工作簿那条'
     '产线彼此独立。它同时画在上面「Xetra 电子盘成交额」那张折线里 —— '
     + ((f'与 Xetra 合计只差 <b>{_LEDMED:.1f}%</b>（{_LEDN} 个可比月的中位，最大 {_LEDMAX:.1f}%），'
@@ -702,11 +706,14 @@ GROUPS = [
     #   页面上印出来的那两个比例走 `_ratio_pct()` 现算，别拿这里的数去核页面。
     #
     # 台账合计放在 Xetra 这一组：它 = Xetra + 法兰克福（回填时逐月过了闭合闸门），
-    # 两条线几乎重合（差多少由 `_ledger_gap()` 现算后印进 ttm 那张的图注），
+    # 两条线几乎重合（差多少由 `_ledger_gap()` 现算后印进 level_yoy 那张的图注），
     # 而**那道缝就是下一张图的全部内容**。
-    # 它不能自己单独成组：单列组走 gs_bar + 次轴单月同比，而这一列已经在 ttm_yoy
-    # 那张（Exhibit「集团台账口径现货成交额」）画了滚动同比 —— 同一列同一页两种同比口径
-    # 正是 CONTRACT §6 拿 cme Ex2/Ex8 当反例的那件事。也不能整个从 groups 里拿掉：
+    # 它不能自己单独成组：单列组走 gs_bar + 次轴单月同比，而这一列已经在 level_yoy
+    # 那张（Exhibit「集团台账口径现货成交额」）画了一条同比线。
+    # ⚠️ 2026-09 之前这里的理由是「那张画的是滚动、这张会是单月，同一列同一页两种
+    # 同比口径」；全站改单月之后**理由换了但结论没换**：两张现在同列、同窗口、同口径，
+    # 落单成组只会画出一字不差的第二张图（CONTRACT §6.4「改口径会造出重复图」，
+    # 底座 `ex_level_yoy` 撞上直接硬失败）。也不能整个从 groups 里拿掉：
     # allc = headline + groups 同时决定末尾核对表，拿掉它表里就没有这一列了。
     {'zh': 'Xetra 电子盘成交额（月度总额，单边计）', 'cols': [
         {'col': 'turnover_xetra_eurbn', 'zh': 'Xetra 电子盘合计',
@@ -753,8 +760,9 @@ GROUPS = [
     #   底座对单桶画 gs_bar，而 gs_bar 的次轴是**单月同比**；
     #   tools/check_yoy_caliber.py 实测这一列有 5 个月与 12 个月滚动口径**符号相反**
     #   （2025-02 单月 −37.5% vs 滚动 +24.2%）。本表里没有第二条 EUR bn/month 的
-    #   同伴可以同轴，所以口径写进组名 —— 契约允许用单月同比，条件是标题里声明
-    #   （CONTRACT.md §6）。声明必须只落在真的画了次轴同比的那张图上，
+    #   同伴可以同轴，所以口径写进组名 —— 单月是全站唯一口径（CONTRACT §6.1 第 1 条），
+    #   §6.6 的自动判据要求它写进标题（R4，不写就报 🟡）。
+    #   声明必须只落在真的画了次轴同比的那张图上，
     #   所以存量那一列先搬出去（存量走点对点同比，本来就不适用这条声明）。
     {'zh': 'EurexOTC Clear 名义未平仓（月内平均值）', 'cols': [
         {'col': 'otc_notional_outstanding_eurbn', 'zh': '名义未平仓（月内平均值）',
@@ -925,32 +933,36 @@ SPEC = {
     # 📌 'decomp' 刻意留空：本表没有任何一对同口径的（金额，数量）列。
     # 理由与机器判据见 _NO_DECOMP_NOTE（它进了下面的 notes 第一条）。
 
-    # ══ 水平值 + 12 个月滚动同比 ═════════════════════════════════════════════
+    # ══ 水平值 + 次轴单月同比 ════════════════════════════════════════════════
     # 两条腿各一张：Eurex 衍生品（快腿，2008-01 起）与集团台账口径现货（慢腿，2010-01 起）。
     # 两条 level 列在 groups 里分别落在「5 列同轴的 lines」与「4 列同轴的 lines」
     # （2026-08-19 之前是「7 列的热力矩阵」）里，都不是单桶 gs_bar
-    # ⇒ 这两张滚动图不会与任何一张单月同比图重复。
+    # ⇒ 这两张不会与任何一张**单桶 gs_bar** 重复。
+    # ⚠️ 但 adv_eurex_total_contracts 同时是**头条列**，头条自带一张 grouped_bars
+    #   的「：单月同比」——2026-09 改口径之后那张的柱与本段第一条的金线**逐点同源**
+    #   （改口径前一张单月、一张滚动，各有各的用处）。底座 `ex_level_yoy` 的护栏只拦
+    #   「level_yoy ∩ groups 单列桶」，拦不到头条这条路；要不要合并成一张由页面所有者定。
     # ⚠ 拆组时务必保住这条：turnover_cash_total_eurbn 一旦落单成组，底座会给它
-    #   gs_bar + 次轴**单月**同比，同一列同一页立刻有了两种同比口径（CONTRACT §6 第 3 条
-    #   点名的 cme Ex2/Ex8 就是这个形状），tools/check_yoy_caliber.py 也会跟着响。
-    'ttm_yoy': [
+    #   gs_bar + 次轴**单月**同比 —— 与下面 level_yoy 那张同列、同窗口、同口径，
+    #   页面上会出现一字不差的两张图（CONTRACT §6.4「改口径会造出重复图」）。
+    #   底座 `ex_level_yoy` 的重复护栏对这种情况**硬失败**，整页发不出去。
+    #   （2026-09 之前这里写的是「立刻有了两种同比口径，CONTRACT §6 拿 cme Ex2/Ex8
+    #   当反例的就是这个形状」—— 那时 level_yoy 画的是滚动。现在两边同口径，
+    #   撞车的形状从「读者不知道信哪张」变成了「两张完全一样」。）
+    'level_yoy': [
         {'zh': 'Eurex 衍生品成交量',
-         'granularity': 'daily_avg',      # 官方工作簿直接发 Daily average
+         # 官方工作簿直接发 Daily average。次轴是**本列自己的单月同比**，
+         # 不再需要 trading_days_eurex 把日均还原成当月合计 —— 那一步只在滚动 12 个月
+         # 合计的年代有意义（台账口径的 vol_fd_total_contracts 与「ADV × 交易日」
+         # 相对偏差量级 1e-3，本来就对不上账）。
          'level': {'col': 'adv_eurex_total_contracts', 'zh': '全所日均成交',
                    'unit': 'contracts/day', 'fmt': 'f0c'},
-         # ⚠ 只给 weight_col，不给 total_col：台账口径的 vol_fd_total_contracts 与
-         #   「ADV × 交易日」对不上（相对偏差量级 1e-3 ≫ 底座阈值 1e-6），
-         #   两者是并行口径不是同一个数，填进去会硬失败。
-         'weight_col': 'trading_days_eurex',
          'note': _NOTE_TTM_EUREX},
 
         {'zh': '集团台账口径现货成交额',
-         'granularity': 'monthly_total',  # turnover_* 本身就是当月合计
+         # turnover_* 本身就是当月合计，次轴同样是本列除本列。
          'level': {'col': 'turnover_cash_total_eurbn', 'zh': '当月成交额（单边计）',
                    'unit': 'EUR bn/month', 'fmt': 'f1'},
-         # 不给 total_col / weight_col：level 那一列本身就是当月合计，柱与线同口径。
-         # 也**不能**给 weight_col —— granularity='monthly_total' 配 weight_col 是硬失败，
-         # 而真乘上去会把年度合计放大二十几倍，图形却照常画得出来。
          'note': _NOTE_TTM_CASH},
     ],
 

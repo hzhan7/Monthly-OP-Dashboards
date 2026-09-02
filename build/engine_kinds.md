@@ -211,7 +211,7 @@
 | 字段 | 作用于 | 对应 gsx | 说明 |
 |---|---|---|---|
 | `zero_base: true` | `lines` | `long_line` 的 `set_ylim(0, max*1.16)` | 纵轴从 0 起。⚠️ **只对 `kind:'lines'` 生效** —— 引擎里它写在 `draw()` 最后那个 `else` 分支里，而 `lines_endlabels` / `gs_bar` / `stacked_dual` 各有自己的分支、排在它前面。给别的 kind 传它是个**死键**，一个字都不生效且不报错（`build/axisfmt.py` 的镜像链同序，所以生成端也看不出来）。这些 kind 要归零请用 `yfloor: 0` |
-| `stacks: [{name,color,values}]` | `gs_bar` | 无（本仓新增） | 把每根柱按业务分色堆叠，**总额仍取 `ex.values`**：纵轴量程、柱顶数值、12 个月均线、次轴 y/y、表格视图与 tooltip 一律照总额走。各段之和必须等于 `values`（`build/verify_pages.py` 硬校验，引擎**不替 payload 求和**）；各段必须显式给互不相同的 color，且**不能与 `yoy.color` 撞**（那条线无描边、画在柱之后，同色时穿过该段整段看不见）。与 `ycap` / `yfloor` / `bar_marks` 不兼容，命中的柱退回单色。⚠️ **不要改用 `stacked_dual`**：它的右轴被写死 `ticks(0, ymax, 6)`、`r0 = 0`，而 `gs_bar` 的次轴同比会转负（实测创意 92 个有值月里 26 个为负、最低 −23.0%），负值会被顶到画布外 |
+| `stacks: [{name,color,values}]` | `gs_bar` | 无（本仓新增） | 把每根柱按业务分色堆叠，**总额仍取 `ex.values`**：纵轴量程、柱顶数值、12 个月均线、次轴 y/y、表格视图与 tooltip 一律照总额走。各段之和必须等于 `values`（`build/verify_pages.py` 硬校验，引擎**不替 payload 求和**）；各段必须显式给互不相同的 color，且**不能与 `yoy.color` 撞**（那条线无描边、画在柱之后，同色时穿过该段整段看不见）。与 `ycap` / `yfloor` / `bar_marks` 不兼容，命中的柱退回单色。⚠️ **不要改用 `stacked_dual`**：它的右轴被写死 `ticks(0, ymax, 6)`、`r0 = 0`，而 `gs_bar` 的次轴同比会转负（全站已统一成单月同比，`data/guc.js` Ex2 实测：创意 115 个有值月里 37 个为负、最低 −52.3%），负值会被顶到画布外 |
 | `end_label: true` | `lines` | `long_line` 的 `n_label` | 每条序列末点标出数值（粗体、点的左上方） |
 | `yoy: {…}` | `gs_bar` | `lvl_bar` 的次轴金色 y/y 折线 | 给了就画次轴 y/y，**同时不画 12 个月均线** |
 
@@ -221,8 +221,9 @@
   fmt: 'f0', label_fmt: 'f0' }              // 末点标签用 label_fmt，缺省回退 fmt
 
 { n: 2, kind: 'gs_bar', values: [...], legend: '净新增账户', fmt: 'f0',
-  ylab2: '% y/y',                            // 右轴标题，双轴图务必给
-  yoy: { name: 'y/y（RHS）', values: [null, …, 24.6], color: 'GOLD', yfmt: 'pct0' } }
+  ylab2: '% y/y（单月）',                     // 右轴标题，双轴图务必给；口径写在这里
+  yoy: { name: '单月同比（当月 ÷ 去年同月 − 1，RHS）',
+         values: [null, …, 24.6], color: 'GOLD', yfmt: 'pct0' } }
 ```
 
 - **`zero_base` 不是万能开关，也不全局强制**：不给它时 `lines` 走的是 `y0 = min − 极差×5%`，
@@ -232,6 +233,12 @@
   末点读数标在点的右下方（柱顶那一排数值标签在点的上方）。表格视图与 tooltip 会多出 y/y 这一行。
 - `yoy.values` 由 Python 算好 —— 包括「基数过小/异号时放弃同比」这类口径判断（见 `gsx.lvl_bar`），
   引擎不替你算。
+- **口径要写进 payload 的字面里，不能只写在图注。** 全站同比统一为**单月**
+  （当月 ÷ 去年同月 − 1，见 `build/CONTRACT.md` §6；例外名单是两页共五张、
+  全不是折线，在 §6.2），而
+  `tools/check_yoy_caliber.py` 的 R4 只认 `title` / `ylab2` / `legend` / `yoy.name`
+  这四处 —— 上面例子把它写在 `ylab2` 与 `yoy.name` 里，照抄时别把这两串换成裸的
+  `'% y/y'` / `'y/y（RHS）'`，那会被判 🟡。
 
 ## 9. 双轴零点对齐的兜底
 

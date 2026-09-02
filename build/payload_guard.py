@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """CONTRACT.md §5 第 5 条「失败要响 …… 绝不静默写 NaN 上线」的**唯一执行点**。
 
-14 个生成器（12 家 + exchanges + wealth）结尾那段「写首行注释 → 写 window.DASH = →
-json.dump」全部换成 `payload_guard.write_dash(path, payload, '<ticker>')`，
-写文件之前先把 payload 递归扫一遍。
+**所有**生成器（各家的 build/<t>.py，以及 build/single.py 与 build/mrbase.py 这两个带
+一批页的底座）结尾那段「写首行注释 → 写 window.DASH = → json.dump」全部换成
+`payload_guard.write_dash(path, payload, '<ticker>')`，写文件之前先把 payload 递归扫一遍。
+这里不写死生成器个数：原文写的是「14 个生成器（12 家 + exchanges + wealth）」，
+页数一扩就不成立了，而没有任何东西在守那个数字 —— 要知道有谁在走这条路，
+`grep -rl write_dash build/`。
 
 ## 为什么护栏放在写出端，而不是读 CSV 那一端
 
@@ -208,7 +211,7 @@ def unchanged(path, body):
 
 
 def write_dash(path, payload, gen):
-    """自检 → 序列化 → 写 data/<gen>.js。14 个生成器写文件一律走这里。
+    """自检 → 序列化 → 写 data/<gen>.js。**所有**生成器写文件一律走这里（见模块 docstring）。
 
     path    输出文件绝对路径（data/<gen>.js）
     payload window.DASH 的内容
