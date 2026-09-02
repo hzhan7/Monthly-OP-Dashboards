@@ -159,6 +159,14 @@ LPL_ACQ_BRK = [(pd.Period('2017-12', 'M'), 'LPL NPH'),            # 分批至 20
                (pd.Period('2021-04', 'M'), 'LPL W&R'),            # +$67.1bn，约上月末资产 7.0%
                (pd.Period('2024-10', 'M'), 'LPL Atria'),          # +$88.3bn，约当月资产 5.3%
                (pd.Period('2025-08', 'M'), 'LPL Commonwealth')]   # +$275.0bn，约 12.1%
+#: 并表的短名（去掉标签里的 'LPL ' 前缀）+ 月份 —— **正文点名时用这一份，不许手写**。
+#:
+#: 标签本身是画在图上的竖排文字，越短越好；正文里再把 "LPL" 重复四遍是噪声。
+#: ⚠ 这一行存在的理由是本页栽过的一次：登记表补到四条之后，汇总表 note、热力矩阵图注
+#:   与页尾说明**三处各写各的**，于是页尾写「四次整体并表」而汇总表还停在「两次」——
+#:   同一页上两句话数出两个数，读者信哪句都会错。凡是要报「哪几笔」的地方一律从这里取。
+LPL_ACQ_SHORT = [f'{lab.removeprefix("LPL ")}（{p}）' for p, lab in LPL_ACQ_BRK]
+
 # LPL 的**口径**断点（不是并表）：官方改了定义。同 build/lpla.py 的 CAL_BREAKS，
 # 两族分开 —— 把现金那条画到 NNA 图上等于告诉读者「这里不可比」而那条线一点没受影响。
 # 这两条也是窗口放宽之后才第一次进到本页的图里。
@@ -179,8 +187,10 @@ HOOD_CUST_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
 HOOD_TPA_BRK = [(pd.Period('2026-06', 'M'), 'HOOD WonderFi'),
                 (pd.Period('2026-07', 'M'), 'HOOD Trump')]
 
-# 「客户资产」这一族图（重定基与 y/y）同时受 LPL 的两次并表与 Robinhood 的 WonderFi 影响，
-# 所以三张图引用同一个合集，不各拼各的。
+# 「客户资产」这一族图（重定基与 y/y）同时受 LPL 的**四次**并表与 Robinhood 的 WonderFi
+# 影响，所以三张图引用同一个合集，不各拼各的。
+# ⚠ 这句原来写「两次」—— 那是 LPL_ACQ_BRK 只有两条那会儿的话，表补到四条时没跟着改。
+#   数量词只要手写就会这样，所以下面凡是数得出来的地方一律 len(LPL_ACQ_BRK)。
 ASSET_BRK = LPL_ACQ_BRK + HOOD_TPA_BRK
 
 # 每个断点在图注里的说法。键就是上面的 Period，保证「画了哪条线」与「图注说了哪条」
@@ -2045,12 +2055,27 @@ ex.append({
 HEAT_YEARS = 7                   # 热力矩阵的行数上限：**排版**上限（7 x 12 的格子）
 
 
+def heat_yrs(t):
+    """这张热力矩阵实际画出来的那几年（行）。
+
+    抽出来是因为**图注要按同一段年份点名**哪些格子带着并购转入（这个图型画不了断点
+    竖线，图注是唯一的通道）。两处各写一遍 `[-HEAT_YEARS:]` 的下场本页见过：
+    序列一回补（lpla 回到 2016-01），矩阵多盖住一笔早年的并表，而手写的图注还停在
+    原来那两笔 —— 图上有格子、图注不提，读者会把它读成有机增长。
+    序列不存在 / 全空时返回空表，调用方据此整段不印。
+    """
+    if f'{t}_yoy' not in df.columns:
+        return []
+    s_ = df[f'{t}_yoy'].dropna()
+    return sorted({p.year for p in s_.index})[-HEAT_YEARS:] if len(s_) else []
+
+
 def heat(n, t, title, extra=''):
     s = df[f'{t}_yoy'].dropna()
     if not len(s):
         return None
     all_yrs = sorted({p.year for p in s.index})
-    yrs = all_yrs[-HEAT_YEARS:]
+    yrs = heat_yrs(t)          # 与图注同源，见 heat_yrs 的 docstring
     matrix = []
     for y in yrs:
         row = []
@@ -2087,14 +2112,33 @@ def heat(n, t, title, extra=''):
     }
 
 
+# 并表当月起的 12 个格子都带着并购转入。**哪几笔要点名不能手写**：矩阵只留最近
+# HEAT_YEARS 年，序列一回补就会多盖住一笔早年的并表 —— 上一版手写「Atria 与
+# Commonwealth」，而 lpla 回到 2016-01 之后 Waddell & Reed 那 12 个格子早就在图上了，
+# 图注却一个字没提（这正是本页页尾反复点名的「图注说的与图上画的对不上」）。
+_LPL_HEAT_YRS = heat_yrs('lpla')
+_LPL_HEAT_HIT = [f'{p}（{lab.removeprefix("LPL ")}）' for p, lab in LPL_ACQ_BRK
+                 # 一笔并表影响的是当月起的 12 个格子，只要有一个格子落在矩阵里就要点名
+                 if any((p + k).year in _LPL_HEAT_YRS for k in range(12))]
+# 拆成语句写，不写成嵌套三元 —— `(A + B if c else '') + C if d else ''` 的结合律会把
+# 「四笔全在矩阵里」那一支的名单整个丢掉，而图照画、没有任何护栏会响。
+if _LPL_HEAT_HIT:
+    _LPL_HEAT_TXT = '、'.join(_LPL_HEAT_HIT)
+    if len(_LPL_HEAT_HIT) < len(LPL_ACQ_BRK):
+        _LPL_HEAT_TXT += (f'（本页登记在册的 {len(LPL_ACQ_BRK)} 笔里的 '
+                          f'{len(_LPL_HEAT_HIT)} 笔，其余几笔的月份落在本表 '
+                          f'{HEAT_YEARS} 年行数上限之外）')
+    _LPL_HEAT_TXT += '起的 12 个格子带着并购转入，不是有机增长；'
+else:
+    _LPL_HEAT_TXT = ''
+
 for _t, _title, _extra in [
     # 标题一律带「单月同比」：热力矩阵按定义是逐格月度读数，豁免于「默认改滚动」那条
     # 规矩（逐格波动与季节形状就是它的题眼，平滑掉等于把唯一的信息抹掉），
     # 但豁免不等于可以不写口径 —— 不写，读者会拿格子里的数去核别页的滚动线。
     ('schw', 'Schwab client assets y/y — 单月同比 (%)', ''),
-    ('lpla', 'LPL client assets y/y — 单月同比 (%)', '2024-10（Atria +$88.3bn）与 '
-                                          '2025-08（Commonwealth +$275.0bn）起的 12 个格子带着并购转入，'
-                                          '不是有机增长；热力矩阵这个图型画不了断点竖线，'
+    ('lpla', 'LPL client assets y/y — 单月同比 (%)', _LPL_HEAT_TXT
+                                          + '热力矩阵这个图型画不了断点竖线，'
                                           f'带断点线的同口径图见 Exhibit {N_YOY}，'
                                           f'剔并购后的有机口径见 Exhibit {N_ORG}。'),
     ('ibkr', 'IBKR client equity y/y — 单月同比 (%)', ''),
@@ -2143,11 +2187,14 @@ for _e in ex:
 _LPL_DRAWN = drawn_for(ex, LPL_ACQ_BRK)
 if LP_RANK_TXT:
     summary['note'] += (
-        'LPL 那行是 as-reported 口径，含 Atria（2024-10 +$88.3bn）与 '
-        'Commonwealth（2025-08 +$275.0bn）两次整体并表，表格画不出断点线：'
+        f'LPL 那行是 as-reported 口径，累计含 {len(LPL_ACQ_BRK)} 次整体并表'
+        f'（{"、".join(LPL_ACQ_SHORT)}），表格画不出断点线：'
         + LP_RANK_TXT
-        + (f'这两次并表在 Exhibit {"、".join(str(n) for n in _LPL_DRAWN)} 上都画了'
-           '红色竖虚线（客户资产与客户现金两族图都受影响）；'
+        # 「登记了几笔」与「这一轮真画出来几笔」是两件事：最早那两笔的月份早于本页
+        # 多数图的窗口起点，登记在册却未必条条都画得出来。写「这几次并表都画了线」
+        # 会在窗口一变时当场变成假话，所以只说 `drawn_for()` 真数出来的那几张图。
+        + (f'其中落在各图窗口内的那几笔在 Exhibit {"、".join(str(n) for n in _LPL_DRAWN)} '
+           '上画了红色竖虚线（客户资产与客户现金两族图都受影响）；'
            if _LPL_DRAWN else '')
         + f'剔并购后的有机口径见 Exhibit {N_ORG}。')
 
@@ -2650,8 +2697,10 @@ def compose_brief(df, latest):
         **这里同样不列图号** —— 上一版写死「Exhibit 8 / 10 / 12」，本轮客户现金那张
         也多了一条 Schwab 短线，三图清单当场少一张；现在这份清单由页尾说明按
         `_schw_gaps()` 现数，源码里不再抄第二份。）
-      · **LPL 的名次要按还原口径报**：as-reported 的客户资产 y/y 含 Atria 与
-        Commonwealth 两次整体并表，剔掉滚动 12 个月的 Acquired NNA（`acq_roll12()`）
+      · **LPL 的名次要按还原口径报**：as-reported 的客户资产 y/y 含 `LPL_ACQ_BRK`
+        登记的那几次整体并表（这里刻意不数数也不点名 —— 上一版写死「Atria 与
+        Commonwealth 两次」，表补到四条之后这句原地变假），剔掉滚动 12 个月的
+        Acquired NNA（`acq_roll12()`）
         之后名次会掉，句子里必带「（还原口径）」（R5）。这条约定对**任何**以 LPL 客户
         资产为分母的比率同样成立：分母被并表机械摊薄，极值断言（「N 个月最低」）必须
         先还原再判，还原后不成立就不许写「最低」。现金占比那一句本轮整句撤了
