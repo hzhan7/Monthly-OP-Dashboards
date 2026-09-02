@@ -1875,7 +1875,16 @@ ex.append({
              '<b>这里取总量是为了与另两家的客户总成交笔数可比</b> —— IBKR 另按 '
              'Cleared Avg. DART per Account 推导过一条更窄的 implied cleared DARTs'
              f'（见 {IBKR_XREF_BOTH}），{CLEARED_TXT}，两条线不要混读；'
-             '「cleared」修饰的是账户（IBKR 自清算的账户），不是订单。'
+             # ⚠ 这里从前写的是「「cleared」修饰的是账户（IBKR 自清算的账户），不是订单」——
+             #   2026-09 查证为**错**，且方向正好反了。IBKR 的官方措辞是
+             #   "annualized average cleared **DARTs** per client account"（2016-02 至今
+             #   126 份月度新闻稿逐份核对，无一例外；"cleared account" 一次都没出现过），
+             #   即 cleared 修饰的是 **DARTs**、账户那一侧是普通的 client account。
+             #   10-K 更把两者当同一个数印：FY2025 正文「approximately 4.4 million cleared
+             #   customer accounts」，MD&A 表「Total Accounts 4,399」千户 —— non-cleared
+             #   客户是在其 ATS 里做流动性的机构交易公司，本来就不计进账户数。
+             '「cleared」修饰的是 <b>DARTs</b>（在 IBKR 自清算的那部分成交），'
+             '不是账户 —— 两条线的账户口径是同一个（全部客户账户），差别在分子。'
              + _HOOD_DATS_CAL
              + (f'<b>Schwab 那条只有 {mlab(df["schw_dats"].dropna().index[0])} 起</b>：'
                 'DATs 与月末融资余额是同一批新增列，自 2026-01 的月报才开始披露、'
