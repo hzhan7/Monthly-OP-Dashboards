@@ -59,29 +59,117 @@
 
 （2015-12 之前的稿子解析不了：那时的 comp 表没有 Canada 行，parser 从来没为它写过，
  而 CSV 也从 2015-12 起，所以不影响向前运行。别把它当回归失败。）
-（本机取不到 GNW 与 investor.costco.com：curl 分别是 000 与 403。所以这一轮**没有**
- 重跑全量 128 个月；上面第二条用的是 `~/.claude` git 历史里那份 `dump_all.json`
- —— 它记的是每篇稿的 comp token 串，够判列序，不够重解全部字段。
- 哪天源站又通了，值得对着原件把全量再核一遍。）
+（2026-08-18 那一轮**没有**重跑全量 128 个月，上面第二条用的是 `~/.claude` git 历史里
+ 那份 `dump_all.json` —— 它记的是每篇稿的 comp token 串，够判列序，不够重解全部字段。
+ 当时给的理由是「本机取不到 GNW，curl 000」，**那个理由是错的**：2026-09-02 查明
+ curl 000 是我们自己顶着假 Chrome UA 招来的（详见 curl() 上方那段），去掉 -A 立刻 200。
+ 源站一直是通的。
+ 但**别据此以为全量重核已经没有障碍**：`find_release` 只拉搜索页第一屏、没有翻页，
+ 实测只列最近 10 条（2026-01-15..2026-08-05），`find_release((2025,8))` 之类一律 None。
+ 障碍从「取不到源」变成了「够不到历史页」—— 全量 128 个月仍要走 GNW 分页或
+ SEC 8-K EX-99.1 那条路，就像 2017-09 那次。）
 
 依赖：pandas（`pd.read_html`）+ lxml（read_html 的 HTML parser 后端，本机没装 html5lib，
       lxml 掉了没有后备，报错信息是「Import html5lib failed」，跟 Costco 毫无关系）。
 """
-import io, re, sys, subprocess
+import io, os, re, sys, subprocess
 import pandas as pd
 
-UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
 SEARCH = 'https://www.globenewswire.com/en/search/organization/Costco%2520Wholesale%2520Corporation'
 GNW = 'https://www.globenewswire.com'
 MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
 WORDNUM = {'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'eleven':11,'twelve':12}
 
-def curl(url):
-    r = subprocess.run(['curl', '-sL', '--retry', '2', '--max-time', '40', '-A', UA, url],
-                       capture_output=True, text=True)
-    if r.returncode != 0 or len(r.stdout) < 3000:
-        raise RuntimeError(f'curl failed ({r.returncode}, {len(r.stdout)}B): {url}')
+# ═══════════════════════ 下载：三条无人值守通道 ═══════════════════════
+# 范式抄 fetch/hood.py 的 `fetch_bytes`：逐条降级、把每条的失败原因都收着，全挂时抛一条
+# 串起所有原因的 RuntimeError。全仓没有共享 transport 模块，每个 fetch 文件自带一份是既定风格。
+#
+# ━━ 为什么第一条是「裸 curl」而不是顶着 Chrome UA ━━（2026-09-02 实测）
+# 这个文件从搬进来那天起就带着一个写死的假 Chrome UA，而 GlobeNewswire 恰恰**因为那个 UA
+# 才拒绝我们**：同一个 /usr/bin/curl、同一条 TLS 连接，
+#     带 `-A <Chrome UA>` → exit 92（HTTP/2 流被服务端掐断）、0 字节
+#     去掉 -A       → 200 / 58,024B，搜索页解析出 10 条 /news-release/ 链接
+# 也就是说墙比对的是「UA 自称 Chrome，TLS/HTTP2 指纹却是 curl」这个**矛盾**，
+# 而不是 curl 本身。伪装得越像浏览器越挨打，老老实实报 curl/x.y 反而放行。
+# ⚠ 所以这**不是** JA3/TLS 指纹拦截，别照着 hood.py 那套「加 impersonate 就好了」的思路去修 ——
+#   真按指纹拦的源（HOOD 的 Akamai、CME 的 gcs-web）裸 curl 一样过不去，这里裸 curl 是最好使的那条。
+# ⚠ 也别再往 _via_curl 里加 `-A` / `-H 'User-Agent: ...'`「让它更像浏览器」：
+#   主线程连成套浏览器头都试过（假 UA + Accept/Accept-Language/Sec-Ch-Ua 全给齐），3/3 仍是 exit 92。
+MIN_CHARS = 3000            # 少于这么多字符 = 拿到的是空壳页/挑战页，不是搜索结果，判失败换下一条
+
+
+def _via_curl(url):
+    """通道 1：系统 curl，**故意不带 -A**（理由见上）。首选，最快也最稳。"""
+    # `-S` 是为了在 `-s` 之下仍把 curl 自己的错误行留在 stderr —— 否则三条通道全挂时
+    # 报出来的只有一个光秃秃的退出码，等于让下一个人重新查一遍。
+    r = subprocess.run(['curl', '-sSL', '--retry', '2', '--max-time', '40', url],
+                       capture_output=True)
+    if r.returncode != 0:
+        # `--retry 2` 会把同一句错误重复三遍，只留第一行，别让报错刷屏
+        err = r.stderr.decode('utf-8', 'replace').strip().splitlines()[0][:200] if r.stderr.strip() else ''
+        # 92 单独点名：这是「有人又把假 UA 加回去了」的特征码，别让后人再查一遍。
+        hint = '（HTTP/2 流被服务端掐断 —— 检查是不是有人又给 curl 加了假 Chrome UA）' if r.returncode == 92 else ''
+        raise RuntimeError(f'curl exit {r.returncode}{hint}{": " + err if err else ""}')
     return r.stdout
+
+
+def _via_curl_cffi(url):
+    """通道 2：curl_cffi 冒充 chrome 指纹。延迟 import —— 没装也能继续走通道 3。"""
+    from curl_cffi import requests as cr
+    r = cr.get(url, impersonate='chrome', timeout=60,
+               headers={'Accept-Language': 'en-US,en;q=0.9'})
+    r.raise_for_status()
+    return r.content
+
+
+def _via_nscurl(url):
+    """通道 3：macOS 自带 nscurl，走 NSURLSession，TLS 指纹是 Apple 的，零第三方依赖。
+    它只会把响应**写文件**（`--output`），所以要包一层临时文件再读回来。
+    注意 nscurl 对 4xx/5xx 一样退 0 并把错误页写进去，靠上面的 MIN_CHARS 判它。"""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix='.html')
+    os.close(fd)
+    try:
+        subprocess.run(['/usr/bin/nscurl', '--output', tmp, url],
+                       check=True, capture_output=True, timeout=180)
+        with open(tmp, 'rb') as f:
+            b = f.read()
+        if not b:
+            raise RuntimeError('nscurl 返回空文件')
+        return b
+    finally:
+        os.path.exists(tmp) and os.unlink(tmp)
+
+
+def curl(url):
+    """取一个 GNW 页面，返回 **str**（不是 bytes）。三条通道全挂才抛。
+
+    返回类型是 str 这件事是**契约**：`find_release` 拿它跑 `re.findall`，
+    `parse_release` 拿它喂 `pd.read_html`，fetch/cost.py 还拿它读发布日。别改成 bytes。
+    显式按 utf-8 解码（GNW 自报 charset=utf-8），不再依赖 `text=True` 那个跟着
+    locale 走的默认编码 —— 换台机器 locale 不是 UTF-8 时旧写法会静默解错。
+    """
+    errs = []
+    channels = (_via_curl, _via_curl_cffi, _via_nscurl)
+    for fn in channels:
+        try:
+            b = fn(url)
+        except Exception as e:                     # noqa: BLE001 —— 通道失败要继续试下一条
+            errs.append(f'{fn.__name__}: {type(e).__name__}: {e}')
+            continue
+        text = b.decode('utf-8', 'replace')
+        # 这道长度判据从搬进来那天就在，挡的是「HTTP 200 但正文是空壳/挑战页」：
+        # 状态码好看、解析却会解出 0 条链接，比直接失败更难查。换下一条通道再试。
+        if len(text) < MIN_CHARS:
+            errs.append(f'{fn.__name__}: 只回了 {len(text)} 字符（< {MIN_CHARS}），疑似空壳页/挑战页')
+            continue
+        # 降级成功也要出声。不喊的话，主通道哪天开始挂是查不出来的 —— 这个仓刚花了
+        # 一整天去考据「GNW 是哪天开始拒我们的」，就是因为当时没有任何一行这样的记录。
+        if fn is not channels[0]:
+            print('[cost] ⚠ 主通道 %s 没成，降级到 %s 才取到（前序失败：%s）'
+                  % (channels[0].__name__, fn.__name__, '；'.join(errs)))
+        return text
+    raise RuntimeError('GlobeNewswire 三条通道全部失败：' + url + '\n  ' + '\n  '.join(errs))
 
 def find_release(target):
     """在 GNW 搜索页找目标零售月的销售稿链接。target=(year, month 1-12)。"""
@@ -301,9 +389,11 @@ def parse_release(html):
 #
 # 表头 fixture 的来源分两类，标签里写清楚了，别把它们混为一谈：
 #   [原件]  当场从官方原件里 `_periods()` 出来的，逐字符照抄
-#   [形状]  原件本机取不到（GNW 与 investor.costco.com 对本机都不可达），
-#           但该月的列序已由 cache 外的历史 dump 反证（CSV 值 == 第 0 列），
-#           表头按官方口径复原（零售月 | 季度 | 财年）
+#   [形状]  写这批 fixture 时以为「原件本机取不到」，于是没去拉原件：该月的列序由 cache 外的
+#           历史 dump 反证（CSV 值 == 第 0 列），表头按官方口径复原（零售月 | 季度 | 财年）。
+#           ⚠ 2026-09-02 更正：GNW 一直是通的（挡我们的是自己带的假 UA，见 curl() 上方那段），
+#           investor.costco.com 裸 curl 403 但 curl_cffi 200 —— 两边现在都拉得到原件。
+#           所以这些 [形状] 条目**可以升级成 [原件]**，本次只修了运输层没去重拉，标签照旧。
 _SELFTEST = [
     # (periods, ntok, 期望列, 说明)
     (['17 Weeks', '53 Weeks', 'Sept. 5 Weeks'], 3, 2,

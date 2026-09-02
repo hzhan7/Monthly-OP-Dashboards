@@ -57,6 +57,12 @@ B 组 · nasdaqtrader「marketshare{YY}.xlsx」—— 美股现货深度历史 +
     必须看**内容首字节是不是 PK\\x03\\x04**，不能看状态码。当前可下的只有 2024/2025/2026。
     （侦察复核稿里那两个 43,088 B 的 "ms19.xlsx / ms20.xlsx" 就是这张 HTML 错误页。）
 
+    ⚠⚠ **2026-09-02 起这个域挂了 Imperva/Incapsula 机器人墙**，判「这年有没有」因此
+    多了一层：被墙时返回的**也是** HTTP 200 + HTML，于是「被墙」和「缺年份」在
+    冷请求下长得一模一样 —— 一律非 PK。把两者都当「缺年份」会让调用点静默回落到
+    上一年、把本年所有 B 组列悄悄留空，而下游那道恒等式只比交集、根本不会响。
+    过墙与三态判据见 `_fetch_marketshare` 上方那一整段实测记录。
+
 C 组 · 发布日证人 —— IR 新闻稿电头
     https://ir.nasdaq.com/news-releases/news-release-details/nasdaq-reports-{month}-{year}-volumes
     季末月（3/6/9/12）改成 …-volumes-and-{Q}q{yy}-statistics
@@ -95,6 +101,10 @@ A 组：次月第 2–6 个日历日；**季末月晚几天**（那一期要一�
 B 组：慢得多。官方自述「Monthly Market Activity 约在次月第 10 个工作日可得」，
       2026-08-06 实测 marketshare26.xlsx 的 `Last-Modified` = 2026-07-13（内容到 2026-06）。
       ⇒ **B 组必然比 A 组晚一个多星期**，`latest_month()` 绝不能拿 B 组当判据。
+      ⚠ 上面那条 Last-Modified 是 2026-08-06 用**裸 urllib** 直接量到的；2026-09-02 再跑，
+      同一条 URL 已经被 Imperva 挡住（urllib 首请求 403）。⇒ **墙是 2026-08-06 之后
+      新上的**，不是一直都有 —— 这条日期差本身就是「什么时候变的」的证据，别删。
+      这也是 `_assert_ms_covers` 那道覆盖闸的量化依据：B 组正常只落后 A 组 1 个月。
       连带结果：每个月新建的那一行，B 组的 9 列天然为空，下一次跑才补上
       （和 `fetch/cboe.py` 的 RPC 滞后同型，`update()` 因此做「只填空、不覆盖」的回补）。
 
@@ -219,7 +229,12 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
     **说明拦的是 UA 不是 JA3 指纹，不需要 curl_cffi / nscurl**（与 HOOD 那条 Akamai 记录成因不同）。
     ⇒ 两个后果：(a) UA 是硬要求；(b) **必须设 timeout**，否则 UA 哪天配错，cron 会卡 30 s 而不是快速失败。
     同域**不同路径策略不同**：新闻稿页面裸 UA 也能过，static-file 不能 ——
-    「有一条 URL 能通」不能证明「这个域没问题」。`nasdaqtrader.com` 完全不挑 UA。
+    「有一条 URL 能通」不能证明「这个域没问题」。
+    ⚠ 这条**只管 `ir.nasdaq.com`**（而且这里的「拦 UA」是做过单变量隔离的：同一个 TLS 栈
+    只改 UA 就从 403 变 200，所以这个收窄站得住）。`nasdaqtrader.com` 2026-08-06 之前
+    确实完全不挑 UA，但 2026-09-02 实测它已经换成 Imperva，**判据在 UA 之外**（urllib 换
+    什么 UA 都过不去），至于具体是哪一类**没做单变量隔离、不要收窄**，见
+    `_fetch_marketshare` 上方那段 —— 两个域两种墙，别拿这一条去推那一个。
 
  8. **PDF 左缘有旋转 90° 的分区侧标**（Equity Derivatives / Cash Equities / Index / Listings）。
     按 y 聚行会把它们混进正文，第 1 页会拼出 "Derivatives January February …" 导致表头识别当场失配。
@@ -397,6 +412,7 @@ import csv
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -676,16 +692,150 @@ def _fetch_ir_pdf(cache_dir):
     return path, cd_month
 
 
-def _fetch_marketshare(cache_dir, year):
-    """下载 marketshare{YY}.xlsx。年份不存在时返回 None（不抛）。
+# ══════════════════════════════════════════════════════════════════════════
+# B 组下载 —— 过 nasdaqtrader.com 的 Imperva 墙，以及那道三态判据
+#
+# 全部是 2026-09-02 本机实测（墙是 2026-08-06 之后新上的，依据见「发布节奏」B 组那段）：
+#
+#  (a) **urllib 时灵时不灵，别当它恒过不去、也别当它可靠**：墙紧的时候首请求 `HTTP 403`，
+#      之后即使把响应里 Set-Cookie 回来的 visid_incap_3159544 / incap_ses_* 带上再发，
+#      拿到的也只是 212 B 的 HTML；但墙松的时候它 6/6 直接拿到 267 KB 的真 xlsx
+#      （2026-09-02 同一天内两种状态都实测到过，相隔约两小时）。
+#      ⇒ 这正是它排在通道 1、且**后面必须跟着 curl_cffi 兜底**的理由：省事的路先走，
+#        走不通立刻降级，而不是靠猜今天墙松不松。
+#      换 UA 无效 ⇒ 判据在 UA 之外；但**到此为止，别写成「拦的是 TLS/HTTP2 指纹」** ——
+#      能过的 curl_cffi 一次同时改掉 TLS 指纹 / HTTP2 SETTINGS / 头集合 / 头顺序四类，
+#      没做单变量隔离，只能说判据落在这四类的并集里（同 fetch/cme.py 文件头那段）。
+#      （也别拿口径坑 7 那条去套：那条说的是 ir.nasdaq.com 拦 UA，两个域两种墙。）
+#  (b) **nscurl 也过不去**（恒 ~957 B 非 PK）。所以本模块**不把它列为通道** ——
+#      写进降级链只会多花 3 分钟超时、并在错误信息里制造「我们已经试过所有办法」的错觉。
+#  (c) **curl_cffi(impersonate='chrome') 单发会抽风**：同一条 URL 隔几秒重发，
+#      成不成来回跳（实测 8 次冷请求里 2 次拿到 773 B 挑战页）。
+#      成因不是随机的：Imperva 只对**没有 cookie 的冷请求**下挑战页，挑战响应自己会
+#      Set-Cookie；只要**用同一个 Session 把 cookie 带上**，下一发就稳过。
+#      ⇒ 所以本模块用**进程内共享的 curl_cffi Session** + 退避重试，
+#         而不是每次 `cr.get()` 那种一次性请求（那正是「抽风」的来源）。
+#         共享还有第二个好处：一次 update() 要下 y 和 y-1 两份，第二份直接复用热 cookie。
+#
+# ── 三态判据（本次修复的核心，别简化成 startswith(b'PK')）─────────────────
+#      PK\x03\x04 开头                          → 'ok'      这一年有
+#      含 b'Incapsula incident ID'（~800 B）     → 'blocked' 被墙，重试
+#      含 b'id=http404' / b'Page Not Available'  → 'noyear'  **请求已经打到源站**，
+#                                                  源站那张 43 KB 的 "Page Not Available"
+#                                                  页说没有这一年（HTTP 仍是 200）
+#      都不是                                    → None     不认识，重试；到头就抛
+#
+# ⚠ **不要拿 `_Incapsula_Resource` 当判据**：那是站点全站脚本，43 KB 的缺年份页里
+#   同样有一处（实测两页各含 1 次）。能把「被墙」和「缺年份」分开，**全靠拿到 cookie
+#   之后请求真的落到源站** —— 冷请求下两者都是非 PK 的 HTML，无法区分。
+#   实测：冷进程首发 2027（真·缺年份）4/4 次都是先 blocked、退避 3 s 后 4/4 次拿到 noyear。
+# ══════════════════════════════════════════════════════════════════════════
+# 退避表 = 尝试次数与间隔。实测过墙只需要「第一发喂 cookie、第二发就过」，
+# 3 s 已经够；后面 8 / 20 s 是给「墙临时收紧」留的，最坏多等 31 s 就抛，cron 卡不死。
+_MS_RETRY_SLEEPS = (0, 3, 8, 20)
+_MS_BLOCK_MARK = b'Incapsula incident ID'
+_MS_NOYEAR_MARKS = (b'id=http404', b'Page Not Available')
 
-    缺年份不返回 404 —— 官方 302 到一张 HTTP 200 的 HTML 错误页（口径坑 5 上方那段）。
-    所以判据是内容首字节，不是状态码。
+_MS_SESSION = None          # 进程内共享的 curl_cffi Session；cookie 复用是过墙的关键
+
+
+def _ms_session():
+    """共享 Session。curl_cffi 是**延迟 import**：没装时前面的 urllib 通道照走。"""
+    global _MS_SESSION
+    if _MS_SESSION is None:
+        from curl_cffi import requests as cr
+        _MS_SESSION = cr.Session(impersonate='chrome')
+    return _MS_SESSION
+
+
+def _ms_classify(body):
+    """B 组响应 → 'ok' / 'blocked' / 'noyear' / None（认不出来）。判据见上方那一段。"""
+    if body.startswith(b'PK\x03\x04'):
+        return 'ok'
+    if _MS_BLOCK_MARK in body:
+        return 'blocked'
+    if any(k in body for k in _MS_NOYEAR_MARKS):
+        return 'noyear'
+    return None
+
+
+def _fetch_marketshare(cache_dir, year):
+    """下载 marketshare{YY}.xlsx。**返回值是三态，调用方必须区分**：
+
+      · str            本地路径 —— 这一年有；
+      · None           **确证官方没有这一年**（拿到了源站那张 "Page Not Available" 页）；
+      · 抛 NdaqFetchError  取不到 —— 被墙或通道全挂，**判不出这一年有没有**。
+
+    2026-09-02 之前这里把「取不到」和「没有这一年」都返回 None，那是个会静默写错数据的
+    坏法：Imperva 一瞬间挡住当年那份 → 返回 None → 调用点回落到上一年 → 上一年那份是
+    真的、解析全过 → **本年各月的 9 个 B 组列悄悄全空**，而 `_crosscheck_ir_vs_ms` 只遍历
+    `set(ir) & set(ms)` 的交集、剩下那些月完全自洽、恒等式照过 ⇒ 整条错法零症状。
+    所以这两种情形今天在**返回值上就分开**，再由 `_assert_ms_covers` 兜第二道。
     """
+    global _MS_SESSION                          # 连接层出错时要把坏 Session 扔掉换一条
     url = MS_URL.format(year=year, yy=year % 100)
-    body, _hdr = _http_get(url)
-    if not body.startswith(b'PK\x03\x04'):
-        return None                      # 302 到 Trader.aspx?id=http404 的 HTML 页
+    tried, last_body = [], b''
+
+    # 通道 1：urllib。实测在墙下必失败，但零依赖、失败也快（403 秒回），
+    # 而且墙哪天撤掉就该走回这条最省事的路，所以留着当第一顺位。
+    try:
+        body, _hdr = _http_get(url)
+        st = _ms_classify(body)
+        tried.append('urllib: %s (%d B)' % (st or 'unknown', len(body)))
+        if st in ('ok', 'noyear'):
+            return _ms_settle(cache_dir, year, st, body)
+        last_body = body or last_body
+    except NdaqFetchError as e:
+        tried.append('urllib: %s' % e)
+
+    # 通道 2：curl_cffi + 共享 Session + 退避重试。
+    for i, wait in enumerate(_MS_RETRY_SLEEPS):
+        if wait:
+            time.sleep(wait)
+        try:
+            r = _ms_session().get(url, timeout=120,
+                                  headers={'Accept-Language': 'en-US,en;q=0.9'})
+            body = r.content
+        except ImportError as e:
+            # curl_cffi 没装：重试 4 轮只会白白多睡 31 s，直接跳出去报「装它」。
+            tried.append('curl_cffi: 没装（%s）—— `pip install curl_cffi`；'
+                         '本域 urllib/nscurl 都过不去，这是唯一可用通道' % e)
+            break
+        except Exception as e:                  # noqa: BLE001 —— 通道失败要继续试下一发
+            tried.append('curl_cffi#%d: %s: %s' % (i + 1, type(e).__name__, e))
+            _MS_SESSION = None                  # 连接层出错就换一条，别抱着坏 Session 重试
+            continue
+        st = _ms_classify(body)
+        tried.append('curl_cffi#%d: %s (%d B)' % (i + 1, st or 'unknown', len(body)))
+        if st in ('ok', 'noyear'):
+            # 降级成功也要出声（同 fetch/cme.py、fetch/cost_release.py 的口径）：
+            # 主通道 urllib 时灵时不灵，只有把「今天是靠 curl_cffi 才拿到的」记下来，
+            # 日后才答得出「墙是哪天收紧的」。全靠 tried 是不够的 —— 它只在抛异常时才被读。
+            print('[ndaq] ⚠ marketshare%02d 主通道 urllib 没成，靠 curl_cffi 第 %d 发才取到'
+                  '（前序：%s）' % (year % 100, i + 1, '；'.join(tried[:-1])))
+            return _ms_settle(cache_dir, year, st, body)
+        last_body = body or last_body
+
+    # 走到这里 = 每一发都是挑战页或不认识的东西。**绝不能返回 None** ——
+    # 那等于告诉调用方「这一年不存在」，于是它会回落到上一年、静默丢掉本年的 B 组列。
+    dump = os.path.join(cache_dir, 'ndaq_marketshare%02d_blocked.html' % (year % 100))
+    if last_body:
+        _write_bytes(dump, last_body)
+    raise NdaqFetchError(
+        'marketshare%02d.xlsx 取不到，而且**判不出这一年到底有没有** —— '
+        'www.nasdaqtrader.com 的 Imperva 墙对被拦和真·缺年份返回的都是 HTTP 200 的 HTML。'
+        '按顺序试过：\n  %s\n'
+        '最后一次的响应已存到 %s（含 %r 即为挑战页）。'
+        '本模块在这种情形下**拒绝返回「这一年不存在」**，因为那会让调用点回落到上一年、'
+        '把本年的 9 个 B 组列悄悄留空而下游恒等式照过。'
+        % (year % 100, '\n  '.join(tried),
+           dump if last_body else '（响应为空，未存）', _MS_BLOCK_MARK))
+
+
+def _ms_settle(cache_dir, year, st, body):
+    """三态里已判定的两态落地：'ok' 写盘返回路径，'noyear' 返回 None。"""
+    if st == 'noyear':
+        return None
     path = os.path.join(cache_dir, 'ndaq_marketshare%02d.xlsx' % (year % 100))
     _write_bytes(path, body)
     return path
@@ -1336,6 +1486,50 @@ def _validate_marketshare(ms):
                 '起才有），解析异常，拒绝写入' % (mon, miss, NTX_START, PSX_START))
 
 
+# B 组允许比 A 组落后几个月。依据见模块 docstring「发布节奏」：A 组次月第 2–8 天发，
+# B 组次月第 10 个工作日前后发（2026-08-06 实测 IR 已到 2026-07 而 B 组内容到 2026-06）
+# ⇒ **正常状态下 B 组只落后 1 个月**。这里留 2 个月余量，是不想让 B 组偶尔晚几天就把
+# 整个 NDAQ 更新（连 A 组一起）打掉；而真要拦的那种坏法差着 7 个月，一撞就响。
+_MS_MAX_LAG = 2
+
+
+def _shift_month(mon, k):
+    """'YYYY-MM' 挪 k 个月（k 可负）。"""
+    t = int(mon[:4]) * 12 + int(mon[5:7]) - 1 + k
+    return '%04d-%02d' % (t // 12, t % 12 + 1)
+
+
+def _month_diff(lo, hi):
+    """hi 比 lo 晚几个月。"""
+    return (int(hi[:4]) * 12 + int(hi[5:7])) - (int(lo[:4]) * 12 + int(lo[5:7]))
+
+
+def _assert_ms_covers(ms, newest, fname):
+    """B 组覆盖范围闸 —— 本模块唯一挡得住「B 组静默少一整年」的地方。
+
+    为什么非有不可：`_crosscheck_ir_vs_ms` 只遍历 `set(ir) & set(ms)` 的**交集**。
+    B 组少了一整年时，交集里剩下的那些月（都在上一年里）完全自洽、恒等式照过，
+    `_validate_marketshare` 也只逐月查「已有的月有没有缺列」——
+    **没有任何一处会因为「本年 9 个 B 组列全空」而失败**。所以只能在这里挡。
+
+    这道闸同时把年初那次**合法**回落放行：IR 2026-01 配 marketshare25.xlsx（含到
+    2025-12）时 2025-12 ≥ 2025-11 = newest-2，照过；而 IR 2026-03 再配 25 那份就过不去。
+    ——「合法」的实质不是「1 月才准回落」，而是：能走到回落，说明源站**确证**没有 y 年
+    那份文件（被墙会在 `_fetch_marketshare` 里抛），既然文件不存在，y 年的 B 组数据
+    本来也就还没发，回落一个字节都不丢。
+    """
+    top = max(ms)
+    need = _shift_month(newest, -_MS_MAX_LAG)
+    if top < need:
+        raise NdaqFetchError(
+            'B 组用的是 %s，只覆盖到 %s，而 IR（A 组）最新月已经是 %s —— 落后 %d 个月，'
+            '超过 %d 个月的正常发布时差，**拒绝写入**。'
+            '常见成因：当年那份 marketshare xlsx 被 Imperva 挡住后静默回落到了上一年，'
+            '或源站那份文件不再更新。'
+            '这种坏法本身没有症状（少一整年时下游恒等式只比交集、照过），所以在这里硬拦。'
+            % (fname, top, newest, _month_diff(top, newest), _MS_MAX_LAG))
+
+
 def _crosscheck_ir_vs_ms(ir, ms):
     """两份独立文件、两个独立域名的恒等式：IR matched(百万股) ≡ (NASDAQ+NTX+PSX)/1e6。
 
@@ -1516,14 +1710,28 @@ def update(series_dir, cache_dir):
 
     # B 组：某一年的那份文件自己就含 2005-09 起的全部历史，所以只需要一份。
     # 年初新一年的文件还没上线时回落到上一年（那份含到上一年 12 月，正是要的）。
+    # ⚠ `y` 是从 **IR 数据月** 推的，不是 today 的年份 —— 1 月初 IR 最新月还是上一年 12 月，
+    #   那时 y 就已经是 y-1，根本走不到回落；真正会回落的只有「IR 已经出 y 年的月份、
+    #   而 y 年那份 xlsx 还没挂上去」这一段（实测窗口约 y-01-01 .. y-02 中旬）。
+    # ⚠ 回落只在 `_fetch_marketshare` 返回 None ——「**源站确证没有这一年**」—— 时发生。
+    #   被 Imperva 挡住是抛异常，不会走到这里；这正是 2026-09-02 修掉的静默降级路径：
+    #   墙一抽风 → 当年那份被判成「不存在」→ 回落到上一年 → 本年 B 组列全空且零症状。
     y = int(newest[:4])
-    ms_path = _fetch_marketshare(cache_dir, y) or _fetch_marketshare(cache_dir, y - 1)
+    ms_path = _fetch_marketshare(cache_dir, y)
+    if ms_path is None:
+        # 既然 y 年那份文件在源站上不存在，y 年的 B 组数据本来也还没发，回落不丢东西。
+        ms_path = _fetch_marketshare(cache_dir, y - 1)
     if ms_path is None:
         raise NdaqFetchError(
-            'nasdaqtrader 的 marketshare%02d.xlsx 与 marketshare%02d.xlsx 都取不到 '
-            '（缺年份会 302 到 HTTP 200 的 HTML 错误页，不是 404）' % (y % 100, (y - 1) % 100))
+            'nasdaqtrader 上 marketshare%02d.xlsx 与 marketshare%02d.xlsx **都不存在** '
+            '（源站给的是 Trader.aspx?id=http404 那张 43 KB 的 "Page Not Available" 页，'
+            'HTTP 状态码仍是 200，所以判据是内容不是状态码）—— 官方改目录结构了？'
+            % (y % 100, (y - 1) % 100))
     ms = _parse_marketshare(ms_path)
     _validate_marketshare(ms)
+    # 第二道闸：万一将来墙又换一种坏法、让「取不到」重新伪装成「不存在」，
+    # 这里按覆盖范围把回落错的那种情形拦下来（理由见 _assert_ms_covers）。
+    _assert_ms_covers(ms, newest, os.path.basename(ms_path))
     _, _, _flagged = _crosscheck_ir_vs_ms(ir, ms)
     for _mon, _a, _b, _rel in _flagged:
         # 只 WARN 不抛：两份官方文件对不上时照官方公布值写入（口径坑 18）。
@@ -1580,11 +1788,17 @@ def _crosscheck(series_dir, cache_dir):
     pdf_path, _cd = _fetch_ir_pdf(cache_dir)
     with fitz.open(pdf_path) as doc:
         ir, quarterly = _parse_page1(doc[0]), _parse_page2(doc[1])
-    y = int(max(ir)[:4])
-    ms_path = _fetch_marketshare(cache_dir, y) or _fetch_marketshare(cache_dir, y - 1)
+    newest_ir = max(ir)
+    y = int(newest_ir[:4])
+    # 同 update()：None 才是「源站确证没有这一年」，被墙一律抛，绝不静默回落。
+    ms_path = _fetch_marketshare(cache_dir, y)
     if ms_path is None:
-        raise NdaqFetchError('marketshare%02d/%02d.xlsx 都取不到' % (y % 100, (y - 1) % 100))
+        ms_path = _fetch_marketshare(cache_dir, y - 1)
+    if ms_path is None:
+        raise NdaqFetchError('marketshare%02d.xlsx 与 marketshare%02d.xlsx 在源站上都不存在'
+                             % (y % 100, (y - 1) % 100))
     ms = _parse_marketshare(ms_path)
+    _assert_ms_covers(ms, newest_ir, os.path.basename(ms_path))
 
     n, worst, flagged = _crosscheck_ir_vs_ms(ir, ms)
     print('[1] IR vs nasdaqtrader matched 恒等式：%d 个重叠月，最大相对偏差 %.4f%%'

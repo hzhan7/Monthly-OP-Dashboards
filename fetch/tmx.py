@@ -165,8 +165,11 @@ Transactions 的单位是**笔**。官方不说明是否双边计数，但四家
   mx_oi_bax_contracts             BAX 月末未平仓（张）
   mx_oi_cra_contracts             CRA 月末未平仓（张）
   mx_oi_stir_futures_contracts    短端利率期货合计月末未平仓（张）
-  mx_oi_bond_futures_contracts    国债期货合计月末未平仓（张）
+  mx_oi_bond_futures_contracts    国债期货合计月末未平仓（张，CGZ+CGF+CGB+LGB 的 Total，
+                                  四条之和逐月精确等于它，296 个月实测零残差）
   mx_oi_cgb_contracts             CGB 月末未平仓（张）
+  mx_oi_cgf_contracts             CGF 月末未平仓（张）
+  mx_oi_cgz_contracts             CGZ 月末未平仓（张）
   mx_oi_sxf_contracts             SXF 月末未平仓（张）
   mx_oi_equity_options_contracts  个股期权月末未平仓（张）
   mx_oi_etf_options_contracts     ETF 期权月末未平仓（张）
@@ -469,7 +472,21 @@ MX_SPEC = [
     ('mx_oi_cra_contracts',             'oi',  None,       'CRA'),
     ('mx_oi_stir_futures_contracts',    'oi',  S_STIR_FUT, 'Total'),
     ('mx_oi_bond_futures_contracts',    'oi',  S_BOND_FUT, 'Total'),
+    # 国债期货三档 OI 与 adv 那三条同源同行：`MONTH END OPEN INTEREST` 是横跨所有产品行的
+    # **列块**（第 11 列，见口径坑 8），CGF / CGZ 的格子一直都在，只是本仓此前没登记 ——
+    # 于是 /tmx/ 的「国债期货月末未平仓」那一组只有「合计 + CGB」两条列，两者之差被读成「其余」：
+    # 2026-07 实测 43.16%、2024 年起中位 41.05%。那 43% 是**本仓的管道边界**，不是官方的
+    # 披露边界；补上这两条之后它落回 0.02%。
+    # 恒等式（296 个月逐月实测）：Bond Futures 小节的 Total ≡ CGB + CGF + CGZ + LGB，
+    # **精确成立、零残差**（2025-06 那个残档走 2507 的上月列，LGB=412 同样对上）。
+    # 所以三档之外只剩 LGB 一个合约：残差占比中位 0.0000%、最大 0.3859%（2022-05 的
+    # 2,752 张 / 713,178 张），2026-08 是 387 张 / 1,630,704 张 = 0.0237%。
+    # LGB 不单列：它 296 个月里有 228 个月 OI 恰为 0，单列出来是一条贴着零轴的死线。
+    # 注意小节里 Total 之**后**还有一行 `Bond Options - OGB`，它不在 Total 里（期权不是期货），
+    # 别把它算进残差。
     ('mx_oi_cgb_contracts',             'oi',  None,       'CGB'),
+    ('mx_oi_cgf_contracts',             'oi',  None,       'CGF'),
+    ('mx_oi_cgz_contracts',             'oi',  None,       'CGZ'),
     ('mx_oi_sxf_contracts',             'oi',  None,       'SXF'),
     ('mx_oi_equity_options_contracts',  'oi',  None,       'Equity Options'),
     ('mx_oi_etf_options_contracts',     'oi',  None,       'ETF Options'),
@@ -1674,6 +1691,96 @@ def backfill_box(series_dir, cache_dir, max_reports=14):
     日常 cron 不走这条路（update() 只翻最新 1 份）。
     """
     return _update_box(series_dir, cache_dir, max_reports=max_reports)
+
+
+def _ensure_columns(csv_path, columns):
+    """确保 CSV 表头含 columns 里的每一列，缺的按 columns 的相对次序插进去（单元格留空）。
+
+    新列插在「它在 columns 里的前一个已有列」之后，而不是甩在行尾 —— CSV 是给人翻的，
+    mx_oi_cgf/cgz 就该紧挨着 mx_oi_cgb。一列都不缺时**不碰文件**（字节级不变）。
+    返回新插入的列名列表。
+    """
+    if not os.path.exists(csv_path):
+        return []
+    with open(csv_path, newline='', encoding='utf-8') as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        raise TmxFetchError('%s 是空文件（连表头都没有）' % csv_path)
+    header = rows[0]
+    added = []
+    for n, col in enumerate(columns):
+        if col in header:
+            continue
+        prev = [c for c in columns[:n] if c in header]
+        at = header.index(prev[-1]) + 1 if prev else len(header)
+        header.insert(at, col)
+        for r in rows[1:]:
+            if r:
+                r.insert(at, '')
+        added.append(col)
+    if added:
+        _write_csv(csv_path, header, [r for r in rows[1:] if r and r[0].strip()])
+    return added
+
+
+def backfill_mx_columns(series_dir, cache_dir, columns=None):
+    """把 MX_SPEC 里**新登记的列**回补到全部历史月份，返回 {列: 这次填了几格}。
+
+    用法（给 MX_SPEC 添完新行之后跑一次）：
+
+        python3 -c "import fetch.tmx as t; print(t.backfill_mx_columns('series','cache'))"
+
+    **为什么非要有这条路**：update() 的 MX 腿只从「CSV 里最后一个有 mx_volume_contracts
+    的月份」往后走（那是它该干的事 —— 每月只解析一两份新 xlsx，不是每月重解析 295 份）。
+    于是给 MX_SPEC 新增一列时，历史那几百个月它一格都不会碰，新列会只有最新月有值。
+    2026-09 补 mx_oi_cgf/cgz 时就是走的这条路。
+
+    与 backfill_index() 的分工：那条走 TMX Money 那个**没有官方契约**的端点，所以明确
+    不进无人值守链路；这条不引入任何新来源 —— 同样是 cache/tmx/ 里那批 m-x.ca 的 xlsx、
+    同样是 parse_mx_workbook()，只是把已经落地的档案按新的列清单再读一遍。
+
+    安全性照旧靠 _merge：**已有值的单元格一格都不覆盖**，所以
+      · 重复跑是幂等的（跑第二遍文件字节级不变）；
+      · 不小心传了一个早已填满的列，也只是白读一遍 xlsx，不会改动任何数据。
+
+    只回补**缓存里已有档案**的月份：官方档案不在本地就跳过（计进返回值旁边的打印），
+    不去下载 —— 要新档案是 update() 的事，这条路的职责是「用手头的档案补新列」。
+    """
+    cols = list(columns or [c for c, _b, _s, _l in MX_SPEC])
+    unknown = [c for c in cols if c not in COLUMNS]
+    if unknown:
+        raise TmxFetchError('这些列不在 COLUMNS 里，先往 MX_SPEC 添行：%s' % unknown)
+
+    csv_path = os.path.join(series_dir, 'tmx.csv')
+    new = _ensure_columns(csv_path, COLUMNS)
+    if new:
+        print('· 表头新增列：%s' % ', '.join(new))
+    header, body, have = _load_csv(csv_path, COLUMNS, 'month')
+    idx = {n: i for i, n in enumerate(header)}
+
+    # 只认「已经有 MX 数据」的月份：现货腿单独建的行（MX 还没发那个月）不该被这条路填。
+    months = [m for m in sorted(have) if have[m][idx['mx_volume_contracts']].strip()]
+    filled = {c: 0 for c in cols}
+    absent = []
+    for month in months:
+        if not os.path.exists(_mx_path(cache_dir, month)):
+            absent.append(month)
+            continue
+        got = fetch_mx_month(cache_dir, month)
+        if got is None:
+            absent.append(month)
+            continue
+        rec, _raw = got
+        before = {c: have[month][idx[c]].strip() for c in cols}
+        _merge(header, body, have, month, {c: rec[c] for c in cols})
+        for c in cols:
+            if not before[c] and have[month][idx[c]].strip():
+                filled[c] += 1
+    _write_csv(csv_path, header, body)
+    print('· 扫过 %d 个月（缓存缺档 %d 个%s）；新填格数：%s'
+          % (len(months), len(absent), '：' + ', '.join(absent[:5]) if absent else '',
+             ', '.join('%s %d' % (c, n) for c, n in filled.items() if n) or '无（已是满的）'))
+    return filled
 
 
 def crosscheck(cache_dir, page_size=300):

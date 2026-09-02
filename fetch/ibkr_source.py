@@ -8,12 +8,22 @@
 OneDrive 落盘、`main()`）本仓库用不上，没有搬。
 
 调用方：
-  · `fetch/ibkr.py`  —— curl / HIST_URL / PR_URL / parse_hist_page / LABELS
-  · `build/ibkr.py`  —— parse_pr（月度新闻稿的佣金与订单规模）、
-                        parse_pr_fut_fee（期货费用占比，页尾脚注用）
+  · `fetch/ibkr.py`            —— curl / HIST_URL / download_pr / parse_hist_page / LABELS
+                                  / parse_pr / parse_pr_cpt_basis / parse_pr_fut_fee
+                                  （每月把新闻稿那几个数追加进 series/ibkr_pr.csv）
+  · `build/basefill/ibkr_pr_2016.py` —— 同上，一次性回填 2016-02 起的历史
+  · `build/ibkr.py`            —— **不再解析新闻稿**，只读 series/ibkr_pr.csv；
+                                  仍从本模块拿 CACHE（历史指标 PDF 的 Notes 段还要读）
 
-`parse_pr_fut_fee` 是**本仓后加的**，原 skill 里没有；加在这里而不是 build/ 侧，
-是为了让「新闻稿怎么解析」始终只有一处定义。
+`parse_pr_fut_fee` / `parse_pr_cpt_basis` / `download_pr` 都是**本仓后加的**，
+原 skill 里没有；加在这里而不是 fetch/build 侧，是为了让「新闻稿怎么下、怎么解析」
+始终只有一处定义。
+
+**2026-09 的一处口径搬家**：CPT 与平均订单规模原先由 `build/ibkr.py` 每次构建现场
+解析 `cache/ibkr/*.pdf`，而 `cache/` 是 gitignore 的 —— 换机器或清缓存，佣金那几张图
+就静默缩短。现在数值入库到 `series/ibkr_pr.csv`（tracked），cache 只留原件。
+理由与 `source_dates.py` docstring 写的是同一条：「cache/ 随时可以删……
+这和 series/ 是唯一真值、cache/ 只是过程物是同一条原则」。
 
 **`parse_hist_page` 已不再是逐字复制件**：原版「一路收数字、按页脚有没有 '% Change'
 砍掉两格」的写法在一格读不出来时会静默截断整行，截在 `US Trading days` 上就是 IBKR
@@ -44,6 +54,29 @@ CACHE = os.path.join(ROOT, 'cache', 'ibkr')
 UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
 HIST_URL = 'https://www.interactivebrokers.com/mkt/getFileNew.php?file=latestMetric'
 PR_URL = 'https://www.interactivebrokers.com/mkt/getFileNew.php?file={ym}MetricsPressRelease.pdf'
+
+# ── 新闻稿的 token 有后缀变体，只试规范那一个会白丢 10 个月 ────────────────────
+# 端点 `getFileNew.php?file=<token>` 对**不存在的文件返回 HTTP 200 +
+# Content-Type: application/pdf + 0 字节**，从不 404 —— 「下不到」与「不存在」在
+# HTTP 层分不开，只能靠反复实测。2026-09-02 全量扫过 2016-01…2026-08 共 128 个月：
+# 2016-02…2016-09 与 2017-12 / 2020-03 这 10 个月的规范 token 是 0 字节，而**词尾多一个
+# 「1」的那份有文件**（核对过电头与正文：2017-12 那份电头 "January 2, 2018"、开篇
+# "699 thousand DARTs"，与 series/ibkr.csv 的 2017-12 逐字对上；2020-03 的 1,964 同样）。
+# 顺序即优先级：规范 token 命中就不再试后缀。
+PR_TOKENS = ('{ym}MetricsPressRelease.pdf', '{ym}MetricsPressRelease1.pdf',
+             '{ym}MetricsPressRelease2.pdf')
+PR_BASE = 'https://www.interactivebrokers.com/mkt/getFileNew.php?file='
+
+# 官方第一份月度 Metrics 新闻稿。2016-01 的 16 种 token（含上面三种与
+# 2/3/4/5/_1/-1/a/A/v1/R1/Final/New/b/.PDF）全部 0 字节 —— 不是下载失败，是没有。
+PR_FIRST_MONTH = '2016-02'
+
+# 「官方真的没发」的登记表：值是**实测依据**，不是猜测。登记在这里，
+# 好让 fetch 与 basefill 都别每天去重试一个永远不存在的文件，也让页面上那个洞有出处。
+# 形状照 fetch/asx.py 的 _KNOWN_SOURCE_GAPS。
+PR_ABSENT = {
+    '2021-10': '2026-09-02 实测：16 种 token 全部返回 200 + application/pdf + 0 字节',
+}
 
 
 # ---------------- download helpers ----------------
@@ -87,6 +120,29 @@ def curl(url, dest):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+def download_pr(month, dest):
+    """把 `month`（'YYYY-MM'）那期新闻稿下到 `dest`，逐个试 `PR_TOKENS`。
+
+    全部试完都拿不到才抛 —— 抛出来的消息里列出试过的 token，因为端点对
+    「文件不存在」也回 200，光看 HTTP 状态永远查不出是哪种失败。
+    成功即返回命中的 token（调用方可以打印出来，好让「这个月走的是后缀变体」留痕）。
+    """
+    ym = month.replace('-', '')
+    tried = []
+    for tok in PR_TOKENS:
+        t = tok.format(ym=ym)
+        tried.append(t)
+        try:
+            curl(PR_BASE + t, dest)
+            return t
+        except Exception:
+            continue
+    raise IbkrParseError(
+        f'{month} 的新闻稿三个 token 都拿不到（{"、".join(tried)}）。'
+        f'端点对不存在的文件也返回 200 + 0 字节，所以这既可能是官方没发、'
+        f'也可能是命名又变了 —— 确认是前者就补进 PR_ABSENT 并写明实测依据。')
 
 
 # ---------------- parse historical metrics PDF ----------------
@@ -315,19 +371,89 @@ def parse_hist_page(page):
 
 
 # ---------------- parse press release ----------------
+# ⚠ 三种版式，跨十年。下面这两条正则与 `_pr_row` 一起，对 2016-02…2026-08 全部 126 份
+#   实测通过；对旧写法能解析的那 46 份（2022-11 起）逐值相同。别改回按位置取格。
+#
+# ① 抬头那句 CPT 的**措辞在 2019-11 改过**：
+#      2016-02..2019-10  "Average commission per cleared client order of $3.91"
+#      2019-11..         "Average commission per cleared Commissionable Order3 of $3.09"
+#    这不只是换词 —— 2019-10 那期的 Note(1) 原文写着「DARTs and cleared client orders do
+#    not include IBKR LITE clients' U.S. Reg.-NMS orders since they are commission free」，
+#    即 IBKR LITE 上线后免佣订单退出分母，2019-11 起把这件事焊进了定义
+#    （当期 Note 把 Commissionable Order 定义成 "a customer order that generates
+#    commissions"）。**跨这条线比 CPT 高低是跨口径比较**，画图的一侧要标出来。
+#    脚注号直接粘在词尾且**编号会变**（2024-11/12 那两期是 4 不是 3），所以是 `\d*`。
+PR_CPT_RE = re.compile(
+    r'Average\s+commission\s+per\s+cleared\s+'
+    r'(?:(client\s+order|Commissionable\s+Order))\s*\d*\s+of\s+\$([\d.]+)', re.I)
+
+# ② Key products 三行的**两列顺序在 2022-11 整个对调了**：
+#      2016-02..2022-10  "Stocks / $2.19 / 2,115 shares"   —— 价在前（表头也是价在前）
+#      2022-11..         "Stocks / 1,415 shares / $2.23"   —— 量在前
+#    所以不锁死顺序：找到产品标签，再在它下方就近凑齐「一个 $ 价」与「一个带单位的量」，
+#    谁先谁后都读得出。顺带吃下另外两种一次性版式意外：
+#      · 2019-10 标签印成 "Stocks1"（脚注号粘在标签上）→ 标签正则带 `\d?`；
+#      · 2020-07 整行没被 PDF 拆开，一行就是 "$2.05    1,390 shares" → 从标签行自身起扫。
+PR_LABELS = (('Stocks', r'shares?'), ('Equity Options', r'contracts?'),
+             ('Futures', r'contracts?'))
+_PR_NUM = r'[\d][\d,]*(?:\.\d+)?'
+PR_ROW_SPAN = 120        # 标签之后往下看多少个字符（跨 3-4 行，够不到下一个产品）
+
+
+def _pr_num(s):
+    return float(s.replace(',', ''))
+
+
+def _pr_row(t, label, unit):
+    """`(平均订单规模, 单笔佣金)`；读不出返回 None。"""
+    m = re.search(re.escape(label) + r'\d?\s*\n', t)
+    if not m:
+        return None
+    win = t[m.end():m.end() + PR_ROW_SPAN]
+    price = re.search(r'\$(' + _PR_NUM + r')', win)
+    size = re.search(r'(' + _PR_NUM + r')\s*' + unit, win)
+    if not (price and size):
+        return None
+    return _pr_num(size.group(1)), _pr_num(price.group(1))
+
+
 def parse_pr(path):
+    """月度新闻稿 → `(cpt, stk_os, stk_cpt, opt_os, opt_cpt, fut_os, fut_cpt)`。
+
+    元组的**长度与顺序与旧版逐字相同**（调用方按位置解包）。解析不出抛
+    `IbkrParseError`（`RuntimeError` 的子类，旧的 `except RuntimeError` 照样接得住）。
+    """
     t = fitz.open(path)[0].get_text()
-    mo = re.search(r'Average commission per cleared Commissionable Order.*?of \$([\d.]+)', t, re.S)
-    mk = re.search(r'Stocks\s*\n([\d,.]+)\s*shares?\s*\n\$([\d.]+)\s*\nEquity Options\s*\n([\d.]+)\s*contracts\s*\n\$([\d.]+)\s*\nFutures\s*\n([\d.]+)\s*contracts\s*\n\$([\d.]+)', t)
-    if not (mo and mk):
-        raise RuntimeError(f'PR parse failed: {path}')
-    return (float(mo.group(1)), float(mk.group(1).replace(',', '')), float(mk.group(2)),
-            float(mk.group(3)), float(mk.group(4)), float(mk.group(5)), float(mk.group(6)))
+    mo = PR_CPT_RE.search(t)
+    rows = [_pr_row(t, lab, unit) for lab, unit in PR_LABELS]
+    if not mo or any(r is None for r in rows):
+        miss = ([] if mo else ['抬头那句 CPT']) + \
+               [lab for (lab, _), r in zip(PR_LABELS, rows) if r is None]
+        raise IbkrParseError(f'新闻稿解析失败 {path}：读不出 {"、".join(miss)}')
+    (so, sc), (oo, oc), (fo, fc) = rows
+    return (float(mo.group(2)), so, sc, oo, oc, fo, fc)
+
+
+def parse_pr_cpt_basis(path):
+    """CPT 的口径名：`'client_order'`（2016-02..2019-10）或 `'commissionable_order'`。
+
+    单独成函数是因为**这是要入库的一列**（`series/ibkr_pr.csv` 的 `cpt_basis`）：
+    口径变更的月份由**数据本身**给出，不许在画图那侧写死一个日期 ——
+    写死的日期与官方哪天改词是两件事，改词那期一变就成假话。
+    """
+    m = PR_CPT_RE.search(fitz.open(path)[0].get_text())
+    if not m:
+        raise IbkrParseError(f'新闻稿里找不到 CPT 那一句，判不出口径 {path}')
+    return 'commissionable_order' if 'commissionable' in m.group(1).lower() else 'client_order'
 
 
 # 「We estimate exchange, clearing and regulatory fees to be NN% of the futures commissions.」
-# PDF 抽文本时这句被换行拆开（"… to be 54% of the \nfutures commissions."），故 \s+ 跨行。
-FUT_FEE_RE = re.compile(r'fees to be\s+(\d+(?:\.\d+)?)\s*%\s+of the\s+futures commissions', re.I)
+# PDF 抽文本时这句被换行拆开，且**断在哪儿逐期不同**：多数期是 "… to be 54% of the
+# \nfutures commissions."，而 2016-10/11/12 三期断在 "of \nthe futures commissions"。
+# 原先 `of the` 中间写的是一个字面空格，那三期就静默漏掉（返回 None → 页尾脚注少一句，
+# 不报错）。所以每一处空白都用 `\s+`。
+FUT_FEE_RE = re.compile(
+    r'fees to be\s+(\d+(?:\.\d+)?)\s*%\s+of\s+the\s+futures\s+commissions', re.I)
 
 
 def parse_pr_fut_fee(path):

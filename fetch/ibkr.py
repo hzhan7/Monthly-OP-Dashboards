@@ -13,8 +13,14 @@ IBKR 官网 IR：
 ——最难发现的那种错。
 
 ═══ 数据落在哪 ═══
-`cache/ibkr/`（hist_latest.pdf + 各月 pr_YYYYMM.pdf，gitignored）是原始件。本模块另把
-历史指标表解析成 `series/ibkr.csv`（与其余十一家同构，tracked），排查时不必开 PDF。
+`cache/ibkr/`（hist_latest.pdf + 各月 pr_YYYYMM.pdf，gitignored）是原始件。本模块把
+**两份**表落进 tracked 的 `series/`，排查时不必开 PDF：
+  · `series/ibkr.csv`    —— 历史指标表（与其余十一家同构）
+  · `series/ibkr_pr.csv` —— 月度新闻稿里的佣金口径（CPT / 平均订单规模 / 期货费用比例 /
+    CPT 的口径名）。2026-09 从 build 侧搬来：那边原先每次构建现场解析 `cache/*.pdf`，
+    而 cache 是 gitignore 的，换机器或清缓存佣金图就静默缩短。历史回填一次性由
+    `build/ibkr_pr_2016.py`（在 build/basefill/ 下）做完，本模块每月只往右追。
+    「官方哪几个月没发新闻稿」登记在 `ibkr_source.PR_ABSENT`，不在这里。
 
 ═══ 发布节奏 ═══
 每月第一个美股交易日（美东 ~16:00 = SGT 次日凌晨），遇假日顺延。
@@ -177,8 +183,8 @@ def update(series_dir, cache_dir=None):
             w.writerows(body)
 
     # 补下最新月的 Metrics 新闻稿（佣金与订单规模来源，历史 PDF 里没有）。
-    # 下不到不算失败：新闻稿偶尔比历史表晚几小时，build/ibkr.py 会自动只用
-    # 已缓存的连续区间画佣金图，缺口不会被画成直线。
+    # 下不到不算失败：新闻稿偶尔比历史表晚几小时，build/ibkr.py 会自动把那个月画成
+    # 缺口（null），不会被画成直线。
     newest = max(data)
     ym = newest.replace('-', '')
     pr = os.path.join(br.CACHE, f'pr_{ym}.pdf')
@@ -190,11 +196,76 @@ def update(series_dir, cache_dir=None):
         if os.path.exists(pr):
             os.remove(pr)                       # 残骸先清掉，否则下面这次成功也覆盖不干净
         try:
-            br.curl(br.PR_URL.format(ym=ym), pr)
+            br.download_pr(newest, pr)
         except Exception as e:
             print(f'[ibkr] {newest} 新闻稿暂时下不到（佣金图会少一个月）: {e}')
 
     _record_source_date(newest, pr)
+    _update_pr(series_dir, br, sorted(data))
+    return added
+
+
+# 新闻稿台账的回看窗口。取 6 同 _SENTINEL_MONTHS：够长到能补回一次瞬时故障
+# （新闻稿比历史表晚几小时是常事，那天的 update 会跳过它），又短到每天只多开
+# 几次「文件已在」的判断。**没有这一层回看，一次瞬时失败就是一个永久的洞** ——
+# 老写法只取 newest 一个月、从不回头，而洞在图上长得跟「官方没发」一模一样。
+_PR_BACKFILL_MONTHS = 6
+
+
+def _update_pr(series_dir, br, all_months):
+    """把新闻稿里的佣金口径追加进 `series/ibkr_pr.csv`（tracked，唯一真值）。
+
+    为什么不放进 `series/ibkr.csv`：那份文件的列被本模块的护栏钉死在
+    `ibkr_source.LABELS` 上（见上面 `unknown` 那一段），而且它的「缺列一律失败」
+    会把「新闻稿晚了几小时」升级成整月抓取失败 —— 而那正是本文件刻意容忍的一种情况。
+
+    幂等且**已有行永不覆盖**（同 build/basefill/hood_2021.py）：官方极少重述，
+    真要重刷历史请跑 `python3 build/basefill/ibkr_pr_2016.py --refresh` 人工裁决。
+    """
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location(
+        'ibkr_pr_2016', os.path.join(os.path.dirname(HERE), 'build', 'basefill', 'ibkr_pr_2016.py'))
+    bf = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(bf)                  # 只为拿 HEAD 与 row_of —— 表结构只有一处定义
+
+    path = os.path.join(series_dir, 'ibkr_pr.csv')
+    have, head = {}, list(bf.HEAD)
+    if os.path.exists(path):
+        with open(path, newline='', encoding='utf-8') as f:
+            rows = list(csv.reader(f))
+        if rows:
+            head, have = rows[0], {r[0]: r for r in rows[1:] if r}
+        if head != bf.HEAD:
+            raise IbkrFetchError(f'series/ibkr_pr.csv 的表头与 basefill 的 HEAD 不一致：'
+                                 f'{head} vs {bf.HEAD}')
+    with open(path, 'rb') as f:                  # 照抄既有行尾（同上面 series/ibkr.csv 那段）
+        term = '\r\n' if b'\r\n' in f.read(4096) else '\n'
+
+    want = [m for m in all_months[-_PR_BACKFILL_MONTHS:]
+            if m >= br.PR_FIRST_MONTH and m not in br.PR_ABSENT and m not in have]
+    added = []
+    for m in want:
+        p = os.path.join(br.CACHE, f'pr_{m.replace("-", "")}.pdf')
+        if not (os.path.exists(p) and os.path.getsize(p) >= 5000):
+            try:
+                br.download_pr(m, p)
+            except Exception as e:
+                print(f'[ibkr] {m} 新闻稿下不到，本轮跳过（下次回看还会再试）: {e}')
+                continue
+        try:
+            have[m] = bf.row_of(br, m, p)
+        except Exception as e:
+            # 解析失败绝不静默写空行 —— 空值会一路画成 null 点上线而全程无报错。
+            raise IbkrFetchError(f'{m} 新闻稿解析失败（版式可能变了，改 '
+                                 f'fetch/ibkr_source.parse_pr，别在别处另写一个）: {e}') from e
+        added.append(m)
+    if not added:
+        return []
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f, lineterminator=term)
+        w.writerow(bf.HEAD)
+        w.writerows(have[m] for m in sorted(have))
+    print(f'[ibkr] series/ibkr_pr.csv 新增 {len(added)} 行: {"、".join(added)}')
     return added
 
 
