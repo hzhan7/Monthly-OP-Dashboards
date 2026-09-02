@@ -487,10 +487,58 @@ def _venue_price():
     return out
 
 
+def _bond_oi_note():
+    """国债期货月末未平仓那一组的口径交代 —— 恒等式闭不闭合，全部现算。
+
+    ⚠️ 给下一个改这里的人：这一组在 2026-09 之前只有「合计 + CGB」两条列，
+    于是合计与 CGB 之间那条越拉越宽的口子读起来像「其余合约」（2024 年起中位 41%）。
+    **它从来不是官方的披露边界，是本仓的管道边界** —— `MONTH END OPEN INTEREST`
+    在 m-x.ca 的 xlsx 里是横跨所有产品行的列块，CGF / CGZ 的格子一直都在，
+    只是 `fetch/tmx.py` 的 `MX_SPEC` 当时没登记这两条（ADV 一侧四条一直是齐的）。
+    补齐之后残差落到千分之几，剩下的只有 LGB 一个合约。
+
+    所以这段话报的数只有一个用处：**证明恒等式现在真的闭合**。它必须现算 ——
+    哪天官方在 Bond Futures 小节里新上一个合约，残差会自己变大，这段话跟着变，
+    而写死的「只剩 LGB」会原地变成假话且没有护栏会喊。
+    """
+    got = []
+    for r in _rows():
+        tot = _num(r, 'mx_oi_bond_futures_contracts')
+        parts = [_num(r, c) for c in ('mx_oi_cgb_contracts', 'mx_oi_cgf_contracts',
+                                      'mx_oi_cgz_contracts')]
+        if not tot or any(p is None for p in parts):
+            continue
+        d = tot - sum(parts)
+        got.append((r['month'], d, d / tot * 100.0))
+    head = ('<b>国债期货的 ADV 与月末未平仓现在都是「合计 + 三档」</b>：'
+            'CGB（10 年）、CGF（5 年）、CGZ（2 年）。'
+            '两侧的画法不同（ADV 四条同轴画一张，未平仓是存量、每列各一张柱图），'
+            '要逐格对总量请看页尾核对表 —— 那里四列并排。'
+            '官方 xlsx 的 Bond Futures 小节里只有这三档加一个 LGB（30 年），'
+            '四条之和恰是小节的 Total，所以「合计」与三档之间那点差就是 LGB，'
+            '不是一篮子说不清的东西。'
+            '（小节的 Total 之<b>后</b>还印着一行 Bond Options - OGB，那是期权、'
+            '不在 Total 里，别把它算进来。）')
+    if not got:
+        return head + '（本次未能从 series/tmx.csv 算出恒等式残差，此处不报数。）'
+    pct = sorted(g[2] for g in got)
+    med, mx = pct[len(pct) // 2], max(pct)
+    worst = max(got, key=lambda g: g[2])
+    lm, ld, lp = got[-1]
+    n0 = sum(1 for g in got if abs(g[1]) < 0.5)
+    return head + (
+        f'实测 {len(got)} 个月逐月核过：合计 − 三档之和占合计的比例'
+        f'中位 {med:.4f}%、最大 {mx:.4f}%（{worst[0]}，{worst[1]:,.0f} 张），'
+        f'最新月 {lm} 是 {ld:,.0f} 张 = {lp:.4f}%；其中 {n0} 个月残差恰为 0。'
+        f'<b>LGB 不单列</b>就是这个原因 —— 它多数月份未平仓为 0，'
+        f'单画一条会是贴着零轴的死线。')
+
+
 _IDX = _index_split()
 _3F = _three_factor()
 _BWM, _BWC, _BWX, _BWR = _bench_wedge()
 _VP = _venue_price()
+_NOTE_BOND_OI = _bond_oi_note()
 _TDAY_MISMATCH = _tday_mismatch_zh()
 # 段名、列、以及跟在覆盖后面的那半句附注 —— 名单与段数从这一份现算，不许在 notes 里
 # 另写一份（上一版就是段数现算、名单写死，某列一空两半立刻对不上）。
@@ -783,10 +831,20 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
         ]},
 
+        # ⚠ 这一组曾经只有「合计 + CGB」两条，于是合计与 CGB 之间那条越拉越宽的口子
+        #   读起来像「其余合约」（2024 年起中位 41%）。它不是 —— 那是本仓 MX_SPEC
+        #   当时没登记 CGF / CGZ 的 OI 格子，是**管道边界**冒充官方的披露边界。
+        #   两列补齐后三档与合计逐月闭合，剩下的只有 LGB（见 _NOTE_BOND_OI）。
+        #   ADV 那一组一直是四列，这一组现在与它同构 —— 只是 stock 列在底座里
+        #   每列各出一张 gs_bar，所以「合计 vs 三档」要在页尾核对表上对，不在图上。
         {'zh': '国债期货月末未平仓', 'cols': [
             {'col': 'mx_oi_bond_futures_contracts', 'zh': '国债期货合计',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'mx_oi_cgb_contracts', 'zh': 'CGB（10 年）',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
+            {'col': 'mx_oi_cgf_contracts', 'zh': 'CGF（5 年）',
+             'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
+            {'col': 'mx_oi_cgz_contracts', 'zh': 'CGZ（2 年）',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
         ]},
 
@@ -1030,6 +1088,8 @@ SPEC = {
         '这条线<b>只画在短端利率那 ' + str(len(_BAX_COLS)) + ' 列的图上</b>：'
         '它是产品替换不是集团口径变化，MX 合计跨这个月是连续的（BAX 掉多少 CRA 接多少），'
         '画到指数点位、现货成交这些图上就是错的。',
+
+        _NOTE_BOND_OI,
 
         'TMX 合计口径在 2023-11 变大：Alpha-X & Alpha DRK 自该月起单独披露并计入合计。'
         '实测恒等式核过 —— 2023-10 及之前 tmx_all_volume_shares 恰等于 TSX + TSXV + Alpha 三家之和'
