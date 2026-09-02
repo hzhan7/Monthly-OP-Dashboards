@@ -7,11 +7,15 @@
      bar_line_dual    柱（左轴）+ 线（右轴）             COST Ex3
      diverging_bars   正负分色柱                        COST Ex4
      bars_labeled     柱 + 每柱数值 + 注解               COST Ex12
-     gs_bar           柱 + 12月均线 + 每柱数值 + YoY/MoM 气泡  IBKR Ex2/4/6/10/12
-     gs_line          平滑线 + 每点数值（可选底部气泡）   IBKR Ex3/5/11/13
-     gs_line_avg      平滑线 + 12月均线 + 右端均值标注    IBKR Ex7
-     lines_endlabels  多条平滑线 + 仅两端标数值          IBKR Ex9
-     stacked_dual     堆叠柱 + 右轴线（段内标数值）       IBKR Ex8
+     gs_bar           柱 + 每柱数值 + 12月均线**或**次轴 y/y 折线（二选一，见 ex.yoy）
+     gs_line          平滑线 + 每点数值（可选底部气泡）
+     gs_line_avg      平滑线 + 12月均线 + 右端均值标注   ⚠ 2026-09 起全站无人用
+                      （IBKR 是它最后一个用户，那页改成 lines + zero_base 之后就空了）
+     lines_endlabels  多条平滑线 + 仅两端标数值
+     stacked_dual     堆叠柱 + 右轴线（段内标数值）
+     ⚠ 上面这几行不再挂具体页的图号：IBKR 的编号在 2026-08 与 2026-09 各变过一次，
+       挂在这里的名单没有任何东西在守，改一次图号就成假话。要看谁在用某个图型，
+       扫 data/*.js 的 kind 字段。
 
    12 家看板新增的图型 ←→ build/gsx.py 的同名函数（PDF 版与网页版必须同型）：
      heat_matrix      行=年 列=月 的热力矩阵，格内写数值   gsx.heat_matrix
@@ -219,7 +223,7 @@
      均线虚线、折线、断点竖线。均线尤其致命 —— 它按构造就落在柱子中段附近，凡是当月值
      接近 12 个月均值的月份，标签必然被一条横线拦腰划掉，数字糊成黑白相间的一团。
      两轮独立的人眼审查都把这一条列为 blocker，且同一根因还制造了十几条
-     「折线划穿自己的端点标签」（IBKR Ex3/5/7、HKEX Ex3、MSCI Ex3、HOOD Ex9/16/25、TSM Ex6…）。
+     「折线划穿自己的端点标签」（HKEX Ex3、MSCI Ex3、HOOD Ex9/16/25、TSM Ex6…）。
 
      描边比「把线画在标签下面」更彻底：z 序只能解决同一图元的先后，解决不了
      两个标签互相压、也解决不了标签压坐标轴刻度。 */
@@ -295,7 +299,7 @@
      浪费率 = 扩出来的量程 ÷ 对齐后的量程，两轴取大者。
 
      阈值 0.38 是实测定的，不是拍的。把当前 14 页 25 张双轴图的浪费率全量出来：
-       0%（15 张，f=0，两轴本来就同零点 —— 含 IBKR Ex8/Ex18 与 COST Ex4，
+       0%（15 张，f=0，两轴本来就同零点 —— 含 COST Ex4，
            所以这条规矩碰不到那两个已上线的站）
        13% hood Ex15 / 14% lpla Ex11 / 17% spgi Ex5·msci Ex5·hood Ex3·hood Ex22 /
        20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex6 / 33% cme Ex7
@@ -1428,7 +1432,9 @@
            （同均线那条规矩，白色描边只压得住画在它下面的东西）。
            这里用「把已有节点再 appendChild 一次」把它们移到 g 的末尾，而不是把整个柱子
            循环拆成两趟 —— 拆循环会连带改掉**没开 y/y** 那条路径的 DOM 顺序，
-           而 IBKR 的 5 张 gs_bar 正走那条路径，要求逐字节不变。 */
+           而当时 IBKR 的 5 张 gs_bar 正走那条路径，要求逐字节不变。
+           （2026-09 起那 5 张都给了 ex.yoy、改走本分支；这条约束对其余仍走原路径的
+           页依然有效，别为了「反正没人用了」把两条路径合并掉。）*/
         for (kk = 0; kk < labg.length; kk++)
           if (labg[kk].el.parentNode === g) g.appendChild(labg[kk].el);
         var jy = lastFinite(vy);
@@ -1808,7 +1814,7 @@
       var yle = txt(svg, xl, cy, ex.ylab, { size: 8.4, transform: 'rotate(-90 ' + xl + ' ' + cy + ')' });
       /* 纵轴标题是竖排的，长度按构造可以超过绘图区高度，而这里**没有任何一处守住
          画布这条界** —— `.plot svg` 是 overflow: visible（style.css），超出的那一截
-         就原样印到卡片上方的 .legend 上（ibkr Ex15 @768：「Net new accounts,
+         就原样印到卡片上方的 .legend 上（实测例：ibkr 的「Net new accounts,
          trailing 12 months (thousands)」压在图例「Net new accounts, T12M」上 32.2px²，
          报成 TEXT_ON_PROSE；1280px 下画布高一点就不触发）。
          它以 cy 为中心上下均分，所以能用的高度是 ph 而不是 ph/2；留 6px 与断点标签

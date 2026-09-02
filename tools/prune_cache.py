@@ -53,6 +53,12 @@ CACHE = os.path.join(ROOT, 'cache')
 PROTECTED_DIRS = {
     'basefill':       '不可重下：archive.org 快照 / CME SPAN 2019 FTP 存档 / ICE 人工导出',
     'axp':            'EDGAR 归档，fetch/axp.py 全量重放',
+    # 历史新闻稿的链接会永久消失：2016-01 与 2021-10 那两期实测下载端点恒返回
+    # 200 + application/pdf + 0 字节（试过十几种文件名），而 2016-02..09 / 2017-12 /
+    # 2020-03 这 10 期只在词尾多一个「1」的 token 下才有。丢了补不回来。
+    # 数值已经入库到 series/ibkr_pr.csv（tracked），所以留着原件只为一件事：
+    # 发现解析 bug 后就地重解（比重下一百多个 PDF 快得多）。
+    'ibkr':           '历史新闻稿链接会永久消失，丢了补不回来；数值已入 series/ibkr_pr.csv',
     '_orig_backup':   '人工备份',
     '_series_backup': '人工备份',
 }

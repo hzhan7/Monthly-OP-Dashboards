@@ -54,6 +54,8 @@ assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind�
 assets/page.js      通用页面渲染器，全部页面共用一份（导航分行读 roster 的 row）
 assets/style.css    版式
 series/*.csv        历史序列（唯一真值，入库）[注]
+                    一家可以有不止一份：hood_q / axp_trust / lseg_part_* /
+                    ibkr_pr（IBKR 月度新闻稿的佣金口径，2016-02 起）等
 fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
@@ -76,6 +78,17 @@ tools/visual_qa.py          整站视觉 QA（截图 + 机器判据，页名自�
 tools/prune_cache.py        cache/ 分级清理（白名单制，dry-run 默认；见「cache 怎么清」）
 docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉一家」
 ```
+
+**2026-09 的一处搬家**：IBKR 的 CPT（单笔佣金）与平均订单规模原先由 `build/ibkr.py`
+**每次构建现场解析 `cache/ibkr/*.pdf`**，而 `cache/` 是 gitignore 的 —— 换一台机器或清一次
+缓存，那几张佣金图就从十年缩回一两个月，一声不响。现在数值入库到 `series/ibkr_pr.csv`
+（tracked，2016-02 起 126 期），`build/ibkr.py` 只查表、一个 PDF 数字都不解析；
+历史由 `build/basefill/ibkr_pr_2016.py` 一次性回填，`fetch/ibkr.py` 每月往右追一行
+并回看 6 个月补漏。**IBKR 那个下载端点对不存在的文件返回 200 + `application/pdf` +
+0 字节、从不 404**，所以「下不到」与「官方没发」在 HTTP 层分不开：2016-01 与 2021-10
+实测十几种文件名全是 0 字节（登记在 `ibkr_source.PR_ABSENT`，页面上画成缺口），
+而 2016-02..09 / 2017-12 / 2020-03 这 10 期只在词尾多一个 `1` 的 token 下才有
+（`ibkr_source.PR_TOKENS` 逐个回落）。
 
 **[注] 个别 `series/*.csv` 只被 `fetch/` 读回当台账，不进 build —— 「没有 build 读它」
 不等于它是断链孤儿。** 目前是 `series/spgi.csv`：它与 `spgi_clean.csv` 在
