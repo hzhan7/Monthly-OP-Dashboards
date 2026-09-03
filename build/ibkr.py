@@ -52,7 +52,7 @@
   第 2 条把存量定为点对点同比，两者在本页都落到「本月 ÷ 去年同月 − 1」这一个式子上。
   每一张画同比的图，标题或次轴标题里仍带「单月」二字 —— `tools/check_yoy_caliber.py`
   的 R4 认的就是这个（§6.6：单月同比没写进标题判 🟡）。
-  **画流量同比的那三张（Exhibit 2 / 3 / 6）各自在图注里印出单月口径的代价**，
+  **画流量同比的那三张（Exhibit 2 / 3 / 7）各自在图注里印出单月口径的代价**，
   用那条序列自己实测（§6.1 第 3 条要的三样：逐月标准差、相邻月最大跳变带月份、
   与 12 个月滚动口径符号相反的月份数；对照那一侧只以数字出现，页上不画）——
   「逐图」是字面意思，页尾那条口径说明是补充，不顶替它。存量的两张（Exhibit 10 / 11）
@@ -477,7 +477,7 @@ def main():
     target = avail[-1]
     ty, tm = int(target[:4]), int(target[5:7])
 
-    # ── 全历史轴（本页除 Exhibit 6-9 外全部图都画在它上面）：必须逐月连续，
+    # ── 全历史轴（本页除新闻稿口径那四张外全部图都画在它上面）：必须逐月连续，
     #    否则 12 个月滚动和与 y/y 会按位置错位 ──
     ALL = avail
     for i in range(1, len(ALL)):
@@ -511,7 +511,7 @@ def main():
 
     # ── 月度新闻稿口径：查表，不解析 PDF ─────────────────────────────────────
     # 2026-09 之前这里是「扫 cache/ 里紧贴最新月的一段连续 PDF，逐份现场解析」。
-    # 那让 Exhibit 6-9 的长度取决于**本机缓存**而不是数据本身：cache/ 是 gitignore 的，
+    # 那让新闻稿口径那四张的长度取决于**本机缓存**而不是数据本身：cache/ 是 gitignore 的，
     # 换机器就只剩一个月，而且中间任何一个月缺一份稿子，回溯就当场停住、把它左边的
     # 十年全部丢掉（2021-10 官方就没发过，一个洞卡掉 60 多个月）。
     # 现在数值入库在 series/ibkr_pr.csv（tracked），窗口 = 台账里第一个月到目标月的
@@ -564,7 +564,7 @@ def main():
         if m:
             source_date = f'{m.group(1)}-{m.group(2)}-{m.group(3)}'
 
-    # ── 全历史派生序列（本页除 Exhibit 6-9 外全部图的底料）──
+    # ── 全历史派生序列（本页除新闻稿口径那四张外全部图的底料）──
     # 顺序上必须在窗口序列**之前**：窗口现在就是全历史，窗口序列直接复用这批数组，
     # 不再各算一遍（各算一遍正是「同一个量在两处给出不同结果」的来源）。
     A = lambda f: np.array([series[m][f] if series[m][f] is not None else np.nan for m in ALL], float)
@@ -573,7 +573,7 @@ def main():
     nn_all = np.array([real_nn[m] for m in ALL], float)
     nn_rep = A('net_new')                                    # 表内披露值（未还原），Ex2 画它
     # 顶部 brief 的日历护栏（R3）要的三条：交易日数与两条**当月合计**成交量列。
-    # 用原始合约数／股数而不是 Ex8 的 product DARTs —— 后者要除以新闻稿里的平均订单
+    # 用原始合约数／股数而不是 product DARTs 那张图的推导值 —— 后者要除以新闻稿里的平均订单
     # 规模，而新闻稿只缓存了最近十几个月，长历史那半段算不出来。
     td_all, opt_all = A('trading_days'), A('opt_contracts')
     fut_all, stk_all = A('fut_contracts'), A('stk_shares')
@@ -583,7 +583,7 @@ def main():
         roll12[i] = nn_all[i - 11:i + 1].sum()
     cleared_all = np.full(len(ALL), np.nan)
     # 首月画不出来：推导式要**月初**账户数，而 2016-01 的上月不在序列里。
-    # 这一格保持 NaN → 由 mrwin.resolve() 把 Exhibit 4 的左端裁到 2016-02，
+    # 这一格保持 NaN → 由 mrwin.resolve() 把 implied cleared DARTs 那张的左端裁到 2016-02，
     # 不是补 0，也不是拿当月账户数当月初值凑（那会造出一个数据里不存在的点）。
     cleared_all[1:] = ann_all[1:] / 252 * (acc_all[1:] + acc_all[:-1]) / 2
     # 右轴画「未清算占比」而不是 cleared/total 本身：bar_line_dual 的右轴强制含 0，
@@ -619,7 +619,7 @@ def main():
     marg_yoy = mono_yoy_arr(mg_all, ALL)
     cred_yoy = mono_yoy_arr(cr_all, ALL)
 
-    # ── 新闻稿窗口序列（Exhibit 6-9）──
+    # ── 新闻稿窗口序列（新闻稿口径那四张的底料）──
     # CPT 与 Average Order Size 只有新闻稿有，所以这四张图短，短的是**数据**不是窗口。
     P = lambda f: np.array([series[m][f] for m in PWIN], float)
     cpt = _PW('cpt_all_usd')
@@ -738,7 +738,7 @@ def main():
     NAV = {}
 
     # `gs_bar` 的次轴字段叫 `yoy`，但**它只是「右轴那条线」的通道**，不一定装同比：
-    # Exhibit 8 用它画 F&O 占比。登记在这里，好让下面「凡是画了同比就必须写明单月」
+    # 分产品 DARTs 那张用它画 F&O 占比。登记在这里，好让下面「凡是画了同比就必须写明单月」
     # 那道护栏别误伤 —— 判据认字段名会把一条占比线当成没标口径的同比。
     RHS_NOT_YOY = set()
 
@@ -863,7 +863,7 @@ def main():
     ex.append({
         'n': 3, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': XL4, 'xstep': 12,
         'title': f'Implied cleared DARTs at {cl4[-1]:,.0f}k/day, {pctf(_y4v)} YoY '
-                 f'and {pctf(mom(cl4))} MoM…',
+                 f'and {pctf(mom(cl4))} MoM',
         'ylab': 'Cleared DARTs (thousands of trades/day)',
         'ylab2': 'y/y, single month (%)',
         'note': 'We calculate cleared DARTs = Cleared avg. DART per account (annualized) / 252 trading days * '
@@ -887,34 +887,116 @@ def main():
     COST_NOTE[_n_cl] = mom_cost_zh(cleared_all, ALL, _w4.cut(WIN), per_day=True)
     ex[-1]['note'] += COST_NOTE[_n_cl]
 
-    # ══════════════════ Exhibit 4：人均年化 cleared DART ═══════════════════════════
-    # 图种是 `lines` + `zero_base`：标题引用「比 2016 年低 N%」这种幅度，而引擎默认下界
-    # 是「最小值 − 极差 5%」，那是一次没有标注的隐性截轴，会把这个幅度在视觉上放大。
-    # 顺带的好处：`lines` 不属 mrwin.DENSE，128 个点不再逐点标数值。
-    _y5v = at(AN_MONO)
-    _a16, _alast = yr_mean(ann_all, y16), yr_mean(ann_all, ylast)
-    _y5g = (1 - _alast / _a16) * 100
+    # ══════════════════ 新闻稿口径的四张（PWIN）══════════════════════════════════
+    # ⚠ 2026-09 的重排（所有者指令）把分产品 DARTs 那张挪到了 Exhibit 3 之后，所以这
+    #   四张**不再连号**：分产品 DARTs 是紧接下面这一张，另外三张在人均年化之后。
+    #   `_pr_why()` 与 `_brk_kw` 因此提到这里定义 —— 第一个用到它们的 ex.append 就在下面，
+    #   留在原处会变成「使用早于定义」，构建当场 NameError。这一段只依赖 PXL／XL／
+    #   COLS／PR_GAPS／PWIN／_cpt_brk，全部在 500-640 行算完，提上来是安全的。
+    # 这四张用的 CPT 与 Average Order Size **只印在月度新闻稿上**，官方那份 Historical
+    # Brokerage Metrics 表（= series/ibkr.csv 的全部内容）里没有这两列。数值已入库到
+    # series/ibkr_pr.csv，所以它们现在与主窗口几乎同长 —— 2026-09 之前只有十几个月，
+    # 那是**本机缓存**的长度，不是数据的长度。
+    # ⚠ 这一段从前是**一个写死的字符串**，四张逐字共用，第一句说「本图要用的 CPT
+    #   （单笔佣金）与 Average Order Size 只印在月度新闻稿上」—— 而四张里**没有一张
+    #   同时用这两列**：分产品 DARTs 只读 Average Order Size，另外三张只读 CPT。
+    #   一句话对每一张都多说了一半。从前读者第一次遇到它是在真的画 CPT 的那张，
+    #   2026-09 的重排把分产品 DARTs 提到了第三张，第一次遇到的恰好是「CPT」那一半
+    #   为假的那张。改成按图现说 —— 本页的规矩是「图注只许声称这张图上真有的东西」。
+    def _pr_why(used, draws_cpt=True):
+        """新闻稿口径那四张共用的「本图左端为什么比主窗口晚」。
+
+        · `used` —— **这一张**真正读的那一列。其余列不在本图上，不替它们发言
+          （「新闻稿只有这两列」这件事仍要说，但说成表里没有它们，不说成本图要用它们）。
+        · `draws_cpt` —— 本图有没有画 CPT。那条红色竖虚线由 `series/ibkr_pr.csv` 的
+          `cpt_basis` 列现算，标的**只是 CPT 那一列**改词的那一期；分产品 DARTs 那张
+          也画了它（四张共用同一把时间标尺），但它一条 CPT 都没画，所以「跨这条线比
+          CPT 高低是跨口径比较」那句对它不成立，换成说清这条线在本图上到底是什么。
+        """
+        return (f'<b>本图 {PXL[0]}–{PXL[-1]}（{len(PXL)} 期），比主窗口 {XL[0]} 晚 '
+                f'{len(XL) - len(PXL)} 期</b>：本图要用的 {used} '
+                '<b>只印在月度新闻稿上</b>，官方那份 Historical Brokerage Metrics 表'
+                f'（本站落库为 series/ibkr.csv 的全部 {len(COLS)} 列）里根本没有 CPT 与 '
+                f'Average Order Size 这两列，而官方第一份月度新闻稿是 {PXL[0]}。数值逐月入库在 '
+                '<code>series/ibkr_pr.csv</code>，本页只查表、不解析 PDF。'
+                + (f'<b>{"、".join(PR_GAPS)} 是图上的缺口</b>：官方那期新闻稿从来没发过'
+                   '（下载端点对不存在的文件返回 200 + 0 字节，实测过十几种文件名），'
+                   '所以那一格留空 —— 不补 0、不插值、不拿邻月顶上。'
+                   if PR_GAPS else '')
+                + (f'<b>{PXL[_cpt_brk]} 起口径变了</b>（图上红色竖虚线）：CPT 的定义从 per cleared '
+                   '<em>client</em> order 改成 per cleared <em>Commissionable</em> Order —— '
+                   'IBKR LITE 上线后免佣订单退出分母。公司在改词的前一期先以脚注说过同一件事'
+                   '（「DARTs and cleared client orders do not include IBKR LITE clients\' '
+                   'U.S. Reg.-NMS orders since they are commission free」）。'
+                   + ('<b>跨这条线比 CPT 高低是跨口径比较</b>，实测跨线那两期只差 1 美分，'
+                      '但口径变了这件事本身不因幅度小而消失。' if draws_cpt else
+                      '<b>但本图一条 CPT 都没画</b>：这条线由 <code>cpt_basis</code> 列现算、'
+                      '标的是 CPT 那一列改词的那一期，本图保留它只为四张新闻稿口径的图'
+                      '共用同一把时间标尺。本图的柱与右轴占比读的是 Average Order Size，'
+                      '新闻稿没有为那一列单列过口径名、本站也没有为它登记过任何口径变更 —— '
+                      '<b>所以不要把这条线读成本图的断点</b>，跨线读本图的柱与占比是可以的。')
+                   if _cpt_brk is not None else ''))
+    # 断点标签**必须短**：引擎把它 rotate(-90) 从图顶往下挂，长文案会一路盖到柱顶的
+    # 数值标签上（实测「2019-11：CPT 口径改为 Commissionable Order」在佣金收入/日那张上压掉两个
+    # 柱值，visual_qa 判 🔴）。完整说明放图注，标签只留「哪一期 + 变了什么」。
+    _brk_kw = ({'break_at': _cpt_brk, 'break_label': f'{PWIN[_cpt_brk]} CPT 口径变更'}
+               if _cpt_brk is not None else {})
+
+    dpp = (pct_fo[-1] - pct_fo[-2]) * 100 if np.isfinite(pct_fo[-2]) else float('nan')
+    fo_mom = (opt_d[-1] + fut_d[-1]) / (opt_d[-2] + fut_d[-2]) - 1
+    st_mom = stk_d[-1] / stk_d[-2] - 1
+    clause = ('as stock DARTs increased more than options and futures' if (dpp < 0 and st_mom > fo_mom)
+              else ('as options and futures DARTs outgrew stocks' if dpp > 0 else 'on shifting product mix'))
     ex.append({
-        'n': 4, 'kind': 'lines', 'fmt': 'f0', 'xlabels': XL, 'xstep': 12, 'zero_base': True,
-        'end_label': True,
-        'title': f'…leading to {pctf(_y5v)} annualized cleared DARTs per account vs. last year'
-                 f'; {_a16:.0f}x avg. in {y16} → {_alast:.0f}x YTD in {ylast}, {_y5g:.0f}% below',
-        'ylab': 'Annualized cleared DARTs / account (x)',
-        'series': [{'name': 'Cleared avg. DART per account (annualized)', 'color': 'NAVY',
-                    'values': L(ann_all)}],
-        'note': '<b>公司直接披露的 Cleared Avg. DART per Account (Annualized)，非推导值。</b>'
-                f'当月 {ann_all[-1]:.0f}x：环比 {pctf(mom(ann_all))}、单月同比 {pctf(_y5v)}。年均：'
-                + '、'.join(f'{y} {yr_mean(ann_all, y):.0f}x' for y in
-                           [y16, '2019', '2020', '2022', '2023', ylast])
-                + '。2020-21 的凸起是疫情期间的交易热潮，其后回落到的平台明显低于 2016-18 —— '
-                  '本图从 2016-01 起画，正是为了让「结构性下台阶」与「周期性回落」分得开。'
-                  '纵轴从 0 起（标题引用的是降幅，截过的轴会把降幅凭空放大）。',
+        # 原来是 `stacked_dual`。那个图型属 mrwin.DENSE（中段 null 直接判 ERROR），且
+        # 它对缺月的处理是 `base[i] + null == base[i]` —— 会把 2021-10 画成一根**零高的柱**，
+        # 与「那个月一笔没成交」在画面上无法区分。改成 `gs_bar` + `stacks`：
+        # 引擎对 `values[i]` 为 null 的柱整根跳过（charts.js 的 `if (!isNum(...)) continue`），
+        # 缺口就是缺口。右轴仍是 F&O 占比，走 gs_bar 的次轴通道。
+        # 段内逐格数值标签一并关掉（`bar_labels: False` 关柱顶总额）：127 根柱上每段
+        # 印一个数只会连成一片，占比看堆叠高度、看右轴那条线，明细看表格视图。
+        'n': 4, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': PXL, 'xstep': 12,
+        'bar_labels': False,
+        'title': f'Implied product DARTs: the % in the form of F&O '
+                 + (f'{"decreased" if dpp < 0 else "increased"} {abs(dpp):.1f}pp MoM, {clause}'
+                    if np.isfinite(dpp) else f'at {pct_fo[-1] * 100:.1f}%')
+                 + f'; {pct_fo[0] * 100:.0f}% in {PXL[0]}',
+        'ylab': 'Implied Product DARTs (thousands of trades/day)',
+        'ylab2': 'F&O share of implied DARTs (%)',
+        # ⚠ 第二句是 2026-09 的重排逼出来的。重排前本图排在第 7 张，与 implied cleared
+        #   DARTs 那张隔着三张；现在两张紧挨着，而它们同轴、同单位（千笔/日）、标题都以
+        #   Implied 打头、量级也只差百分之几 —— 不点破，读者会直接把本图读成那一张的产品
+        #   拆分。它们其实是两条**没有共同输入列**的独立推导，而这条「互不相干」正是
+        #   Total client DARTs 那张图注里最硬那条证据的前提。
+        'note': 'Product DARTs estimated as monthly volume / average order size / US trading days. '
+                f'<b>这三段是拿新闻稿的 Average Order Size 独立反推出来的，不是 Exhibit {_n_cl} '
+                '那根推导 cleared DARTs 的产品拆分</b>：那一张走「公司披露的人均年化 cleared '
+                'DART ÷ 252 × 期初期末账户数均值」，本图走「当月成交量 ÷ 每单规模 ÷ 当月交易日」，'
+                '两条路径<b>没有任何一个共同的输入列</b>。两张图同轴同单位、量级也接近，'
+                '但一张不是另一张的拆分；它们实测有多接近、以及为什么这件事正是'
+                '「披露总量里那道缺口不是推导误差」最硬的一条证据，写在 ⟨nav:totaldarts⟩ 的图注里。'
+                '假设：average order size 取的是全部订单的均值；对期货与国际股票同样套用<b>美股</b>交易日数。'
+                f'本图各产品推导值合计约为披露 Total Client DARTs 的 '
+                f'{np.nanmin(cov_prod):.1f}%~{np.nanmax(cov_prod):.1f}%'
+                f'（{PXL[0]}–{PXL[-1]}，中位 {np.nanmedian(cov_prod):.1f}%），'
+                '故本图口径接近 cleared 而非 total（下方总表那一列是 Total Client DARTs）。'
+                + _pr_why('Average Order Size（平均订单规模）', draws_cpt=False),
+        'values': L(prod_d),
+        'stacks': [
+            {'name': 'Implied Stock DARTs', 'color': 'BLUE', 'values': L(stk_d)},
+            {'name': 'Implied Options DARTs', 'color': 'GRAY', 'values': L(opt_d)},
+            {'name': 'Implied Futures DARTs', 'color': 'NAVY', 'values': L(fut_d)},
+        ],
+        'yoy': yoy_rhs(pct_fo, '% Futures & Options (RHS)', color='GREEN', yfmt='pct1'),
+        **_brk_kw,
     })
-    _n_ann = ex[-1]['n']
+    _n_pd = ex[-1]['n']
+    RHS_NOT_YOY.add(_n_pd)          # 本图右轴是占比，不是同比（见 RHS_NOT_YOY 的说明）
 
     # ══════════════════ Exhibit 5：Total client DARTs（披露）+ 未被推导覆盖的占比 ═══
-    # 2026-09 从页尾（原 Exhibit 17）挪到这里：它讲的正是上面两张 cleared DARTs 图与
-    # 公司披露总量之间的差额，紧挨着被解释的对象比隔着十张图有用。
+    # 2026-09 从页尾（原 Exhibit 17）挪到这里：它讲的正是本页那两张 cleared DARTs 图
+    # （推导那张紧挨在它上面、人均年化那张按所有者指令挪到了它下面）与公司披露总量之间的
+    # 差额 —— 挨着被解释的对象比隔着十张图有用。
     # 断点索引现算且**允许算不出**：`ALL.index()` 找不到就 ValueError，整个 routine 硬失败
     # 退出，页面永久停更（build/lpla.py 就是栽在这上面）。断点不在轴上就不给 break_at，
     # 同时把图注里「红色虚线」那句一并省掉：图注只许声称图上真有的东西。
@@ -1020,34 +1102,33 @@ def main():
     NAV['⟨nav:totaldarts⟩'] = ex[-1]['n']
     _n_td = ex[-1]['n']
 
-    # ══════════════════ Exhibit 6-9：新闻稿口径的四张（PWIN）══════════════════════
-    # 这四张用的 CPT 与 Average Order Size **只印在月度新闻稿上**，官方那份 Historical
-    # Brokerage Metrics 表（= series/ibkr.csv 的全部内容）里没有这两列。数值已入库到
-    # series/ibkr_pr.csv，所以它们现在与主窗口几乎同长 —— 2026-09 之前只有十几个月，
-    # 那是**本机缓存**的长度，不是数据的长度。
-    _PR_WHY = (f'<b>本图 {PXL[0]}–{PXL[-1]}（{len(PXL)} 期），比主窗口 {XL[0]} 晚 '
-               f'{len(XL) - len(PXL)} 期</b>：本图要用的 CPT（单笔佣金）与 Average Order Size '
-               '<b>只印在月度新闻稿上</b>，官方那份 Historical Brokerage Metrics 表'
-               f'（本站落库为 series/ibkr.csv 的全部 {len(COLS)} 列）里根本没有这两列，'
-               f'而官方第一份月度新闻稿是 {PXL[0]}。数值逐月入库在 '
-               '<code>series/ibkr_pr.csv</code>，本页只查表、不解析 PDF。'
-               + (f'<b>{"、".join(PR_GAPS)} 是图上的缺口</b>：官方那期新闻稿从来没发过'
-                  '（下载端点对不存在的文件返回 200 + 0 字节，实测过十几种文件名），'
-                  '所以那一格留空 —— 不补 0、不插值、不拿邻月顶上。'
-                  if PR_GAPS else '')
-               + (f'<b>{PXL[_cpt_brk]} 起口径变了</b>（图上红色竖虚线）：CPT 的定义从 per cleared '
-                  '<em>client</em> order 改成 per cleared <em>Commissionable</em> Order —— '
-                  'IBKR LITE 上线后免佣订单退出分母。公司在改词的前一期先以脚注说过同一件事'
-                  '（「DARTs and cleared client orders do not include IBKR LITE clients\' '
-                  'U.S. Reg.-NMS orders since they are commission free」）。'
-                  '<b>跨这条线比 CPT 高低是跨口径比较</b>，实测跨线那两期只差 1 美分，'
-                  '但口径变了这件事本身不因幅度小而消失。'
-                  if _cpt_brk is not None else ''))
-    # 断点标签**必须短**：引擎把它 rotate(-90) 从图顶往下挂，长文案会一路盖到柱顶的
-    # 数值标签上（实测「2019-11：CPT 口径改为 Commissionable Order」在 Ex6 上压掉两个
-    # 柱值，visual_qa 判 🔴）。完整说明放图注，标签只留「哪一期 + 变了什么」。
-    _brk_kw = ({'break_at': _cpt_brk, 'break_label': f'{PWIN[_cpt_brk]} CPT 口径变更'}
-               if _cpt_brk is not None else {})
+    # ══════════════════ Exhibit 6：人均年化 cleared DART ═══════════════════════════
+    # 2026-09 的重排（所有者指令）把它从 Exhibit 4 挪到了这里 —— 原来它紧跟推导 cleared
+    # DARTs 那张、两个标题以省略号连读，现在中间隔着分产品 DARTs 与披露总量两张，
+    # 所以那对省略号（旧 Ex3 尾的「…」与本图头的「…leading to」）一并删掉，各自成句。
+    # 图种是 `lines` + `zero_base`：标题引用「比 2016 年低 N%」这种幅度，而引擎默认下界
+    # 是「最小值 − 极差 5%」，那是一次没有标注的隐性截轴，会把这个幅度在视觉上放大。
+    # 顺带的好处：`lines` 不属 mrwin.DENSE，128 个点不再逐点标数值。
+    _y5v = at(AN_MONO)
+    _a16, _alast = yr_mean(ann_all, y16), yr_mean(ann_all, ylast)
+    _y5g = (1 - _alast / _a16) * 100
+    ex.append({
+        'n': 6, 'kind': 'lines', 'fmt': 'f0', 'xlabels': XL, 'xstep': 12, 'zero_base': True,
+        'end_label': True,
+        'title': f'Annualized cleared DARTs per account {pctf(_y5v)} vs. last year'
+                 f'; {_a16:.0f}x avg. in {y16} → {_alast:.0f}x YTD in {ylast}, {_y5g:.0f}% below',
+        'ylab': 'Annualized cleared DARTs / account (x)',
+        'series': [{'name': 'Cleared avg. DART per account (annualized)', 'color': 'NAVY',
+                    'values': L(ann_all)}],
+        'note': '<b>公司直接披露的 Cleared Avg. DART per Account (Annualized)，非推导值。</b>'
+                f'当月 {ann_all[-1]:.0f}x：环比 {pctf(mom(ann_all))}、单月同比 {pctf(_y5v)}。年均：'
+                + '、'.join(f'{y} {yr_mean(ann_all, y):.0f}x' for y in
+                           [y16, '2019', '2020', '2022', '2023', ylast])
+                + '。2020-21 的凸起是疫情期间的交易热潮，其后回落到的平台明显低于 2016-18 —— '
+                  '本图从 2016-01 起画，正是为了让「结构性下台阶」与「周期性回落」分得开。'
+                  '纵轴从 0 起（标题引用的是降幅，截过的轴会把降幅凭空放大）。',
+    })
+    _n_ann = ex[-1]['n']
 
     _cd_mono = mono_yoy_arr(comm_day, PWIN)
     ex.append({
@@ -1056,7 +1137,7 @@ def main():
         #   步长按 log10 只算出 0 位小数，于是 12.5 / 7.5 / 2.5 印成 13 / 8 / 3 ——
         #   刻度看上去不等距（visual_qa 判 🔴「轴刻度不等距（值被四舍五入）」）。
         #   本页只改自己这一格；引擎那条通用毛病不在本轮范围内。
-        'n': 6, 'kind': 'gs_bar', 'fmt': 'f1', 'yfmt': 'f1', 'xlabels': PXL, 'xstep': 12,
+        'n': 7, 'kind': 'gs_bar', 'fmt': 'f1', 'yfmt': 'f1', 'xlabels': PXL, 'xstep': 12,
         'title': f'Implied commission revenue/day at ${comm_day[-1]:,.1f}mn, '
                  f'{pctf(_cd_mono[-1] if np.isfinite(_cd_mono[-1]) else float("nan"))} YoY '
                  f'and {pctf(mom(comm_day))} MoM',
@@ -1069,7 +1150,7 @@ def main():
                 'cleared DARTs 本身也是推导值，两层近似复合。要得到月度总额还需再乘当月官方交易日数。'
                 '月度无对应披露可比，季度有（10-Q 的 Commissions 行），但尚未接入。'
                 '次轴金色折线是本图柱的<b>单月同比</b>。'
-                + _PR_WHY,
+                + _pr_why('CPT（单笔清算订单平均佣金）'),
         'legend': 'Implied Commission Revenue/Day', 'values': L(comm_day),
         'yoy': yoy_rhs(_cd_mono, 'y/y, single month (RHS)'),
         **_brk_kw,
@@ -1091,7 +1172,7 @@ def main():
         #   ② `gs_line` 逐点标数值，127 个点抽稀后剩下的是一串孤立读数，噪音大于信息；
         #   ③ `gs_line` 的纵轴是「最小值 − 极差 30%」，一次没有标注的隐性截轴，会把
         #      2016→2021 那段降幅在视觉上放大约 1.5 倍。`lines` + zero_base 从 0 起。
-        'n': 7, 'kind': 'lines', 'fmt': 'usd2', 'xlabels': PXL, 'xstep': 12,
+        'n': 8, 'kind': 'lines', 'fmt': 'usd2', 'xlabels': PXL, 'xstep': 12,
         'zero_base': True, 'end_label': True,
         'title': f'Average commission per cleared order at ${cpt[-1]:.2f}, '
                  + (f'{"down" if dc < 0 else "up"} {abs(dc):.0f}¢ MoM' if np.isfinite(dc)
@@ -1100,50 +1181,11 @@ def main():
         'ylab': 'Average commission / cleared order ($)',
         'series': [{'name': 'Avg. commission per cleared order', 'color': 'NAVY',
                     'values': L(cpt)}],
-        'note': '纵轴从 0 起（标题引用的是区间与幅度，截过的轴会把幅度凭空放大）。' + _PR_WHY,
+        'note': '纵轴从 0 起（标题引用的是区间与幅度，截过的轴会把幅度凭空放大）。'
+                + _pr_why('CPT（单笔清算订单平均佣金）'),
         **_brk_kw,
     })
     _n_cpt = ex[-1]['n']
-
-    dpp = (pct_fo[-1] - pct_fo[-2]) * 100 if np.isfinite(pct_fo[-2]) else float('nan')
-    fo_mom = (opt_d[-1] + fut_d[-1]) / (opt_d[-2] + fut_d[-2]) - 1
-    st_mom = stk_d[-1] / stk_d[-2] - 1
-    clause = ('as stock DARTs increased more than options and futures' if (dpp < 0 and st_mom > fo_mom)
-              else ('as options and futures DARTs outgrew stocks' if dpp > 0 else 'on shifting product mix'))
-    ex.append({
-        # 原来是 `stacked_dual`。那个图型属 mrwin.DENSE（中段 null 直接判 ERROR），且
-        # 它对缺月的处理是 `base[i] + null == base[i]` —— 会把 2021-10 画成一根**零高的柱**，
-        # 与「那个月一笔没成交」在画面上无法区分。改成 `gs_bar` + `stacks`：
-        # 引擎对 `values[i]` 为 null 的柱整根跳过（charts.js 的 `if (!isNum(...)) continue`），
-        # 缺口就是缺口。右轴仍是 F&O 占比，走 gs_bar 的次轴通道。
-        # 段内逐格数值标签一并关掉（`bar_labels: False` 关柱顶总额）：127 根柱上每段
-        # 印一个数只会连成一片，占比看堆叠高度、看右轴那条线，明细看表格视图。
-        'n': 8, 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': PXL, 'xstep': 12,
-        'bar_labels': False,
-        'title': f'Implied product DARTs: the % in the form of F&O '
-                 + (f'{"decreased" if dpp < 0 else "increased"} {abs(dpp):.1f}pp MoM, {clause}'
-                    if np.isfinite(dpp) else f'at {pct_fo[-1] * 100:.1f}%')
-                 + f'; {pct_fo[0] * 100:.0f}% in {PXL[0]}',
-        'ylab': 'Implied Product DARTs (thousands of trades/day)',
-        'ylab2': 'F&O share of implied DARTs (%)',
-        'note': 'Product DARTs estimated as monthly volume / average order size / US trading days. '
-                '假设：average order size 取的是全部订单的均值；对期货与国际股票同样套用<b>美股</b>交易日数。'
-                f'本图各产品推导值合计约为披露 Total Client DARTs 的 '
-                f'{np.nanmin(cov_prod):.1f}%~{np.nanmax(cov_prod):.1f}%'
-                f'（{PXL[0]}–{PXL[-1]}，中位 {np.nanmedian(cov_prod):.1f}%），'
-                '故本图口径接近 cleared 而非 total（下方总表那一列是 Total Client DARTs）。'
-                + _PR_WHY,
-        'values': L(prod_d),
-        'stacks': [
-            {'name': 'Implied Stock DARTs', 'color': 'BLUE', 'values': L(stk_d)},
-            {'name': 'Implied Options DARTs', 'color': 'GRAY', 'values': L(opt_d)},
-            {'name': 'Implied Futures DARTs', 'color': 'NAVY', 'values': L(fut_d)},
-        ],
-        'yoy': yoy_rhs(pct_fo, '% Futures & Options (RHS)', color='GREEN', yfmt='pct1'),
-        **_brk_kw,
-    })
-    _n_pd = ex[-1]['n']
-    RHS_NOT_YOY.add(_n_pd)          # 本图右轴是占比，不是同比（见 RHS_NOT_YOY 的说明）
 
     chg_cpt = [('stocks', stk_cpt[-1] / stk_cpt[-2] - 1), ('options', opt_cpt[-1] / opt_cpt[-2] - 1),
                ('futures', fut_cpt[-1] / fut_cpt[-2] - 1)]
@@ -1154,7 +1196,7 @@ def main():
     if dec: parts.append('decreased ' + ', '.join(dec))
     if inc: parts.append('increased ' + ', '.join(inc))
     ex.append({
-        # 原来是 `lines_endlabels`（两端都标数值）。同 Exhibit 7 的第 ① 条：它属 DENSE，
+        # 原来是 `lines_endlabels`（两端都标数值）。同单笔佣金那张的第 ① 条：它属 DENSE，
         # 中段 null 会被 verify_pages 判 ERROR，而本序列有 2021-10 那个洞。
         # `lines` + `end_label` 只标末点；起点读数改写进标题，信息不丢。
         'n': 9, 'kind': 'lines', 'fmt': 'usd2', 'xlabels': PXL, 'xstep': 12,
@@ -1169,7 +1211,7 @@ def main():
             {'name': 'Futures Avg CPT', 'color': 'MBLUE', 'values': L(fut_cpt)},
         ],
         'note': f'纵轴从 0 起。三条线与 Exhibit {_n_cpt} 的总额来自同一张 Key products 表。'
-                + _PR_WHY,
+                + _pr_why('分产品的 CPT（单笔清算订单平均佣金）'),
         **_brk_kw,
     })
     _n_pcpt = ex[-1]['n']
@@ -1229,21 +1271,12 @@ def main():
     STOCK_YOY[_n_cr] = '客户现金是月末存量'
 
     # ══════════════════ Exhibit 12 / 13：长历史两张 lines ══════════════════════════
+    # 2026-09 的重排（所有者指令）把两张对调了：占比那张在前（Exhibit 12）、
+    # 客户权益在后（Exhibit 13）。
     # 两张都显式 zero_base：不给它时引擎走 y0 = min − 极差×5%，那是一次**没有任何标注的
-    # 隐性截轴**，而它们的标题偏偏都在讲倍数／占比（Ex12 的「N.Nx」、Ex13 的两组端点）
-    # —— 截过的轴会把这些幅度凭空放大，图与文字互相打架。
+    # 隐性截轴**，而它们的标题偏偏都在讲占比／倍数（占比那张的两组端点、客户权益那张的
+    # 「N.Nx」）—— 截过的轴会把这些幅度凭空放大，图与文字互相打架。
     # 两张都给 end_label：末点读数正是各自标题引用的那个数。
-    ex.append({
-        'n': 12, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'f0c',
-        'zero_base': True, 'end_label': True,
-        'title': f'Client equity at ${eq_all[-1]:,.0f}bn, {eq_all[-1] / eq_all[0]:.1f}x the '
-                 f'${eq_all[0]:,.0f}bn of {XL_LONG[0]}',
-        'ylab': 'Client Equity ($bn)',
-        'note': '公司披露值（期末口径，不含非客户余额）。'
-                f'它是 Exhibit {_n_mg} / {_n_cr} 两条余额的分母，也是 NII 的规模基数。',
-        'series': [{'name': 'Client Equity', 'color': 'NAVY', 'values': LN(eq_all)}],
-    })
-
     # ⚠ 标题从前只给 pp 差、不给端点：「client cash 19.3%（-1.3pp over 12M）」—— 去年同月
     #   那个数图上一处都没有，−1.3pp 无从核对。更糟的是它与端点**减不出来**：两条腿都
     #   贴着四舍五入的边界（真值 −1.2501pp 印成 −1.3，而两个端点各按一位小数印出来是
@@ -1272,12 +1305,13 @@ def main():
         _a, _b = round(float(_s[-1 - _w16]), 1), round(float(_s[-1]), 1)
         _want = f'{_nm} {_vb16[_sg(round(_b - _a, 1))]} from {_a:.1f}% to {_b:.1f}%'
         if _want not in _t16:
-            raise SystemExit(f'Exhibit 13 标题与数据对不上：期待子句 {_want!r}；实得 {_t16!r}')
+            raise SystemExit(f'占比那张（客户现金／融资余额占客户权益）标题与数据对不上：'
+                             f'期待子句 {_want!r}；实得 {_t16!r}')
     # 舍入差额也现算：写死「差 0.1pp」在两个端点恰好整除的月份就是假话。
     _rd = [abs(round(float(s[-1]), 1) - round(float(s[-1 - _w16]), 1)
                - (float(s[-1]) - float(s[-1 - _w16]))) for s in (cr_share, mg_share)]
     ex.append({
-        'n': 13, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'pct1',
+        'n': 12, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'pct1',
         'zero_base': True, 'end_label': True,
         'title': _t16,
         'ylab': 'as % of client equity (%)',
@@ -1308,13 +1342,27 @@ def main():
     })
     NAV['⟨nav:share⟩'] = ex[-1]['n']
 
+    ex.append({
+        'n': 13, 'kind': 'lines', 'x': 'long', 'xlabels': XL, 'xstep': 12, 'fmt': 'f0c',
+        'zero_base': True, 'end_label': True,
+        'title': f'Client equity at ${eq_all[-1]:,.0f}bn, {eq_all[-1] / eq_all[0]:.1f}x the '
+                 f'${eq_all[0]:,.0f}bn of {XL_LONG[0]}',
+        'ylab': 'Client Equity ($bn)',
+        'note': '公司披露值（期末口径，不含非客户余额）。'
+                f'它是 Exhibit {_n_mg} / {_n_cr} 两条余额的分母，也是 NII 的规模基数。',
+        'series': [{'name': 'Client Equity', 'color': 'NAVY', 'values': LN(eq_all)}],
+    })
+
     # ── 页尾脚注要点名的几批图：**一律从建完的 `ex` 现算**，不在文案里手抄编号 ──
     # 这些名单从前是写死的图号串。写死的名单已经被撞过两次（2026-08 的合并、2026-09 的
     # 删并挪），任何一处漏改都会指到别的图上，而没有东西报错。
     def _exlist(ns):
         return ('Exhibit ' + ' / '.join(str(n) for n in ns)) if ns else ''
 
-    _pr_ns = list(_PR_NS)                   # 画在新闻稿口径上的那几张（建图现场登记）
+    # 排序不是可有可无：`_PR_NS` 按**建图先后**登记，而 2026-09 的重排把分产品 DARTs
+    # 那张挪到了前面 —— 不排序就会印出「Exhibits 7／8／4／9」这种乱跳的图号（连号判据
+    # 也会因为顺序不对而失效）。名单本身仍在建图现场登记，这里只按页面顺序取用。
+    _pr_ns = sorted(_PR_NS)                 # 画在新闻稿口径上的那几张（建图现场登记）
     _pr_span = (f'{_pr_ns[0]}-{_pr_ns[-1]}'
                 if _pr_ns == list(range(_pr_ns[0], _pr_ns[-1] + 1))
                 else '／'.join(str(n) for n in _pr_ns))
@@ -1809,9 +1857,9 @@ def main():
             f'<strong>纵轴</strong>：{_exlist(_zb_ns)} 这 {len(_zb_ns)} 张 '
             f'<code>{"／".join(_zb_kinds)}</code> 图一律<strong>从 0 起</strong>。'
             '引擎默认的下界是「最小值 − 极差 5%」，那是一次没有标注的'
-            f'隐性截轴，会把这几张标题里引用的倍数与降幅（{_y5g:.0f}% below／'
-            f'{eq_all[-1] / eq_all[0]:.1f}x／{cr_share[0]:.1f}%→{cr_share[-1]:.1f}% 与 '
-            f'{mg_share[0]:.1f}%→{mg_share[-1]:.1f}%）在视觉上凭空放大。'
+            f'隐性截轴，会把这几张标题里引用的降幅、占比与倍数（{_y5g:.0f}% below／'
+            f'{cr_share[0]:.1f}%→{cr_share[-1]:.1f}% 与 {mg_share[0]:.1f}%→'
+            f'{mg_share[-1]:.1f}%／{eq_all[-1] / eq_all[0]:.1f}x）在视觉上凭空放大。'
             + ('本页没有任何一张图设了截轴（ycap／yfloor／次轴 ymax）。' if not _cap_ns else
                f'<b>本页设了截轴的是 {_exlist(_cap_ns)}</b>，截的是<b>次轴</b>（同比那条线）'
                f'而不是柱：不截的话疫情那一年的低基数尖峰会把其余十年压成贴着零线的一条平线。'
