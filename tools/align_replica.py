@@ -203,8 +203,19 @@ def left_values_of(ex):
             lv.append(bn)
         return lv + list(_bridge_net(ex, n))
     if k == 'stacked_dual':
+        # 与 bridge_bar 同形：一列推**两条**包络（正向堆到哪、负向堆到哪），
+        # 不是两者相抵之后的合计。2026-09 起引擎的 stacked_dual 能画负段了
+        # （charts.js 那支与 build/axisfmt.py 的 _left_vals 同时改的），这里是
+        # 第四份副本，漏改就会让本工具算出的轴与页面上画的对不上 —— 而这个工具
+        # 存在的全部意义就是复算出与引擎逐位相同的轴。
+        # 全非负时负包络恒为 0、正包络恒等于旧的合计，取值与从前一字不差。
         n = _n_of(ex)
-        return [sum((st['values'][i] or 0) for st in ex['stacks']) for i in range(n)]
+        lv = []
+        for i in range(n):
+            vs = [(st['values'][i] or 0) for st in ex['stacks']]
+            lv.append(sum(v for v in vs if v >= 0))
+            lv.append(sum(v for v in vs if v < 0))
+        return lv
     # charts.js:853 `else lv = ex.values.slice()`
     if 'values' in ex:
         return list(ex['values'] or [])
@@ -263,7 +274,10 @@ def compute_axes(left_series, right_series, opts):
         has_rhs = opts.get('has_rhs')
         if has_rhs is None:
             has_rhs = bool(_fin(right_series))
-        y0, y1 = 0.0, mx * (1.28 if has_rhs else 1.06)               # :869
+        # 下界原来写死 0.0。2026-09 起与引擎一起改成 min(0, mn×1.15)
+        # （qtr_bar / seasonality / grouped_bars 同一条负向留白规矩）——
+        # 全非负时 mn 恒为 0 ⇒ 仍是 0.0，既有 22 张一位都不变。
+        y0, y1 = min(0.0, mn * 1.15), mx * (1.28 if has_rhs else 1.06)   # :869
     elif kind == 'bars_labeled':
         y0, y1 = 0.0, mx * 1.13                                      # :870
     elif kind == 'qtr_bar':

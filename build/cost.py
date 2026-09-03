@@ -1926,42 +1926,55 @@ def main():
         raise SystemExit(f'核心口径与报告口径的客流出现 {_trf_gap:.2f}pp 的差 —— '
                          f'Exhibit 15 图注里「油汇只调价、不调客流」那句话不再成立')
 
-    # ── 图上的三组（全部报告口径，9 格满格，无 null）──────────────────────────
-    # 配色沿用本页习惯：comp 这条主线在 Exhibit 2 是 NAVY 柱，这里也给 NAVY；
-    # 拆出来的两条腿用同族的 BLUE / MBLUE，一眼看得出是「主 + 两个分量」而不是三个并列的量。
+    # ── 一格一根柱：客单与客流叠在同一根柱上，菱形标 comp ─────────────────────
+    # （所有者 2026-09-03 指令：「把 ticket 和 traffic 两个因素都放在一根柱子上」。
+    #  原来是三根并排柱。）
+    #
+    # 图型选 `bridge_bar` 而不是 `stacked_dual`，两条硬理由：
+    #   1. **客单会是负的**（FY24Q4 全公司 −0.9%，同期客流 +6.4%）。`stacked_dual` 的
+    #      柱顶画的是**正向包络**，那一格会停在 +6.4，而 comp 是 +5.4 —— 柱顶不是
+    #      合计，读者按柱顶读就错了。`bridge_bar` 正的往上堆、负的往下堆，另用菱形
+    #      标净额，这一格 comp 才有地方落。
+    #   2. `stacked_dual` 的段内数值标签走的是引擎里写死 0 位小数、不带单位的格式器，
+    #      +7.3% 会印成「7」；`bridge_bar` 干脆一个数值标签都不画，反而不会印错值
+    #      （逐格读数走右上角「表格」视图，当期读数写进标题）。
+    #
+    # ⚠️ 三段之和必须**恰好**等于 comp，而客单与客流是**相乘**的：
+    #     (1 + 客单)(1 + 客流) − 1 = comp
+    # 所以两条腿相加不等于 comp，差的是交叉项。做法不是把它藏起来（那才是最难被
+    # 发现的错），而是把差额单列成第三段「残差」，定义就是 comp −（客单 + 客流）——
+    # 它同时装着交叉项与两处一位小数的四舍五入。这样图上三段之和与公司披露的 comp
+    # 在显示精度上逐格相等，两条腿也仍然逐字是申报里那个数（没有被摊过、没有被换算过）。
     _TKT_X = fq_xlabels(_rep.index, 'Exhibit 15')
-    _TKT_G = [('Reported comp (y/y)', 'tc_sales', 'NAVY'),
-              ('…of which: average transaction (ticket)', 'tc_tkt', 'BLUE'),
-              ('…of which: shopping frequency (traffic)', 'tc_trf', 'MBLUE')]
+    _tkt_res = [round(float(_rep.at[f, 'tc_sales'] - _rep.at[f, 'tc_tkt']
+                            - _rep.at[f, 'tc_trf']), 1) or 0.0 for f in _rep.index]
+    _TKT_G = [('Average transaction (ticket)', 'tc_tkt', 'BLUE'),
+              ('Shopping frequency (traffic)', 'tc_trf', 'MBLUE')]
     _tkt_vals = {c: L(_rep[c]) for _, c, _ in _TKT_G}
+    _tkt_vals['tc_sales'] = L(_rep['tc_sales'])
     _tkt_nul = {c: sum(v is None for v in a) for c, a in _tkt_vals.items()}
     if any(_tkt_nul.values()):
-        raise SystemExit(f'Exhibit 15 的报告口径三条腿有缺格（{_tkt_nul}）—— '
-                         f'grouped_bars 遇 null 只是不画那根柱，图上看不出是缺数还是 0')
+        raise SystemExit(f'Exhibit 15 的报告口径各腿有缺格（{_tkt_nul}）—— '
+                         f'`bridge_bar` 遇 null 只是不画那一段，**菱形照画**，'
+                         f'于是可见的几段够不到菱形，而没有任何东西会报错')
+    # 恒等式硬校验（docs/CHART_KINDS.md §3.15：引擎不会替你求和，Python 侧要断言）
+    _res_bad = [(f, round(float(_rep.at[f, 'tc_tkt'] + _rep.at[f, 'tc_trf']) + r
+                          - float(_rep.at[f, 'tc_sales']), 6))
+                for f, r in zip(_rep.index, _tkt_res)]
+    _res_bad = [t for t in _res_bad if abs(t[1]) > 1e-9]
+    if _res_bad:
+        raise SystemExit(f'Exhibit 15 三段之和 ≠ 菱形（comp）：{_res_bad} —— '
+                         f'柱高与菱形对不上，而引擎不会告诉你')
+    # 残差在图注里被称作「一根发丝」。它要是真的长起来，那句话就成了假话。
+    _res_max = max(abs(r) for r in _tkt_res)
+    if _res_max > 0.5:
+        raise SystemExit(f'Exhibit 15 的残差段最大已到 {_res_max:.2f}pp —— '
+                         f'图注里「细到几乎看不见」那句话不再成立，先改措辞再上线')
     # 季度轴必须逐格相接：并排柱把相邻两格画成挨着的，跳掉一个季度就是
     # CONTRACT §5 第 3 条点名的「不可比的相邻期画成连续序列」。
     _qn = [int(f[2:4]) * 4 + int(f[-1]) for f in _TKT_X]
     if any(b - a != 1 for a, b in zip(_qn, _qn[1:])):
         raise SystemExit(f'客单/客流的季度序列不连续或没排序：{_TKT_X}')
-
-    # ── 通栏这件事：按引擎自己的量边距算式现算，不写死一个 px ──────────────────
-    # `mrwin.band_px()` 走的是 `chartscale._margins()`（= assets/charts.js 那段
-    # margin 分支的复算）；一组柱的宽度是引擎的 `BW(0.74 / 组数)`，
-    # 与 charts.js 的 `BW = max(1.5, min(band × frac, band − 1.5))` 逐行等价
-    # （grouped_bars 分支：`var wgb = BW(0.74 / ng)`）。
-    _gb_probe = {'kind': 'grouped_bars', 'ylab': 'y/y (%)', 'xlabels': _TKT_X}
-    _bw = lambda band, ng: max(1.5, min(band * (0.74 / ng), band - 1.5))
-    _b_half, _b_full = mrwin.band_px(_gb_probe, full=False), mrwin.band_px(_gb_probe, full=True)
-    _g_half, _g_full = _bw(_b_half, len(_TKT_G)), _bw(_b_full, len(_TKT_G))
-    # 要印的标签就是这三条腿的值本身，用引擎的 pct1 格式器量最宽的那一个 ——
-    # 不拿一个编出来的样例去量（编的那个不一定是最长的）。柱值标签字号 6.6px
-    # （charts.js 的 grouped_bars 分支写死）。
-    _lab_w = max(chartscale._label_px(chartscale._efmt(v, 'pct1'), 6.6)
-                 for a in _tkt_vals.values() for v in a)
-    if _g_full <= _lab_w:
-        raise SystemExit(f'Exhibit 15 通栏后一组柱只有 {_g_full:.1f}px，仍装不下 '
-                         f'{_lab_w:.1f}px 的柱值标签 —— 已无更宽的档位，'
-                         f'要么减少组数要么关掉 bar_labels，别让标签互相压着上线')
 
     # ── 图注要用的读数，全部现算 ───────────────────────────────────────────────
     # (a) 这张图的横轴与全页月度轴不是同一张网格：一格几周，从分部季度表现读
@@ -1998,23 +2011,74 @@ def main():
                f'差 {max(_md_dev)[0]:.1f}pp），全部落在整数四舍五入的半宽 0.5pp 之内 —— '
                f'两份申报没有互相矛盾。')
 
+    # ── (e) 段那几个读数，全部现算 ─────────────────────────────────────────────
+    # 交叉项：本图画的那条（全公司、报告口径），以及「三地区 × 两口径」全体的最大值。
+    # 两个都报，是因为读者会拿本图去理解**整套**披露，而全体的那个更大。
+    _xt = lambda a, b: abs(float(a) * float(b) / 100.0)
+    _x_tc, _x_tc_f = max(((_xt(_rep.at[f, 'tc_tkt'], _rep.at[f, 'tc_trf']), f)
+                          for f in _rep.index))
+    _ZH_G = {'us': '美国', 'ca': '加拿大', 'oi': '其他国际', 'tc': '全公司'}
+    _x_all, _x_all_f = max(
+        (_xt(row[f'{g}_tkt'], row[f'{g}_trf']),
+         f'{row["fq"]}·{_ZH_G[g]}·{"报告" if row["basis"] == "reported" else "核心"}口径')
+        for _, row in _tk.iterrows() for g in _ZH_G
+        if pd.notna(row[f'{g}_tkt']) and pd.notna(row[f'{g}_trf']))
+    # 四舍五入那一半 = 残差 − 交叉项（同一格里两者之差就是进位造成的部分）
+    _x_rnd = max(abs(r - _xt(_rep.at[f, 'tc_tkt'], _rep.at[f, 'tc_trf']) *
+                     (1 if float(_rep.at[f, 'tc_tkt']) * float(_rep.at[f, 'tc_trf']) >= 0 else -1))
+                 for f, r in zip(_rep.index, _tkt_res))
+    _res_zero = [f for f, r in zip(_TKT_X, _tkt_res) if abs(r) < 0.05]
+    # 残差在图上有多细：报「占纵轴量程的百分之几」，不报像素。
+    # 报像素就要复算引擎的**纵向**几何，而 chartscale 只复算了横向（_margins）——
+    # 再抄一份高度算式就是仓里的第 N 份副本，engine_kinds.md 那条「量程逻辑有三份
+    # 副本、改一处要同改另两处」的警告说的就是这种事。比值与画布高无关，够用。
+    # 量程本身与引擎同一条算式：bridge_bar 的 y0/y1 = 正负包络各外扩 0.16×range。
+    _env = [sum(v for v in (float(_rep.at[f, 'tc_tkt']), float(_rep.at[f, 'tc_trf']), r) if v > 0)
+            for f, r in zip(_rep.index, _tkt_res)]
+    _envn = [sum(v for v in (float(_rep.at[f, 'tc_tkt']), float(_rep.at[f, 'tc_trf']), r) if v < 0)
+             for f, r in zip(_rep.index, _tkt_res)]
+    _y1, _y0 = max(_env + _tkt_vals['tc_sales']), min(_envn + _tkt_vals['tc_sales'])
+    _rng = (_y1 - _y0) * 1.32 or 1.0          # 上下各 0.16 的留白
+    _res_share = _res_max / _rng
+    _neg_txt = ('本期这 %d 格里 %s 的客单为负' % (
+        len(_tkt_res), '、'.join(f for f, v in zip(_TKT_X, _tkt_vals['tc_tkt']) if v < 0))
+        if any(v < 0 for v in _tkt_vals['tc_tkt']) else '本期九格的两条腿都为正')
+
+    _bs = _rep.iloc[-1]                       # 当期那一格，标题与 annot 都引它
     ex.append({
-        'n': 15, 'kind': 'grouped_bars', 'full': True,
-        # `fmt` 管表格视图与 tooltip，`label_fmt` 管柱顶数值，`yfmt` 管纵轴刻度：
-        # 三处都显式给，一处都别让引擎去猜（grouped_bars 的缺省是 'f0c'，
-        # 会把 9.8% 印成没有单位的「10」）。
-        'fmt': 'pct1', 'label_fmt': 'pct1', 'yfmt': 'pct0', 'bar_labels': True,
-        # 横排（xrot: 0）在 1280 下确实放得下，但**窄视口下放不下**：实测 375px 视口
-        # 九个「FY24Q3」首尾相压，tools/visual_qa.py 记了 8 条 🟡（每对相邻标签
-        # 31.7px²）。判据不能只在开发用的那个视口上成立 —— 这里不再写死角度，
-        # 交回引擎的自适应（charts.js: n > 20 → 90°，否则 45°），
-        # 9 格拿到 45°，1280 与 375 两头都不压字。
+        'n': 15, 'kind': 'bridge_bar',
+        # 不给 full：旧版那条「必须通栏」的理由是 grouped_bars 的柱值标签不过抽稀、
+        # 半栏装不下 —— 而 bridge_bar **一个数值标签都不画**，那笔账连被算的对象都没有了。
+        # 一格一根柱，半栏放得下。
+        #
+        # `fmt` 是**载荷字段**：bridge_bar 的表格视图与 tooltip 走 `ex.fmt || ex.yfmt`，
+        # 而且各段与净额都走它 —— 只给 yfmt 的话表格里会退成 pct0，残差那一段
+        # （0.1pp 量级）会被四舍五入成 0.0%，正好把本图要交代的那件事抹掉。
+        # 不给 `label_fmt` / `bar_labels`：bridge_bar 只在截轴时用 label_fmt，本图没截轴，
+        # 给了就是一个谁都不读的死键。
+        'fmt': 'pct1', 'yfmt': 'pct0',
+        # xrot 交回引擎自适应（n=9 → 45°）：写死 0° 时 375px 视口下九个「FY24Q3」
+        # 首尾相压，visual_qa 记了 8 条 🟡。判据不能只在开发用的那个视口上成立。
         'xstep': 1,
-        'title': SEC_TKT + 'Comp decomposed: ticket × traffic (total company, '
-                           'reported basis, quarterly)',
+        'title': SEC_TKT + 'Comp = ticket × traffic, decomposed additively '
+                           '(total company, reported basis, quarterly); '
+                 f'{_TKT_X[-1]}: comp {float(_bs["tc_sales"]):+.1f}% = ticket '
+                 f'{float(_bs["tc_tkt"]):+.1f}% + traffic {float(_bs["tc_trf"]):+.1f}% '
+                 f'+ residual {_tkt_res[-1]:+.1f}%',
         'ylab': 'y/y (%)',
         'xlabels': _TKT_X,
-        'groups': [{'name': nm, 'color': cl, 'values': _tkt_vals[c]} for nm, c, cl in _TKT_G],
+        # 图上不印任何数值（bridge_bar 不画数据标签），所以当期的乘法恒等式写进 annot：
+        # 读者至少能在图上把「相乘不是相加」这件事对一遍。
+        'annot': (f'{_TKT_X[-1]}: (1{float(_bs["tc_tkt"]) / 100:+.4f}) × '
+                  f'(1{float(_bs["tc_trf"]) / 100:+.4f}) − 1 = '
+                  f'{((1 + float(_bs["tc_tkt"]) / 100) * (1 + float(_bs["tc_trf"]) / 100) - 1) * 100:.2f}%'),
+        'stacks': [{'name': nm, 'color': cl, 'values': _tkt_vals[c]} for nm, c, cl in _TKT_G]
+                  + [{'name': 'Residual: comp − (ticket + traffic) — cross term + rounding',
+                      'color': 'GRAY', 'values': _tkt_res}],
+        # 菱形 = 公司申报的 comp 本身，不是三段求和的结果。显式给：省略时引擎会替我们
+        # 求和，那样「三段之和 ≡ 披露值」就成了自证，上面那道断言也就白写了。
+        'net': {'name': 'Reported comp (y/y, as filed)', 'values': _tkt_vals['tc_sales']},
+        'net_color': 'INK',
         'src_extra':
             # ── 出处 ──
             f'<b>本图的数据源与本页其余各图不同</b>：客单与客流月度新闻稿一个字都不报'
@@ -2051,9 +2115,8 @@ def main():
               f'(1{float(_rep["tc_trf"].iloc[-1]) / 100:+.4f}) − 1 = '
               f'{((1 + float(_rep["tc_tkt"].iloc[-1]) / 100) * (1 + float(_rep["tc_trf"].iloc[-1]) / 100) - 1) * 100:.2f}%'
               f'，公司披露 {float(_rep["tc_sales"].iloc[-1]):.1f}%。'
-              f'把两根柱直接<b>相加</b>是个好近似但不是恒等式：差的正是交叉项'
-              f'（客单 × 客流），全表最大 {_xmax[0]:.2f}pp（{_xmax[1]}，{_xmax[3]}，'
-              f'{_xmax[2]} 口径）。<b>三根柱之间没有加法关系</b>，第一根不是后两根之和。'
+              f'（本图怎么把这条<b>乘法</b>恒等式画成一根<b>加法</b>的柱、'
+              f'差额去了哪里，见下面「怎么读这根柱」那一段。）'
             # ── 报告 vs 核心：差全在客单上 ──
             + (f'<b>图上画的是报告口径</b>（9 格满格）。核心口径的信息一个字都没丢：'
                f'公司调的只是价，<b>客流在两个口径下逐格完全相同</b>（构建期实测差 '
@@ -2063,29 +2126,29 @@ def main():
                if _wedge else '')
             # ── (d) 独立对账腿 ──
             + _md_txt
-            # ── 通栏这件事是量出来的 ──
-            + f'<b>本图通栏</b>：柱顶要标数值，而 grouped_bars 的柱值标签是引擎里唯一'
-              f'不过抽稀（thinLabels）的一路，画上去就不管。半栏时一格 {_b_half:.1f}px、'
-              f'{len(_TKT_G)} 组各占 {_g_half:.1f}px，而本图要印的最宽标签是 '
-              f'{_lab_w:.1f}px —— 相邻两个标签会压 {_lab_w - _g_half:.1f}px；'
-              f'通栏后一组 {_g_full:.1f}px，富余 {_g_full / _lab_w:.1f} 倍。'
-              f'这一步由构建期按 <code>assets/charts.js</code> 的量边距与字宽算式复算得出'
-              f'（<code>mrwin.band_px</code> / <code>chartscale._label_px</code>，'
-              f'与引擎同一把尺子），不是目测；本图只有 {len(_TKT_X)} 格，'
-              f'低于 <code>mrwin.layout_all</code> 的 21 格门槛，它不会来管这张图。'
-              f'所以这里的通栏不是版式偏好，是「要么通栏、要么别标数值」的结果。'
-              # ⚠️ 上面这笔账算的是 **1280px 视口**下的通栏宽度（`mrwin.band_px` 的量边距
-              # 走的就是那个基准），窄视口下卡片会一起缩，富余也跟着缩没。实测
-              # （tools/visual_qa.py，2026-09-03）：1280 干净，768 与 375 各余下少量
-              # 相邻柱值标签互相压 —— 都是客单与客流读数接近的那几格（如 3.2% 对 3.1%），
-              # 面积 8~59px²，记 🟡/🔵，不是 🔴。取舍写在明处而不是留给下一个人重新发现：
-              # 关掉柱值标签能让它归零，代价是**主视口**上九个季度的读数全部只能靠
-              # 「表格」视图去翻 —— 用主视口的信息量去换窄视口的一处压字，不划算。
-              # 引擎侧的真解是把 grouped_bars 的柱值标签也接进 thinLabels（现在全站
-              # 只有这一路不抽稀），那是 34 页共用的引擎文件，要单开一轮回归。
-              + f'<b>窄视口下的已知残留</b>：本图在 768 / 375px 下，'
-                f'客单与客流读数接近的那几格柱值标签会轻微互压'
-                f'（实测 8~59px²，1280px 下没有）—— 逐格读数请走右上角「表格」视图。',
+            # ── (e) 三段怎么读、那根发丝是什么 ──
+            + f'<b>怎么读这根柱</b>：一格一根柱，客单与客流叠在同一根上（负的往下堆 —— '
+              f'{_neg_txt}），<b>黑色菱形是公司申报的 comp 本身</b>，不是三段求和的结果；'
+              f'三段之和与菱形在构建期逐格核过，差恒为 0（对不上就整页失败）。'
+              f'柱顶<b>不等于</b> comp：有负段的那一格柱顶停在正向包络上，'
+              f'comp 要看菱形。'
+            + f'<b>⚠️ 客单与客流是<u>相乘</u>的，两条腿相加不等于 comp</b>：'
+              f'(1 + 客单)(1 + 客流) − 1 = comp。差额就是图上那条灰色的<b>残差</b>段，'
+              f'它按定义 = comp −（客单 + 客流），里面装着两样东西：交叉项'
+              f'（本图这条序列上最大 {_x_tc:.2f}pp @{_x_tc_f}；把三个地区、两个口径一起算，'
+              f'最大 {_x_all:.2f}pp @{_x_all_f}）与两处一位小数的四舍五入'
+              f'（最大 {_x_rnd:.2f}pp）。本期残差 {_tkt_res[-1]:+.1f}pp。'
+            + f'<b>残差细到几乎看不见，而这正是本图的一个结论</b>：'
+              f'{len(_tkt_res)} 格里最大的一格也只有 {_res_max:.1f}pp，'
+              f'不到本图纵轴量程的 {_res_share:.1%}；'
+            + (f'{"、".join(_res_zero)} 这 {len(_res_zero)} 格四舍五入后是 0.0pp，'
+               f'引擎索性不画那一段。' if _res_zero else '没有一格恰好归零。')
+            + f'也就是说「把客单与客流加起来当 comp」在这条序列上误差不到 '
+              f'{_res_max:.1f}pp —— 但它是<b>近似</b>不是恒等式，所以图上把差额画出来，'
+              f'而不是让两条腿假装加得起来。'
+            + f'<b>图上不印任何数值</b>：本图型不画数据标签。当期读数写在标题里、'
+              f'乘法恒等式写在图内注解里，逐格读数请走右上角「表格」视图'
+              f'（那一路按本图的 <code>pct1</code> 格式印，残差那 0.1pp 不会被抹掉）。',
     })
 
     # 数据源那条页尾注要把「SEC 申报腿」与「月度新闻稿腿」分开点名，名单只准在建图
@@ -2240,6 +2303,84 @@ def main():
     _coh_impl = {y: sum(_cnt[c] * _cval[(c, y)] for c in _data_labs if (c, y) in _cval)
                  for y in _COH_YRS}
     _coh_gap = {y: 1 - _coh_impl[y] / float(_fyd.at[y, 'net_sales_mn']) for y in _COH_YRS}
+    # ── 单位经济性（Exhibit 17 的全部算术）提前到这里算 ──────────────────────
+    # 它本来长在 Exhibit 17 那一块里。搬上来是因为所有者要把「盈亏平衡销售额」
+    # 写进本图 Totals 那一行（2026-09-03 指令），于是 16 与 17 必须**共用同一份**
+    # 计算结果 —— 各算一遍的分叉长这样：两张图上的 $272mn 不是同一个数，而页面
+    # 不会报错。它读的是 _fyd（年度表）与 _cval（本块刚解出来的队列矩阵），
+    # 两样在这里都已经就位。
+    # ── 每年一份口径无关的比率 + 两个均店销售口径 ────────────────────────────────
+    def _e17_calc(y):
+        r = _fyd.loc[y]
+        ns = float(r.net_sales_mn)
+        g = (ns - float(r.merch_cost_mn)) / ns          # 商品毛利率（对净销售额）
+        s = float(r.sga_mn) / ns                        # SG&A 率（已含开办费）
+        m = float(r.memb_fee_mn) / ns                   # 会员费率
+        wh = float(r.wh_total)
+        coh = _cval.get((_COH_TOT, y))                  # 队列表 Totals 行（披露的均店销售）
+        # 盈亏平衡 = 覆盖 SG&A 需要的销售额 ÷ 单位销售额的贡献率。
+        # 上沿：贡献只算商品毛利 g（一分会员费都不给这家店）。
+        # 下沿：把会员费按公司平均费率 m 记进贡献（g + m）。两者都是**比率**，与均店
+        # 销售的口径无关 —— 折成金额时才需要挑一个口径，见 note。
+        return {
+            'ns': ns, 'g': g, 's': s, 'm': m, 'wh': wh, 'coh': coh,
+            'memb': float(r.memb_fee_mn), 'gp': ns - float(r.merch_cost_mn),
+            'sga': float(r.sga_mn), 'oi': float(r.op_income_mn),
+            'hi': s / g, 'lo': s / (g + m),
+            'ns_wh': ns / wh,
+            'first': _cval.get((str(y), y)),            # 当年新开队列的首年（年化）销售
+        }
+
+    # 窗口 = series/cost_fy.csv 里的**全部**财年（本期 FY2016 起，所有者 2026-09-03 指令：
+    # 「ex17 时间维度从 2016 年开始算」）。不写死起点年：那张 CSV 的左端由
+    # fetch/cost_sec.py 的 FY_FIRST 定（再往前 XBRL 就没有分国家仓店数与
+    # 净销售额/会员费拆分了），在这里再写一个 2016 只会有两处可以互相说谎。
+    _E17_YS = [int(y) for y in _fyd.index]
+    # ── C 段（分部经营利润）有一条口径断点，必须硬拦，不能只写在注里 ──────────────
+    # Costco 在 FY2022 10-K 里说「Effective for fiscal 2022, stock-based compensation
+    # was allocated to the segments … Operating income was restated in each of the
+    # segments for all prior periods」，但它**只呈现了 FY2022/2021/2020 三年** ——
+    # FY2019 及更早从来没有被重述过。series/cost_fy.csv 的 `seg_oi_basis` 记着每一年落在
+    # 哪一侧（pre-sbc-alloc / sbc-alloc）。两侧混在一张表里画趋势，会读出一段纯属
+    # 股权激励改分摊造成的假拐点（实测：其他国际 FY19 3.83% → FY20 3.76%，看着像下滑）。
+    # 合并口径的 `op_income_mn` 不受影响 —— 断的只是分部的拆法。
+    _E17_BAS = {y: str(_fyd.at[y, 'seg_oi_basis']) for y in _E17_YS}
+    _E17_BASIS = sorted(set(_E17_BAS.values()))
+    # 窗口跨了断点是**允许**的（不跨就看不到 FY2016-2019），但跨了就必须在**表里**
+    # 逐列标出来 —— CONTRACT §5 第 2 条：「口径断点必须画出来，不能靠图注文字提一句
+    # 就算数」。下面 C 段会因此多一行「分部口径」，值逐列现读 _E17_BAS。
+    # 这里只拦「出现了本文件不认识的取值」：那说明上游又加了一档，而 C 段那一行
+    # 会把它印成原始英文串，读者读不懂，且我们也不知道新那一档跟旧的能不能比。
+    # 值要短：这一行有 10 列，写成「旧（股权激励未摊入分部）」会把整张表撑到必须横滑。
+    # 两档各是什么意思写在行名与 note 里，格子里只留可区分的最短记号。
+    _E17_BAS_ZH = {'pre-sbc-alloc': '旧', 'sbc-alloc': '新'}
+    _bad_bas = [b for b in _E17_BASIS if b not in _E17_BAS_ZH]
+    if _bad_bas:
+        raise SystemExit(f'series/cost_fy.csv 的 seg_oi_basis 出现本文件不认识的取值 '
+                         f'{_bad_bas} —— 先决定它与已有两档能不能并排读，再改这里')
+    if len(_E17_YS) < 5:
+        raise SystemExit(f'series/cost_fy.csv 只有 {len(_E17_YS)} 个财年，'
+                         f'Exhibit 17 至少要 5 列才看得出趋势')
+    # Exhibit 16 的横轴也是财年，两张表并排读；列对不上时读者会以为其中一张漏了年份。
+    # 不强行取交集：对不上就说明两张 CSV 的覆盖区间分叉了，那是要人去看的事。
+    if [y for y in _E17_YS if y in _COH_YRS] != _COH_YRS:
+        raise SystemExit(f'Exhibit 17 的财年 {_E17_YS} 没有覆盖 Exhibit 16 的 {_COH_YRS} —— '
+                         f'两张表的列对不上，而 16 的 Totals 行要印 17 算出来的平衡线')
+    _E = {y: _e17_calc(y) for y in _E17_YS}
+    _EL = _E[_E17_YS[-1]]                               # 最新财年，note 与标题的水平值都引它
+    # 标题与 note 里直接引这两个值，缺了会印出 'None'。宁可整页失败也别印那种字。
+    for _k, _why in (('coh', f'{_COH_V} 矩阵的 Totals 行没有 FY{_E17_YS[-1]} 那一格'),
+                     ('first', f'{_COH_V} 矩阵里没有 {_E17_YS[-1]} 年开业那一队的首年值')):
+        if _EL[_k] is None:
+            raise SystemExit(f'Exhibit 17 的标题/图注要引 {_k}，但{_why}')
+    # 盈亏平衡的两条边，按 Exhibit 16 那张矩阵的年份逐年折成金额。
+    # 在这里算而不是在下面追加行的地方算：Ex16 的 note 要引这两行的首末读数，
+    # 而 note 拼好的时候行还没接上去。一处算、两处用，不许各算一遍。
+    _be_vals = {k: [None if not _E[y]['coh'] else round(_E[y][k] * _E[y]['coh'])
+                    for y in _COH_YRS] for k in ('lo', 'hi')}
+    _be_lo0, _be_hi0 = _be_vals['lo'][0], _be_vals['hi'][0]
+    _be_lo1, _be_hi1 = _be_vals['lo'][-1], _be_vals['hi'][-1]
+
     _ns_last = float(_fyd.at[_COH_LAST, 'net_sales_mn'])
     _wh_last = int(_fyd.at[_COH_LAST, 'wh_total'])
     # 期间平均家数：只为**证伪**「缺口是期末/期间平均之差造成的」这一说 —— 换了平均数，
@@ -2298,14 +2439,47 @@ def main():
         + f'；（2）「电商销售不进这张图」—— 10-K 既没这么说也没否认，那是猜，不是口径。'
         f'<b>怎么读</b>：一行一个开业队列，往右是它开业后的每一个财年；开业年之前的 '
         f'{_n_null} 格留空（那时这些仓店还不存在，不是缺数据）。'
-        f'最新队列首年 ${_first_new}mn 与系统均店 ${_sys_avg}mn 之间的那一段就是新店爬坡，'
-        f'Exhibit 17 把它与推导出来的盈亏平衡线并排放。')
+        f'最新队列首年 ${_first_new}mn 与系统均店 ${_sys_avg}mn 之间的那一段就是新店爬坡。'
+        # ── 末两行（盈亏平衡）不是公司披露值，必须在这里说清 ──
+        f'<b>⚠️ 末两行不是公司披露值，是推导的盈亏平衡区间</b>（算法、两条假设与'
+        f'「为什么只能是区间」全部写在 Exhibit 17 的 Note 里，这里不重复一遍）：'
+        f'上面每一行都是 {_COH_V} 10-K 印出来的数，末两行是本页拿合并损益的三个比率'
+        f'（商品毛利率 g、SG&amp;A 率 s、会员费率 m）折到同一张矩阵的口径上算出来的 —— '
+        f'下沿把会员费按公司平均费率记进贡献，上沿一分都不记。'
+        f'本期 FY{_COH_YRS[0]} 是 ${_be_lo0}–{_be_hi0}mn、FY{_COH_LAST} 是 '
+        f'${_be_lo1}–{_be_hi1}mn。接进这张矩阵是为了让「某一队爬到第几年才过线」'
+        f'能在同一张图上竖着读，不用跳到下一张表。'
+        f'<b>⚠️ 但别按颜色读这两行</b>：色阶是全矩阵共用的（引擎按所有有限值的 5/95 '
+        f'分位定色），而它们的语义与队列各行相反 —— 队列是越高越好，平衡线是越高越难达标，'
+        f'于是同一种绿色在这两行上的含义正好反过来。引擎没有逐行色阶这个开关，'
+        f'所以只能在这里点名，读数请看格子里的数字。')
+
+    # ── 把盈亏平衡线并进矩阵（所有者 2026-09-03 指令：「把『盈亏平衡销售额』这个数字
+    #    写到 ex16 里面 totals 这一行」）──────────────────────────────────────────
+    # 放在这里、而不是在上面那些校验之前：以上每一条校验（家数合计、加权均值复现、
+    # 每队列格数、缺口、_n_null）问的都是「公司披露的那张矩阵自洽不自洽」，
+    # 推导行掺进去会把它们全部变成另一个问题。所以先验完披露值，再往下面接两行。
+    #
+    # 为什么是**两行**而不是一行：平衡线本来就是个区间（上沿不给这家店记一分会员费、
+    # 下沿按公司平均费率记进去），Exhibit 17 的 E 段也是这么印的。在这里塌成一个数，
+    # 等于把一个明确标了「区间」的推导值在另一张图上改口说成点估计。
+    #
+    # ⚠️ 色阶是**全矩阵共用**的（引擎按所有有限值的 5/95 分位定色），而这两行的
+    # 语义与其余各行相反 —— 队列行是「越高越好」，平衡线是「越高越难达标」。
+    # 引擎没有逐行色阶这个开关，所以只能在 note 里点名，别让读者按颜色读这两行。
+    _BE_LO = f'盈亏平衡（计会员费）'
+    _BE_HI = f'盈亏平衡（不计会员费）'
+    for _lab, _k in ((_BE_LO, 'lo'), (_BE_HI, 'hi')):
+        _COH_LABS.append(_lab)
+        _coh_matrix.append(_be_vals[_k])              # 上面算好的那一份，不重算
 
     ex.append({
         'n': 16, 'kind': 'heat_matrix', 'full': True,
-        # 标题里**不许有 Implied**：这张图一个推导值都没有（见块首注释）。
-        'title': (f'Average Sales Per Warehouse by Year Opened, $mn ({_COH_V} 10-K): '
-                  f'New Warehouse ${_first_new}mn vs System Average ${_sys_avg}mn'),
+        # 队列各行与 Totals 是**公司披露值**，末两行是推导的盈亏平衡区间 ——
+        # 标题里必须让这件事一眼看得见（CONTRACT §5 第 1 条），不能只写在 note 里。
+        'title': (f'Average Sales Per Warehouse by Year Opened, $mn ({_COH_V} 10-K), '
+                  f'+ Implied Break-Even: New Warehouse ${_first_new}mn vs '
+                  f'System Average ${_sys_avg}mn vs Break-Even ${_be_lo1}–{_be_hi1}mn'),
         'rows': _COH_LABS,
         'cols': [f'FY{y}' for y in _COH_YRS],
         'matrix': _coh_matrix,
@@ -2313,9 +2487,12 @@ def main():
         'legend': '均店销售（$mn/店·年）',
         # 行标签里最长的是聚合行「2016 & Before」（13 个字符，size 8 下约 58px），
         # 默认的 row_lab_w=32 会让它压到格子里去；这里按最长行标签定宽，不猜常数。
-        # 4.8 是 size-8 行标签的每字符宽（引擎给 heat_matrix 的行标签写死 size 8），
-        # +10 是左右各留一点余量；最长的是聚合行「2016 & Before」。
-        'row_lab_w': max(32, round(max(len(s) for s in _COH_LABS) * 4.8) + 10),
+        # 4.8 是 size-8 行标签的每 **ASCII** 字符宽（引擎给 heat_matrix 的行标签写死
+        # size 8）。中日韩字符在同一字号下约是它的两倍宽，而新加的两行盈亏平衡标签
+        # 全是中文 —— 按 len() 直接乘 4.8 会把标签栏算窄一半、标签压进格子里。
+        # 所以按「CJK 记 2、其余记 1」现算宽度，仍不写死常数。
+        'row_lab_w': max(32, round(max(
+            sum(2 if ord(ch) > 0x2E7F else 1 for ch in lab) for lab in _COH_LABS) * 4.8) + 10),
         'row_head': '开业年份（队列）', 'cell_h': 20,
         'src_extra': _COH_SRC,
         'note': _COH_NOTE,
@@ -2359,54 +2536,6 @@ def main():
         if abs(_seg - _r.op_income_mn) > 0.5:
             raise SystemExit(f'FY{_y} 分部经营利润合计 {_seg} ≠ 合并 {_r.op_income_mn}')
 
-    # ── 每年一份口径无关的比率 + 两个均店销售口径 ────────────────────────────────
-    def _e17_calc(y):
-        r = _fyd.loc[y]
-        ns = float(r.net_sales_mn)
-        g = (ns - float(r.merch_cost_mn)) / ns          # 商品毛利率（对净销售额）
-        s = float(r.sga_mn) / ns                        # SG&A 率（已含开办费）
-        m = float(r.memb_fee_mn) / ns                   # 会员费率
-        wh = float(r.wh_total)
-        coh = _cval.get((_COH_TOT, y))                  # 队列表 Totals 行（披露的均店销售）
-        # 盈亏平衡 = 覆盖 SG&A 需要的销售额 ÷ 单位销售额的贡献率。
-        # 上沿：贡献只算商品毛利 g（一分会员费都不给这家店）。
-        # 下沿：把会员费按公司平均费率 m 记进贡献（g + m）。两者都是**比率**，与均店
-        # 销售的口径无关 —— 折成金额时才需要挑一个口径，见 note。
-        return {
-            'ns': ns, 'g': g, 's': s, 'm': m, 'wh': wh, 'coh': coh,
-            'memb': float(r.memb_fee_mn), 'gp': ns - float(r.merch_cost_mn),
-            'sga': float(r.sga_mn), 'oi': float(r.op_income_mn),
-            'hi': s / g, 'lo': s / (g + m),
-            'ns_wh': ns / wh,
-            'first': _cval.get((str(y), y)),            # 当年新开队列的首年（年化）销售
-        }
-
-    _E17_YS = [int(y) for y in list(_fyd.index)[-5:]]   # 至少 5 个财年，读者要看得到趋势
-    # ── C 段（分部经营利润）有一条口径断点，必须硬拦，不能只写在注里 ──────────────
-    # Costco 在 FY2022 10-K 里说「Effective for fiscal 2022, stock-based compensation
-    # was allocated to the segments … Operating income was restated in each of the
-    # segments for all prior periods」，但它**只呈现了 FY2022/2021/2020 三年** ——
-    # FY2019 及更早从来没有被重述过。series/cost_fy.csv 的 `seg_oi_basis` 记着每一年落在
-    # 哪一侧（pre-sbc-alloc / sbc-alloc）。两侧混在一张表里画趋势，会读出一段纯属
-    # 股权激励改分摊造成的假拐点（实测：其他国际 FY19 3.83% → FY20 3.76%，看着像下滑）。
-    # 合并口径的 `op_income_mn` 不受影响 —— 断的只是分部的拆法。
-    _E17_BASIS = sorted({str(_fyd.at[y, 'seg_oi_basis']) for y in _E17_YS})
-    if len(_E17_BASIS) > 1:
-        raise SystemExit(
-            f'Exhibit 17 的窗口 FY{_E17_YS[0]}–FY{_E17_YS[-1]} 跨了分部经营利润的口径断点'
-            f'（seg_oi_basis 出现 {_E17_BASIS}）—— C 段那几行会把股权激励改分摊读成经营变化。'
-            f'要么把窗口收进同一侧，要么在 C 段画出断点并改写行名，别让它静默上线。')
-    if len(_E17_YS) < 5:
-        raise SystemExit(f'series/cost_fy.csv 只有 {len(_E17_YS)} 个财年，'
-                         f'Exhibit 17 至少要 5 列才看得出趋势')
-    _E = {y: _e17_calc(y) for y in _E17_YS}
-    _EL = _E[_E17_YS[-1]]                               # 最新财年，note 与标题的水平值都引它
-    # 标题与 note 里直接引这两个值，缺了会印出 'None'。宁可整页失败也别印那种字。
-    for _k, _why in (('coh', f'{_COH_V} 矩阵的 Totals 行没有 FY{_E17_YS[-1]} 那一格'),
-                     ('first', f'{_COH_V} 矩阵里没有 {_E17_YS[-1]} 年开业那一队的首年值')):
-        if _EL[_k] is None:
-            raise SystemExit(f'Exhibit 17 的标题/图注要引 {_k}，但{_why}')
-
     _m1 = lambda v: None if v is None else f'{float(v):,.1f}'      # $mn 一位小数
     _p2 = lambda v: None if v is None else f'{float(v) * 100:.2f}%'
     _i0 = lambda v: None if v is None else f'{float(v):,.0f}'
@@ -2437,6 +2566,18 @@ def main():
 
         _hdr('<b>C. 分部经营利润 / 店</b>（收入侧含会员费，与 A 段不可加减）'),
     ]
+    # ── C 段的口径断点：逐列标出来，而不是在 note 里提一句 ─────────────────────
+    # Costco 在 FY2022 10-K 里说「Effective for fiscal 2022, stock-based compensation was
+    # allocated to the segments … Operating income was restated in each of the segments for
+    # all prior periods」，但它**只呈现了 FY2022/2021/2020 三年** —— FY2019 及更早从来
+    # 没有被重述过。所以本段横着读会在 FY2019/FY2020 之间跨一次口径：实测其他国际
+    # 3.83% → 3.76% 看着像下滑，同口径下其实是上升。合并口径的 op_income_mn 不受影响，
+    # 断的只是分部的拆法，所以 A/B/D/E 四段照旧可以整条横读。
+    # 这一行只在窗口真的跨了断点时才加：没跨的时候它每列一个样，是纯噪音。
+    if len(_E17_BASIS) > 1:
+        _E17_ROWS.append({'xl': '　<b>分部口径</b>：旧 = 股权激励未摊入分部 · '
+                                '新 = 已摊入（<b>跨档不可比</b>）(D)', **{
+            _KEY[y]: _E17_BAS_ZH[_E17_BAS[y]] for y in _E17_YS}})
     # 分部三行读的是 op_income_{us,ca,oi} / wh_{us,ca,oi}，与 _row 走的「先算比率再乘」
     # 那条路结构不同，单独拼一遍比给 _row 加一堆参数清楚。
     for _lab, _oc, _wc in (('美国', 'op_income_us_mn', 'wh_us'),
@@ -2529,7 +2670,20 @@ def main():
         f'（FY{_E17_YS[-1]} ${_e17_capex:,.0f}mn），它同时覆盖新开与改建仓店的土地、'
         f'建筑与设备，还含 IT 与配送设施，把它除以当年开业的 {_e17_open:.0f} 家得到的'
         f'那个数<b>不是一家仓店的造价</b>，所以本表不印这个比值，也请不要在别处这么用。'
-        f'<b>分部段的口径提醒</b>：分部经营利润是在把会员费算进分部收入之后结出来的，'
+        + (f'<b>⚠️ C 段横着读要在 FY{[y for y in _E17_YS if _E17_BAS[y] == _E17_BASIS[0]][-1]}'
+           f'/FY{[y for y in _E17_YS if _E17_BAS[y] != _E17_BASIS[0]][0]} 之间断一次</b>：'
+           f'Costco 在 FY2022 10-K 里写「Effective for fiscal 2022, stock-based compensation '
+           f'was allocated to the segments … Operating income was restated in each of the '
+           f'segments for all prior periods」，但那份年报<b>只呈现了三个财年</b>，'
+           f'FY2019 及更早从来没有被重述过。所以本段前 '
+           f'{sum(1 for y in _E17_YS if _E17_BAS[y] == "pre-sbc-alloc")} 列是旧口径、'
+           f'后 {sum(1 for y in _E17_YS if _E17_BAS[y] == "sbc-alloc")} 列是新口径，'
+           f'C 段头一行逐列标着「旧 / 新」。跨着那一档读会读出一段纯属改分摊的假拐点'
+           f'（实测其他国际由 3.83% 变成 3.76%，看着像下滑，同口径下其实是上升）。'
+           f'<b>只有 C 段受影响</b> —— 合并口径的经营利润在两侧完全相同'
+           f'（FY2020 两侧都是 5,435mn），所以 A / B / D / E 四段照旧可以整条横读。'
+           if len(_E17_BASIS) > 1 else '')
+        + f'<b>分部段的口径提醒</b>：分部经营利润是在把会员费算进分部收入之后结出来的，'
         f'而 A 段的「净销售额 / 店」<b>不含</b>会员费（会员费在 A 段单列一行），'
         f'两段不能相加减；本表的源里没有分部收入，所以分部只给到经营利润 / 店，'
         f'<b>也因此没有分部的盈亏平衡列</b> —— 那需要分地区的会员费，公司不披露。')
