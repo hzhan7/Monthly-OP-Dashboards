@@ -885,7 +885,7 @@
       /* 与 bridge_bar 同一条道理：堆叠柱的轴要罩住「正向堆到哪」「负向堆到哪」两条
          包络，而不是两者相抵之后的合计。原来这里只推合计 —— 一列 +6.4 与 −0.9 的
          合计是 +5.5，可柱顶实际在 +6.4、柱底在 −0.9，两头都在轴外。
-         全站现有 22 张 stacked_dual 一个负段都没有 ⇒ sn_ 恒为 0、sp_ 恒等于旧的
+         全站现有 23 张 stacked_dual 一个负段都没有 ⇒ sn_ 恒为 0、sp_ 恒等于旧的
          tot，mx 一字不变（mn 本 kind 从前根本没参与量程，从这一轮起才参与）。 */
       var sp_, sn_, sv_;
       for (i = 0; i < n; i++) {
@@ -915,7 +915,7 @@
        下界原来写死 0：负段按构造就在轴外，而绘图那边 Math.max(0, …) 又把它削成零高
        不画、基线照样往下走，合起来是「一根颜色错的柱从 −0.9 顶到 +5.5」且不报错。
        现在改成与 qtr_bar / seasonality / grouped_bars 同一条负向留白规矩
-       （min(0, mn×1.15)）：全非负时 mn 恒为 0 ⇒ y0 仍是 0，既有 22 张一个像素不变。 */
+       （min(0, mn×1.15)）：全非负时 mn 恒为 0 ⇒ y0 仍是 0，既有 23 张一个像素不变。 */
     else if (kind === 'stacked_dual') {
       y0 = Math.min(0, mn * 1.15); y1 = mx * (rhsOf(ex) ? 1.28 : 1.06);
     }
@@ -1550,10 +1550,10 @@
          削成零高、根本不画，而 `base[i]` **照样往下走**，于是它上面那一段从负基线
          起画 —— 一根柱看着是「一整段颜色错的柱」从 −0.9 一路顶到 +5.5，
          没有报错、没有告警、表格里却是对的（cost FY24Q4：客单 −0.9% / 客流 +6.4%）。
-         `posB` 与从前的 `base` 在全非负数据上逐字节相同（全站 22 张都是），
+         `posB` 与从前的 `base` 在全非负数据上逐字节相同（全站 23 张都是），
          所以既有页面走的仍是同一串浮点数。 */
-      var ws = BW(0.62), posB = [], negB = [];
-      for (i = 0; i < n; i++) { posB.push(0); negB.push(0); }
+      var ws = BW(0.62), posB = [], negB = [], hadP = [], hadN = [];
+      for (i = 0; i < n; i++) { posB.push(0); negB.push(0); hadP.push(false); hadN.push(false); }
       for (s = 0; s < ex.stacks.length; s++) {
         var st = ex.stacks[s], labst = [];
         for (i = 0; i < n; i++) {
@@ -1571,8 +1571,11 @@
              正段的前一段在下面 ⇒ 缝在下缘（y 不动，高度减 1.5）；
              负段的前一段在上面 ⇒ 缝在上缘（y 下移 1.5，高度同样减 1.5）。
              缝写在错的那一侧不会报错，只会让相邻两个同亮度的负段粘成一块。
-             首段（s === 0）不留，否则柱底/柱顶浮空。 */
-          var sgp = s ? 1.5 : 0;
+             紧贴零线的那一段不留缝，否则柱底/柱顶浮空。判据是 hadP / hadN
+             （「本方向上前面已经画过段没有」），不是 `s === 0`：负向的第一段
+             可以落在 stacks 的任意一层，按下标判会让它离零线浮起 1.5px。
+             全段非负时正向第一段永远是 s === 0，两者等价 —— 既有 23 张逐像素不变。 */
+          var sgp = (sneg ? hadN[i] : hadP[i]) ? 1.5 : 0;
           var hgt = Math.max(0, Y(sDn) - Y(sUp) - sgp);
           el('rect', { x: Xc(i) - ws / 2, y: Y(sUp) + (sneg ? sgp : 0), width: ws,
             height: hgt, fill: col(st.color) }, g);
@@ -1582,7 +1585,7 @@
             labst.push({ i: i,
               el: txt(g, Xc(i), (Y(lo) + Y(hi)) / 2 + 2.4, comma(st.values[i], 0),
                 { size: 6.6, fill: col(st.label_color) }) });
-          if (sneg) negB[i] = hi; else posB[i] = hi;
+          if (sneg) { negB[i] = hi; hadN[i] = true; } else { posB[i] = hi; hadP[i] = true; }
         }
         /* 段内数值同样会横向连成一片（cboe Ex5 @375px 的「11,836」「12,215」重叠 3.3px）。
            一段一抽：同一段的标签在同一带高度上，互相压的只会是左右邻居。 */

@@ -221,11 +221,13 @@ def _neg_bar_guard(ex):
     再补一道 `yfloor` 只会互相打架：`yfloor = mn×1.22` 会盖掉引擎算出来的下界，
     而且 `ycap != None or yfloor != None` 是引擎的**截轴开关**（`charts.js` 的
     `capOn`），一置上顶边距就从 14 跳到 30、图上多出一行给竖排真值的留白 ——
-    可这张图一根柱都没被截。现存 22 张 stacked_dual 的列合计全非负、
+    可这张图一根柱都没被截。现存 23 张 stacked_dual 的列合计全非负、
     这条护栏从来没在它们身上触发过，所以摘掉它对既有页面是零影响（已复跑全站核过）。
 
-    `charts.js` 给 gs_bar / bars_labeled 两个 kind **写死** `y0 = 0`，
-    只按最大值定上界。序列里出现负值时 `Y(v)` 落在绘图区下方，
+    真正还写死 `y0 = 0` 的只剩 gs_bar 与 bars_labeled 两个 kind，在 `charts.js`
+    的 ylim 分支里各占一行 —— `if (kind === 'gs_bar') { y0 = 0; … }`（charts.js:911）
+    与 `else if (kind === 'bars_labeled') { y0 = 0; … }`（charts.js:922）；
+    它们只按最大值定上界。序列里出现负值时 `Y(v)` 落在绘图区下方，
     而 SVG 没有 clip-path —— 柱子会一路画下去盖住后面的 exhibit。
     实测 miax Ex13「股票 capture（每 100 股，可为负）」最小值 −0.028、上界 0.0073，
     越出 3.8 个图高，整片浅蓝色柱压在 Exhibit 15 与 Exhibit 17 的正文上。
