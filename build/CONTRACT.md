@@ -30,6 +30,8 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 | `through_label` | ✓ | 人话月份，如 `2026 年 7 月`；零售日历公司可写 `零售月 Jun 2026（5 周）` |
 | `subtitle` | ✓ | 副标题：数据源 + 覆盖区间 + 版式出处 |
 | `headline` | ✓ | 一行数据条。正负号交给 f-string 的 `+` 标志，别写死字面量（负值会印成 `+-0.6%`） |
+| `brief` | | headline 之下、Exhibit 1 之上的一段解读（HTML，走 `innerHTML`）。职责与 `headline` 互补：那一行给**读数**，这一段给**读数该怎么读**（基数效应、口径背离、所处区间）。**随月份变，每月重写。**整段在 Python 侧拼好 —— 页面不做措辞判断。不给就整块 `hidden`，不会留下一个空的带框方块 |
+| `glossary` | | `brief` 之下、Exhibit 1 之上的名词释义（HTML，走 `innerHTML`）。与 `brief` 分工：brief 说「**这个月**这组读数该怎么读」，glossary 说「**这些词**是什么意思」（ADV、RPC、口径断点……）—— 所以它**不随月份变**，一年到头是同一段。合进 brief 的后果是每月重写 brief 时要连释义一起重抄（迟早抄漏或抄旧），而且当月真正的判断被淹在常年不变的定义里。版式是定义列表：`<h4>名词释义</h4><dl><dt>词</dt><dd>释义</dd>…</dl>`（`.glossary` 的 CSS 只认这个结构：`dl` 是两列 grid，`dt` 在左、`dd` 在右）。同样不给就 `hidden` |
 | `hub_line` | | 首页卡片上的短摘要（≤60 字）。不给则截取 `headline` 前 110 字 |
 | `source` | ✓ | 所有 exhibit 共用的 `Source:` 行 |
 | `source_date` | | 官方发布日 `YYYY-MM-DD`，显示在抬头右侧。**必须是源头自己写出来的日期**（文件里的 "Published on"、新闻稿电头、SEC filingDate，或该家 fetch docstring 已认定为发布日的 HTTP `Last-Modified`）。构建日、文件 mtime、下载时刻一律不行 —— 那是一句关于外部世界的事实断言，编不得。台账在 `series/source_dates.csv`，由 `fetch/<t>.py` 摄入该月时按月份钉进去、`build/<t>.py` 查表；**不要在 build 里当场从 `cache/` 解析**（cache 是 gitignore 的，清掉后这半句会静默消失，且缓存里可能躺着比 `data_through` 更新的一期文件，当场解析会把新一期的发布日安到旧月份上）。横截面页用 `latest_of()` 取成员里最晚的那个，缺任何一个成员就整体省略 |
@@ -129,6 +131,45 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 
 见 `engine_kinds.md`（由图表引擎那一侧维护）：
 `heat_matrix` `year_lines` `qtr_bar` `seasonality` `bridge_bar` `grouped_bars` `range_band`。
+
+### `kind: 'table'` —— 夹在图中间的 HTML 表（**不是引擎的 kind**）
+
+用途是让一张表**参与图的阅读顺序**：单位经济性、口径对照这类表，读者是在看完某几张图
+之后立刻要看的，推到末尾附录里等于让他翻回去找。§4 那张末尾核对表职责不同 ——
+它是拿去和公司披露逐条核对的原始值，位置就该在最后，两者不要混为一谈。
+
+字段与 §4 的 `table` **完全相同**（`n` / `title` / `idx` / `cols` / `rows`），另加两个可选项：
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `kind` | ✓ | 固定 `'table'` |
+| `n` | ✓ | Exhibit 编号，与图排在同一条序列里（1 号被汇总表占着，图从 2 起连号） |
+| `title` | ✓ | 卡片抬头渲成 `Exhibit n: title`（前缀由 page.js 加，别自己写进 title） |
+| `idx` | | 首列表头，缺省「月份」。这种表的首列通常**不是**月份，记得给（如「项目」） |
+| `cols` | ✓ | `[[列名, 列键], …]`，不得为空 |
+| `rows` | ✓ | `[{'xl': 首列文字, 列键: 值, …}, …]`，不得为空 |
+| `full` | | `True` 走通栏（加 `.wide`，`grid-column: 1 / -1`）。半栏宽只有 ~570px，超过 4–5 列就该开 |
+| `note` | | 卡片下方的 `Note:` 行，位置与用词跟图卡一致（`<p class="src"><b>Note:</b> …`），允许 HTML |
+
+值一律是**已经格式化好的字符串**（或 `None` → 渲染成「—」），与 §4 同规矩：
+页面不做计算，也不做格式化。
+
+**末行不高亮。** 全局表格样式里那条「最后一行加粗 + 蓝底」是给 §4 核对表的最新月行准备的
+（那张表的最后一行按构造就是最新一期）；这种表的最后一行只是又一个普通项目，
+所以 page.js 给它的卡片挂了 `.tblex`，CSS 把那条关掉 —— 表里没有合计行时，
+加粗末行等于凭空暗示「这是合计」。要一行合计就自己写进 `rows`，别指望版式替你标。
+
+**charts.js 不认得这个 kind，也不该让它认得。** 拦截在 `assets/page.js` 的 exhibits
+循环里：`ex.kind === 'table'` 那一支在 `window.Exhibits.card()` **之前**就 return 了。
+漏掉这道拦截的后果不是「这张表画不出来」，而是**整页从这里往下全空** —— 引擎的 kind
+分派没有这一支，未知 kind 掉进 `else` 当 `values[]` 柱图，而这种 exhibit 根本没有
+`values`，于是抛 TypeError，本页此图之后的 exhibit 一张都不渲染（跟「缺必填字段」
+同一种后果）。理由见 `docs/CHART_KINDS.md` 开头那句「引擎不许改」：它同时服务全站
+34 张页，为一个不画图的 kind 动它要重新验收 34 页。
+
+`build/verify_pages.py` 因此把它放进 `PAGE_KINDS` 而不是 `KINDS` —— 后者的语义被钉死成
+「assets/charts.js 认得的全部 kind」，混进去只会让下一个对着它点引擎源码的人得出
+「引擎少实现了一种」，然后去改那份不许改的文件。
 
 ## 4. table（末尾核对表）
 

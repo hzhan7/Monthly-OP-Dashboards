@@ -725,7 +725,7 @@ def yoy_series(ex):
     `not nm` 那一半意味着**只要序列有名字，图题就永远够不到**。后果是一整张图静默
     退出全部规则，而 census 把它记成 `n_series=0`，与「这张图根本没有同比」在
     输出上一模一样 —— 正是本文件开头反对的那种失明，它自己踩了进去。
-    实测（2026-09-02 快照）：`data/cost.js` 的 Ex2/7/8/9/10 都是 `bar_line`，
+    实测（2026-09-02 快照）：`data/cost.js` 的头条图与四张分地区 / 电商 comp 图都是 `bar_line`，
     图题写着 `…, y/y`、`yfmt='pct0'` 写在 **exhibit 级**，而两条序列都有名字
     （`'Reported Comp'` / `'Core Comp (ex. gas & FX)'`）—— 十条真同比序列一条都没登记。
 

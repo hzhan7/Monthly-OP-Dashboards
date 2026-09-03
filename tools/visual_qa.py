@@ -256,7 +256,13 @@ function analyze(d, w){
 
   var payload = null;
   try { payload = w.DASH; } catch(e){}
-  if (payload && payload.exhibits) R.payload_exhibits = payload.exhibits.length;
+  /* 只数**会画出 SVG 的**那些 exhibit：kind:'table' 由 page.js 自己渲成 HTML 表、
+     压根不进绘图引擎（见 assets/page.js 的拦截处），把它算进来的话
+     payload_exhibits 恒比 svg_count 多，SVG_COUNT_MISMATCH 这条 🔴 会在带表格图的
+     页面上、每个视口、每次跑批都报一遍 —— 而页面本身完全正常。
+     这条判据问的是「有没有图渲染失败」，不是「payload 里有几项」。 */
+  if (payload && payload.exhibits)
+    R.payload_exhibits = payload.exhibits.filter(function(e){ return e.kind !== 'table'; }).length;
   var byN = {};
   if (payload && payload.exhibits)
     payload.exhibits.forEach(function(e){ byN[String(e.n)] = e; });

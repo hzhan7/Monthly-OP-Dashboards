@@ -13,6 +13,8 @@
      ticker/name/tracker/title       标识与抬头
      data_through 'YYYY-MM'          数据月份。页面的新鲜度信号绑它，不绑构建日期
      through_label/subtitle/headline 抬头右侧、副标题、一行数据条
+     brief?                          数据总结：**本月这组读数该怎么读**，随月份变
+     glossary?                       名词释义：**这些词是什么意思**，不随月份变
      source                          图脚的 Source 行，所有 exhibit 共用
      source_date?  source_date_note? 官方发布日；源头不标发布日时改印 note 说明原因
      stale_source?                   沿用了本地过期缓存时打红标
@@ -20,7 +22,9 @@
      summary {title,heads,rows,note} Exhibit 1 汇总表。数字**已在 Python 里格式化成字符串**，
                                      连同 *_cls 颜色类一起传过来 —— 格式化规则（pp/bp、
                                      分位反向、正负号）是口径的一部分，属于 Python
-     exhibits []                     交给 charts.js 画；full:true 走通栏
+     exhibits []                     交给 charts.js 画；full:true 走通栏。
+                                     例外是 kind:'table' —— 由本文件自己渲成 HTML 表，
+                                     不进引擎（引擎不认得这个 kind，见下面拦截处）
      table {n,title,cols,rows}       末尾的原始值核对表
      notes []                        「口径与方法说明」的 li，允许 HTML
      footer                          页脚 HTML
@@ -82,6 +86,65 @@
     if (bn) { bn.innerHTML = D.brief; bn.hidden = false; }
   }
 
+  /* ── 名词释义（glossary）──
+     与 brief 的分工：brief 说的是「**这个月**这组读数该怎么读」（基数效应、口径背离、
+     所处区间），每月重写；glossary 说的是「**这些词**是什么意思」（ADV、DARTs、
+     零售月、口径断点……），一年到头都是同一段，换个月份不用动一个字。
+     两件事合进 brief 会有两个后果：每月重写 brief 时要连释义一起重抄一遍（迟早抄漏
+     或抄旧），而且真正当月的判断被淹在一堆常年不变的定义里。
+     所以给它自己的槽位，排在**所有 exhibit 之前** —— 不认识词的人是在看第一张图
+     之前卡住的。同样整段在 Python 侧拼好（页面不做措辞判断），没给就保持 hidden。 */
+  if (D.glossary) {
+    var gn = el('glossary');
+    if (gn) { gn.innerHTML = D.glossary; gn.hidden = false; }
+  }
+
+  /* ── HTML 表格卡片：两处共用 ──
+     用它的是 ① 末尾核对表（顶层 D.table）② exhibits 里 kind:'table' 的那种。
+     两者的字段完全一样（n/title/idx/cols/rows，值都是已格式化的字符串），
+     所以渲染只留一份 —— 复制成两份的话，改一处版式必然漏掉另一处，而两张表
+     长得八成像，肉眼比对根本发现不了（这正是 12 家共用一份 page.js 的理由）。
+
+     **不进 charts.js**，理由同下面 Exhibit 1 处那一条（SVG 内核不兼职排 HTML 表）；
+     再加一条：引擎服务着全站 34 张页，为一个根本不画图的 kind 动它要重新验收 34 页
+     （docs/CHART_KINDS.md 开头那句「引擎不许改」）。
+
+     `T.note` 是给 kind:'table' 用的，位置与用词跟 charts.js 的卡片一致
+     （`<p class="src"><b>Note:</b> …`，排在 Source 行之前）。顶层 D.table 没有这个
+     字段（CONTRACT §4），所以这一段对既有 34 页是死代码，它们渲染出来的 HTML
+     与拆函数之前逐字节相同。 */
+  function tableCardHTML(T, src) {
+    var h = '<section class="card"><header><h3>Exhibit ' + T.n + ': ' + T.title +
+      '</h3></header><div class="tblwrap"><table><thead><tr><th>' + (T.idx || '月份') + '</th>';
+    T.cols.forEach(function (c) { h += '<th>' + c[0] + '</th>'; });
+    h += '</tr></thead><tbody>';
+    T.rows.forEach(function (r) {
+      h += '<tr><td>' + r.xl + '</td>';
+      T.cols.forEach(function (c) {
+        var v = r[c[1]];
+        h += '<td>' + (v == null ? '—' : v) + '</td>';
+      });
+      h += '</tr>';
+    });
+    return h + '</tbody></table></div>' +
+      (T.note ? '<p class="src"><b>Note:</b> ' + T.note + '</p>' : '') +
+      '<p class="src">' + src + '</p></section>';
+  }
+
+  /* 宽表（HOOD 16 列、AXP 16 列、wealth 12 列）在 1280px 屏上装不下。
+     .tblwrap 本来就有 overflow-x:auto、能滑，但**没有任何可滑动的提示** ——
+     截图上看就是被生生切断，读者不会知道右边还有列，只会以为数据丢了。
+     所以这里实测一下宽度，真的溢出才挂 class，由 CSS 画右缘渐隐 + 一行提示。
+     必须在 host 已经进了文档之后调用：没上屏的元素 clientWidth 是 0，
+     scrollWidth > 0 恒成立，会给每一张表都挂上滑动提示。 */
+  function markScrollable(host, T) {
+    var wrap = host.querySelector('.tblwrap');
+    if (wrap && wrap.scrollWidth > wrap.clientWidth + 1) {
+      wrap.classList.add('scrollable');
+      wrap.setAttribute('data-cols', String(T.cols.length + 1));
+    }
+  }
+
   /* ── Exhibit 1：汇总表 ──
      不进 charts.js：那份文件是 SVG 绘图内核，塞 HTML 表格进去会让它同时承担两种职责。 */
   var S = D.summary;
@@ -125,6 +188,25 @@
       sh2.textContent = ex.section;
       grid.appendChild(sh2);
     }
+    /* kind:'table' 在这里被截住，**不往下走引擎**。
+       charts.js 的 kind 分派没有这一支：未知 kind 会掉进 else 分支当 values[] 柱图，
+       而这种 exhibit 根本没有 values —— 引擎抛 TypeError，本页此图之后的 exhibit
+       一张都渲染不出来（同 verify_pages 里「缺必填字段」那条的后果）。
+       所以拦截必须在 card() 之前，而不是在引擎里加一支。 */
+    if (ex.kind === 'table') {
+      var box = document.createElement('div');
+      box.innerHTML = tableCardHTML(ex, D.source);
+      var tc = box.firstChild;
+      /* 标出「这是夹在图中间的表」，让 CSS 关掉末行高亮 —— 那条高亮是给附录核对表的
+         最新月行准备的，这种表的最后一行只是又一个普通项目（见 style.css 的 .tblex）。 */
+      tc.classList.add('tblex');
+      /* 表格卡片没有 SVG viewBox 要重算，所以 full 只是加 class，不进 needRedraw：
+         HTML 表的列宽由浏览器按容器宽自己排，加完 class 就已经是最终版式。 */
+      if (ex.full) tc.classList.add('wide');
+      grid.appendChild(tc);
+      markScrollable(tc, ex);      // 必须在 appendChild 之后：没上屏量不出宽度
+      return;
+    }
     window.Exhibits.card(grid, ex, {
       source: D.source,
       xlabels: ex.x === 'long' ? D.xlabels_long : D.xlabels,
@@ -139,34 +221,13 @@
   /* ── 末尾核对表：官方原始单位，供逐条核对 ── */
   var T = D.table;
   if (T) {
-    var h = '<section class="card"><header><h3>Exhibit ' + T.n + ': ' + T.title +
-      '</h3></header><div class="tblwrap"><table><thead><tr><th>' + (T.idx || '月份') + '</th>';
-    T.cols.forEach(function (c) { h += '<th>' + c[0] + '</th>'; });
-    h += '</tr></thead><tbody>';
-    T.rows.forEach(function (r) {
-      h += '<tr><td>' + r.xl + '</td>';
-      T.cols.forEach(function (c) {
-        var v = r[c[1]];
-        h += '<td>' + (v == null ? '—' : v) + '</td>';
-      });
-      h += '</tr>';
-    });
-    el('tbl').innerHTML = h + '</tbody></table></div><p class="src">' + D.source + '</p></section>';
+    el('tbl').innerHTML = tableCardHTML(T, D.source);
     /* 章节标题只写「附录」两个字。以前这里写的是完整的 "Exhibit N：<title>"，
        而卡片自己的 header 也会渲染一遍同样的文字 —— 14 个页面全都把核对表标题
        原样打印了两次，一大一小上下挨着。 */
     var sec = el('tblhead');
     if (sec) sec.textContent = '附录';
-
-    /* 宽表（HOOD 16 列、AXP 16 列、wealth 12 列）在 1280px 屏上装不下。
-       .tblwrap 本来就有 overflow-x:auto、能滑，但**没有任何可滑动的提示** ——
-       截图上看就是被生生切断，读者不会知道右边还有列，只会以为数据丢了。
-       所以这里实测一下宽度，真的溢出才挂 class，由 CSS 画右缘渐隐 + 一行提示。 */
-    var wrap = el('tbl').querySelector('.tblwrap');
-    if (wrap && wrap.scrollWidth > wrap.clientWidth + 1) {
-      wrap.classList.add('scrollable');
-      wrap.setAttribute('data-cols', String(T.cols.length + 1));
-    }
+    markScrollable(el('tbl'), T);
   }
 
   /* ── 口径与方法说明 ── */

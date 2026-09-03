@@ -14,7 +14,11 @@ data 文件名与目录名不一致）在这一段全部现形，而且现形方
   3. 顶层字段齐不齐（CONTRACT.md §1）
   4. 每个 exhibit：kind 在 17 种白名单内、必填对象在不在、所有数据数组长度是不是都等于
      该图 xlabels 的长度、heat_matrix 的 matrix 维度对不对、格式器名与颜色名认不认得、
-     以及「不容忍 null」的四种图型里有没有 null（见 docs/CHART_KINDS.md §1.2）
+     以及「不容忍 null」的四种图型里有没有 null（见 docs/CHART_KINDS.md §1.2）。
+     例外是 `kind:'table'`（PAGE_KINDS）：它不进引擎，只查表格形状
+  5. 编号自洽：`table.n` 必须大于最大的 exhibit 号（ERROR）；exhibit 从 2 起连号只记 WARN
+     —— exchanges-eu / exchanges12 有按数据可得性跳号的条件图，见该处注释
+     —— 两者同号时页面会印出两个「Exhibit N」，payload 却完全合法
 
 **为什么长度检查值得单独跑一遍**：引擎的绘图循环是 `for i < xlabels.length`，
 数组长了的部分画不出来**但仍然参与纵轴量程**——图被一个看不见的点压扁，没有任何提示；
@@ -51,6 +55,13 @@ KINDS = {
     'grouped_bars', 'gs_bar', 'gs_line', 'gs_line_avg', 'heat_matrix', 'lines',
     'lines_endlabels', 'qtr_bar', 'range_band', 'seasonality', 'stacked_dual', 'year_lines',
 }
+# **page.js 自己渲染、引擎完全不认得**的 kind。跟 KINDS 分成两个集合而不是并进去，
+# 是因为 KINDS 的语义被上面那行钉死了：「assets/charts.js 认得的全部 kind，引擎是唯一真源」。
+# 把 'table' 混进去，下一个照着 KINDS 对引擎源码点数的人只会得出「引擎少实现了一种」，
+# 然后去 charts.js 里加一支 —— 而那份文件是明令不许改的（docs/CHART_KINDS.md 开头）。
+# 两个集合各自对着一个真源：KINDS 对 charts.js 的 kind 分派，PAGE_KINDS 对 page.js
+# 里 `ex.kind === 'table'` 那处拦截。
+PAGE_KINDS = {'table'}
 FMTS = {'f0', 'f1', 'f2', 'f3', 'f0c', 'int', 'pct0', 'pct1', 'pct2', 'pct0z',
         'pp0', 'pp1', 'x0', 'usd0', 'usd1', 'usd2', 'usd3', 'usd4'}
 COLORS = {'NAVY', 'BLUE', 'MBLUE', 'GRAY', 'GREEN', 'RED', 'GOLD',
@@ -283,10 +294,55 @@ def endlabel_collision(ex, nlab):
     return (top - 7) < 7, round(top, 1)
 
 
+def check_table_shape(where, T):
+    """HTML 表格的形状检查。两处共用：顶层 `table`（末尾核对表）与 `kind:'table'` 的 exhibit。
+
+    共用是因为 page.js 那边这两者走的**是同一个 tableCardHTML()** —— 字段要求当然也是
+    同一套。分开写两份检查，新加的那份必然比旧的松，而松掉的恰好是「渲染不报错、
+    页面上却是一张空表」这一类：cols 空了只剩首列表头，rows 空了只剩一行表头，
+    两种都不抛异常、退出码照样 0。
+    """
+    if not T.get('title'):
+        err(where, '没有 title —— 卡片抬头会渲成 "Exhibit n: undefined"')
+    cols = T.get('cols') or []
+    rows = T.get('rows') or []
+    bad = [i for i, c in enumerate(cols) if not (isinstance(c, list) and len(c) == 2)]
+    if bad:
+        err(where, f'cols[{bad[0]}] 不是 [列名, 列键] 这样的两元数组 —— '
+                   f'page.js 取的是 c[0] 与 c[1]，形状不对会渲成 undefined')
+        cols = []                       # 形状不对就当没有列，但**别在这里 return** ——
+        #                                 return 会把下面 rows 为空、缺 xl 那几条一起跳过，
+        #                                 而它们与 cols 无关，同一张表可以同时犯两个错。
+    if not cols:
+        err(where, 'cols 为空 —— 渲出来只有首列一根表头，看着像表坏了而不是像没数据')
+    if not rows:
+        err(where, 'rows 为空 —— 渲出来是一张只有表头、一行数据都没有的表')
+    # 首列的值走 page.js 的 `'<tr><td>' + r.xl + '</td>'`：缺 `xl` 会在首列印出字符串
+    # `undefined`，与上面那条「抬头渲成 Exhibit n: undefined」是同一类错 —— 渲染不报错、
+    # 退出码 0、页面上一列 undefined。顶层核对表与 kind:'table' 共用这一支，两边都受益。
+    noxl = [i for i, r in enumerate(rows) if not r.get('xl')]
+    if noxl:
+        err(where, f'rows[{noxl[0]}] 没有 xl —— page.js 的首列直接拼 r.xl，'
+                   f'缺了就在页面上印出字符串 undefined（共 {len(noxl)} 行）')
+    keys = [c[1] for c in cols]
+    for i, r in enumerate(rows):
+        miss = [k for k in keys if k not in r]
+        if miss:
+            err(where, f'rows[{i}] 缺列键 {miss} → 渲染成「—」')
+            break
+
+
 def check_exhibit(tag, ex, short, long_):
     n = ex.get('n')
     where = f'{tag} Exhibit {n}'
     kind = ex.get('kind')
+    # `kind:'table'` 由 page.js 在 exhibits 循环里就地截住、自己渲成 HTML 表，**根本不进引擎**。
+    # 所以下面那一整套「引擎认不认得」的检查（格式器名、色名、必填对象、数组长度 =
+    # xlabels 长度、平滑图不容忍 null）对它一条都不成立，必须在 KINDS 白名单那道判断
+    # **之前**分流 —— 放在后面的话第一件事就是被判「不在 17 种白名单内」。
+    if kind in PAGE_KINDS:
+        check_table_shape(where, ex)
+        return
     if kind not in KINDS:
         err(where, f'kind={kind!r} 不在 17 种白名单内')
         return
@@ -509,6 +565,10 @@ def check_payload(path):
     for i, nt in enumerate(d.get('notes') or []):
         _md(f'{tag} notes[{i}]', nt)
     _md(f'{tag} summary.note', (d.get('summary') or {}).get('note'))
+    # glossary 与 notes 一样走 innerHTML（page.js 的 `gn.innerHTML = D.glossary`），
+    # 所以手滑写成 Markdown 的 `**粗体**` 同样只会印出四个星号 —— 而它排在整页最上面，
+    # 是全页第一段被读到的文字。
+    _md(f'{tag} glossary', d.get('glossary'))
     for e in d.get('exhibits') or []:
         for f_ in ('note', 'src_extra', 'title', 'ylab'):
             _md(f'{tag} Exhibit {e.get("n")}.{f_}', e.get(f_))
@@ -524,12 +584,7 @@ def check_payload(path):
                          f'{len(r.get("cells") or [])} 个 cell，heads 有 {len(heads)} 个')
     T = d.get('table')
     if T:
-        keys = [c[1] for c in T.get('cols') or []]
-        for i, r in enumerate(T.get('rows') or []):
-            miss = [k for k in keys if k not in r]
-            if miss:
-                err(tag, f'table.rows[{i}] 缺列键 {miss} → 渲染成「—」')
-                break
+        check_table_shape(f'{tag} table', T)
 
     short, long_ = d.get('xlabels') or [], d.get('xlabels_long') or []
     exs = d.get('exhibits') or []
@@ -541,6 +596,40 @@ def check_payload(path):
     seq = [int(re.match(r'\d+', str(x)).group()) for x in ns if re.match(r'\d+', str(x))]
     if seq != sorted(seq):
         warn(tag, f'exhibit 编号不是递增的：{ns} —— 页面按数组顺序渲染，读者按编号读')
+    # ── 编号的两条硬约定：图从 2 起连号，核对表排在所有图之后 ──
+    # 在这之前**没有任何东西**把 `table.n` 和 exhibit 的编号放在一起看过：核对表的号
+    # 是生成器里另写的一个字面量，插一张图、删一张图、或按所有者指令重排图序
+    # （最近一次就是 fb43aba 的 /ibkr/）之后忘了跟着改，页面上就会出现两个
+    # 「Exhibit 15」——一个在网格里，一个在附录里，而 payload 合法、渲染不报错、
+    # 退出码 0。实测：把某页的 exhibit 改成 n=15、table.n 也是 15，本脚本一声不吭。
+    # 连号从 2 起：1 号被汇总表占着（page.js 写死 'Exhibit 1: '），中间断一号，
+    # 读者只会理解成「这张图这个月没出」，而不是「编号错了」。
+    # 连号这一条只能是 WARN，**不能升成 ERROR**：本仓已经有页面按设计就会跳号。
+    # `build/exchanges_eu.py` 有六张图写死字面量编号、只在数据可得时才 append 且事后不重排
+    # （`if HAS_ATH:` / `if HAS_NDAQ:` / `if HAS_NDQ:` / `if HAS_NAR_WIN:` / `if len(_yy_years)>=3:`
+    # / `if _hm_flat:`），`build/exchanges12.py` 的 `if band_keys:` 同理 —— 那些 guard 全是纯粹的
+    # 数据可得性判断，写它们就是为了「这个月上游没给就少画一张、别炸」。升成 ERROR 的代价
+    # 实测过：把 data/exchanges-eu.js 的 Exhibit 12 删掉（= HAS_NAR_WIN 为假的那个月），
+    # 本脚本 exit=1 → monthly_run 判 FAIL → **28 家一起不发布**，而实际只是欧洲那一页少一张图。
+    # 用「上游断一次货就停整站」去换「图号别断」，方向反了。
+    # 真要连号的页面自己在生成器里立硬护栏（build/cost.py 与 build/ibkr.py 的 `_ens` 就是），
+    # 那里知道自己有没有条件图，这里不知道。
+    uniq = sorted(set(seq))
+    if uniq and uniq != list(range(2, 2 + len(uniq))):
+        gaps = [i for i in range(2, uniq[-1]) if i not in set(uniq)]
+        warn(tag, f'exhibit 编号不是从 2 起的连号：{ns}'
+                  + (f'（缺 {gaps}）' if gaps else '')
+                  + ' —— Exhibit 1 固定是汇总表。若该页没有条件图，这就是漏改了图号；'
+                    '若有条件图（exchanges-eu / exchanges12），这是设计如此，可以忽略')
+    if T is not None and seq:
+        tn = T.get('n')
+        ti = int(re.match(r'\d+', str(tn)).group()) if re.match(r'\d+', str(tn)) else None
+        if ti is None:
+            err(tag, f'table.n={tn!r} 里没有可比的整数部分 —— 无法确认它排在所有图之后')
+        elif ti <= max(seq):
+            err(tag, f'table.n={tn!r} 不大于最大的 exhibit 编号 {max(seq)} —— '
+                     f'附录里那张表会和网格里的某张图**同号**（页面照渲，不报错）；'
+                     f'插图/删图/重排图序之后忘了改核对表编号，就是这个样子')
     for ex in exs:
         check_exhibit(tag, ex, short, long_)
     kinds = sorted({e.get('kind') for e in exs})
