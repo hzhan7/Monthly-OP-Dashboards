@@ -111,7 +111,7 @@
   /* ── Exhibit 2..N ──
      全部挂进同一个 grid，通栏图靠 CSS 的 grid-column: 1/-1 就地横跨两列。
      早先的写法是把 ex.full 的图挂进汇总表那个容器，结果散落在各处的通栏图
-     （CME 的 Ex6/17/18）会被一起提到 Exhibit 2 前面，编号读起来是 1→6→17→18→2→3。
+     （当时 CME 的 Ex6/17/18，该页已重排、号不作数）会被一起提到 Exhibit 2 前面，编号读起来是 1→6→17→18→2→3。
      GS deck 的图号就是阅读顺序，打乱它比少一张图更糟。 */
   var grid = el('grid'), needRedraw = false;
   D.exhibits.forEach(function (ex) {

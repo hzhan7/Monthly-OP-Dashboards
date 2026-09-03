@@ -303,7 +303,7 @@
        0%（15 张，f=0，两轴本来就同零点 —— 含 COST Ex4，
            所以这条规矩碰不到那两个已上线的站）
        13% hood Ex15 / 14% lpla Ex11 / 17% spgi Ex5·msci Ex5·hood Ex3·hood Ex22 /
-       20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex6 / 33% cme Ex7
+       20% hkex Ex7 / 25% msci Ex10·lpla Ex14 / 29% tsm Ex6 / 33% cme 旧 Ex7（2026-09 重排前的号，那张全历史线已删）
        ── 空档 ──
        40% schw Ex11 / 44% axp Ex8 / 50% hood Ex4 / 50% hood Ex14
      33% 与 40% 之间是空的，阈值放在这段空档里对数据抖动最不敏感；
