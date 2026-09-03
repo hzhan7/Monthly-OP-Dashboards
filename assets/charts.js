@@ -12,7 +12,9 @@
      gs_line_avg      平滑线 + 12月均线 + 右端均值标注   ⚠ 2026-09 起全站无人用
                       （IBKR 是它最后一个用户，那页改成 lines + zero_base 之后就空了）
      lines_endlabels  多条平滑线 + 仅两端标数值
-     stacked_dual     堆叠柱 + 右轴线（段内标数值）
+     stacked_dual     堆叠柱 + 右轴线（段内标数值，右轴可选）
+                      左轴：正段自 0 往上堆、负段自 0 往下堆，量程罩住两条包络
+                      （2026-09 起；此前下界写死 0，负段被静默吞掉）。右轴仍写死 r0 = 0。
      ⚠ 上面这几行不再挂具体页的图号：IBKR 的编号在 2026-08 与 2026-09 各变过一次，
        挂在这里的名单没有任何东西在守，改一次图号就成假话。要看谁在用某个图型，
        扫 data/*.js 的 kind 字段。
@@ -64,8 +66,10 @@
                        这条在 build/verify_pages.py 里硬校验，不在这里兜底求和：
                        兜底会把「分部漏了一块」画成一根矮柱，而矮柱看着完全正常。
                        与 ycap / bar_marks 不兼容，遇上时该柱退回单色（见绘制处注释）。
-                       ⚠️ **不要为此改用 stacked_dual**：它的右轴被写死成 0..ymax
+                       ⚠️ **不要为此改用 stacked_dual**：它的**右**轴被写死成 0..ymax
                        （见 `kind === 'stacked_dual'` 那行 ticks(0, rc.ymax || 60, 6)），
+                       —— 2026-09 起它的**左**轴能画负段了，但那管的是「段」为负，
+                       与这里说的「次轴线转负」是两件事，下面这条结论不变；
                        而 gs_bar 的次轴同比是会转负的（全站已统一成单月同比，实测
                        日月光最低 −19.7%、创意 −76.1%；原来这里引的 −13.6% / −23.0%
                        是 2026-08 那一版滚动口径下的读数，那种线现在一条都不画了），
@@ -878,10 +882,19 @@
       }
       lv = lv.concat(bridgeNet(ex, n));
     } else if (kind === 'stacked_dual') {
+      /* 与 bridge_bar 同一条道理：堆叠柱的轴要罩住「正向堆到哪」「负向堆到哪」两条
+         包络，而不是两者相抵之后的合计。原来这里只推合计 —— 一列 +6.4 与 −0.9 的
+         合计是 +5.5，可柱顶实际在 +6.4、柱底在 −0.9，两头都在轴外。
+         全站现有 23 张 stacked_dual 一个负段都没有 ⇒ sn_ 恒为 0、sp_ 恒等于旧的
+         tot，mx 一字不变（mn 本 kind 从前根本没参与量程，从这一轮起才参与）。 */
+      var sp_, sn_, sv_;
       for (i = 0; i < n; i++) {
-        var tot = 0;
-        for (s = 0; s < ex.stacks.length; s++) tot += ex.stacks[s].values[i] || 0;
-        lv.push(tot);
+        sp_ = 0; sn_ = 0;
+        for (s = 0; s < ex.stacks.length; s++) {
+          sv_ = ex.stacks[s].values[i] || 0;      // null / NaN → 0，与从前逐字相同
+          if (sv_ >= 0) sp_ += sv_; else sn_ += sv_;
+        }
+        lv.push(sp_); lv.push(sn_);
       }
     } else lv = ex.values.slice();
 
@@ -898,8 +911,14 @@
     if (kind === 'gs_bar') { y0 = 0; y1 = mx * 1.22; }
     /* 那 28% 顶部留白是给右轴折线的逐点百分比标签的（它们被抬到柱顶之上的白底里）。
        没有右轴线时那批标签根本不存在，留白就成了纯空白 —— 100% 堆叠的柱顶在 100，
-       轴却画到 128。所以按有没有 line 分两档。既有五页都给了 line，取值不变。 */
-    else if (kind === 'stacked_dual') { y0 = 0; y1 = mx * (rhsOf(ex) ? 1.28 : 1.06); }
+       轴却画到 128。所以按有没有 line 分两档。既有五页都给了 line，取值不变。
+       下界原来写死 0：负段按构造就在轴外，而绘图那边 Math.max(0, …) 又把它削成零高
+       不画、基线照样往下走，合起来是「一根颜色错的柱从 −0.9 顶到 +5.5」且不报错。
+       现在改成与 qtr_bar / seasonality / grouped_bars 同一条负向留白规矩
+       （min(0, mn×1.15)）：全非负时 mn 恒为 0 ⇒ y0 仍是 0，既有 23 张一个像素不变。 */
+    else if (kind === 'stacked_dual') {
+      y0 = Math.min(0, mn * 1.15); y1 = mx * (rhsOf(ex) ? 1.28 : 1.06);
+    }
     else if (kind === 'bars_labeled') { y0 = 0; y1 = mx * 1.13; }
     /* 以下四个与 gsx.py 同名函数的 set_ylim 一一对应（qtr_bar 的 1.32 是给竖排标签留的） */
     else if (kind === 'qtr_bar') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.32; }
@@ -1026,6 +1045,10 @@
       tkn.setAttribute('data-tick', 'l');
       try { tickW = Math.max(tickW, tkn.getComputedTextLength()); } catch (e) { }
     }
+    /* 零线：只看量程跨不跨零，与 kind 无关 —— 所以 `stacked_dual` 一旦有负段、
+       下界掉到 0 以下，这条线自动就有了，不必在那个分支里再画一条（画两条会在
+       同一像素上叠出一条更深的线）。它画在 `svg` 上、早于柱所在的 `g`，
+       故被柱压在下面、只在柱与柱之间露出来 —— 与网格线同一层次，是有意的。 */
     if (y0 < -1e-9 && y1 > 1e-9)
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(0), y2: Y(0), stroke: C.AXIS, 'stroke-width': 0.9 }, svg);
 
@@ -1522,19 +1545,47 @@
         txt(g, Xc(n - 1) + 7, d.y, d.t, { size: 8, anchor: 'start', fill: d.c });
       });
     } else if (kind === 'stacked_dual') {
-      var ws = BW(0.62), base = [];
-      for (i = 0; i < n; i++) base.push(0);
+      /* 一列**两条**运行基线：正段自 0 往上堆、负段自 0 往下堆（标准堆叠柱语义）。
+         原来只有一条 `base`。负段在那条路径上是双重静默错误：`Math.max(0, …)` 把它
+         削成零高、根本不画，而 `base[i]` **照样往下走**，于是它上面那一段从负基线
+         起画 —— 一根柱看着是「一整段颜色错的柱」从 −0.9 一路顶到 +5.5，
+         没有报错、没有告警、表格里却是对的（cost FY24Q4：客单 −0.9% / 客流 +6.4%）。
+         `posB` 与从前的 `base` 在全非负数据上逐字节相同（全站 23 张都是），
+         所以既有页面走的仍是同一串浮点数。 */
+      var ws = BW(0.62), posB = [], negB = [], hadP = [], hadN = [];
+      for (i = 0; i < n; i++) { posB.push(0); negB.push(0); hadP.push(false); hadN.push(false); }
       for (s = 0; s < ex.stacks.length; s++) {
         var st = ex.stacks[s], labst = [];
         for (i = 0; i < n; i++) {
-          var lo = base[i], hi = base[i] + st.values[i];
-          var hgt = Math.max(0, Y(lo) - Y(hi) - (s ? 1.5 : 0));
-          el('rect', { x: Xc(i) - ws / 2, y: Y(hi), width: ws, height: hgt, fill: col(st.color) }, g);
+          /* 判据写成 `v < 0` 而不是 `!(v >= 0)`：null / undefined / NaN 与数的比较
+             恒为 false，于是缺值仍走**正**这条路径，把 NaN 灌进 posB、整柱后续段
+             不画 —— 与从前逐字相同的已知行为（docs/CHART_KINDS.md §1.2 记着它，
+             stacked_dual 属 mrwin.DENSE、本来就不许有 null，本轮不顺手改它）。 */
+          var sv = st.values[i], sneg = sv < 0;
+          var lo = sneg ? negB[i] : posB[i], hi = lo + sv;
+          /* 值域的上/下缘：正段是 [lo, hi]，负段反过来是 [hi, lo]。
+             （别把 sUp 写成 `stop` —— 那是 window.stop，函数内 var 虽然只是遮蔽、
+             不报错，但读代码的人会以为在调它。） */
+          var sUp = sneg ? lo : hi, sDn = sneg ? hi : lo;
+          /* 段间留白缝留在**朝零线那一侧**，也就是紧挨前一段的那条边：
+             正段的前一段在下面 ⇒ 缝在下缘（y 不动，高度减 1.5）；
+             负段的前一段在上面 ⇒ 缝在上缘（y 下移 1.5，高度同样减 1.5）。
+             缝写在错的那一侧不会报错，只会让相邻两个同亮度的负段粘成一块。
+             紧贴零线的那一段不留缝，否则柱底/柱顶浮空。判据是 hadP / hadN
+             （「本方向上前面已经画过段没有」），不是 `s === 0`：负向的第一段
+             可以落在 stacks 的任意一层，按下标判会让它离零线浮起 1.5px。
+             全段非负时正向第一段永远是 s === 0，两者等价 —— 既有 23 张逐像素不变。 */
+          var sgp = (sneg ? hadN[i] : hadP[i]) ? 1.5 : 0;
+          var hgt = Math.max(0, Y(sDn) - Y(sUp) - sgp);
+          el('rect', { x: Xc(i) - ws / 2, y: Y(sUp) + (sneg ? sgp : 0), width: ws,
+            height: hgt, fill: col(st.color) }, g);
+          /* 段内标签仍钉在 (Y(lo)+Y(hi))/2 —— 那是**这一段自己**两条边的中点，
+             与正负无关，所以负段的标签自动落在负段体内，不会跑到零线上方。 */
           if (st.label && hgt > 8)
             labst.push({ i: i,
               el: txt(g, Xc(i), (Y(lo) + Y(hi)) / 2 + 2.4, comma(st.values[i], 0),
                 { size: 6.6, fill: col(st.label_color) }) });
-          base[i] = hi;
+          if (sneg) { negB[i] = hi; hadN[i] = true; } else { posB[i] = hi; hadP[i] = true; }
         }
         /* 段内数值同样会横向连成一片（cboe Ex5 @375px 的「11,836」「12,215」重叠 3.3px）。
            一段一抽：同一段的标签在同一带高度上，互相压的只会是左右邻居。 */
@@ -1545,7 +1596,8 @@
          所以这一段整体跳过，不是「画一条空线」。 */
       if (rhsOf(ex) && Y2) {
       polyline(ex.line.values, col(ex.line.color), 1.8, true, false, Y2);
-      /* 左右两轴各自缩放（左轴 0..stackMax*1.28，右轴 0..ymax），两者没有耦合，
+      /* 左右两轴各自缩放（左轴 min(0, 负向堆到底×1.15)..正向堆到顶×1.28，右轴 0..ymax），
+         两者没有耦合，
          右轴折线经常落在柱体内部 —— 那里已经有段内数值标签，两个 6.6px 的数字会在
          同一个 x 上叠成一团（hood Ex9 的 Jun-25：「384」与「41.5%」基线只差 0.1px，
          放大后印成「4384%」，两个真值都读不出）；而且绿字压在深蓝/灰段上，
@@ -1558,7 +1610,10 @@
       for (i = 0; i < n; i++) {
         if (!isNum(ex.line.values[i])) continue;
         var yPct = Y2(ex.line.values[i]) - 5;
-        if (isNum(base[i])) yPct = Math.min(yPct, Y(base[i]) - 2);
+        /* 柱顶 = 正向那条基线（`posB`）。有负段时柱顶仍然是正段堆到的高度，
+           负段挂在零线下方，与这个百分比标签的落点无关；一列全是负段时 posB[i]
+           就是 0，标签被抬到零线上方 —— 那里确实是这一列柱体的顶。 */
+        if (isNum(posB[i])) yPct = Math.min(yPct, Y(posB[i]) - 2);
         labsd.push({ i: i, el: txt(g, Xc(i), yPct, ex.line.values[i].toFixed(1) + '%',
           { size: 6.6, fill: col(ex.line.color) }) });
       }

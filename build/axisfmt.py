@@ -110,8 +110,16 @@ def _left_vals(ex):
     if k == 'grouped_bars':
         return [v for g in ex['groups'] for v in g['values']]
     if k == 'stacked_dual':
+        # 与 `charts.js` 同源：堆叠柱的轴要罩住「正向堆到哪」「负向堆到哪」**两条**
+        # 包络，不是两者相抵之后的合计（+6.4 与 −0.9 的合计是 +5.5，可柱顶在 +6.4、
+        # 柱底在 −0.9）。全非负时负包络恒为 0、正包络恒等于旧的合计，max 一字不变。
         n = len(ex['stacks'][0]['values'])
-        return [sum((st['values'][i] or 0) for st in ex['stacks']) for i in range(n)]
+        out = []
+        for i in range(n):
+            vs = [(st['values'][i] or 0) for st in ex['stacks']]
+            out.append(sum(v for v in vs if v >= 0))
+            out.append(sum(v for v in vs if v < 0))
+        return out
     if k in ('gs_bar', 'gs_line', 'gs_line_avg', 'bars_labeled', 'diverging_bars', 'qtr_bar'):
         return list(ex.get('values') or [])
     return None
@@ -134,7 +142,9 @@ def _left_range(ex):
     elif k == 'stacked_dual':
         # 与 charts.js 同源：顶部留白只在有右轴线时才需要（那批逐点标签被抬到柱顶
         # 之上的白底里）。两处必须一起改，否则 Python 侧的轴模型与引擎画出来的不是同一个。
-        y0, y1 = 0.0, mx * (1.28 if _rhs(ex) is not None else 1.06)
+        # 下界原来写死 0（负段画不出来）；现在与 qtr_bar / seasonality / grouped_bars
+        # 同一条负向留白规矩 min(0, mn×1.15) —— 全非负时 mn 恒为 0 ⇒ 仍是 0.0。
+        y0, y1 = min(0.0, mn * 1.15), mx * (1.28 if _rhs(ex) is not None else 1.06)
     elif k == 'bars_labeled':
         y0, y1 = 0.0, mx * 1.13
     elif k == 'qtr_bar':
@@ -206,8 +216,18 @@ def _bump(fmt, dec):
 def _neg_bar_guard(ex):
     """柱状图型有负值时把 `yfloor` / `ycap` 钉死 —— 否则柱子会画到画布外面去。
 
-    `charts.js:622-624` 给 gs_bar / stacked_dual / bars_labeled 三个 kind
-    **写死** `y0 = 0`，只按最大值定上界。序列里出现负值时 `Y(v)` 落在绘图区下方，
+    ⚠️ **`stacked_dual` 已经从这张名单里去掉了，不要再加回来。**
+    它现在自己会算负向包络（`_left_range` 的 `min(0, mn×1.15)`，与引擎同源），
+    再补一道 `yfloor` 只会互相打架：`yfloor = mn×1.22` 会盖掉引擎算出来的下界，
+    而且 `ycap != None or yfloor != None` 是引擎的**截轴开关**（`charts.js` 的
+    `capOn`），一置上顶边距就从 14 跳到 30、图上多出一行给竖排真值的留白 ——
+    可这张图一根柱都没被截。现存 23 张 stacked_dual 的列合计全非负、
+    这条护栏从来没在它们身上触发过，所以摘掉它对既有页面是零影响（已复跑全站核过）。
+
+    真正还写死 `y0 = 0` 的只剩 gs_bar 与 bars_labeled 两个 kind，在 `charts.js`
+    的 ylim 分支里各占一行 —— `if (kind === 'gs_bar') { y0 = 0; … }`（charts.js:911）
+    与 `else if (kind === 'bars_labeled') { y0 = 0; … }`（charts.js:922）；
+    它们只按最大值定上界。序列里出现负值时 `Y(v)` 落在绘图区下方，
     而 SVG 没有 clip-path —— 柱子会一路画下去盖住后面的 exhibit。
     实测 miax Ex13「股票 capture（每 100 股，可为负）」最小值 −0.028、上界 0.0073，
     越出 3.8 个图高，整片浅蓝色柱压在 Exhibit 15 与 Exhibit 17 的正文上。
@@ -219,7 +239,7 @@ def _neg_bar_guard(ex):
     但我们给的下界比最小值还低 22%，不会有任何一根柱真的被截，
     所以图上不会出现断口符号。
     """
-    if ex.get('kind') not in ('gs_bar', 'bars_labeled', 'stacked_dual'):
+    if ex.get('kind') not in ('gs_bar', 'bars_labeled'):
         return
     vs = _fin(_left_vals(ex))
     if not vs or min(vs) >= 0:
