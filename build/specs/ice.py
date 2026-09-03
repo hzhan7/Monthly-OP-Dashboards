@@ -97,6 +97,32 @@ def _split_vs_total():
     return len(rel), rel[-1], rel[len(rel) // 2]
 
 
+def _split_exact_months():
+    """上面那组月份里，商品合计 + 金融合计与总 ADV **精确相等** 的月数。
+
+    释义板要说的是「这不是恒等式」，而「大多数月份其实相等、少数月份不等」比只报一个
+    最大相对差更能挡住误用：读者看见 121/187 就不会把偶发的不等当成解析错误去「修」。
+    现算，不写死。算不出返回 None。
+    """
+    n = 0
+    ok = False
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            for r in csv.DictReader(fh):
+                try:
+                    c = float(r['adv_commodities_kcontracts'])
+                    f = float(r['adv_financials_kcontracts'])
+                    t = float(r['adv_futures_options_kcontracts'])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if t:
+                    ok = True
+                    n += (c + f == t)
+    except OSError:
+        return None
+    return n if ok else None
+
+
 def _rows():
     try:
         with open(_CSV, encoding='utf-8') as fh:
@@ -386,6 +412,7 @@ def _share_selfcheck():
 
 _NMONEY, _NQTY, _NRATE, _NNOT = _column_census()
 _SPLITN, _SPLITMAX, _SPLITMED = _split_vs_total()
+_SPLITEQ = _split_exact_months()
 _CDS0, _CDSLAG_ZH, _CDSLAG = _cds_start()
 _SHN, _SHMAXPP, _SHMED = _share_selfcheck()
 _NCOLS, _NMONTHS, _M0, _M1 = _shape()
@@ -765,6 +792,179 @@ SPEC = {
          'level': {'col': 'adv_nyse_us_cash_handled_mnsh', 'zh': 'NYSE handled ADV',
                    'unit': 'mn shares/day', 'fmt': 'f0c'},
          'note': _NOTE_TTM_CASH},
+    ],
+
+    # ══ 名词释义：排在所有 exhibit 之前（CONTRACT §1）════════════════════════
+    # 分工：brief 说「**这个月**这组读数怎么读」、每月重写；这里说「**这些词**是
+    # 什么意思」、一年到头同一段 ⇒ 一个当月读数都不写。出现的数只有两类：
+    # 单位换算常数（千张 = 1,000 张）与恒等式本身；实测量只有两个（分项之和与合计
+    # 差多远、差在哪几个月），都复用 `_split_vs_total()` / `_split_exact_months()`
+    # 在 import 期算出来的 `_SPLITMAX` / `_SPLITEQ`，不另抄一份会过期的快照。
+    # 起点年月（`_M0` / `_MIAX0` / `_CDS0`）同理，一律现读。
+    #
+    # 选词只从本页**露过面**的字里选（图题 / 序列名 / 纵轴 / 汇总表行头 /
+    # 核对表列头 / 图注 / 页尾说明），且限于「不看定义就会读错」的那些：
+    #   · 缩写与行话：ADV、月末净 OI、RPC、Tape A/B/C、CDS 名义额、
+    #     TTF（在页上只露过一次脸 —— 汇总表行头「天然气（含 TTF）」—— 但纯缩写，
+    #     不知道它是荷兰枢纽的人会把那一行读成一条纯美国天然气序列）；
+    #   · 单位陷阱：千张（跨家差 1,000 倍）；
+    #   · 官方标签与实际口径不一致：FX 与 USDX（行名写 & CREDIT，其实不含信用）、
+    #     期权行业总量（ICE 从未书面定义过，别当官方口径引）；
+    #   · 同一个词在本页有特定外延：衍生品总 ADV（不含单股、也不是分项相加）、
+    #     单股（已被官方剔出合计）、份额（三组各有各的分母，都是全市场不是池内）、
+    #     handled / matched（份额只能用后者）；
+    #   · 口径断点的实质：追溯并入的形式数（改的是外延，不只是名字）。
+    # 不收 m/m、y/y、3Y %ile、pp/bp —— 那是全站通用的读图约定，summary.note 与
+    # 页尾「同比口径」已经逐条讲过，释义板再讲一遍就是两处各写一份、迟早不同步。
+    #
+    # 每条的口径都对着页尾 notes、图注、series/ 现算与 fetch/ 的口径坑核过，
+    # 冲突以既有 notes / fetch 口径坑为准。⚠ 这一行不是一句自述而是一条纪律：
+    # 上一版栽在它上面两次 —— 一次把 fetch 口径坑 6 明令禁写的错因果（「分项与合计
+    # 各用各的交易日归一」）当定义写进了两条释义，一次把注 [18] 上方已经删掉的
+    # 「本仓唯一」全称断言原样搬了回来。改这一段之前先读那两处。
+    'glossary': [
+        ('ADV',
+         '日均成交量（average daily volume）：<code>当月合计 ÷ 当月交易日数</code>。'
+         '本页凡是标着 ADV 的列都是<b>官方自己算好的日均</b>，本仓不做任何还原、也不再平均'
+         '（CDS 那一组不是 ADV，见下）。'
+         # ⚠ 这里原本接着写「分项与合计各用各的那一套归一 —— 这是页尾『分项之和 ≠
+         #   合计』那条的成因」。那个因果 fetch/ice.py 的口径坑 6 已经证伪过（偏差最大的
+         #   2011-08 / 2011-10 / 2012-08 里两列交易日恰恰相等），本机现算也是：两列相等
+         #   的 69 个月里有 25 个月不平，两列不等的 118 个月里反而有 77 个月精确相等。
+         #   ⇒ 只留「两套交易日各归一各的」这个可核的事实，不再宣称它解释了什么。
+         '⚠️ ICE 有<b>不止一套交易日</b>（<code>trading_days_commod</code>、'
+         '<code>trading_days_rates</code>，美股现货另有一套），各条 ADV <b>各归一各的</b>'
+         ' —— <b>不要</b>随手挑一套乘回去把日均还原成当月合计，横跨两侧的列没有哪一套'
+         '日历能代表它。'),
+
+        ('千张（k contracts）',
+         '官方原表的单位（原文 "contracts in 000s"）：本页衍生品 ADV 与 OI 的 1 '
+         '就是 <b>1,000 张</b>合约。⚠️ 跨家比较前必须先统一 —— '
+         '<code>series/cme.csv</code> 的 <code>oi_*_contracts</code> 是裸张数，'
+         '两者差 1,000 倍。另外月度值<b>在官方原表里就已四舍五入到整千张 / 整百万股</b>，'
+         '所以本页计数类一律按 0 位小数显示；小基数行（环境权益、FX 与 USDX）的同比'
+         '因此会与官方新闻稿略有出入，那是官方自己取整造成的（见页尾）。'),
+
+        ('衍生品总 ADV',
+         '页顶头条那一列，官方原表行名 <b>TOTAL FUTURES & OPTIONS</b>，'
+         '横跨大宗商品与金融两侧、<b>不含单股</b>。汇总表「金融衍生品 ADV」组里的'
+         '「期货与期权总计」<b>是同一列</b>，不是第二个读数。'
+         # ⚠ 原文在这里给了「合计按总量÷总交易日归一、而两套交易日不同」这个因果。
+         #   fetch/ice.py 口径坑 6 白纸黑字写着它已被证伪，原话是「写一个错的因果，
+         #   下一个人会去『修』一个修不好的东西」。⇒ 只留现算得出的事实，成因写「官方
+         #   未说明」。（页尾注与 Ex25 图注里还留着同一句错因果，那两处不在本次范围内。）
+         '⚠️ 它<b>不是</b>「大宗商品合计 + 金融合计」相加得来的：'
+         + ((f'{_SPLITN} 个月里 {_SPLITEQ} 个月两边精确相等，其余月份有 '
+             f'0~{_SPLITMAX:.2f}% 的相对差（现算）。')
+            if (_SPLITMAX is not None and _SPLITEQ is not None) else
+            '多数月份两边精确相等，少数月份差一层（见页尾实测）。')
+         + '<b>官方从未说明原因</b>，本仓也未查明 —— '
+         '<b>不要当恒等式、也不要当校验条件</b>用。'),
+
+        # TTF 在全页只露过一次脸：汇总表「能源衍生品 ADV」组的行头「天然气（含 TTF）」。
+        # 它是纯缩写，且正好是「不看定义就会读错」的那一类 —— 不知道它是荷兰枢纽的人，
+        # 会把这一行当成一条纯美国（Henry Hub）天然气序列。
+        # 口径出处：docs/verify/ice.md:89（adv_natgas_kcontracts = 北美 + NGX + 英国 +
+        # 欧洲（含 TTF））与 fetch/ice.py 口径坑 17（整份工作簿逐格扫过，TTF 没有独立行，
+        # 被折进 Nat Gas；官方新闻稿点评的 TTF 是合约级口径，与本表的产品组行同名不同物）。
+        ('TTF',
+         'Title Transfer Facility，荷兰的天然气交易枢纽，是 ICE Futures Europe 那条'
+         '<b>欧洲</b>气基准。⚠️ 本页汇总表里的「天然气（含 TTF）」<b>不是</b>一条纯美国'
+         '（Henry Hub）序列 —— 官方把北美、NGX、英国与欧洲（TTF 就在其中）四块'
+         '<b>合并成一行</b>披露，<b>不拆</b>。⇒ 本表给不出「ICE 的 TTF 成交量」；'
+         '官方新闻稿里单独点评过的 TTF 同比是<b>合约级</b>口径，与这一行同名不同物，'
+         '拿它去反推一个 TTF 绝对量是在编数。'),
+
+        ('单股',
+         '<code>adv_single_stock_kcontracts</code>，ICE Futures Europe 的单股期货 / 期权。'
+         '官方<b>已把它从 TOTAL FINANCIALS 剔除</b>（理由是收入封顶、与量无相关性），'
+         '所以本页的「金融合计（不含单股）」与「衍生品总 ADV」<b>都不含它</b>。'
+         '它只能单独看，<b>不要并进任何合计或竞争池</b>。'),
+
+        ('FX 与 USDX',
+         '<code>adv_fx_credit_kcontracts</code>。官方行标签写的是 "TOTAL FX & CREDIT"，'
+         '但<b>口径是外汇 + 美元指数（USDX），不含信用</b> —— 依据是表内脚注原文只提 '
+         'U.S. Dollar Index 与 foreign exchange，并与官方合约级明细文件对上过（见页尾）。'
+         'ICE 的信用业务在本页是<b>另一组</b>（CDS 清算名义额），两者既不同口径也不同单位。'),
+
+        ('月末净 OI',
+         '未平仓合约（open interest），月末<b>净</b>口径（表内注明按行业惯例报 net OI）。'
+         '它是<b>存量</b> —— 某一天的截面，不是当月发生的量，'
+         '<b>不能与本页的日均 / 当月合计相加</b>；跨币种换算时流量配月均汇率、'
+         '存量配月末汇率。单位同样是千张。⚠️ 官方<b>没有 TOTAL OI 行</b>，'
+         '新闻稿里的 "Total OI" 是「大宗商品 + 金融」两条自己加出来的。'),
+
+        ('RPC（每张收入）',
+         'revenue per contract。官方定义（表内脚注 1）= <code>交易收入 ÷ 合约量</code>，'
+         '而且是<b>滚动三月均</b> —— 所以<b>不能拿它乘单月量当单月收入</b>。'
+         '⚠️ 它是<b>费率不是成交价</b>：分子是 ICE 向会员收的费，'
+         '不是市场撮合出来的价格，本页因此不画量价分解（见页尾第一条）。'
+         '与 Cboe 不同，ICE 的 RPC <b>不滞后</b>一个月，两家并排画时 ICE 那条每月都会'
+         '多伸出一格。现货那一条的单位是 USD/100 股，不是 USD/张。'),
+
+        ('handled / matched',
+         'handled = 本所撮合 + <b>路由到别家</b>交易所成交的量；'
+         'matched = <b>只算本所自己撮合</b>的那部分。'
+         '⇒ 市场<b>份额只能用 matched 算</b>，拿 handled 当分子等于把别家的成交'
+         '记在自己名下。本页头条「NYSE 美股现货 ADV（handled）」量的是 NYSE Group 的'
+         '<b>体量</b>，而所有份额列（NYSE 全美 matched 份额、三条 Tape 份额）'
+         '都是 matched 口径，<b>两者不可互相换算</b>。'),
+
+        ('Tape A / B / C',
+         '美股合并行情的三条带，按<b>上市地</b>划分：Tape A = NYSE 上市，'
+         'Tape B = NYSE Arca / American 与区域所上市，Tape C = Nasdaq 上市。'
+         # ⚠ 原文这里写的是「这个分母只有 ICE 按月披露」。它与本页自己的页尾注打架：
+         #   注 [18] 点名 series/miax.csv 的行业 ADV 是同类分母，注 [19] 更说两条数值
+         #   几乎逐位相同 —— MIAX 那条同样按月披露。这正是 [18] 上方那段注释警告过的
+         #   「跨页全称断言」，被删掉的那半句不能从释义板搬回来。
+         #   ⇒ 换成两条都在本仓、都能现读的事实：起点谁更早，以及「按 tape 拆」这一层。
+         '每条带本页给三列：<b>「全市场」是全美合并成交量</b>（所有成交场所之和，'
+         '<b>不是</b> NYSE 自己的量）'
+         + ((f'。同口径的分母本仓另有一条（<code>series/miax.csv</code> 的行业 ADV，'
+             f'两家独立申报、数值几乎逐位相同，见页尾），但它自 {_MIAX0} 才起，'
+             f'本页这三列回溯到 {_M0}；')
+            if (_M0 and _MIAX0) else '。同口径的分母本仓另有一条（miax 的行业 ADV），')
+         + '且 miax 那条只有一个全市场合计，<b>按 tape 拆开</b>的是 ICE 这三列。'
+         '另两列是 NYSE 在该带的 matched 与 handled。'),
+
+        ('份额（share_*）',
+         '本页五条份额列在官方原表里是 <b>0–1 的小数</b>（0.191 = 19.1%），'
+         '页面统一 ×100 按百分数显示（<code>series/miax.csv</code> 存的却是百分数，'
+         # ⚠ 原文把三条 Tape 份额与「NYSE 全美 matched 份额」并成一组，说分母都是
+         #   「全美合并成交量」。三条 Tape 份额的分母其实是**该带自己**的合并量：
+         #   现算 2026-07，share_nyse_tapeA_matched = 0.291 = 1,534 ÷ 5,267（Tape A 自己
+         #   的合并量），而 1,534 ÷ 17,437（三带合计）只有 0.088 —— 按字面读会把
+         #   Tape A 份额算错三倍多。⇒ 三组分母分开写。
+         '跨页取数别弄混）。<b>分母各不相同</b>，三组各是各的：'
+         '三条 <b>Tape 份额</b>的分母是<b>该带自己</b>的全市场合并量'
+         '（该带 matched ÷ 该带 consolidated），<b>不是</b>三条带的合计；'
+         '<b>NYSE 全美 matched 份额</b>才是三带之和除三带之和'
+         '（三带 matched 之和 ÷ 三带合并量之和）；'
+         '<b>NYSE 份额（官方直接给）</b>的分母是全美股票/ETF 期权行业总量。'
+         '三者都是<b>全市场</b>分母，<b>不是</b>「本页出现的这几家」池内份额。'),
+
+        ('期权行业总量',
+         '<code>adv_us_equity_options_industry_kcontracts</code>：'
+         '全美股票 / ETF 期权的行业合计，<b>不含指数期权</b>，'
+         '是「NYSE 份额（官方直接给）」的分母。⚠️ 这个口径是与 Cboe multilist 及 '
+         'ICE 10-K 交叉验证出来的 —— <b>工作簿里这一行没有任何脚注、'
+         'ICE 从未书面定义过</b>，不要当官方定义引用。'),
+
+        ('CDS 清算名义额',
+         'ICE Clear Credit 当月清算的 CDS <b>名义总额</b>（gross notional，单边计），'
+         '单位十亿美元。⚠️ 是<b>当月总量，不是日均</b>（原表标题里没有 daily 字样）'
+         '—— 与本页其余 ADV 列<b>不是同一种口径</b>，不要顺着读成「每天多少」。'
+         '「合计 = 客户盘 + 非客户盘」（官方原表行名 CLIENT / NON-CLIENT），'
+         '入库时逐月核过。'
+         + ((f'三列自 {_CDS0} 起，早于该月的空格是官方就没有，不是漏抓。')
+            if _CDS0 else '三列起步晚于全表首月，早期的空格是官方就没有，不是漏抓。')),
+
+        ('追溯并入的形式数',
+         'ICE 在 2013-11 才完成 NYSE Euronext 收购，但官方原表把 NYSE 的 ADV / RPC / OI '
+         '<b>追溯并入了此前的每一个月</b>（原表注：for comparison purposes）。'
+         '⇒ 红色竖虚线<b>左边</b>那一段里的 NYSE 各列，讲的是被收购前 NYSE Euronext 的量，'
+         '<b>不是 ICE 的</b>，与线右边不可比。这是本页唯一一处口径断点；'
+         '热力矩阵没有连续横轴、画不出这条线，读它的同比要自己扣掉这一层。'),
     ],
 
     'notes': [

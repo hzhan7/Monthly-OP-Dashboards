@@ -983,6 +983,362 @@ def _breaks():
     return sorted(out, key=lambda b: (b['month'], b['col']))
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（SPEC 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与页尾 notes / 图注的分工 ━━
+# notes 与图注说的是「这一张图这个月该怎么读」（含当月读数、当月实测的毛刺量）；
+# 这一块说的是「这些词是什么意思」，一年到头是同一段 ⇒ 这里**不写当月读数**。
+# 出现的数只有两类：把定义钉住的**结构性**量（隐含交易日数有多少个月不是整数、
+# 两类利率合约的单张面值差几倍、四档相加与合计的残差）与恒等式本身；
+# 能现算的一个都不写死（同本文件其余图注的做法，全部在 import 期从
+# series/tmx.csv 与 series/contract_specs.csv 读）。唯一的两个字面常数是
+# **官方合约规格里的乘数**（个股 / ETF 期权 100 股·份/张），出处写在 `_FACE_OPT`
+# 的注释里 —— 它在 contract_specs.csv 里那一格是空的（📌 未填），现算不出来。
+#
+# ━━ 为什么是这 15 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
+# 而且**不看定义就会读错**。按「读错会出什么事」分四类：
+#   ① 单位与分母   ADV / 张（contract）/ 月末未平仓（OI）—— 本页四十来张图在
+#      contracts/day、contracts/month、contracts 三种量纲之间反复切换，而 MX 的 ADV
+#      是官方直接发的、**还原不出来**（一个月跑两套交易日历）。不点破，读者会拿
+#      「当月合计 ÷ 交易日数」去核对 ADV，或把存量的未平仓与流量的成交加在一起。
+#   ② 合约代码     BAX / CRA、CGB / CGF / CGZ、SXF、个股期货 / 个股期权 ——
+#      它们以**裸代码**出现在图题、图例、汇总表行头里，不查表根本不知道是什么；
+#      而且各自带一个坑（换代不是归零、张数不是久期、占比高不是抢份额、
+#      名字只差一个字却分属两个分母）。
+#   ③ 本页轧出来、不是官方披露的数   「其他」段（占比图的残差）、加权平均成交价、
+#      每笔平均成交额 —— 这三个在页面上长得和官方列一模一样，必须点明来路，
+#      而且「其他」段在本页有**三种**含义。
+#      ⚠ 2026-09 复核：上一版这里只写了两种（官方未单列 vs 本仓的管道边界），
+#      漏掉了本页 mix 图里占三张的那一种 —— 现货成交额 / 股数 / 笔数的残差段
+#      `residual_zh` 明写着「Alpha-X & Alpha DRK」，那是官方 2023-11 起单列、
+#      本仓已入库、并且各自另有专图的一条列（`_NOTE_MIX_SPOT` 第一句说的正是这件事），
+#      既不是「官方未单列」也不是「本仓的管道边界」。按两分法读那三张图两种都是错的。
+#      同一次复核还改掉两处与本页既有图注打架的说法：
+#        · 「官方未单列 = 官方表里本来就没有这一栏」对 **LGB 不成立** ——
+#          `_NOTE_BOND_OI` 与 CGB 那条词条都写着它在官方 Bond Futures 小节里是一行
+#          （四条之和恰是小节 Total），进残差是因为本仓没为它登记列；
+#        · 「期权那张的残差 = fetch/tmx.py 没登记那一格」也不全对 ——
+#          股指期权那一块**入库了**（`mx_adv_index_options_contracts`，`_NOTE_MIX_OPT`
+#          还拿它量过占比），只是归零多年没单开线。
+#   ④ 谁是谁的分母 / 外延   MX、TMX 合计、TSX / TSXV / Alpha、Alpha-X & Alpha DRK、
+#      S&P/TSX Composite —— 本页最贵的一类误读全在这里：把「TMX 合计」读成加拿大
+#      全市场（于是把池内份额读成全国市占率）、把 Alpha-X 2023-11 之前的空白读成
+#      「那时没有成交」、拿含仙股的合计去配只含主板成分的指数。
+# **有意不收**：
+#   · m/m、y/y、单月同比 / 点对点同比、3Y %ile、pp/bp —— 全站通用的读图约定，
+#     summary.note 与页尾 notes 第 6、7 条已经逐条讲过，释义板再讲一遍就是两处各写一份；
+#   · 「慢腿」「口径断点」—— 页尾 notes 第 2、3 条讲的正是这两件事在本页的**具体落点**
+#     （哪几列、哪几张图），那是每月都会变的名单，不该塞进一年不动的释义里；
+#   · 「存量 / 流量」—— notes 第 4 条逐列点名了哪些是存量，这里只在「月末未平仓」
+#     那一条里带一句它属于哪边就够；
+#   · 成交额 / 成交股数 / 成交笔数 —— 本页对它们没有特殊口径（原始单位、当月合计），
+#     真正的坑在「谁是分母」上，已由 TMX 合计与那三条盘口词条覆盖；
+#   · BOX —— 页尾说明了它只有季度口径、本页一张图都没有，页面上不出现的词不收。
+# ══════════════════════════════════════════════════════════════════════════════
+
+#: 个股 / ETF 期权的合约乘数：**官方规格里的常数**，只能写死。
+#: series/contract_specs.csv 的 MX_EQUITY_OPT / MX_ETF_OPT 两行 base_notional 那一格
+#: 至今是空的（📌 未填 —— 要逐个期权类拉 2019-01 成交量与标的均价才补得上），
+#: 所以这个数现算不出来。出处写在同两行的 evidence 列里：
+#: 「乘数已核实：100 股/张（m-x.ca 单股期权规格页）」/「100 份/张（Options on ETF 规格页）」。
+#: 页尾 notes 与两条图注里那句「一张个股期权的名义值是 100 股 × 股价」用的是同一个数。
+_FACE_OPT = 100
+
+
+def _face(pid):
+    """series/contract_specs.csv 里某个 MX 产品的**基期单张面值**（本币，float）。
+
+    利率合约按**面值**计名义额、不乘结算价（报价是 100 − 收益率，乘上去无经济含义），
+    所以这一格就是「一张合约代表多大敞口」的官方口径答案。读不到返回 None ——
+    缺文件 / 缺行不许在 import 期抛异常（同本文件其余现算函数）。
+    """
+    path = os.path.join(_ROOT, 'series', 'contract_specs.csv')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            for r in csv.DictReader(fh):
+                if r.get('product_id') == pid:
+                    v = (r.get('base_notional_per_unit_local') or '').strip()
+                    return float(v) if v else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _adv_divisor_zh():
+    """「当月合计 ÷ ADV」得到的隐含交易日数有多少个月不是整数 —— 现算。
+
+    这是「MX 全所 ADV 还原不出来」这句话的**证据**，不是形容词：MX 一个月里跑两套
+    交易日历（利率/债券类跟债市、股票类跟股市），GRAND TOTAL 的 ADV 因此是两套日历
+    混出来的，拿当月合计除以任何一个整数天都得不到它。
+    容差 0.05 与 fetch/tmx.py 口径坑 2 的反推容差对齐（那边超过 0.05 就判「基准合约
+    自己跨了日历」并报错）—— 两处用同一把尺子，免得同一件事在两处各有一个门槛。
+    算不出返回空串，调用方退回不带数字的说法。
+
+    ⚠ **这个计数不能整个归因给「两套日历」，所以它自己要把归因拆开报。**
+    2026-09 复核：上一版只报「N 个月得不到整数天」并把它直接摆在「两套日历」后面当
+    证据，而页尾说明里 `_tday_mismatch_zh()` 现算的是另一个数（两条交易日列真的不等的
+    月份数），同一页上两个数并排、读者无从判断该信哪个。实测这不是口径差而是归因错：
+    两列不等的那些月份**恰好是**得不到整数天的月份的一个子集，剩下的那些月两列完全
+    相同、集中在早年，是官方的量表与 ADV 表本身对不上，与日历无关。
+    ⇒ 这里按「两列等不等」把 bad 拆成两堆分别报，两条腿都现算：
+      · 不等的那一堆与页尾那条 notes **同源同数**（同样比 trading_days_rates /
+        trading_days_equity 两列），页面上不会再出现两个互相打架的计数；
+      · 相等的那一堆报个数、最晚月份与最离谱的一个月（隐含天数 vs CSV 记的天数）。
+    **上一版那句「最大偏离 X 天」已删**：dev 是「离最近整数的距离」，按定义就 ≤0.50，
+    印出来的 0.50 是这把尺子的天花板而不是一个观测，而且会被读成「隐含天数最多差半天」
+    ——实际最远的一个月离 CSV 记的天数差了 4 天以上。要报差距就报离**记录值**的差。
+    """
+    a_col, e_col = 'trading_days_rates', 'trading_days_equity'
+    n = bad = same = 0
+    last_same = None
+    gap, gap_m, gap_d, gap_rec = 0.0, None, None, None
+    for r in _rows():
+        v, a = _num(r, 'mx_volume_contracts'), _num(r, 'mx_adv_contracts')
+        if not v or not a:
+            continue
+        n += 1
+        d = v / a
+        if abs(d - round(d)) <= 0.05:
+            continue
+        bad += 1
+        x = (r.get(a_col) or '').strip()
+        y = (r.get(e_col) or '').strip()
+        if not x or not y or x != y:
+            continue                    # 两套日历真的不同 —— 只有这一堆能归因给日历
+        same += 1
+        last_same = r['month']
+        try:
+            rec = float(x)
+        except ValueError:
+            continue
+        if abs(d - rec) > gap:
+            gap, gap_m, gap_d, gap_rec = abs(d - rec), r['month'], d, rec
+    if not n or not bad:
+        return ''
+    out = f'实测拿当月合计去除 ADV，{n} 个月里有 <b>{bad} 个月得不到整数天</b>'
+    if not same:
+        return out + '，逐月都对得上「两列不等」那几个月'
+    out += (f'；其中 {bad - same} 个月正是两条交易日列<b>本身不等</b>的那几个月'
+            f'（与页尾说明里那条现算的是同一批），另外 {same} 个月两列<b>相等</b>'
+            f'（最晚一个 {last_same}）')
+    if gap_m:
+        out += (f'——那是早年官方的量表与 ADV 表<b>本身对不上</b>，与日历无关'
+                f'（差得最远的 {gap_m} 隐含 {gap_d:.1f} 天，而两列都记 {gap_rec:.0f} 天）')
+    return out
+
+
+_ADV_DIV = _adv_divisor_zh()
+_FACE_STIR, _FACE_BOND = _face('MX_STIR'), _face('MX_BOND')
+# 「两类利率合约一张差几倍」——两个面值都读得到才说，读不到就整句不写。
+_FACE_ZH = (
+    f'本仓 <code>series/contract_specs.csv</code> 记的基期单张面值：'
+    f'短端利率（BAX / CRA）C${_FACE_STIR:,.0f}、国债期货（CGB / CGF）'
+    f'C${_FACE_BOND:,.0f}，相差 {_FACE_STIR / _FACE_BOND:,.0f} 倍；'
+    f'个股与 ETF 期权一张对应 {_FACE_OPT} 股（份）× 标的价。'
+    if _FACE_STIR and _FACE_BOND else
+    f'不同合约一张代表的敞口差着数量级（个股与 ETF 期权一张对应 {_FACE_OPT} 股'
+    f'（份）× 标的价，利率合约按面值计）。')
+
+# BAX → CRA 换代的两个月份：迁移完成月（BAX 转 0 的那一月）与最后一个非零月，
+# 与 `_breaks()` 用的是同一个 `_first_zero_after_nonzero()`，不另写一份。
+_BAX_LAST, _BAX_GONE = _zero_tail('mx_adv_bax_contracts')[0], \
+    _first_zero_after_nonzero('mx_adv_bax_contracts')
+_BAX_ZH_G = (f'BAX 的 ADV 自 <b>{_BAX_GONE}</b> 起恒为 0（最后一个非零月 {_BAX_LAST}）'
+             if _BAX_GONE and _BAX_LAST else 'BAX 的 ADV 在换代完成那一月起恒为 0')
+# Alpha-X & Alpha DRK 单列（并计入 TMX 合计）的首月，以及四档相加与合计的残差。
+_AX_FROM = _first_present('alphax_drk_volume_shares')
+# 四档相加与合计的残差**不能整段当核对结果用**（`_bench_wedge()` 的 `_BWR` 覆盖
+# tmx_all_* 的**全部**月份，而换源前那一段是本仓自己按三档加总的，残差恒 0 是定义
+# 使然）—— 释义里报的是下面 `_all_identity_split()` 拆出来的右半段。
+# **这段注释里一个计数都不写**：写死一次就要过期一次，要看当期数就 import 本模块
+# 打印 `_all_identity_split()`（同 `_tday_mismatch_zh()` 的做法）。
+
+
+def _all_identity_split():
+    """「TSX + TSXV + Alpha(+Alpha-X&DRK) ≡ TMX 合计」这条式子里，**哪一段真的核过**。
+
+    2026-09 复核加的：上一版释义把它写成「官方恒等式 … 全期最大残差 0 股（分毫不差）」，
+    而 fetch/tmx.py 口径坑 17 写得很直白 —— **CIRO 的历史报里没有「TMX 合计」这一列**
+    （它的 `All Traded Marketplaces` 是全加拿大，含 CSE / Nasdaq CXC / MATCHNow / NEO…），
+    所以 `_SRC_SWITCH` 之前那一段的 `tmx_all_*` 是**本仓按三档加总**出来的。
+    那一段的零残差是**定义使然**，不是核对结果；「官方」与「全期」两个词一起用，
+    正好把这件事盖住。这里把月份数按 `_SRC_SWITCH` 拆成两堆，让释义只把
+    「核对结果」这四个字给到右边那一堆。
+
+    返回 (换源前月数, 换源后月数, 换源后的最大残差)；算不出返回 (None, None, None)。
+    """
+    before = after = 0
+    resid = 0.0
+    for r in _rows():
+        tot = _num(r, 'tmx_all_volume_shares')
+        if not tot:
+            continue
+        parts = [_num(r, c) for c in ('tsx_volume_shares', 'tsxv_volume_shares',
+                                      'alpha_volume_shares')]
+        if any(p is None for p in parts):
+            continue
+        ax = _num(r, 'alphax_drk_volume_shares') or 0.0
+        if r['month'] < _SRC_SWITCH:
+            before += 1
+        else:
+            after += 1
+            resid = max(resid, abs(tot - (sum(parts) + ax)))
+    if not before and not after:
+        return None, None, None
+    return before, after, resid
+
+
+_ALL_N_CIRO, _ALL_N_TMX, _ALL_RESID_TMX = _all_identity_split()
+
+_GLOSSARY = [
+    # ── ① 单位与分母 ────────────────────────────────────────────────────
+    ('ADV（日均成交）',
+     '<b>日均成交张数</b>（average daily volume，contracts/day）。'
+     '⚠️ MX 这一侧的 ADV 是<b>官方直接发布</b>的（m-x.ca 月度 xlsx 的 <code>EN ADV</code> 表），'
+     '本页<b>不做除法</b>，也<b>还原不出来</b>：MX 一个月里跑<b>两套交易日历</b>'
+     '（利率 / 债券类跟债市、股票类跟股市），全所合计的 ADV 是两套混出来的，'
+     '拿当月合计除以任何一个整数天都还原不回去。'
+     + (_ADV_DIV + '。' if _ADV_DIV else '')
+     + '想看「一个月一共做了多少」要看 <code>contracts/month</code> 那张'
+       '（「MX 当月成交总量」），它是官方<b>另发的一列</b>，两条谁也不从谁推。'
+       '⚠️ 现货那半边<b>一条 ADV 都没有</b>：本页现货三类列一律是<b>当月合计</b>'
+       '（官方新闻稿里印的 Daily Average 只保留到 0.1 million，本仓不入库，'
+       '见 <code>fetch/tmx.py</code>）。'),
+
+    ('月末未平仓（OI）',
+     'open interest：<b>月末仍未了结</b>的合约张数，取自官方 xlsx 的 '
+     '<code>MONTH END OPEN INTEREST</code> 列块。'
+     '它是<b>某一天的截面（存量）</b>，不是当月累计（流量）⇒ 与 ADV、当月成交'
+     '<b>既不能相加也不能比大小</b>，本页也一律不与流量共轴。'
+     '本页凡带「月末未平仓」的行、图与核对表列头都是它。'),
+
+    ('张（contract）',
+     'MX 那半边的唯一计量单位：<b>合约张数</b>，一张合约成交计 1 张、<b>单边计</b>'
+     '（不把买卖两边各计一次）。'
+     '⚠️ <b>张数既不是名义额也不是风险敞口</b>：不同合约一张代表的敞口差着数量级 —— '
+     + _FACE_ZH
+     + '⇒ 本页所有占比图读作「成交（或持仓）<b>张数</b>落在哪个产品上」，'
+       '不是收入构成，也不是风险构成。'),
+
+    # ── ② MX 那条腿与它的合约代码 ───────────────────────────────────────
+    # 顺序上把 ④ 类里的「MX」提到这里：下面五条讲的都是 MX 的产品，
+    # 先说清「MX 是哪半边」再逐个讲代码，比按分类硬排更好读。
+    ('MX（蒙特利尔交易所）',
+     'Montréal Exchange，TMX 集团的<b>衍生品交易所</b>。本页凡以 contracts 计量的行与图'
+     '（ADV、当月成交、月末未平仓、各产品分档）全部只讲它；'
+     '加拿大<b>现货</b>那半边（TSX / TSX Venture / TSX Alpha / Alpha-X & Alpha DRK）'
+     '是<b>另一条腿</b> —— 另一个官方源、另一套单位、另一个发布节奏。'
+     '⇒ 两条腿的读数不能相加；本页的数据月也只由 MX 那条定。'),
+
+    ('BAX / CRA',
+     'MX 的两代<b>三个月期短端利率期货</b>：<b>BAX</b> 是加拿大银行承兑汇票期货'
+     '（基准 CDOR），<b>CRA</b> 是 CORRA 期货。CDOR 停用后二者完成换代，'
+     + _BAX_ZH_G + '，CRA 接棒（月份由 CSV 里 BAX 转 0 的那一月读出，没有写死）。'
+     '⚠️ 这是<b>产品替换</b>，不是短端利率业务归零：「短端利率合计」那条跨这个月是'
+     '连续的（BAX 掉多少 CRA 接多少），所以本页把两条画在一起，'
+     '红色竖虚线也只画在短端利率这几列上。'),
+
+    ('CGB / CGF / CGZ',
+     'MX 的<b>加拿大国债期货</b>三档久期：CGB = 10 年（MX 旗舰合约）、CGF = 5 年、'
+     'CGZ = 2 年。官方 Bond Futures 小节里还有一个 <b>LGB</b>（30 年），'
+     '四条之和恰是小节的 Total ⇒ 本页「国债期货合计」与三档之间的那点残差<b>就是 LGB</b>，'
+     '不是一篮子说不清的东西。'
+     '⚠️ 三档是按<b>张数</b>并排，不是按利率风险：同样面值下 2 年期与 10 年期的 DV01 '
+     '差 5 倍以上（久期约 1.9 年 vs 约 8 年，出处见 '
+     '<code>series/contract_specs.csv</code> 的 MX_BOND 行），'
+     '而月度成交报表里没有久期字段，本页拆不出风险口径。'),
+
+    ('SXF',
+     '<b>S&P/TSX 60 标准股指期货</b>，MX 股指期货的主力合约；'
+     '「股指期货合计」减去 SXF 之后那一小段是官方未单列的其余股指合约（SXM 迷你等）。'
+     '⚠️ 它的占比常年在九成以上，读作「加拿大的股指期货成交几乎全部集中在<b>一张合约</b>上」，'
+     '<b>不是</b>「它打赢了谁」—— 这些合约的唯一挂牌地就是 MX。'),
+
+    ('个股期货 / 个股期权',
+     '<b>两条不同的序列，名字只差一个字。</b><b>个股期货</b>（share futures）是期货，'
+     '在本页算进「期货 ADV」那张占比图的分母；<b>个股期权</b>（equity options）是期权，'
+     '在「MX 期权」那张占比图里，分母是期权 ADV 合计。'
+     '⇒ 两者<b>分属两个分母</b>，把它们相加不指代任何东西；'
+     '与个股期权同图可比的是 <b>ETF 期权</b>那一段。'),
+
+    # ── ③ 本页轧出来、不是官方披露的数 ──────────────────────────────────
+    ('「其他」段',
+     '<b>几乎每一张</b> 100% 占比图最上面那一段是<b>算出来的残差</b> —— '
+     '合计减去本页画出来的各分项，<b>不是</b>直接取自某一条官方列'
+     '（唯一没有这一段的是 MX「期货 vs 期权」那张：两栏之和逐月恰等于合计）。'
+     '本页有<b>三种</b>残差，读法完全不同：'
+     '① <b>官方单列、本页另有专图</b>，只是这张图没把它画成一段 —— '
+     '现货成交额 / 股数 / 笔数那三张，那一段<b>就是 Alpha-X & Alpha DRK</b>'
+     '（官方自己一行、本页另有三张图，构成完全已知，见它自己那条词条）；'
+     '② <b>本页没为它单画一条线的其余合约</b> —— 国债期货那两张的 <b>LGB（30 年）</b>'
+     '（它在官方 Bond Futures 小节里<b>是一行</b>，三档加它之和恰是小节的 Total，'
+     '所以那一段就是它）、股指期货那张的 SXM 迷你等（官方在本页取数的那一栏里没有单开）；'
+     '③ <b>本仓的管道边界</b> —— 期权那张、MX 月末未平仓那张：官方那几行都在，'
+     '本页却没把它们画成一段（有的没入库，有的入库了但归零多年、单开是条死线）。'
+     '⇒ ①② 查得到是什么，只有 ③ <b>本页给不出构成，别去估</b>。'),
+
+    ('加权平均成交价',
+     '<b>不是官方披露的数</b>，是页尾量价分解图<b>现算</b>的派生量：'
+     '<code>当期成交额 ÷ 当期成交股数</code>（C$/股）。'
+     '它同时含两件事 —— 市场整体涨跌，与成交在贵票和便宜票之间的迁移'
+     '（本页把后者叫<b>品种结构</b>）。两者靠 S&P/TSX Composite 拆得开，'
+     '拆法与逐年读数在那张图的图注里。'),
+
+    ('每笔平均成交额',
+     '同样<b>不是官方披露的数</b>：<code>当期成交额 ÷ 当期成交笔数</code>（C$/笔）。'
+     '⚠️ <b>它不是价。</b>它衡量的是<b>订单碎片化</b> —— 同一笔母单被切成更多子单时，'
+     '笔数上升、每笔金额下降，而成交额与股价一个都没动。要读价请看「加权平均成交价」。'),
+
+    # ── ④ 谁是谁的分母 / 外延（现货那条腿；MX 那一条见上）────────────────
+    ('TMX 合计',
+     '现货那半边的分母：<code>TSX + TSX Venture + TSX Alpha</code>'
+     + (f'（{_AX_FROM} 起再加 Alpha-X & Alpha DRK）' if _AX_FROM else '（后来再加 Alpha-X & Alpha DRK）')
+     + '。⚠️ <b>这条恒等式只有右半段是核对结果</b>：'
+     + (f'{_SRC_SWITCH} 起 TMX 自报合计的那 {_ALL_N_TMX} 个月是逐月核过的'
+        f'（最大残差 {_ALL_RESID_TMX:,.0f} 股）；'
+        if _ALL_N_TMX and _ALL_RESID_TMX is not None else
+        f'{_SRC_SWITCH} 起那一段是拿 TMX 自报的合计逐月核过的；')
+     + f'{_SRC_SWITCH} 之前'
+     + (f'那 {_ALL_N_CIRO} 个月' if _ALL_N_CIRO else '那一段')
+     + '的合计是<b>本仓按三档加总</b>出来的 —— <b>CIRO 没有「TMX 合计」这一列</b>'
+       '（它的 All Traded Marketplaces 是全加拿大，不是 TMX 集团），'
+       '所以那一段的零残差是<b>定义使然</b>，不是核对结果。'
+     + '⚠️ 它是 <b>TMX 自家盘口之和，不是加拿大全市场</b> —— 加拿大还有 TMX 之外的'
+       '交易场所（本页现货历史那一段的源，标题就叫 Report of Marketshare by '
+       '<b>Marketplace</b>）。⇒ 本页一切「份额」都是<b>池内份额</b>（分母 = TMX 合计），'
+       '<b>不能</b>读成全国市占率。'),
+
+    ('TSX / TSXV / Alpha',
+     'TMX 的三个现货盘口：<b>TSX</b> 是主板（Toronto Stock Exchange）、'
+     '<b>TSX Venture</b> 是创业板（官方表下脚注写明<b>含 NEX</b>）、'
+     '<b>TSX Alpha</b> 是另一个撮合盘口。'
+     '⚠️ Alpha 那三列<b>不含</b> Alpha-X 与 Alpha DRK（那两个盘口另有自己的三列）。'
+     '三档的标的与上市层级都不同 ⇒ 占比图读作「成交落在<b>哪个场所</b>」，'
+     '不是三家在抢同一批订单流。'),
+
+    ('Alpha-X & Alpha DRK',
+     'TMX 的另外两个盘口，官方在<b>同一行里合并披露</b>（所以本页也只有合计一条列，'
+     '拆不开），并且'
+     + (f'<b>{_AX_FROM} 才开始单列</b>并计入 TMX 合计。' if _AX_FROM else
+        '在某一月才开始单列并计入 TMX 合计。')
+     + '⇒ 图上它在那之前是空的，含义是<b>当时的「合计」口径不含它们</b>，'
+       '不是那时没有成交；跨那个月读 TMX 合计与各段占比，<b>分母变大过一次</b>'
+       '（红色竖虚线标的就是这件事）。'),
+
+    ('S&P/TSX Composite',
+     '加拿大股票市场的宽基指数，本页画的是<b>月末收盘点位</b>（<b>存量</b>、时点数）。'
+     '日常增量与现货成交印在<b>同一张官方表</b>里；更早的历史由 TMX Money 的官方指数'
+     '历史回补（<code>fetch/tmx.py</code> 每次回补都拿重叠月逐格断言，对不上就拒绝入库），'
+     '所以左边那一段不是另一套数。'
+     '⚠️ 它的成分是 <b>TSX 主板</b>的票，<b>不含</b> TSX Venture'
+     '（后者另有 S&P/TSX Venture Composite 一条）—— 这正是页尾三张量价分解图'
+     '一律画 TSX 主板、而不画 TMX 合计的原因：拿它去除含仙股的合计均价，'
+     '算出来的「品种结构」有一大截只是盘口混合比例。'),
+]
+
 SPEC = {
     'ticker': 'tmx',
     'name': 'TMX Group',
@@ -1385,6 +1741,10 @@ SPEC = {
     #   · 现货那条 → 「加拿大现货成交股数」那组的 mix（total=tmx_all_volume_shares）。
     # 留在 'level_yoy' 里会画出**第二张一模一样的图**（底座把它追加在全部
     # exhibit 之后，不会去重），所以在这里删掉，而不是在底座里加一条去重规则。
+
+    # 名词释义：排在所有 exhibit 之前。选词判断与「有意不收」的理由写在 `_GLOSSARY`
+    # 上面那块注释里（为什么是这 15 个词、按「读错会出什么事」分哪四类）。
+    'glossary': _GLOSSARY,
 
     'notes': [
         _SEG

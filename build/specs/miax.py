@@ -381,6 +381,84 @@ def _rpc_span_gap_zh():
 _RPC_GAP = _rpc_span_gap_zh()
 
 
+def _first(col):
+    """一列的首个有值月（'2017-02'）；一格都没有返回空串。
+
+    释义里凡是要写月份的地方（三次开所、金融期货上线）都走它，不写死 ——
+    这些月份本来就是从 CSV 的「哪个月开始有值」读出来的，与 breaks 同源。
+    """
+    return _span(col)[0] or ''
+
+
+def _sum4_vs_pdf_zh():
+    """API 四所之和 与 IR 月报「MIAX 集团四所合计」的相对差 → 一句话；算不出返回空串。
+
+    这是释义里「两个源的同名概念不可互相回补」那句话的**结构性**证据，
+    所以要有数；但**不写死** —— 每多一个重叠月，区间就可能变。
+    （fetch/miax.py 口径坑 3 记的是落地当时的读数，那里是日志、这里是页面。）
+    """
+    dev = []
+    for r in _rows():
+        p = _num(r, 'adv_multilist_options_kcontracts')
+        vs = [_num(r, c) for c in ('adv_miax_options_api_kcontracts',
+                                   'adv_pearl_options_api_kcontracts',
+                                   'adv_emerald_options_api_kcontracts',
+                                   'adv_sapphire_options_api_kcontracts')]
+        if not p or vs[0] is None:
+            continue
+        dev.append((sum(v for v in vs if v is not None) / p - 1.0) * 100.0)
+    if not dev:
+        return ''
+    lo, hi = min(dev), max(dev)
+    if lo < 0 and hi < 0:
+        return '实测 %d 个重叠月里 API 四列之和一律<b>偏低</b> %.2f%%~%.2f%%' % (
+            len(dev), abs(hi), abs(lo))
+    return '实测 %d 个重叠月的相对差在 %+.2f%%~%+.2f%% 之间' % (len(dev), lo, hi)
+
+
+def _tday_pair_zh():
+    """期权段与期货段两列交易日数的关系 → 一句话；有一列没有就返回空串。
+
+    释义里「分母按段各一套」那句话的证据。差几天、有几个月不同都现算 ——
+    写死「差 0~1 天」的那一天就是它开始变旧的那一天。
+    """
+    d = [(_num(r, 'trading_days_options'), _num(r, 'trading_days_futures'))
+         for r in _rows()]
+    d = [(a, b) for a, b in d if a and b]
+    if not d:
+        return ''
+    ne = [abs(a - b) for a, b in d if a != b]
+    if not ne:
+        return '两列在 %d 个共同月里逐月相同' % len(d)
+    return ('两列在 %d 个共同月里有 %d 个月<b>不相同</b>（最大差 %.0f 天）'
+            % (len(d), len(ne), max(ne)))
+
+
+# 「股票段有没有自己的交易日列」—— 现判。释义里「只能等权相加」那半句话的前提，
+# 一旦 fetch 侧补上股票口径的交易日列，这半句必须自己消失（同 _tday_equity_zh 的理由）。
+_TD_HAS_EQ = any(seg == _TDAY_EQUITY for _c, seg in _tday_cols())
+# ⚠️ _SUM4_GAP **现在没有拼进任何一段页面文字**，helper 与这行留着是有意的：
+# 它现算的是全窗口（重叠月全取）的区间，而页尾 notes 第 4 条（两个源的关系）那句
+# 「MIAX 合计比值稳定在 0.9967~0.9976」是 2026 那 7 个月的**子样本**区间
+# （fetch/miax.py 口径坑 3 原文就分两段写：全窗口 0.9922~0.9998，2026 收窄到
+# 0.9967~0.9976）。两个都印，同一页同一个量就有两个不重合的区间；
+# 释义板这一侧先退出（同「行业总量」那条的处理：只说方向、不给区间）。
+# ⇒ 等 notes 那半句改成同一个 helper 的现算值之后，再把它拼回释义里。
+_SUM4_GAP = _sum4_vs_pdf_zh()
+_TDPAIR = _tday_pair_zh()
+
+# ── 释义板专用：三个源各自的**起始月**（只要起点，不要末月与期数）────────────
+# 正文/notes 那边用的是 _SPAN_API / _SPAN_VOL / _SPAN_PDF，它们渲染成
+# 「2015-04 起 137 个月（至 2026-08）」—— 末月与期数每发一期就变一次。
+# 释义板「一年到头是同一段」，所以这里只取起点：要钉住的结构性事实是
+# 「三段历史的起点差着近十年」，那由三个起始月就说完了，末月与期数不承担这个功能。
+_G_API0 = _first('adv_miax_options_api_kcontracts')   # 源 B indsum API
+_G_VOL0 = _first('vol_futures_ag_contracts')          # 源 C 历史档案 PDF
+_G_PDF0 = _first('adv_multilist_options_kcontracts')  # 源 A IR 月报 PDF
+# 「量」那两段里最早的那个起点（现在两段都是 2015-04，但不假定它们相等）。
+_G_QTY0 = min([m for m in (_G_API0, _G_VOL0) if m], default='')
+
+
 def _fmt_bad(rec):
     """对不上的那几个月 → 「2025-06 −1.17%、…」。没有就返回空串。
 
@@ -466,6 +544,191 @@ _TTM_NOTE = (
       '写在本文件末尾的注释块 §F1 —— <b>页面不复述那些数</b>：它们不是从 '
       '<code>series/miax.csv</code> 算得出来的，写进图注就成了写死的数字。'
 )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（SPEC 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与页尾 notes / 图注的分工 ━━
+# notes 与图注说的是「这一张图、这一个月该怎么读」（含当月读数、当月实测的毛刺量）；
+# 这一块说的是「这些词是什么意思」，一年到头是同一段 ⇒ 这里**不写当月读数**。
+# 出现的数只有两类：把定义钉住的结构性量（两套交易日数差几天、各所与各段的**起点**）
+# 与恒等式本身 —— 且**一个都不写死**，全部在 import 期从 series/miax.csv 现算
+# （同本文件其余图注的做法，见文件抬头那条规矩）。
+# ⚠️ 现算也**不等于**可以写：「N 个月」「至 YYYY-MM」这类数虽然现算不会写错，
+# 但它们每发一期就变一次，与「一年到头是同一段」直接冲突 ⇒ 释义里只取**起始月**
+# （_G_API0 / _G_VOL0 / _G_PDF0），不取末月与期数（正文与 notes 那边照旧用 _SPAN_*）。
+# 同理，两个源的同名概念「差多远」这个区间也不写（见 _SUM4_GAP 那里的注释）。
+#
+# ━━ 为什么是这 13 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
+# 而且**不看定义就会读错**。按「读错会出什么事」分五类：
+#   ① 三个源同名不同物   IR 月报 / indsum API、行业总量、MIAX 集团四所 ——
+#      本页最密集、后果最重的一类：同一个概念在不同源下是不同的线，数值系统性差着
+#      几个百分点，混用或互相回补之后图形完全正常、看不出来。
+#      ⚠️ 本页是**三个**源不是两个：农产品的「当月合计张数」走的是第三个源
+#      （miaxglobal.com 的 MIAX Futures 历史成交量 PDF，页尾 notes 第 1 条的②段、
+#      汇总表组名「历史档案口径」），写成两个源会让读者把它硬塞进另外两个里。
+#   ② 分母与单位   ADV、交易日数、份额、日均名义额 —— 分母按段各一套（期权 / 期货
+#      各一列，股票段根本没有），而「当月合计张数」与 ADV 差一个当月开市天数。
+#      不点破，读者会拿一套天数去反推另一段的月总量，或把两个单位直接比大小。
+#   ③ 单价口径   RPC、股票 capture —— 都是「净」的、都是官方按滚动三月平均披露的，
+#      而 capture 的分母（total shares）与同业不同、且可以为负。
+#      （只说「可以为负」，不说「长期为负」：方向是随期变的，CSV 里 2025 年整年为负、
+#      2026 年已经翻正过又回落 —— 钉方向就是钉一个明年不成立的断言。）
+#   ④ 名字像、其实是两块业务   多挂牌期权、Pearl Equities、MIAX Futures ——
+#      「MIAX Pearl」在本页有期权与股票两条线、起点差三年多；MIAX Futures 的
+#      「农产品」实质只有一个品种。不点破就会把两条线相加或读成一篮子。
+#   ⑤ 本页自己轧出来、公司没披露的派生量   成交量加权平均成交价 ——
+#      量价分解那张图的「价」与第三块「品种结构」都由它定义（Pearl 日均名义额 ÷
+#      日均成交股数）。它是本页唯一一个非披露量，不点破会被读成「大盘涨了多少」。
+# **有意不收**：m/m、y/y、3Y %ile、pp/bp（全站通用读图约定，summary.note 已逐条讲过）、
+# 「口径断点」与「慢腿」（页尾 notes 第 2、3 条讲的正是这两件事在本页的落点，
+# 释义板再讲一遍就是两处各写一份）、以及成交量 / 市值这类本页没有特殊口径的常识词。
+# ══════════════════════════════════════════════════════════════════════════════
+_GLOSSARY = [
+    ('IR 月报 / indsum API',
+     '本页有<b>三个源</b>，同一个概念在不同源下是<b>各自一列、各自一条线</b> —— '
+     '图题与行名里的「（IR 月报口径）」「（indsum API 口径）」「（历史档案口径）」'
+     '就是这条分界。'
+     'IR 月报（ir.miaxglobal.com 的 Volume &amp; RPC Report PDF'
+     + (f'，{_G_PDF0} 起' if _G_PDF0 else '')
+     + '）是与 10-K 对得上的<b>权威值</b>，也是<b>唯一</b>带 RPC / capture 的源；'
+       'indsum API（miaxglobal.com 的市占看板'
+     + (f'，{_G_API0} 起' if _G_API0 else '')
+     + '）管<b>历史与分拆</b>：四所分开、股票端另给名义额；'
+       '<b>历史档案</b>（miaxglobal.com 的 MIAX Futures 历史成交量 PDF'
+     + (f'，{_G_VOL0} 起' if _G_VOL0 else '')
+     + '）只供「农产品期货当月合计张数」<b>一列</b>，与 IR 月报那条农产品 ADV 是'
+       '<b>同一批成交的两种表述</b>、按单位不同分两列存。'
+       '⇒ 各源的同名列<b>不可混用、不可互相回补</b>，只能各自成线。'
+     + (f'⚠ <b>回补的是量，不是价</b>：量最早从 {_G_QTY0} 起，'
+        f'而带 RPC / capture 的 IR 月报段要到 {_G_PDF0} 才开始 —— '
+        f'「量 × 单价」类读法的可用窗口只有后面那一段。'
+        if _G_QTY0 and _G_PDF0 else '')),
+
+    ('ADV',
+     '<b>日均</b>成交量（average daily volume）：<code>期内总量 ÷ 期内交易日数</code>'
+     '（官方 PDF 脚注 1 的定义），期权段按<b>张/日</b>、股票段按<b>股/日</b>，'
+     '一笔成交<b>只计一次</b>（交易所自报成交量的行业惯例，不是买卖双边各计一次）。'
+     '⚠ 分母<b>按段各一套</b>，见下一条。'
+     '⚠ 「农产品期货当月合计张数」是<b>同一批成交</b>的月合计口径（contracts/month），'
+     '与 ADV 的 contracts/day <b>不是一个单位</b> —— 要比大小，'
+     '<b>只把月合计那一列</b>除以当月期货交易日数还原成日均'
+     '（<code>当月合计张数 ÷ 当月官方交易日 = ADV</code>，页尾另有一条讲这个恒等式）；'
+     '<b>ADV 那一列本身已经是日均，不要再除一次</b>。'),
+
+    ('交易日数',
+     '当月开市天数，本页的 ADV 分母。'
+     + (f'表里的交易日列是 {_TDCOVER} —— {_TDEQ}。' if _TDCOVER else '')
+     + (f'{_TDPAIR}，所以<b>不能拿其中一套去反推另一段</b>的月总量。' if _TDPAIR else '')
+     + ('' if _TD_HAS_EQ else
+        '⇒ 本页股票的年度聚合因此只能按月<b>等权</b>相加，'
+        '那一步带一个本页量不出来的权重偏差 —— 量价分解与成交股数两张图的图注里'
+        '如实标了出来。')),
+
+    ('多挂牌期权',
+     'multiply-listed options：在<b>多家</b>交易所同时挂牌的<b>个股与 ETF 期权</b>'
+     '（官方段名 Options (Equity and ETF)）。本页「行业总量」「MIAX 集团四所合计」'
+     '「MIAX 集团份额」「多挂牌期权 RPC」四行都是这个口径，'
+     '与另一列<b>指数期权</b>是两类不同的产品，行业分母（equity &amp; ETF）也<b>不含</b>'
+     '指数期权 —— 别把两列加到一起再去除那个分母。'
+     '这一列与 <code>series/cboe.csv</code> 的同名列<b>逐字同口径</b>，'
+     '是全仓少数几个可以直接并排的量。'),
+
+    ('MIAX 集团四所',
+     '四家<b>期权</b>交易所：MIAX Options（代码 M'
+     + (f'，{_first("adv_miax_options_api_kcontracts")} 起' if _first('adv_miax_options_api_kcontracts') else '')
+     + '）、MIAX Pearl（P'
+     + (f'，{_first("adv_pearl_options_api_kcontracts")} 起' if _first('adv_pearl_options_api_kcontracts') else '')
+     + '）、MIAX Emerald（D'
+     + (f'，{_first("adv_emerald_options_api_kcontracts")} 起' if _first('adv_emerald_options_api_kcontracts') else '')
+     + '）、MIAX Sapphire（S'
+     + (f'，{_first("adv_sapphire_options_api_kcontracts")} 起' if _first('adv_sapphire_options_api_kcontracts') else '')
+     + '）—— 月份是各所在 CSV 里的首个有值月。'
+       '⚠ <b>单所那几条线不能单看</b>：新所上线时集团内部会导流，'
+       '某一所的量下台阶<b>不等于</b>它在丢份额，要连着集团合计一起读。'
+       '⚠ API 四列之和<b>不等于</b> IR 月报那条「MIAX 集团四所合计」'
+     ' —— 两个源的分类口径不同，不是抓错。'
+     '（差多少见页尾「两个源的关系」那一条；同一个量不在两处各印一个区间，'
+     '下一条「行业总量」也同样只说方向、不给区间。）'),
+
+    ('行业总量',
+     '本页的<b>行业分母</b>。期权与股票<b>各有两条</b>、分属两个源，'
+     '数值不同且<b>不可互换</b>：期权是 <code>industry_adv_options_kcontracts</code>'
+     '（IR 月报，MIH 自报）与 <code>…_options_api_…</code>（API 取 TOTAL 行），'
+     '后者<b>系统性偏低</b>几个百分点（IR 月报更接近 OCC 的 equity+ETF 分类，'
+     'API 是 OPRA 挂牌代码分类）；股票是 '
+     '<code>industry_adv_equities_mnshares</code> 与 <code>…_equities_api_…</code>，'
+     '两条都<b>含 TRF 场外</b>，逐月对账的结果印在量价分解那张图的图注里。'
+     '⇒ 算份额、算相对倍数时分子分母必须<b>同源</b>。'),
+
+    ('份额',
+     '成交量份额，本页两条<b>分母不是同一套市场</b>。「MIAX 集团份额」是 MIH '
+     '<b>官方自报</b>的一列（只给 1 位小数；要更高精度得自己拿四所合计 ÷ 行业总量算），'
+     '分母是 IR 月报口径的多挂牌期权行业总量；「Pearl Equities 份额」的分母是'
+     '<b>含 TRF 场外</b>的全美股票 ADV。⇒ 两条不能横向比高低，'
+     '也不能与别家页面上同名的「份额」直接并排。'),
+
+    ('RPC',
+     'revenue per contract，<b>每张净收入</b>。官方 PDF 脚注 2 的定义：交易与清算费'
+     '<b>减去</b>流动性返还、经纪 / 清算 / 交易所费与 Section 31 费，再除以期内总张数。'
+     '本页四条 RPC / capture 都是官方按<b>滚动三月平均</b>披露的 —— 那是官方对'
+     '<b>水平值</b>的平滑、是<b>披露口径</b>，不是本页做的处理。'
+     '⚠ 它是「净」的：新产品爬坡期返还大于收费时<b>可以为负</b>，负值是真值不是错值。'),
+
+    ('Pearl Equities',
+     'MIAX Pearl 的<b>股票</b>业务'
+     # ⚠️ 只写「CSV 首个有值月」，不写「开业月」：那个月是 indsum 股票端返回体的
+     # 边界（2020-11 请求返回 []），本仓一手出处只支持到**年**（fetch/miax.py
+     # 口径坑 13 与 docs/verify/miax.md：「Pearl Equities 2020 年才开业」）。
+     + (f'（CSV 首个有值月 {_first("adv_equities_api_mnshares")}，'
+        f'本仓可得的全部历史；官方口径记的是 2020 年开业）'
+        if _first('adv_equities_api_mnshares') else '')
+     + '，本页股票段的一切 —— ADV、份额、capture、日均名义额、量价分解 —— 都指它。'
+       '⚠ <b>别与「MIAX Pearl」那条期权线混为一谈</b>'
+     + (f'（期权 {_first("adv_pearl_options_api_kcontracts")} 起、股票 '
+        f'{_first("adv_equities_api_mnshares")} 起）'
+        if _first('adv_pearl_options_api_kcontracts') and _first('adv_equities_api_mnshares') else '')
+     + '：同一个品牌下的两块业务、两个市场、两段长度不同的历史，'
+       '两条线既不能相加，也不该画在同一根轴上。'),
+
+    ('股票 capture',
+     '股票端的<b>单价</b>口径：每 <b>100 股</b>捕获多少美元'
+     '（官方脚注 3 的原话是「除以 total shares 的百分之一」）。'
+     # ⚠️ 写「可以为负」而不是「长期为负是常态」：方向是随期变的
+     # （CSV 实测这一列 2025 年整年为负、2026 年已翻正又回落），而汇总表行名与
+     # 那张图的图题自己写的就是「可为负」。释义板一年到头是同一段，不钉方向。
+     '<b>可以为负</b>，负值是真值不是错值：Pearl Equities 走 inverted / taker-rebate '
+     '定价，付出的返还大于收到的费时这一列就是负数。'
+     '⚠ 分母是 <b>total</b> shares，与 Cboe 那条 per 100 <b>touched</b> shares '
+     '不是同一个分母，两家<b>不能相减、不能画在同一根轴上</b>（页尾另有一条专讲）。'),
+
+    ('日均名义额',
+     '当月成交的<b>美元金额</b>日均（成交股数 × 成交价，官方字段 '
+     '<code>AVERAGE_NOTIONAL_VALUE</code>），单位 USD bn/day。'
+     '它<b>只有 indsum API 段有</b> —— IR 月报段一个金额列都没有，'
+     '所以 Pearl 与行业这两条金额线在本仓<b>没有第二个源可以逐月对账</b>，'
+     '是本页量价分解链条里唯一没有独立交叉验证的一环（那张图的图注里如实标了）。'),
+
+    ('成交量加权平均成交价',
+     '量价分解那张图上的「价」：<code>Pearl 日均名义额 ÷ Pearl 日均成交股数</code>，'
+     '<b>本页自己轧出来的、不是公司披露的数</b>（本页唯一一个这样的量）。'
+     '它同时含市场本身的涨跌与<b>成交结构变化</b> —— 单价高的标的成交占比上升，'
+     '即使每只票都没涨这个数也会被抬高，所以它<b>不是</b>股价指数的收益率，'
+     '不能读成「大盘涨了多少」。同一张图第三块「均价相对行业（<b>品种结构</b>）」'
+     '＝ Pearl 均价 ÷ 行业均价：两条均价相除把市场涨跌基本抵消掉，'
+     '剩下的是 Pearl 的成交品种相对全市场偏贵还是偏便宜。'),
+
+    ('MIAX Futures',
+     '集团的<b>期货</b>交易所，前身是 Minneapolis Grain Exchange（MGEX）。本页两条腿：'
+     '<b>农产品</b>期货实质只是 Minneapolis <b>硬红春小麦一个品种</b>，'
+     '不是一篮子农产品，单位是<b>裸张数</b>（张/日、张/月）而<b>不是千张</b>；'
+     '<b>金融</b>期货是 Bloomberg 股指期货系列'
+     + (f'，{_first("adv_futures_fin_contracts")} 才上线'
+        if _first('adv_futures_fin_contracts') else '')
+     + '，序列很短、还在爬坡。两条腿各有自己的 ADV 与 RPC，别当成一条线读。'),
+]
+
 
 # ── breaks 是从 CSV 读出来的，不是抄文档 ────────────────────────────────
 # 四个所各自 API 列的首个有值月：
@@ -746,6 +1009,10 @@ SPEC = {
         {'month': '2020-12', 'col': 'vol_futures_ag_contracts',
          'zh': 'MIH 全资收购 MGEX（左侧非 MIH 经营数据）'},
     ],
+
+    # 名词释义：排在所有 exhibit 之前。选词判断与「有意不收哪些词」写在 _GLOSSARY
+    # 上面那一块注释里（本页 23 张图、两个源，词条按「读错会出什么事」分四类）。
+    'glossary': _GLOSSARY,
 
     'notes': [
         '<b>本页有三段长度差十年的历史，不要当成同一段。</b>'

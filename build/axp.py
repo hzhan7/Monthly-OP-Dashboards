@@ -34,6 +34,7 @@ import pandas as pd
 
 import axisfmt
 import brief as B
+import glossary as gloss     # 名词释义的版式层与护栏，全站共用
 import mrwin                            # 窗口左端 / 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
@@ -1255,6 +1256,243 @@ while len(_hub) > 1 and len('；'.join(_hub)) > 60:
 HUB = '；'.join(_hub)
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（payload 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与 brief / 图注 / 页尾 notes 的分工 ━━
+# brief 与图注说的是「**这个月**这组读数该怎么读」，每月重写；这一块说的是
+# 「**这些词**是什么意思」，一年到头是同一段 ⇒ 这里**不写当月读数**。
+# 出现的数只有两类：把定义钉住的**结构性**量（两套口径的体量差、两条口径的并存
+# 月数、恒等式的实测残差）与**恒等式本身** —— 且**一个都不写死**，全部在下面从
+# series/*.csv 现算（同本页其余图注的做法）。口径一律与本页既有的图注 / notes 对齐，
+# 有出入以图注为准（那些是逐条核过的）。
+#
+# ━━ 为什么是这 15 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
+# 而且**不看定义就会读错**。按「读错会出什么事」分四类：
+#   ① 两套不可连比的口径   Card balances / Card Member loans / Card balances HFI /
+#      30+ days past due / 净核销率 —— 本页最贵的坑。两组 exhibit 各画一套口径，
+#      分母不同、比率天生高低不同，跨组读同一条指标会把「换了口径」读成
+#      「信用改善了」。这一类必须给出**体量差有多大**，否则读者没有量的概念。
+#   ② 同一件事的两个数     月均余额 / 期末余额 —— 8-K 同一张表里并排印着，名字只差
+#      两个字，用错了 Exhibit 6 的 NII 基数就整个偏；本页实测两者的 m/m 会反号。
+#   ③ 推导值 vs 披露值     隐含净利息收入 / 净利息收益率 —— Exhibit 6 是本页自己轧
+#      出来的，公司不按月披露 NII；乘上去的收益率是**季度**的、**全公司**口径。
+#      不点破，读者会拿这张图当 AXP 的月度 NII 去对账。
+#   ④ 另一个池子的一整套词 信托池 / 本金应收 / 组合收益率 / 还款率 / 超额利差 /
+#      净违约率 —— 这六个只在 Exhibit 8-11 与汇总表 Trust 那一段出现，口径与 8-K
+#      那半页**没有一个是相同的**。不点破，读者会把两边的逾期率当成同一个数的两次
+#      测量，转而去给那道其实只是池子差异的缺口找业务解释。
+#   ⑤ 只在本页出现的简写 SBS —— 页顶头条与汇总表分组里的写法，8-K 原表里叫
+#      U.S. Small Business Card。不点破，读者既不知道它与 Consumer 是并列的两段，
+#      也不知道公司卡与美国以外的业务不在 8-K 那张表的任何一行里（本页唯一的例外是
+#      Exhibit 6/7 乘上去的那个全公司口径收益率，那条自己交代）。
+# **有意不收**：
+#   · m/m、y/y、3Y %ile、pp / bp —— 全站通用的读图约定，summary.note 与 NOTES[8]
+#     已经逐条讲过；释义板再讲一遍就是同一件事两处各写一份，迟早分叉。
+#   · 「加池」（Exhibit 8-11 的红色竖虚线）与「出售已核销余额」（Jun-26 那一档）——
+#     NOTES[3] / NOTES[2] 讲的是这两件事在本页的**具体落点**（哪一期、影响哪几张图、
+#     哪个月滚出比较基数），那是**事件**不是名词，而且随窗口滚动，不该冻进释义。
+#   · 「同月常态」（Exhibit 13/15 的灰柱）—— NOTES[9] 已经把它是什么写清楚了。
+#   · 余额 / 逾期 / 核销这些词的**普通含义** —— 本页对它们的特殊之处（分母是哪一套）
+#     已经分别挂在①那几条里，另立一条只会把真正要说的那句稀释掉。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 释义里要用到的结构性量：一律现算，一个都不写死 ────────────────────────────
+# 新旧两套口径并存的月份（重述件给的新口径历史 ∩ 旧口径序列）。
+_G_OV = new.index.intersection(old.index)
+# 释义里的句子是「新口径余额平均**比旧口径高** X%」——「比 B 高」的分母只能是 B（旧口径）。
+# 原先分母写的是 new，那算的是「pay-in-full 占**新**口径余额的比重」，是另一个量：
+# 两者在 Consumer 上差 1.8pp、在 SBS 上差 13.3pp，等于把本页最贵的那个坑说小了三分之一。
+# 旁证：fetch/axp.py 口径坑第 1 条举的 2026-03 Consumer 旧 97.5bn → 新 110.8bn，
+# 也是按旧口径做分母读的（+13.6%）。
+_G_GAP_C = float(100 * ((new.loc[_G_OV, 'consumer_balance_usdbn'] -
+                         old.loc[_G_OV, 'consumer_balance_usdbn'])
+                        / old.loc[_G_OV, 'consumer_balance_usdbn']).mean())
+_G_GAP_S = float(100 * ((new.loc[_G_OV, 'sbs_balance_usdbn'] -
+                         old.loc[_G_OV, 'sbs_balance_usdbn'])
+                        / old.loc[_G_OV, 'sbs_balance_usdbn']).mean())
+# 汇总表 Combined 那一行与上面两段的关系：8-K 自己印的三个数，逐月核一遍。
+# 残差是浮点噪声量级（实测 1e-14），所以不印数、印「核过多少个月、有没有例外」——
+# 印一个 0.0000bn 只会让读者以为那是个真被四舍五入掉的差额。
+_G_HFI_D = float((avgbal['total_hfi_usdbn'] - avgbal['consumer_total_bal_usdbn']
+                  - avgbal['smb_total_bal_usdbn']).abs().max())
+_G_HFI = (f'逐月<b>恰等于</b>上面 U.S. Consumer 与 U.S. Small Business 两段之和'
+          f'（{len(avgbal)} 个月逐月核过，无一例外）⇒ 它是这两段的合计，'
+          f'<b>不是</b>一个更宽的全公司口径。'
+          if _G_HFI_D < 0.005 else
+          f'与上面 U.S. Consumer ＋ U.S. Small Business 两段之和最大差 '
+          f'{_G_HFI_D:.2f}bn（{len(avgbal)} 个月现算）—— 差额是这两段之外的部分。')
+# 期末余额与月均余额的 m/m 反号月数 —— 「两个余额口径不能互相替代」的实测。
+_G_BAL = pd.concat([(avgbal['consumer_total_bal_usdbn']
+                     + avgbal['smb_total_bal_usdbn']).pct_change(),
+                    (avgbal['consumer_avg_bal_usdbn']
+                     + avgbal['smb_avg_bal_usdbn']).pct_change()], axis=1).dropna()
+_G_BAL_N = len(_G_BAL)
+# 判据与本页 brief 的 s3 分支同一套规矩：np.sign(a) != np.sign(b) 会把「月均 m/m 恰为 0」
+# 也判成反号（重放里 Jun-25 就是：月均 0.000000%、期末 -1.26%），而 brief 那边专门为这种
+# 月份开了闸门，写着这不配叫「口径反向」。同一页两处对同一个月给相反判定最糟，
+# 所以这里沿用 brief 的显示精度闸门（月均 m/m 四舍五入印成 0.0% 的月不计入）＋严格反号。
+_G_BAL_OPP = int((((_G_BAL.iloc[:, 0] * _G_BAL.iloc[:, 1]) < 0)
+                  & (_G_BAL.iloc[:, 1].abs() * 100 >= 0.05)).sum())
+# 10-D 的两条恒等式（毛违约 − 回收 ＝ 净违约；四档账龄之和 ＝ 30+ 合计）。
+# 残差就是申报自身的取整，印出来读者可以拿 Exhibit 19 的原始单位自己核。
+_G_DEF_D = float((tfull['ann_default_rate_pct'] - tfull['ann_recovery_rate_pct']
+                  - tfull['ann_default_rate_net_pct']).abs().max())
+_G_DQ_D = float((tfull[['dq3160_pct', 'dq6190_pct', 'dq91120_pct', 'dq120p_pct']].sum(axis=1)
+                 - tfull['dq30p_pct']).abs().max())
+# 本金应收 vs 总应收：差的那部分是已计提未收的利息与费用应收（finance charge）。
+_G_FC = float(100 * ((tfull['ending_total_receivables_usd']
+                      - tfull['ending_principal_receivables_usd'])
+                     / tfull['ending_total_receivables_usd']).median())
+# 「本金应收是谁的分母」——逐月反算出来的，不是照口号写的。
+#   · 年化违约率／回收率：确实是它（× 365 ÷ 当月天数 ÷ 期末本金应收，残差 0.0000pp）。
+#   · 信托 30+ 逾期率（含四档账龄）：分母是 10-D 另印的**总应收**，不是本金应收
+#     —— 除总应收残差在 2 位小数的取整半径内，除本金应收则单边偏高一个量级。
+#   · 组合收益率与还款率：本页手上这几列反算不出任何一个候选分母（残差 1-2pp 量级），
+#     所以释义里对这两条不作分母断言（图注只说组合收益率「占本金应收」，那是 10-D 的定义，
+#     不是本页能现算核实的恒等式）。
+_G_PR_DEF = float((tfull['defaulted_amount_usd'] * 365 / tfull['days_in_period']
+                   / tfull['ending_principal_receivables_usd'] * 100
+                   - tfull['ann_default_rate_pct']).abs().max())
+_G_DQ_TR = float((tfull['dq30p_usd'] / tfull['ending_total_receivables_usd'] * 100
+                  - tfull['dq30p_pct']).abs().max())
+_G_DQ_PR = float((tfull['dq30p_usd'] / tfull['ending_principal_receivables_usd'] * 100
+                  - tfull['dq30p_pct']).abs().max())
+# 10-D 逐期印出的当月天数 —— Exhibit 9 那条「日历假象」的量从哪来。
+_G_DAYS = '/'.join(str(int(v)) for v in sorted({int(v) for v in tfull['days_in_period'].dropna()}))
+# 新旧两套净利息收益率的并存季度（series/fee_rates.csv）：旧口径分母不含 pay-in-full，
+# 所以同一个季度的收益率天然高一截。并存季度只有几个，没有就整句不写。
+_r_old = _rates[(_rates['company'] == 'AXP') &
+                (_rates['metric'] == 'net_interest_yield_on_cardmember_loans_oldbasis')]
+_niy_old = (_r_old.assign(q=pd.PeriodIndex(_r_old['period'].str.replace('-', ''), freq='Q'))
+                  .set_index('q')['value'].astype(float).sort_index())
+_G_QOV = _niy.index.intersection(_niy_old.index)
+_G_NIY = ((f'旧 Card Member loans 口径下这个收益率高一截：{len(_G_QOV)} 个并存季度里'
+           f'平均高 <b>{float((_niy_old.loc[_G_QOV] - _niy.loc[_G_QOV]).mean()):.1f}pp</b>'
+           f'（本页现算），差的就是分母里那块不计息的 pay-in-full。')
+          if len(_G_QOV) else '')
+
+GLOSSARY = [
+    # ① 两套不可连比的口径 ────────────────────────────────────────────────────
+    ('Card balances',
+     f'AXP 自 2026 年 5 月起改用的<b>合并</b>口径：Card Member loans（计息的循环余额）'
+     f'＋ receivables，把到期<b>全额还清</b>（pay-in-full）的那部分并了进来。'
+     f'公司在 2026-05-15 的 8-K Exhibit 99.1 里按新口径重述了历史，本页'
+     f'【新口径】各图（Exhibit 2-7）画的就是这段重述序列。'
+     f'⚠️ 它<b>不只是换个名字，分母变大了</b>：两套口径并存的 {len(_G_OV)} 个月里，'
+     f'Consumer 余额平均比旧口径高 <b>{_G_GAP_C:.1f}%</b>、Small Business 高 '
+     f'<b>{_G_GAP_S:.1f}%</b>（本页现算）—— 逾期率与核销率的分母跟着变大，'
+     f'比率天生更低，所以<b>跨【新口径】与【旧口径】两组读同一条指标是错的</b>。'),
+
+    ('Card Member loans',
+     '2026 年 5 月之前的旧口径，<b>只含循环（计息）余额</b>，不含 pay-in-full。'
+     '本页【旧口径】各图（Exhibit 12-18）与长历史、季节性用的都是它；序列'
+     '<b>刻意截到改口径前最后一个月</b>，新口径的数字不会被接到它尾巴上，'
+     '免得画出一条纯由换口径造出来的假曲线。'),
+
+    ('Card balances HFI',
+     f'8-K 行名 Total Card balances <b>held for investment</b>（持有待投资）—— '
+     f'与 held for sale（持有待售、准备出表的那部分）相对的会计分类，是汇总表 '
+     f'Combined 那一行。本页现算的关系：它{_G_HFI}'),
+
+    ('30+ days past due',
+     f'逾期 <b>30 天以上</b>的余额占总余额的比例。本页有<b>两条</b>：8-K 的 '
+     f'Consumer / SBS，和信托池那一条。两条是<b>同一个概念、两个池子</b> —— '
+     f'Exhibit 11 里那道持续存在的缺口是池子差异，<b>不是</b>数据错，也<b>不能</b>'
+     f'当成同一个数的两次测量去解释。信托那条在 10-D 里是四档账龄之和'
+     f'（31–60 / 61–90 / 91–120 / 120+，本页现算逐月相符，最大差 {_G_DQ_D:.2f}pp，'
+     f'即申报自身的取整）。'),
+
+    ('净核销率（本金）',
+     '8-K 行名 Net write-off rate：当月核销掉的余额<b>扣除回收</b>之后的净额，'
+     '占余额的比例；本页各图、汇总表与核销热力矩阵用的都是页面上标 '
+     '<b>principal</b> 的那一套 —— 核销额里<b>只算本金</b>那一部分。'
+     '它是<b>比率</b>不是金额，分母跟着口径走（见 Card balances 那条），'
+     '换口径时整条线会机械性下移。'),
+
+    # ② 同一件事的两个数 ──────────────────────────────────────────────────────
+    ('月均余额 / 期末余额',
+     f'8-K 同一张表里的<b>两个</b>余额口径，别用混：Total Card balances 是<b>月末'
+     f'时点</b>数（Exhibit 2 / 4 的柱、汇总表余额行、页顶头条都是它）；'
+     f'Average Card balances 是当月<b>平均</b>数，乘进 Exhibit 6 隐含 NII 的是它'
+     f'（利息是按整月余额生的，拿月末点当基数会读偏；核对表 Exhibit 19 也把这两段的'
+     f'平均余额逐月印出来供核对）。两者<b>不能互相替代</b>：'
+     f'本页现算的 {_G_BAL_N} 个可比月里，两者的 m/m 有 <b>{_G_BAL_OPP} 个月符号相反</b>。'),
+
+    # ③ 推导值 vs 披露值 ──────────────────────────────────────────────────────
+    ('隐含净利息收入',
+     'Exhibit 6 的 Implied NII：<b>不是公司披露的数</b>，是本页轧出来的 —— '
+     '<code>月度 NII ＝（Consumer ＋ Small Business 月均余额）× 当季净利息收益率 ÷ 12</code>。'
+     '公司<b>不按月披露</b> NII，所以这张图<b>无从对账</b>；而且分子的余额只有美国卡'
+     '两段、乘上去的收益率却是全公司口径，两者总体不一致 ⇒ <b>只读方向，不读小数位</b>。'),
+
+    ('净利息收益率',
+     f'公司披露的 Net interest yield，<b>按季</b>给，所以 Exhibit 7 画出来是一道'
+     f'<b>季度阶梯</b>（同一季三个月同值，最新季之后沿用最后一档、冻住不动）。'
+     f'两处要当心：(1) 它是<b>全公司</b>口径，含非美卡与其它贷款，而本页乘上它的余额'
+     f'只有美国 Consumer ＋ Small Business 卡；(2) 官方是按<b>实际天数</b>年化的'
+     f'（净利息收入 × 365 ÷ 当季天数 ÷ 平均余额），<b>不是</b> 4 × 当季净利息收入 ÷ '
+     f'平均余额，自己反算对不上不是解析错。{_G_NIY}'),
+
+    # ④ 另一个池子的一整套词 ──────────────────────────────────────────────────
+    ('信托池（Trust）',
+     'American Express Credit Account Master Trust：AXP 把一部分卡应收<b>转让</b>进去'
+     '发 ABS 的信托，按月报 Form 10-D（CIK 0001003509），与 8-K <b>同日报送</b>。'
+     '⚠️ 它是<b>另一个池子，不是 8-K 的子集</b>：池内只有 revolve-eligible（可循环）'
+     '余额，所以组合收益率、逾期率、违约率都系统性异于 8-K 那半页的同名指标，'
+     'Exhibit 10 / 11 里那道缺口正是池子差异。'),
+
+    ('本金应收',
+     f'10-D 行名 Ending Principal Receivables：信托池月末的<b>本金</b>余额，也就是'
+     f'「池子多大」这个量。⚠️ Exhibit 8-11 的比率<b>不是都拿它做分母</b>：本页现算，'
+     f'Exhibit 10 的年化违约率与回收率拿它做分母逐月严丝合缝'
+     f'（<code>违约额 × 365 ÷ 当月天数 ÷ 期末本金应收</code>，{len(tfull)} 个月最大差 '
+     f'{_G_PR_DEF:.3f}pp），而 Exhibit 11 的信托 30+ 逾期率分母是 10-D 另印的'
+     f'<b>总应收</b>（现算最大差 {_G_DQ_TR:.3f}pp，即申报自身的取整；换成本金应收则 '
+     f'{_G_DQ_PR:.3f}pp 且单边偏高）。两者之差正是<b>不含</b>在本金里的那部分 —— '
+     f'已计提未收的利息与费用应收（finance charge receivables），本页现算占总应收'
+     f'全历史中位 <b>{_G_FC:.1f}%</b>。'),
+
+    ('组合收益率',
+     f'Portfolio yield：池子当月收到的<b>利息与各项费用</b>，年化后占本金应收的比例，'
+     f'即这个池子的<b>毛</b>收入率 —— 超额利差就是从它身上逐层扣出来的。'
+     f'⚠️ 它的逐月锯齿主要是<b>当月天数</b>造成的日历假象，不是经营波动'
+     f'（10-D 逐期印出当月天数，本页 {len(tfull)} 个月里有 {_G_DAYS} 天四种）：'
+     f'<b>要比就比天数相同的月份</b>，Exhibit 9 的图注里有本页实测的相关系数。'),
+
+    ('还款率',
+     'Payment rate：持卡人当月还掉了多少存量余额。AXP 的还款率<b>结构性地高</b>'
+     '——客群以每月全额还清的 transactor 为主——所以<b>绝对水平不能拿去跟别家发卡行'
+     '比，只看它自己的走向</b>。它是这一段唯一的<b>领先指标</b>：掉头意味着持卡人'
+     '开始转向循环，通常比逾期率早几个月、更早于核销。天数假象同上一条。'),
+
+    ('超额利差',
+     'Excess spread ＝ <b>组合收益率 − 净核销 − 服务费 − 票息</b>：信托收上来的钱'
+     '付完所有成本之后剩下的那一层，债券持有人被打到之前先由它吸收损失。'
+     '这是 ABS 交易里最被盯的一个数 —— 跌到 <b>0</b> 附近会触发提前摊还'
+     '（early amortization）：投资人本金被提前还回，AXP 失去这条融资渠道。'
+     '所以 Exhibit 8 是用来<b>确认没事</b>的，不是用来找信号的。'
+     '⚠️ 10-D 按 series 逐个列出，本页取的是 <b>Group 1</b>（由 B 段的花名册认组，'
+     '不按「哪个数字出现得多」取众数——两组人数换边时众数会静默倒向 Group 2）。'),
+
+    ('净违约率',
+     f'汇总表行名 Annualised default rate, <b>net of recoveries</b>：信托池的年化'
+     f'违约率，已经<b>扣掉回收</b>。10-D 把它拆开印，本页现算这条恒等式逐月成立：'
+     f'<code>毛违约率 − 回收率 ＝ 净违约率</code>（{len(tfull)} 个月最大差 '
+     f'{_G_DEF_D:.3f}pp，即申报自身的取整）。⇒ 净额升<b>不一定</b>是违约变多，'
+     f'也可能是<b>回收变差</b>，两者要分开看。'),
+
+    ('SBS',
+     '本页对 <b>U.S. Small Business Card</b>（美国小型企业卡）的简写，页顶头条与'
+     '汇总表分组里都是它，与 U.S. Consumer Card 并列。8-K Item 7.01 那张表'
+     '<b>只报这两段美国业务</b>：公司卡与美国以外的卡不在那张表的任何一行里。'
+     '本页唯一的例外是 Exhibit 6 / 7 乘上去的那个收益率 —— 它是<b>全公司</b>口径、'
+     '含非美卡与其它贷款（见「净利息收益率」那条）。'),
+]
+
+
 # ────────────────────────── 页顶 ~300 字数据总结（brief）──────────────────────────
 def compose_brief(new, avgbal, trust, tfull, cur, oneoff_m, oneoff_c):
     """AXP 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
@@ -1838,6 +2076,9 @@ payload = {
     # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
     # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
     'brief': compose_brief(new, avgbal, trust, tfull, CUR, ONEOFF_M, ONEOFF_C),
+    # brief 之下、Exhibit 1 之上的「名词释义」。与 brief 分工：那段每月重写，
+    # 这段一年到头不动。选词判断与「有意不收哪些词」写在 GLOSSARY 上面那块注释里。
+    'glossary': gloss.render(GLOSSARY, where='axp glossary'),
     'hub_line': HUB,
     'source': 'Source: AXP 8-K Item 7.01 (SEC CIK 0000004962) and American Express Credit Account '
               'Master Trust Form 10-D (SEC CIK 0001003509); format after J.P. Morgan',

@@ -92,6 +92,7 @@ build/mrwin.py      mrbase 的窗口左端与排版裁决层，可单测（pytho
 build/CONTRACT.md   payload 数据契约（写生成器前先读它；§6 是全站同比口径）
 build/yoy.py        同比口径的唯一实现，所有生成器算同比一律走这里
 build/brief.py      页顶数据总结（brief）的规则库，句子由各家生成器自己拼
+build/glossary.py   页顶名词释义（glossary）的版式层与护栏，措辞由各家自己写
 build/roster.py     生成 data/roster.js（总览页与导航的目录，含各家披露节奏 LAG）
 data/<t>.js         生成物，页面直接 <script src> 加载
 cache/              下载来的原始文件（gitignore）
@@ -394,6 +395,18 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   规则库在 `build/brief.py`（只算事实），句子由各家生成器自己拼（`build/mrbase.py`
   也 `import brief`，7 家共用底座拼出来的那几句 + spec 的 `brief_extra` 钩子）；
   刻意不复述图表里已有的数字，只写图表讲不出来的三件事 —— 基数效应、口径背离、所处区间。
+- **glossary（名词释义）**：34 页每页一块，排在 `brief` 之下、**所有 exhibit 之上**。
+  与 brief 分工明确：brief 说「**这个月**这组读数该怎么读」、每月重写；
+  glossary 说「**这些词**是什么意思」、一年到头是同一段 —— 所以释义里不写当月判断，
+  也不写随月份变的数。收词的判据是页面所有者定的：**本页的图与表里出现过、
+  不看定义就会读错**的名词（ADV / SDAV / DDAV / OI / RPC / DARTs / NNA / comp /
+  池内占比 / 定基名义额……），而不是一本通用金融词典；`m/m`、`y/y`、`3Y %ile`、pp/bp
+  这类全站通用读图约定**不收**（每页 `summary.note` 已经逐条讲过，收进来就是两处各写一份）。
+  版式与四道护栏在 `build/glossary.py`（Markdown 星号、非行内标签、`dt` 过长、
+  词条重复/空释义，四种都是「页面上看得见、构建期一声不吭」的写法）；
+  `build/verify_pages.py` 的 `check_glossary()` 在产物侧再查一遍，
+  并核「词条是不是本页真有的词」（过半查不到才报，留出「可比零售周」这类
+  解释别的词用得上、页面上不直接出现的口径概念）。
 
 ## 图表引擎
 

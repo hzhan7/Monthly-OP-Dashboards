@@ -89,6 +89,7 @@ import pandas as pd
 
 import axisfmt                      # 引擎 ticks() 的 Python 复算，只调用不修改（Exhibit N_ORG 截轴用）
 import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
+import glossary as gloss            # 名词释义的版式层与护栏，全站共用
 import mrwin                        # 窗口/排版的边界裁决，只调用不修改（DENSE 集合、layout_all）
 import payload_guard
 import pctile                       # 3Y %ile 的唯一实现，各页不许各写各的（CONTRACT §2）
@@ -2746,6 +2747,38 @@ headline = (f'共同最新月 {mlab(LATEST)}（短板 {LAG}）'
 # 没有随这一句消失。
 
 
+# ── 指标族表：brief 的「齐备几家」与「名词释义」的「这一族由哪几家组成」共用这一张 ──
+# 列名是显式白名单：{t}_org_roll 这类派生列刻意不在任何一族里 —— 它是有机增速的
+# 滚动对照口径，不是一个新指标族。
+# ⚠ 这张表回答「一族有哪些**候选**成员」；某家在不在这一族里由 `fam_firms()` 现数，
+#   任何一处都**不许**把家数写成中文数词（客户现金那一族 2026-08-19 刚从两家变成三家，
+#   融资余额那一族在 Schwab 2026-01 那期月报新增列之前只有两家，HOOD 缺席那一轮
+#   四家会退回三家 —— 见 MEMBERS 的注释与页尾第 1 条）。
+FAMS = [('客户资产', ['schw_assets', 'lpla_assets', 'ibkr_assets', 'hood_assets']),
+        ('净流入', ['schw_flow', 'lpla_flow', 'hood_flow']),
+        ('融资余额', ['schw_margin', 'ibkr_margin', 'hood_margin']),
+        ('日均交易', ['schw_dats', 'ibkr_dats', 'hood_dats']),
+        ('客户现金', ['schw_cash', 'lpla_cash', 'ibkr_cash']),
+        ('账户存量', ['ibkr_accounts', 'hood_accounts'])]
+
+
+def fam_firms(nm):
+    """某指标族里**真正披露该项**的成员 ticker（按 FAMS 的登记顺序）。
+
+    与 compose_brief 里的 `cnt` 共用 FAMS，只差判据的时点：那边取共同最新月那一格
+    （问「这个月齐了几家」，随月份变，属 brief）；这里取整条序列有没有值
+    （问「这一族由哪几家组成」，只在某家开始 / 停止披露时才变，属释义的定义层）。
+    ⇒ 释义里凡是「这一族有几家」「另几家」，一律由它现数，不写中文数词。
+    """
+    return [c.split('_')[0] for c in dict(FAMS)[nm]
+            if c.split('_')[0] in HAS and c in df.columns and has(c)]
+
+
+def fam_names(nm):
+    """同上，取显示名。"""
+    return [NAME[t] for t in fam_firms(nm)]
+
+
 def compose_brief(df, latest):
     """横截面页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
 
@@ -2859,14 +2892,9 @@ def compose_brief(df, latest):
         ahead_txt = '各家最新月一致'
 
     # ── 边界二（覆盖）：可比性是分层的，逐族点名齐备几家 ────────────────────
-    # 列名是显式白名单：本轮新加的 {t}_org_roll 派生列刻意不在任何一族里 ——
-    # 它是有机增速的滚动对照口径，不是一个新指标族。
-    FAMS = [('客户资产', ['schw_assets', 'lpla_assets', 'ibkr_assets', 'hood_assets']),
-            ('净流入', ['schw_flow', 'lpla_flow', 'hood_flow']),
-            ('融资余额', ['schw_margin', 'ibkr_margin', 'hood_margin']),
-            ('日均交易', ['schw_dats', 'ibkr_dats', 'hood_dats']),
-            ('客户现金', ['schw_cash', 'lpla_cash', 'ibkr_cash']),
-            ('账户存量', ['ibkr_accounts', 'hood_accounts'])]
+    # 族表 FAMS 已提到模块级（见上），brief 与「名词释义」共用同一张表 ——
+    # 这里问的是「共同最新月这一族齐了几家」（随月份变），释义那边问的是
+    # 「这一族由哪几家组成」（`fam_firms()`，只在某家开始/停止披露时才变）。
     cnt = {nm: sum(1 for c in cs if c in df.columns and np.isfinite(df[c].loc[latest]))
            for nm, cs in FAMS}
     full = [nm for nm, k in cnt.items() if k == len(HAS)]
@@ -3032,6 +3060,238 @@ def compose_brief(df, latest):
 
 BRIEF = compose_brief(df, LATEST)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（payload 的 `glossary`，排在 headline / brief 之下、Exhibit 1 之上）
+#
+# ━━ 与 brief / 页尾 notes / 图注的分工 ━━
+# brief 说「**这个月**这组读数该怎么读」，每月重写；notes 与图注说「**这一张图**的
+# 窗口、断点、口径差在本页的具体落点」，逐图现算；这一块只说「**这些词**是什么意思」，
+# 一年到头是同一段 ⇒ 这里**不写当月读数、不写「最新一期」**。
+# 出现的数只有两类：恒等式本身（净流入 x 12 ÷ 上月末资产、mn x 1,000 = k）与
+# 把定义钉住的结构性量，且**一个都不写死** —— 图号一律引用 N_* 常量（插一张图就会
+# 全部跟着走），Schwab 门槛调整的月份取自 SCHW_NNA_BRK 登记表。凡是要写月份 /
+# 读数 / 名次的地方，本块一律不写，改成「见页脚」「见该图图注」——
+# 少一个数不是缺陷，写死一个下个月就变旧的数才是。
+# ⚠ 「这一族有几家 / 是哪几家」同属此列，2026-09 审出来的：本块曾有 6 处把成员数写成
+#   中文数词（「四家用三个官方名字」「不是四家合计」「与另三家」「三家的分子口径不同」
+#   「这一族只有三家」「这一族只有两家」）。那几个数今天都对，但客户现金那一族
+#   2026-08-19 才从两家变成三家、融资余额那一族在 Schwab 那批新增列之前只有两家、
+#   HOOD 缺席那一轮页面照出而释义会继续印「四家」并列出页面上没有的线 ——
+#   图注那一侧（firms_note / summary.note）全是现算的，写死就是两处必然分叉。
+#   现在成员数与成员名单都由 `fam_firms()` 从模块级 FAMS 现取，与 brief 的齐备计数
+#   共用同一张表（判据只有一处定义）。
+#
+# ━━ 为什么是这 11 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头 /
+# 图注里，而且**不看定义就会读错**。按「读错会出什么事」分三类：
+#   ① 本页自己造的口径（读者在别的页、别的研报上都见不到）——
+#      共同最新月 / 短板（本页的发布门槛，不是各家自己的最新月）、
+#      重定基（基期 = 100）（基期是**现算**的：各线都有值的最早那个月，不是挑的）、
+#      Acquired NNA 的**还原口径**（减的是滚动 12 个月，与 y/y 的分子窗口对齐）、
+#      % of client assets（**分母是这一家自己的客户资产**，不是市场份额）。
+#      这四个词里三个是横截面页独有的，读错的代价是把一张图整个读反。
+#   ② 同一件事的四个官方名字 —— 客户资产、净新增资产（NNA）、客户现金、融资余额、
+#      DATs / DARTs、账户 / 客户数。这是横截面页最密集的坑：四家各印各的词，
+#      「能不能直接比大小」全看分子含不含某一块（IBKR 的 client credits 不含货基、
+#      Schwab 的融资余额含 short credits、三家的「一笔」不是同一件事、
+#      IBKR 数账户而 Robinhood 数人）。图形完全正常，偏差却是系统性的。
+#   ③ 水平值 / 流量 / 存量的混读 —— 年化有机增速：它是**增长率的水平值不是同比**，
+#      分母是**上月末**资产，把一个月的流量乘 12。不点破，它会被当成同比去与
+#      客户资产 y/y 那张图逐月对照。
+# **有意不收**：
+#   · m/m、y/y、单月同比、3Y %ile、pp/bp —— 全站通用的读图约定，CONTRACT §6 与
+#     本页 summary.note、页尾第 4/5 条已逐条讲过，释义板再讲一遍就是两处各写一份。
+#   · 「口径断点 / 红色竖虚线」—— 页尾第 6 条与各图图注讲的是这几条线在本页的
+#     具体月份与落点（每月会变），定义搬到这里就会与那一份分叉。
+#   · 「窗口 / 通栏 / x 轴标签抽稀」—— 那是排版判决，逐图由 mrwin 现算并写在图注里。
+#   · 客户权益、成交笔数、市值这类常识词 —— 本页对它们没有特殊口径；只有当它在
+#     本页有一个特定的分母时才收（那一条收成了 % of client assets）。
+# ══════════════════════════════════════════════════════════════════════════════
+# ── 释义里的「这一族有几家 / 是哪几家」一律现数 ────────────────────────────────
+# 这几个数今天是四 / 三 / 三 / 二，但它们**不是常数**：客户现金那一族 2026-08-19 刚从
+# 两家变成三家；融资余额与日均交易那一族在 Schwab 2026-01 那期月报新增列之前只有两家；
+# HOOD 是后加的成员，缺了整页退回三家（MEMBERS 与页尾第 1 条）。图注那一侧
+# （firms_note / summary.note）全是现算的，释义板一写死就必然与它们分叉 ——
+# 所以这里连成员名单一起由 `fam_firms()` 现取，缺席的那一家的从句整条不印。
+_cn = B.cn
+
+_AST = fam_firms('客户资产')
+_FLOW = fam_firms('净流入')
+_CASH = fam_firms('客户现金')
+_MGN = fam_firms('融资余额')
+_ACCT = fam_firms('账户存量')
+_DATS = fam_firms('日均交易')
+
+_ASSET_TERM = {'schw': 'total client assets', 'lpla': 'total client assets',
+               'ibkr': 'client equity', 'hood': 'total platform assets'}
+
+_CASH_CLAUSE = {
+    'schw': ('Schwab 是月报 Selected Balances 块里 <code>Transactional Sweep Cash</code> 与 '
+             '<code>Total Money Market Funds</code> 两条月末余额之和（含货基）'),
+    'lpla': 'LPL 是 <code>client cash</code>（ICA + 货基 + DCA）',
+    'ibkr': 'IBKR 是 <code>client credits</code>（客户贷方余额，<b>不含</b>货基）',
+}
+
+_MGN_TERM = {'schw': 'margin balances', 'ibkr': 'margin loans', 'hood': 'margin book'}
+
+_ACCT_CLAUSE = {
+    'ibkr': ('IBKR 数的是 <code>total accounts</code>（数的是<b>账户</b>，不是人数）'),
+    'hood': ('Robinhood 数的是 <code>funded customers</code>（<b>有入金的客户</b>数，数人）'),
+}
+
+_DATS_CLAUSE = {
+    'schw': 'Schwab 的 DATs 数客户成交笔数',
+    # IBKR 那一条把「披露值 vs 推导值」这个坑写全：公司直接披露的只有
+    # Cleared Avg. DART per Account（年化，按固定 252 个交易日折算），IBKR 单页上那条
+    # 更窄的 cleared DARTs 是由它折回日频**推导**出来的 —— 见 build/ibkr.py 的
+    # 「人均年化 cleared DART」与「Total client DARTs（含未清算）」两条释义，
+    # 以及本页 Exhibit N_DATS 图注里的「implied cleared DARTs」。
+    'ibkr': ('IBKR 这条是公司披露的 <b>Total Client DARTs</b>，<b>含</b>通过 IBKR 执行但'
+             '<b>不在</b> IBKR 清算的客户（公司另披露的是 <code>Cleared Avg. DART per '
+             'Account</code>，由它折回日频<b>推导</b>出的 cleared DARTs 更窄，'
+             '画在 IBKR 单页上 —— 那是<b>推导值，不是公司披露的数</b>，两条不要混读；'
+             '「cleared」修饰的是<b>笔数</b>，不是账户）'),
+    'hood': ('Robinhood 是股票 + 期权 + 加密三个市场之和（官方单位 mn，本页 x1,000 换成 k '
+             f'与另{_cn(len(_DATS) - 1)}家同轴，核对表保留 mn 原始单位）'),
+}
+
+_FLOW_CLAUSE = {
+    'schw': ('Schwab 是 <code>core NNA</code>（剔掉单一客户的异常大额流入，'
+             f'门槛自 {SCHW_NNA_BRK[0][0]} 起提过一档、月报不重述历史）'),
+    'lpla': ('LPL 本页画的是<b>有机口径</b>，由官方 <code>Total NNA</code> 逐月减去官方同页'
+             '披露的 <code>Acquired NNA</code> 得到（两个分量都是官方数，'
+             '<b>相减这一步是本页做的</b>）'),
+    'hood': 'Robinhood 是 <code>net deposits</code>（含现金与证券转入）',
+}
+
+
+def _asset_terms():
+    """客户资产那一族：按登记顺序把「哪几家用哪个官方名字」拼成一句，并数出名字个数。"""
+    groups = []
+    for t in fam_firms('客户资产'):
+        for g in groups:
+            if g[0] == _ASSET_TERM[t]:
+                g[1].append(NAME[t])
+                break
+        else:
+            groups.append((_ASSET_TERM[t], [NAME[t]]))
+    return '、'.join(f'{" / ".join(ns)} 的 <code>{k}</code>' for k, ns in groups), len(groups)
+
+
+_AST_TXT, _AST_TERMS = _asset_terms()
+
+GLOSSARY = [
+    ('共同最新月 / 短板',
+     '本页的<b>发布门槛</b>，<b>不是</b>各家自己的最新月：整页统一截到成员中'
+     '<b>最慢</b>的那一家已披露的月份（= 共同最新月），把它钉住的那一家（或几家）'
+     '本页叫<b>短板</b>。各家披露节奏散在次月 1–20 日，若每家都画到自己的最新月，'
+     '末端那几个月的「谁强谁弱」全是披露时点造成的假象。'
+     '⇒ 已经更新到更晚月份的成员，那些月份本页<b>一律不画</b>；'
+     '当期是哪个月、短板是谁、各家自身最新月各是几月，见页脚。'),
+
+    ('客户资产',
+     f'{_cn(len(_AST))}家用{_cn(_AST_TERMS)}个官方名字说同一件事：{_AST_TXT}'
+     ' —— 都是「客户放在这家平台上的资产总额」，可以直接并排。'
+     '本页凡是归一化的图，<b>分母都是它</b>'
+     f'（各家用自己的那一条，<b>不是</b>{_cn(len(_AST))}家合计）。'
+     '⚠ LPL 那条是 <b>as-reported</b> 口径，累计含数次整体并表，'
+     f'与另{_cn(len(_AST) - 1)}家逐月比高低之前先看「Acquired NNA」那一条'
+     f'（Exhibit {N_YOY} 的图注与汇总表表注给的是同一个还原口径）。'),
+
+    ('重定基（基期 = 100）',
+     '把一条序列<b>除以它在基期那个月的值再乘 100</b>：之后各期读到的是'
+     '<b>相对基期的累计涨幅</b>，不是金额（纵轴写作 <code>index, ⟨基期⟩ = 100</code>，'
+     '各条线右端的粗体数字就是当期指数值）。<b>基期是现算的，不是挑的</b>：'
+     '取图上各条线<b>都已有值</b>的最早那个月（即起步最晚那条的首月）—— 更早的月份'
+     '分母是空值，整条线画不出来。⇒ 入图的公司一换，基期就跟着变，'
+     f'本页几张重定基图（Exhibit {_join_n([N_REB18, N_REB23, N_REB19])}）的指数值'
+     f'<b>不能互相比</b>。⚠ 并购在重定基图上是<b>永久抬升</b>的：'
+     f'断点右侧的全部水平差里有一块不是自己长出来的。'),
+
+    ('净新增资产（NNA）',
+     'net new assets：客户<b>净转入</b>的资产（转入 − 转出），是<b>流量</b>不是存量。'
+     f'{_cn(len(_FLOW))}家的官方叫法与剔除规则各不相同：'
+     + '；'.join(_FLOW_CLAUSE[t] for t in _FLOW)
+     + '。经济含义相同，但剔除规则不同，<b>绝对额不宜逐家对齐</b>。'
+     '⚠ 流量<b>不算环比百分比</b>（分母是上个月的流量，一个月的噪音会被放大成趋势），'
+     '本页一律换算成年化有机增速。IBKR <b>不披露</b> NNA，只披露净新增账户。'),
+
+    ('年化有机增速',
+     '<code>当月净流入 x 12 ÷ 上月末客户资产</code>，'
+     f'把{_cn(len(_FLOW))}家口径不同的净流入换算到'
+     '同一把尺子上（GS「LPLA monthly metrics」的流量口径规矩）。'
+     '<b>它是增长率的水平值，不是同比</b>：答的是「按这个月的流速走一年能长多少」，'
+     f'不是「比去年同月快多少」—— 所以不要拿它与客户资产 y/y（Exhibit {N_YOY}）'
+     f'逐月对照。分母用<b>上月末</b>资产，故每条线比它自己的资产序列<b>晚一个月</b>'
+     f'起画（序列首月没有上月，那一格在定义上就不存在）。'
+     '把一个月的流量乘 12，噪声也跟着放大 12 倍：对照的<b>滚动 12 个月</b>口径'
+     '（滚动 12 个月净流入 ÷ 12 个月前的月末资产）本页<b>一条线都不画</b>，'
+     '只在图注与页尾以数字出现。'),
+
+    ('Acquired NNA',
+     'LPL 官方在同一页披露的<b>并购转入</b>的客户资产 —— 被并方带过来的存量，'
+     '<b>不是</b>自己获客。本页两处用到它：有机增速图直接从 Total NNA 里逐月扣掉；'
+     '客户资产 y/y 的<b>还原口径</b>（凡标「剔并购」的读数）是从当月资产里减去'
+     '<b>滚动 12 个月</b>的 Acquired NNA 再与去年同月相除 —— 窗口与 y/y 的分子对齐，'
+     '并表滚出 12 个月它自己归零。⚠ as-reported 与还原口径的<b>名次可以是反的</b>'
+     '（当期差多少见汇总表表注）。核对表里 <code>LPL NNA total, as reported</code> 与 '
+     '<code>LPL acquired NNA</code> 两列并排印着，可以自己相减复核。'),
+
+    ('客户现金',
+     '客户留在账上没有投出去的钱，是净利息收入的基数。'
+     f'<b>{_cn(len(_CASH))}家的分子口径不同，水平值不能直接比高低</b>：'
+     + '；'.join(_CASH_CLAUSE[t] for t in _CASH)
+     + ('—— 所以 IBKR 那条系统性低一档，可比的是各自的方向与拐点。'
+        if 'ibkr' in _CASH else '。')
+     + ('Robinhood <b>不入</b>这一族：它把客户现金拆成 cash sweep（扫到合作银行、表外）与 '
+        'cash and deposits（留在券商）两条，<b>不发布同一口径的合计</b>，'
+        '取任一条与这一族的其余各条并排，不是漏计就是重复计。' if 'hood' in HAS else '')),
+
+    ('融资余额',
+     '客户以证券作担保向券商借的钱，本页这一族是 '
+     + ' / '.join(f'{NAME[t]} 的 <code>{_MGN_TERM[t]}</code>' for t in _MGN)
+     + '，一律取<b>月末</b>口径。'
+     # short credits 在本页出现三次（Exhibit N_MGN / N_MGNPCT 的图注、页尾第 3 条），
+     # 三处都只用不释 —— 行内给一句通用定义就够。Schwab 具体含哪几块公司没有印，不猜。
+     + ('⚠ Schwab 那条<b>含</b> short credits（客户<b>卖空</b>所得留在券商处的贷方余额），'
+        + ' / '.join(NAME[t] for t in _MGN if t != 'schw')
+        + ' <b>不含</b> —— 水平值有系统性偏差，方向与相对位次才是可比的信息。'
+        if 'schw' in _MGN and len(_MGN) > 1 else '')
+     + 'LPL 既<b>不披露</b>融资余额也不披露交易笔数，故<b>不入</b>这一族。'),
+
+    ('% of client assets',
+     f'本页两张<b>归一化</b>图的纵轴（Exhibit {N_MGNPCT} 融资余额、'
+     f'Exhibit {N_CASHPCT} 客户现金）：<b>分母是这一家自己的客户资产</b>。'
+     '它答的是「同样一块客户资产上，谁的客户加了更多杠杆 / 留了更多现金」，'
+     '<b>不是</b>市场份额，也与其余几家的规模无关 —— 绝对额只说明谁大，'
+     '这两张才是横截面页真正独有的读法。'
+     '⚠ 分子分母的口径差（见上面几条）会造成系统性水平偏差；'
+     '并表当月分子与分母跳的幅度不同，占比会<b>机械地</b>掉一截，'
+     '看着像「客户把现金投出去了」，其实是并购摊薄（当期量级见该图图注）。'
+     f'⚠ Exhibit {N_CASHPCT} 上{_cn(len(_CASH))}条线<b>不同源</b>：Schwab 取官方自己印的那一行'
+     f'（<code>Client Cash as a Percentage of Client Assets</code>），'
+     f'LPL 与 IBKR 是本页拿各自的分子分母相除的<b>推导值</b> —— '
+     f'能拿到 as-reported 就不自算，自算只会把那条线砍到分量的起点。'),
+
+    ('DATs / DARTs',
+     '日均交易笔数（daily average trades / daily average <i>revenue</i> trades）。'
+     f'<b>{_cn(len(_DATS))}家的「一笔」不是同一件事</b>：'
+     + '；'.join(_DATS_CLAUSE[t] for t in _DATS)
+     + '。⇒ 水平值只能<b>当量级读</b>，方向与拐点才是可比的信息。'
+     f'⚠ Robinhood 早期若干月官方印的是 DARTs（<b>不含</b>不产生收入的交易）、'
+     f'之后才是 DATs，具体月份见 Exhibit {N_DATS} 的图注。'),
+
+    ('账户 / 客户数',
+     f'Exhibit {N_ACCT} 上{_cn(len(_ACCT))}条线的存量口径'
+     + ('<b>不同</b>：' if len(_ACCT) > 1 else '：')
+     + '，'.join(_ACCT_CLAUSE[t] for t in _ACCT) + '。'
+     + ('⇒ 绝对水平<b>不可比</b>，可比的只有增速的方向与幅度。' if len(_ACCT) > 1 else '')
+     + 'Schwab 只披露当月<b>新开</b>账户、LPL 披露的是投顾人数，'
+       '都与这一族的存量口径不同，故<b>不入</b>这一族。'),
+]
+
+
 payload = {
     'ticker': 'wealth',
     'tracker': 'Wealth & Brokerage Cross-Section',
@@ -3047,6 +3307,9 @@ payload = {
     # headline 之下、Exhibit 1 之上的 ~300 字解读。职责与 headline 互补：
     # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
     'brief': BRIEF,
+    # 页顶「名词释义」：本页图 / 表里出现的名词的定义，一年到头不变（选词判断与
+    # 「有意不收哪些词」写在 GLOSSARY 上方）。版式与四道护栏在 build/glossary.py。
+    'glossary': gloss.render(GLOSSARY, where='wealth glossary'),
     'hub_line': (f'共同最新月 {mlab(LATEST)}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）· '
                  f'{len(HAS)} 家 · {len(ex)} 张图'),
     'source': SRC,

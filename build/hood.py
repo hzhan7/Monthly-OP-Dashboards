@@ -65,6 +65,7 @@ import pandas as pd
 
 import brief as B
 import axisfmt
+import glossary as gloss                # 名词释义的版式层与护栏，全站共用
 import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
 import pctile
@@ -652,6 +653,7 @@ AXIS_RATIO = set()      # pct_series（以 % 计量）的图；页尾口径说�
 # 而那种错没有任何自动化能发现 —— 所以引用一律走常量，不写字面数字。
 N_RATE_HI, N_RATE_LO = 13, 14          # 费率：高量级档 / 低量级档
 N_BRIDGE_TEST, N_IMPLIED = 15, 16      # 样本外检验 / 隐含交易收入
+N_REV_MIX = 17                         # 季度收入构成（被事件合约那一行钉住左端的唯一一张）
 N_HIST = 22                            # 总平台资产全历史
 N_QTR_ND, N_QTR_DATS = 23, 26          # 季度净流入 / 季度 DATs
 N_TABLE = 29                           # 末尾核对表
@@ -1342,7 +1344,7 @@ _ev17_txt = (
     f'in the {(_rq.index[-1] - _ev_on[0]).n + 1} quarters since {_ev_on[0]} — the fastest '
     'mix shift in the business. ' if len(_ev_on) else '')
 EX.append({
-    'n': 17, 'kind': 'stacked_dual', 'title': 'Transaction revenue mix by asset class',
+    'n': N_REV_MIX, 'kind': 'stacked_dual', 'title': 'Transaction revenue mix by asset class',
     'xlabels': [str(p) for p in _rq.index], 'fmt': 'f0c', 'ylab': '$mn per quarter',
     'ylab2': '% event contracts (RHS)',
     'stacks': [
@@ -2183,6 +2185,216 @@ notes = [
     '比坐标轴多给一位小数，可直接与公司披露逐条核对。',
 ]
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（payload 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与 brief / 图注 / 页尾 notes 的分工 ━━
+# brief 与图注说的是「**这个月**这组读数该怎么读」（含当月读数、当月实测的毛刺量），
+# 每月重写；这一块说的是「**这些词**是什么意思」，一年到头是同一段
+# ⇒ 这里**不写当月读数、不写「最新一期」**。出现的数只有两类：
+#   (a) 把定义钉住的结构性量（官方口径断点的月份、High-Yield Cash 改版的 $10k 门槛、
+#       WonderFi 带进的客户数）—— 全部引本文件上方已有的常量（BRK_*、
+#       WONDERFI_CUSTOMERS_MN、DARTS_UNTIL），不在这里另抄一份；
+#   (b) 恒等式本身（年化有机增速、市值变动、费率与它的量纲换算）。
+# 另有三处「口径成立与否」的实测（加密交易日 ≡ 日历日、股票/期权交易日的半日月数、
+# 出借净额 ≤ 总额）当场从 series/hood.csv 现算，**一个都不写死**；检验不成立时
+# 那半句整个不写，不会退化成一句假话。
+#
+# ━━ 为什么是这 15 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
+# 而且**不看定义就会读错**。按「读错会出什么事」分五类：
+#   ① 客户与资产的四个口径   总平台资产 / 入金客户 / 净流入 / 年化有机增速 —— 页尾
+#      第 2 条列的五个官方口径断点里，**四个**落在这四行上（Bitstamp / TradePMR /
+#      WonderFi / Trump Account），而且**落法各不相同**：Trump Account 进资产与
+#      净流入却不进客户数，WonderFi 进客户数与净流入。不点破，读者会把「客户 +300k
+#      而资产没同步」当成业务信号，实际上是三行外延不同。
+#      第五个断点（High-Yield Cash，2026-02）不在这四行上 —— 它落在现金那两行之间、
+#      只在 Exhibit 19 上画竖虚线，收在下面第 ⑤ 类里。别把这里写成「五个全落在这四行」。
+#   ② 本页轧出来的派生量   市值变动 / 费率 / 隐含交易收入 / 收入桥 —— 都**不是公司
+#      披露的数**。市值变动是恒等式残差（并购资产也落在它头上）；费率是反解值；
+#      隐含收入与同季实际收入按构造必然吻合（循环论证），唯一有信息量的是收入桥。
+#      漏掉「不是披露值」这半句，读者会拿它去和公司财报对账。
+#   ③ 分母与单位   ADV / DATs（DARTs）/ 交易日与自然日 —— 本页有**两套天数**、
+#      当月合计与日均**两节**、DATs 与 DARTs **两把尺子**，且加密 DATs 不含 Bitstamp
+#      而加密 ADV 含。不点破，读者会拿一套天数反推另一类的月合计，或把两条覆盖面
+#      不同的线直接比高低。
+#   ④ 本页特有的两条业务线   Bitstamp / 事件合约 —— 一个是费率远低于零售 App 的机构
+#      口径（成交量的涨跌不等价于收入的涨跌），一个是收入这一行在**季度表里比同表
+#      其余各行**出现得晚得多（其余各行自 2021Q1 起，它自 2023Q2 起），并因此钉住了
+#      Exhibit 17 一张图的左端。左边那段空白是披露史，不是 0。
+#      ⚠ 这两处都不许写成全称断言：比较对象是**同一张季度表的其余各行**，不是月度表
+#      （月度的事件合约成交量同样只从 2023-01 起，两张表「晚」的幅度只差一个季度）；
+#      被钉住的只有 Exhibit 17，Exhibit 13 / 14 / 15 各有各的窗口（见那张图的图注）。
+#   ⑤ 生息资产那一节的三行   融资余额 / Cash sweep 与 deposits / 证券出借收入 ——
+#      现金两行是**互通**的（High-Yield Cash 改版把钱从一行挪到另一行），单看一行的
+#      同比是改版的产物；出借收入的总额与净额差的是一笔明确的利息。
+# **有意不收**：m/m、y/y、3Y %ile、pp/bp（全站通用读图约定，本页 summary.note 与页尾
+# 第 8 条已经逐条讲过，释义板再讲一遍就是两处各写一份）；「口径断点」「单月同比 vs
+# 季度同比」（页尾第 2、8 条讲的就是这两件事在本页的具体落点，这里只在各词条内部
+# 点到它涉及哪一行，不另立词条）；户均资产（＝总平台资产 ÷ 入金客户，两个词都已在
+# 上面定义，图注也写了同一句）；成交量、名义额、市值这类本页没有特殊口径的常识词。
+# ══════════════════════════════════════════════════════════════════════════════
+# 三处实测：结论不写死，构建期从 series/hood.csv 现算；不成立就让那半句整个不写。
+_g_cal = df['crypto_trading_days'].dropna()
+_G_CAL_N = int(len(_g_cal))
+_G_CAL_OK = int(sum(1 for p, v in _g_cal.items() if float(v) == p.days_in_month))
+_g_eq = df['eqopt_trading_days'].dropna()
+_G_EQ_N = int(len(_g_eq))
+_G_EQ_HALF = int(sum(1 for v in _g_eq.values if float(v) % 1 != 0))
+_g_sl = df[['seclend_total_usdmn', 'seclend_net_usdmn']].dropna()
+_G_SL_N = int(len(_g_sl))
+_G_SL_OK = int((_g_sl['seclend_net_usdmn'] <= _g_sl['seclend_total_usdmn']).sum())
+_g_adv = df['adv_equity_usdbn'].dropna()
+_G_ADV0 = mlab(_g_adv.index[0]) if len(_g_adv) else None
+
+_G_CAL_TXT = (f'实测<b>逐月等于当月日历天数</b>，{_G_CAL_N} 个月现算、无一例外'
+              if _G_CAL_N and _G_CAL_OK == _G_CAL_N else '按自然日计')
+_G_HALF_TXT = (f'，本页 {_G_EQ_N} 个月里有 <b>{_G_EQ_HALF}</b> 个月含半日，'
+               f'所以这一列会出现 .5' if _G_EQ_HALF else '')
+_G_SL_TXT = (f'（{_G_SL_N} 个月逐月现算，净额一个月都没有超过总额）'
+             if _G_SL_N and _G_SL_OK == _G_SL_N else '')
+_G_ADV_TXT = (f'官方开始印这一节（{_G_ADV0}）' if _G_ADV0 else '官方开始印这一节')
+_G_WF = f'{WONDERFI_CUSTOMERS_MN * 1000:.0f}k'
+
+# 事件合约「晚」的那句：比较对象是**同一张季度表的其余各行**（其余收入行自季度表起点
+# 就有，事件合约收入到 _G_EV_Q0 才有），不是月度表 —— 月度的事件合约成交量同样只从
+# 2023-01 起，两张表晚的幅度只差一个季度，写「比月度表晚得多」会被本页两张 CSV 当场
+# 证伪。两个季度标签一律现读 series/hood_q.csv，不写死。
+_g_ev_q = q['rev_event_usdmn'].dropna()
+_G_EV_Q0 = str(_g_ev_q.index[0]) if len(_g_ev_q) else None
+# 「其余各行」的起点也现算：拿 Exhibit 17 那三条非事件合约的收入腿，取它们里最晚的
+# 首个非空季。三条不同起点时这半句整个不写，不退化成一句假话。
+_g_oth_q0 = sorted({str(q[c].dropna().index[0]) for c in
+                    ('rev_options_usdmn', 'rev_equities_usdmn', 'rev_crypto_usdmn')
+                    if len(q[c].dropna())})
+_G_EV_LATE = (f'（同表其余三条收入行自 {_g_oth_q0[0]} 起就有，它到 {_G_EV_Q0} 才有）'
+              if len(_g_oth_q0) == 1 and _G_EV_Q0 and _G_EV_Q0 != _g_oth_q0[0] else '')
+
+GLOSSARY = [
+    # ① 客户与资产：页尾第 2 条那五个口径断点里的四个落在这四行上，而且落法各不相同
+    #    （第五个 High-Yield Cash 落在现金那两行之间，收在下面 ⑤ 的「Cash sweep / deposits」）
+    ('总平台资产',
+     '官方行名 <code>Total Platform Assets</code>，<b>月末时点的存量</b>（不是当月发生额）。'
+     '它<b>曾名 Assets Under Custody</b>，改名时口径同时<b>扩大</b>：现含 TradePMR 顾问的'
+     '资产，而那部分并<b>不由</b> Robinhood 托管 —— 所以「托管」两个字已经不是它的内容。'
+     f'自 {BRK_TRUMP} 起还并入 Trump Account 里由 Robinhood 托管的那部分。'),
+
+    ('入金客户',
+     '官方行名 <code>Funded Customers</code>，同样是<b>月末存量</b>。'
+     '⚠️ 它的增量<b>不等于</b>自然获客：'
+     f'{BRK_WONDERFI} 的 WonderFi 一次带进约 {_G_WF}，那是<b>股权交易</b>。'
+     f'反过来，Trump Account 的资产与缴款分别进了总平台资产与净流入，却<b>不计入</b>'
+     f'这一行（{BRK_TRUMP}）—— 同一个月这三行不同步是口径造成的，不是业务。'),
+
+    ('净流入',
+     '官方行名 <code>Net Deposits</code>：当月的客户净汇入，是<b>流量</b>（$bn/月），'
+     '与总平台资产那个期末存量不是一回事，两者只在下面「市值变动」那条恒等式里相遇。'
+     '⚠️ 它<b>不是纯有机流量</b>：'
+     f'Bitstamp（{BRK_BITSTAMP}）、TradePMR 顾问资产的流量（{BRK_TRADEPMR}）、'
+     f'Trump Account 的缴款（{BRK_TRUMP}）先后并入 —— 跨这几个月比较时，'
+     f'两端不是同一个外延。'),
+
+    ('年化有机增速',
+     '<code>当月净流入 × 12 ÷ 上月末总平台资产</code>，与本系列里 Schwab core NNA、'
+     'LPL organic NNA 用的是同一套约定。它是一个<b>比率</b>，两期之差一律出'
+     '<b>百分点</b>，不做「百分比的百分比变化」。'
+     '⚠️ 名字里的「有机」指的是这套<b>算法</b>（流量 ÷ 期初存量），'
+     '<b>不表示</b>分子已经剔除并购带进来的流量 —— 分子就是上面那条净流入，'
+     '并购的部分原样在里面。'),
+
+    ('市值变动',
+     '<b>不是公司披露的数</b>，是资产变动桥的<b>轧差项</b>：'
+     '<code>市值变动 = 期末资产 − 期初资产 − 净流入</code>。'
+     '正因为它是恒等式里被轧出来的那一项，<b>并购带进来的资产也全落在它头上</b> —— '
+     '所以它不能当成纯市场回报读。'),
+
+    # ② 分母与单位：两套天数、两节口径、两把尺子
+    ('ADV',
+     '<b>日均成交量</b>（average daily volume）：官方自己印的<b>一整节</b>，本页直接取原值。'
+     '⚠️ 「当月合计」（<code>Total Trading Volumes</code>）与它是<b>两节</b>，'
+     '差的就是当月开市天数，不是两个指标。而 <code>ADV = 当月合计 ÷ 交易日</code> '
+     f'这个除法<b>本页不代做</b>（换算值不是披露值），所以在{_G_ADV_TXT}之前，'
+     f'各 ADV 图的左端是<b>空的、不补</b>。'),
+
+    ('DATs / DARTs',
+     '<b>日均成交笔数</b>（Daily Average Trades），按股票 / 期权 / 加密三类分列。'
+     '公司 2026-07 才把这一节从 <b>DARTs</b>（Daily Average <i>Revenue</i> Trades，'
+     '只数<b>产生收入</b>的交易）改名 DATs，并且重述只回溯到 Jan-25；'
+     f'{mlab(DARTS_UNTIL)} 及更早本页填的就是当期印的 DARTs（Dec-24 及更早两种口径'
+     f'逐月逐位相同，所以两段接得上，但左段严格说是窄口径）。'
+     '⚠️ 加密 DATs <b>不含</b> Bitstamp 的机构交易，而加密 ADV <b>含</b> —— '
+     '这两条线的覆盖面不一样，不能互相印证。'),
+
+    ('交易日 / 自然日',
+     '官方印的是<b>两套</b>天数，本页两套都在用：'
+     '<code>Equities and options trading days</code>（交易所交易日'
+     + _G_HALF_TXT +
+     '）与 <code>Crypto and prediction markets trading days</code>'
+     f'（加密与预测市场 7×24，{_G_CAL_TXT}）。'
+     '⇒ 同一个月这两套天数可以<b>一增一减</b>，拿其中一套去反推另一类的当月合计必错；'
+     '两类资产的日均值也因此不在同一个分母上。'),
+
+    # ③ 本页特有的两条业务线
+    ('Bitstamp',
+     f'{BRK_BITSTAMP} 并入的<b>机构</b>加密交易平台。它在本页有两处不对称：'
+     '加密成交量（当月合计与 ADV）<b>含</b> Bitstamp、加密 DATs <b>不含</b>；'
+     '而它的费率<b>远低于</b>零售 App，所以加密<b>成交量</b>的涨跌'
+     '<b>不等价于</b>加密<b>收入</b>的涨跌。'
+     '并表之前那一段 0 是<b>官方自己印的 0</b>（当时还不在合并范围内），不是缺数补零。'),
+
+    ('事件合约',
+     'Prediction Markets Hub 上的合约（2024-10 上线）。计量单位是<b>张</b>：'
+     '当月合计按 bn 张印、日均按 mn 张印。'
+     f'⚠️ <b>收入</b>这一行在季度表里比<b>同表其余各行</b>出现得晚得多{_G_EV_LATE}：'
+     '它是 Q2\'26 那份 Earnings Supplement 才从 P&amp;L 的「Other」里拆出来的，'
+     '而那份文件的季度 P&amp;L 只滚动覆盖 13 个季度，更早的官方文件里它还并在 Other 内。'
+     f'⇒ <b>Exhibit {N_REV_MIX}</b>（季度收入构成）的左端被这一行钉住 —— '
+     f'其余几张季度图各有各的窗口，<b>都不是</b>被这一行截住的（各自的左端写在各自图注里）；'
+     '被它钉住的那一段留空的格子是<b>没有任何官方文件印过</b>，不是 0。'),
+
+    # ④ 生息资产那一节的三行
+    ('融资余额',
+     '官方行名 <code>Margin Book</code>，「生息资产」那一节的第一行：<b>月末</b>的'
+     '融资放贷余额（应收），<b>含</b> TradePMR 平台上 RIA 的余额。'
+     '它读的是<b>时点存量</b>、且是<b>贷款</b>不是成交量 —— 这一节的三行都是月末时点，'
+     '与上面那些当月流量不能并排读增速。'),
+
+    ('Cash sweep / deposits',
+     '「生息资产」那一节里<b>互通的两行</b>：<code>Cash Sweep</code> 是扫到合作银行、'
+     '在 Robinhood <b>资产负债表外</b>的余额；<code>Cash and Deposits</code> 是留在'
+     '表内的自由信用余额。'
+     f'{BRK_SWEEP} 的 High-Yield Cash 改版把每位客户已加入余额中的<b>前 $10k</b> '
+     f'从前者挪到后者，用于支持融资放贷 —— 所以那之后单看<b>任何一行</b>的同比都是'
+     f'改版的产物而不是客户流失，<b>两行必须一起读</b>。'),
+
+    ('证券出借收入',
+     '官方按<b>月</b>印的两行，都是当月<b>流量</b>（$mn/月）不是余额：'
+     '<b>总额</b>（<code>Total securities lending revenue</code>）与'
+     '<b>净额</b>（<code>Securities lending, net</code>）。'
+     '两者之差是明确的一笔：净额<b>剔除</b>为融资放贷而收取的现金抵押品利息 —— '
+     f'所以融资盘越大、两行之间的口子越宽{_G_SL_TXT}。'),
+
+    # ⑤ 本页轧出来的派生量：都不是公司披露的数
+    ('费率（take rate）',
+     '<b>不是公司披露的数</b>，是本页反解出来的：'
+     '<code>某季某类的披露收入 ÷ 同季该类的披露成交量</code>。'
+     '量纲换算是恒等式：<code>$mn ÷ $bn</code> 再 ×10 得 <b>bp</b>，'
+     '<code>$mn ÷ mn 张</code> 再 ×100 得<b>美分/张</b>。'
+     f'⚠️ 四条费率跨两个量级，本页按量级拆成两张图（Exhibit {N_RATE_HI} 与 '
+     f'Exhibit {N_RATE_LO}），两张的单位都<b>混着</b> bp 与美分/张（写在各自图例名里），'
+     f'<b>跨图不能直接比高低</b>。'),
+
+    ('隐含交易收入 / 收入桥',
+     '两个都由上面那条费率推导而来，但<b>不是同一件事</b>，信息量差得很远。'
+     f'<b>隐含交易收入</b>（Exhibit {N_IMPLIED}）＝ 当月成交量 × 该月所属季度的费率，'
+     f'它与<b>同季</b>实际收入按构造<b>必然吻合</b>，是循环论证。'
+     f'<b>收入桥</b>（Exhibit {N_BRIDGE_TEST}）拿<b>上一季</b>的费率去乘本季的实际成交量，'
+     f'再与事后披露的实际收入对照 —— 这才是本页唯一的<b>样本外</b>检验。'
+     f'桥的两根柱每季只覆盖<b>同一组</b>资产类别（某类上季反解不出费率就从两边同时'
+     f'剔除），否则算出来的误差是假的。'),
+]
+
+
 # ────────────────────────── 顶部数据总结（brief）──────────────────────────
 def compose_brief(df, nd, bk_nd, brk_sweep):
     """HOOD 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
@@ -2524,6 +2736,9 @@ payload = {
                 f'版式沿用 Goldman Sachs GIR「HOOD Monthly」，含 GS 版没有的收入桥样本外检验',
     'headline': headline,
     'brief': compose_brief(df, nd, BK_ND, BRK_SWEEP),
+    # 名词释义：排在所有 exhibit 之前。选词判断与「有意不收哪些词」写在 GLOSSARY
+    # 上面那块注释里；版式与四道护栏在 build/glossary.py（全站共用，不在这里拼字符串）。
+    'glossary': gloss.render(GLOSSARY, where='hood glossary'),
     'hub_line': f'总平台资产 ${tpa.iloc[-1]:,.0f}bn（{pp_txt(_tpa_yoy)} y/y 单月）·'
                 f'净流入 ${nd.iloc[-1]:,.1f}bn · 入金客户 {_fc:,.1f}mn',
     'source': SRC,

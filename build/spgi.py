@@ -47,6 +47,7 @@ import numpy as np
 
 import axisfmt
 import brief as B
+import glossary as gloss   # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile
 import yoy as Y        # 同比口径的唯一实现（build/yoy.py）；本页不再自己写滞后 12 期的除法
@@ -69,6 +70,10 @@ def _source_dates():
 
 
 SRC = 'Source: S&P Global monthly metrics xlsx; format after Goldman Sachs GIR'
+# ⚠️ 下面三条英文都是**本仓自己写的 Source 行文案**（deck 风格的 extra=），
+#    不是官方工作簿的脚注原文 —— DNOTE 描述的就是本页自己做的反算，官方不可能这么写。
+#    别在任何地方把它们标成「原文」「脚注」再用引号框起来：那是把自撰文案冒充官方引用。
+#    真要引原文，先把 xlsx 那一格抄出来并在这里留下出处（as-of 月 + 单元格）。
 DNOTE = ('2022 ADV values are back-calculated from the 2023 level and the officially '
          "disclosed 23 v. 22 % change")
 INOTE = ('Billed issuance is disclosed as a y/y % only; this index chains those '
@@ -937,6 +942,151 @@ def _mlab_key(k):
     return mlab(f'{k // 12}-{k % 12 + 1:02d}')
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（payload 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与 brief / 页尾 notes 的分工 ━━
+# brief 说「**这个月**这组读数该怎么读」、每月重写；页尾 notes 与图注说「这一张图上
+# 这次断点落在哪、当月哪几个读数跨了口径」；这一块只说「**这些词**是什么意思」，
+# 一年到头是同一段 ⇒ 这里**不写当月读数**。出现的数只有基期年、反算年这类把定义钉住的
+# 结构性量，而且一个都不写死：BASE_Y / DERIVED_* / BRK_M / BRK_DRAWN 全是上面从
+# series/spgi_clean.csv 与 payload 现读的量。2026-08 那次历史回填把基期年从 2024 挪到
+# 2022、反算年跟着挪，当时页面里手写的 2024 有二十来处一夜之间全变成假话 —— 这一块
+# 是页面上**第一段**被读到的文字，最不该是那样。
+#
+# ━━ 为什么是这几个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
+# 而且**不看定义就会读错**。本页只有两条官方序列，坑几乎全集中在「哪个数是公司给的、
+# 哪个数是本页轧出来的」这条线上，按「读错会出什么事」分四类：
+#   ① 披露边界与外延　SPDJI / Ratings、Billed issuance —— 公司每月**只给两个数**，
+#      其中一条**只有同比、从来没有面值**。不点破，读者会在页面上找 billed issuance 的
+#      水平值（找不到，因为它不存在），或者把本页比别家薄当成漏做。
+#      Billed issuance 还要连**外延**一起收：它只含实际计费的发行，剔除 frequent
+#      issuer program、无评级债与多数国际公共融资（出处 build/basefill/spgi_history.py
+#      :64-66），否则那个 y/y 会被读成全市场发行量或受评发行量的增速。
+#   ② 外延、单位与分母　ADV、ETD —— 数的只是**挂钩 S&P DJI 指数**的那部分交易所
+#      衍生品（不是全市场 ETD）、披露的**本来就是日均值**（页面上没有交易日数这一列，
+#      反推不出当月总张数）、计的是**张数不是金额**、季度值是**简单平均不是合计**。
+#      四件事错任何一件，量级就差一到两个数量级，而图形完全正常、看不出来。
+#      外延那一件与 Billed issuance 那一条同理：两条官方序列各自的外延都比词面窄，
+#      两处一起收，不许一处收、一处不收。
+#   ③ 本页自己轧出来的数　Billed issuance 指数、反算值 —— 两个都**不是公司披露值**，
+#      各自带一套「只能这么读」的限制（指数每一格基数不同，只能同月对同月竖着看；
+#      反算值是算术推导不是估计，但精度受官方那个百分比的取整限制）。释义板不点名，
+#      整页就只剩图注在孤零零地说「推导值」。
+#   ④ 口径变更里的那个专有名词　event contracts —— 全页反复出现、一次也没解释过，
+#      而它正是 Dec-25 那处断点的内容。这里只写它在本页的**作用**（被剔出 ADV 的定义、
+#      不重述历史、被剔除的量官方没给），**不替官方定义这类合约是什么** —— 查不到出处
+#      的断言不写。
+# **有意不收**：
+#   · m/m、y/y、单月同比、3Y %ile、pp / bp —— 全站通用的读图约定，汇总表的 note 与
+#     页尾「汇总表的比率行用 pp / bp」「同比口径」两条已经逐条讲过；释义板再讲一遍
+#     就是同一件事在两处各写一份，改了一处另一处就开始说假话。
+#   · 「口径断点」这个词本身 —— 页尾「口径断点 2025-12」那一条讲的是它在本页**逐图的
+#     落点**（哪张画了竖线、哪张的 x 轴画不了、哪根柱季内混口径），那是当期状态不是
+#     词义。这里只在 event contracts 一条里给词义并指路，不复述那张名单。
+#   · 成交量 / 发行量 / 指数这类常识词 —— 本页对它们没有特殊口径（真有特殊口径的是
+#     「billed issuance 指数」那一条，已单列）。
+#   · 收入 / AUM / 分部 —— 页面上根本没有，公司月度披露里就没有这些。
+# ══════════════════════════════════════════════════════════════════════════════
+_BRK_WHERE = (f'本页在 {_exl(BRK_DRAWN)} 上把它标成红色竖虚线（语义是「从这一期起与'
+              f'左侧不可比」）' if BRK_DRAWN else
+              '这处断点已经滚出本页所有图的窗口，当前没有任何一张图画竖虚线')
+# 反算年的年份、以及官方那一列的行名，都跟着数据走：反算年可能不止一年，也可能在
+# 官方补发绝对值之后一年都不剩（那时下面这一条整个不出）。
+_DER_LABEL = (f"'{(DERIVED_Y0 + 1) % 100:02d} v. '{DERIVED_Y0 % 100:02d} % Change"
+              if DERIVED_Y0 is not None else '')
+
+GLOSSARY = [
+    ('SPDJI / Ratings',
+     '公司月度披露的<b>两块业务</b>，也是那份工作簿的两张 sheet：'
+     '<b>S&amp;P Dow Jones Indices</b>（SPDJI，指数业务）每月只出 ADV 一条；'
+     '<b>S&amp;P Global Ratings</b>（评级业务）每月只出 billed issuance 的同比一条。'
+     '⚠️ 公司每月<b>只给这两个数</b> —— 没有收入、没有 AUM、没有分部拆分，'
+     '本页比其他标的薄不是漏做，是披露就这么多。两条的口径也完全不同'
+     '（评级业务的计费发行量 vs 指数业务的衍生品日均成交），页上把它们并排画只是'
+     '把两块业务当月各自的动能放在一起看，<b>同向或背离都不构成因果</b>。'),
+
+    # ⚠️ 第一句的限定语（只数挂钩 S&P DJI 指数的那部分）不能省：出处是公司
+    #    2023-02-09 的 Q4/FY2022 财报 8-K（SEC accession 0000064040-23-000055）
+    #    "Upcoming Disclosures" 一节原话 "the volume of Exchange-Traded Derivatives
+    #    for S&P Dow Jones Indices"，逐字见 build/basefill/spgi_history.py:35-38；
+    #    同文件 62-63 也写明「本页的 ADV 是全部 SPDJI-IP 衍生品的合计」。
+    #    写成泛指的「交易所挂牌衍生品」会让读者把这条读成全市场 ETD 成交（差一到两个
+    #    数量级），而这条词条存在的理由恰恰是钉住这个外延。
+    ('ETD（交易所交易衍生品）',
+     '<b>exchange-traded derivatives</b>：在交易所挂牌交易的衍生品合约（期货、期权）。'
+     '⚠️ 本页的 ADV <b>不是</b>全市场的交易所衍生品成交，只数<b>挂钩 S&amp;P DJI 指数'
+     '</b>（SPDJI 的指数知识产权）的那一部分 —— 公司 8-K 里的原话是 '
+     '<code>the volume of Exchange-Traded Derivatives for S&amp;P Dow Jones Indices</code>。'
+     '数的是这类合约的<b>张数</b>、<b>跨交易所合计</b>，取的是 SPDJI 那张 sheet 报出来的'
+     '<b>合计</b> —— 官方<b>不拆品种、不拆交易所、不给名义金额</b>，'
+     '所以页面上没有、也推不出任何更细的分解。'),
+
+    ('ADV',
+     '<b>average daily volume</b>，日均成交张数，单位 <code>mn contracts / day</code>。'
+     '⚠️ 公司披露的<b>本来就是日均值</b>，不是本页拿月合计除出来的；'
+     '序列里<b>没有交易日数这一列</b>，反过来也推不出当月总张数。'
+     '计的是<b>张数不是金额</b>（既不是名义金额，也不是指数业务的收入）。'
+     '季度图上的季度值是季内各月 ADV 的<b>简单平均</b>而不是合计 —— '
+     '日均口径相加会得到一个没有单位含义的数。'
+     '⚠️ 这条序列有两处不能直读：定义在 ' + mlab(BRK_M) + ' 变过一次'
+     '（见下面 event contracts）'
+     + (f'，{DERIVED_TXT} 年整年是反算值（见下面「反算值」）' if DERIVED_TXT else '')
+     + '。'),
+
+    ('event contracts',
+     # 这里**不引英文原文**：EVENT 那串是本仓自己写的 Source 行文案（见文件上方
+     # DNOTE/INOTE/EVENT 处的注释），标成「工作簿脚注原文」就是拿自撰文案冒充官方引用。
+     # 事实本身（Dec-2025 起剔除、不重述）与 fetch/spgi.py 的口径坑第 3 条、
+     # 页尾「口径断点 2025-12」及 Exhibit 2/4/5 的图注一致，直接陈述即可。
+     f'官方从 {mlab(BRK_M)} 起把这类合约<b>剔出 ADV 的定义</b>，并且<b>不追溯重述</b>'
+     f'更早的月份（本页把这处变更标作 <code>{BRK_LABEL}</code>）。'
+     f'⚠️ 官方<b>没有给出被剔除部分的量</b>，本页因此<b>无法</b>把断点两侧接成一条'
+     f'同口径的序列，也不做任何拼接或估补：{_BRK_WHERE}；'
+     f'断点右侧的每一个 ADV 同比还都是「新口径的当月 ÷ 旧口径的去年同月」。'
+     f'它逐图的落点与各自受什么影响，见页尾「口径断点」那一条。'
+     f'至于这类合约本身包含哪些品种，本页手上<b>没有可引的出处</b>，'
+     f'不替官方补一个定义。'),
+
+    ('Billed issuance',
+     'S&amp;P Global Ratings 侧公司按月披露的<b>唯一</b>指标（官方行名 '
+     '<code>billed issuance</code>）。⚠️ 官方<b>只给同比百分比，从不给绝对面值</b> —— '
+     '这不是本页没抓到，是披露里就没有；给的百分比是<b>当月对去年同月</b>的。'
+     # 外延这一句的出处：build/basefill/spgi_history.py:64-66（陷阱 3，实际打开读过的
+     # 那批文件的结论）——「rated dollar volume ≠ billed issuance：billed issuance 明确
+     # 剔除 frequent issuer program、无评级债与多数国际公共融资」。不写这一句，读者会
+     # 把 y/y 当成全市场发行量或受评发行量的增速。
+     '⚠️ 它的外延<b>不是全市场发行</b>：只含 S&amp;P Global Ratings <b>实际计费</b>的'
+     '发行，<b>剔除 frequent issuer program、无评级债与多数国际公共融资</b> —— '
+     '所以这条同比既不是市场发行量的增速，也不是受评发行量'
+     '（<code>rated dollar volume</code>，另一个口径）的增速。'
+     '⇒ 本页手里<b>没有一条可加总的 billed issuance 水平值序列</b>，'
+     '凡是它的图，画的要么是这串百分比本身，要么是由这串百分比推出来的指数。'),
+
+    ('Billed issuance 指数',
+     f'⚠️ <b>不是公司披露值</b>：本页把官方那串同比百分比<b>链式</b>接到'
+     f'「{BASE_Y} 年<b>同月</b> = 100」上，构造出来的一个水平值代理。'
+     f'因此<b>每一格各自以自己那个月份的 {BASE_Y} 年为基数</b>：跨月读高低会混进'
+     f'基期年的季节性，格与格之间<b>不能相减、不能取平均、也不能排分位</b>'
+     f'（汇总表那一行的 m/m 与 3Y %ile 刻意留空，是这个原因，不是缺数）；'
+     f'链越长这条毛病越重，<b>只能同月对同月竖着看</b>。'
+     f'干净的只有它的同比 —— {BASE_Y} 年同月基数在分子分母上精确对消，'
+     f'等于官方披露的那个百分比。核对表里这一列标着「推导」，'
+     f'拿它去核对官方文件会对不上。'),
+]
+
+if DERIVED_TXT:
+    GLOSSARY.append((
+        '反算值',
+        f'{DERIVED_TXT} 年各月的 ADV <b>不是官方直接披露值</b>，是由<b>次年</b>同月的'
+        f'披露值与官方公布的同比（那一列的行名形如 <code>{_DER_LABEL}</code>）'
+        f'反算得到的（每份工作簿只带当年与上年两列）。'
+        f'⚠️ 这是对披露数据的<b>算术推导，不是估计</b>，但精度受官方那个百分比的'
+        f'取整限制 —— 末位不要当真。ADV 那张长历史图把这些月画成<b>斜纹柱</b>，'
+        f'图下的 Source 行与页尾也各标一次。'))
+
+
 def compose_brief(months, adv_raw, advy_raw, biy_raw, derived_raw):
     """SPGI 页顶部的 ~300 字数据总结（payload 的 `brief` 字段）。
 
@@ -1155,6 +1305,8 @@ payload = {
     'headline': headline,
     # 那一行给读数，这一段给「读数该怎么读」。见 compose_brief 的 docstring。
     'brief': compose_brief(MONTHS, ADV, ADVY, BIY, DERIVED),
+    # 选词判断与「有意不收哪些词」写在 GLOSSARY 上面那块注释里。
+    'glossary': gloss.render(GLOSSARY, where='spgi glossary'),
     'hub_line': (f'ADV {adv_c:.1f}mn/日（{advy_c:+.0f}% y/y）· '
                  f'billed issuance {biy_c:+.0f}% y/y'),
     'source': SRC,

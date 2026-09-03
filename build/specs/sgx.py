@@ -157,6 +157,201 @@ _GT = _yoy_gap('vol_ftse_taiwan_futures_contracts')
 _GB = _yoy_gap('new_bond_listings')
 
 
+# ══ 名词释义要用的几组结构性实测（全部从 series/sgx.csv 现算）════════════════
+# 与上面那两组同一条规矩：释义里出现的数一个都不写死。这几个函数只做算术，
+# 不含任何当月判断 —— 释义是「这些词是什么意思」，一年到头是同一段。
+def _rows():
+    """series/sgx.csv 的全部行；读不到返回空表（import 期不许因缺文件抛异常）。"""
+    try:
+        with open(_CSV, encoding='utf-8') as fh:
+            return list(csv.DictReader(fh))
+    except OSError:
+        return []
+
+
+def _num(r, c):
+    v = (r.get(c) or '').strip()
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+
+
+def _sdav_identity():
+    """证券侧恒等式 `当月成交额 ÷ 当月证券交易日数 = SDAV` 的实测偏差。
+
+    返回 (可算月数, 最大相对差%)；算不出返回 (None, None)。
+    这条是 fetch/sgx.py 的解析自检（_crosscheck）用的同一条恒等式。
+    """
+    e = []
+    for r in _rows():
+        t, d, s = (_num(r, 'sec_turnover_sgdmn'), _num(r, 'sec_trading_days'),
+                   _num(r, 'sdav_sgdmn'))
+        if t and d and s:
+            e.append(abs(t / d / s - 1) * 100.0)
+    return (len(e), max(e)) if e else (None, None)
+
+
+def _ddav_days():
+    """衍生品侧那条恒等式**不成立**的实测（fetch/sgx.py 口径坑 6）。
+
+    用官方两个数反算隐含交易日数 `当月成交合计 ÷ DDAV`，再与当月**证券市场**
+    交易日数比。返回 (可算月数, 与证券交易日不等的月数, 隐含天数下界, 上界,
+    误用证券交易日的相对差中位%, 最大%)；算不出返回 (None,) * 6。
+    """
+    imp, ne, rel = [], 0, []
+    for r in _rows():
+        v, dd, d = (_num(r, 'deriv_vol_contracts'), _num(r, 'ddav_contracts'),
+                    _num(r, 'sec_trading_days'))
+        if v and dd and d:
+            x = v / dd
+            imp.append(x)
+            if abs(x - d) > 0.005:            # 官方交易日是整数，半天以内算相等
+                ne += 1
+            rel.append(abs(v / d / dd - 1) * 100.0)
+    if not imp:
+        return (None,) * 6
+    rel.sort()
+    return (len(imp), ne, min(imp), max(imp), rel[len(rel) // 2], max(rel))
+
+
+def _swaps_gap():
+    """「当月成交合计 = 期货 + 期权 + 掉期」与掉期的占比。
+
+    掉期不上页面（见文件抬头），所以页上两条「其中」相加必然比合计少一点点 ——
+    释义里要把这个缺口点名，不然读者会以为漏了数。
+    返回 (可算月数, 三项逐位相加等于合计的月数, 最大残差张数,
+          掉期占合计中位%, 最大%)；算不出返回 (None,) * 5。
+    """
+    sh, exact, res = [], 0, []
+    for r in _rows():
+        tot, fu, op, sw = (_num(r, 'deriv_vol_contracts'),
+                           _num(r, 'deriv_futures_vol_contracts'),
+                           _num(r, 'deriv_options_vol_contracts'),
+                           _num(r, 'deriv_swaps_vol_contracts'))
+        if tot and None not in (fu, op, sw):
+            sh.append(sw / tot * 100.0)
+            d = abs(fu + op + sw - tot)
+            res.append(d)
+            if d < 0.5:
+                exact += 1
+    if not sh:
+        return (None,) * 5
+    sh.sort()
+    return (len(sh), exact, max(res), sh[len(sh) // 2], max(sh))
+
+
+def _eqix_share():
+    """本页单列的指数产品占「股指期货合计」多少 —— 证明合计**不是**它们的和。
+
+    返回 (同组三条的中位占比%, 再加上另两组里 GIFT Nifty 与 FTSE 台湾的中位占比%)；
+    算不出返回 (None, None)。缺值按 0 计（那两条各有自己的起点，缺的月份本就没有量）。
+    """
+    a, b = [], []
+    for r in _rows():
+        tot = _num(r, 'vol_equity_index_futures_contracts')
+        if not tot:
+            continue
+        p3 = [_num(r, c) for c in ('vol_a50_futures_contracts',
+                                   'vol_nikkei225_futures_contracts',
+                                   'vol_msci_singapore_futures_contracts')]
+        if any(x is None for x in p3):
+            continue
+        p2 = [_num(r, c) or 0.0 for c in ('vol_nifty50_futures_contracts',
+                                          'vol_ftse_taiwan_futures_contracts')]
+        a.append(sum(p3) / tot * 100.0)
+        b.append((sum(p3) + sum(p2)) / tot * 100.0)
+    if not a:
+        return (None, None)
+    a.sort()
+    b.sort()
+    return (a[len(a) // 2], b[len(b) // 2])
+
+
+def _velocity_stats():
+    """换手率：印刷精度，以及「拿本页两列反推」为什么不成立。
+
+    返回 (月数, 整数月数, 读数下界, 上界, 与「当月成交额 ÷ 月末总市值」之比的
+          下界 / 中位 / 上界)；算不出返回 (None,) * 7。
+    倍数不是常数正是论据本身：官方脚注说明分子分母都只取 primary listed
+    securities，而本页那两列是全市场口径。
+    """
+    v, mult = [], []
+    for r in _rows():
+        x = _num(r, 'turnover_velocity_pct')
+        t, m = _num(r, 'sec_turnover_sgdmn'), _num(r, 'mktcap_sgdmn')
+        if x:
+            v.append(x)
+            if t and m:
+                mult.append(x / (t / m * 100.0))
+    if not v or not mult:
+        return (None,) * 7
+    mult.sort()
+    return (len(v), sum(1 for x in v if x == int(x)), min(v), max(v),
+            min(mult), mult[len(mult) // 2], max(mult))
+
+
+def _rto_only_months():
+    """家数 = 0 而募资额 > 0 的月数 —— 「募资额含 RTO、家数不含」的直接证据。"""
+    n = 0
+    for r in _rows():
+        c, f = _num(r, 'ipos_count'), _num(r, 'ipo_funds_sgdmn')
+        if c == 0 and f and f > 0:
+            n += 1
+    return n
+
+
+def _fx_share():
+    """本页单列的两条外汇产品占「外汇期货合计」多少 —— 同 `_eqix_share()` 的用途。
+
+    Ex15 与汇总表把「合计 + 两条分项」画在同一根轴上，读者会去相加对账；
+    两条各有自己的合约边界（USD/CNH 不含 Mini / FlexC、INR/USD 不含 FlexC，
+    见 fetch/sgx.py 的列口径表），相加必然少一块。
+    返回 (可算月数, 占比下界%, 中位%, 上界%)；算不出返回 (None,) * 4。
+    """
+    s = []
+    for r in _rows():
+        tot = _num(r, 'vol_fx_futures_contracts')
+        a, b = (_num(r, 'vol_usdcnh_futures_contracts'),
+                _num(r, 'vol_inrusd_futures_contracts'))
+        if tot and a is not None and b is not None:
+            s.append((a + b) / tot * 100.0)
+    if not s:
+        return (None,) * 4
+    s.sort()
+    return (len(s), s[0], s[len(s) // 2], s[-1])
+
+
+def _iron_share():
+    """铁矿石占「商品合计」的中位比重；算不出返回 None。"""
+    s = sorted(_num(r, 'vol_iron_ore_contracts') / _num(r, 'vol_commodities_contracts')
+               * 100.0
+               for r in _rows()
+               if _num(r, 'vol_commodities_contracts') and _num(r, 'vol_iron_ore_contracts'))
+    return s[len(s) // 2] if s else None
+
+
+def _price_range():
+    """加权平均成交价（当月成交额 ÷ 当月成交股数）的全期区间；算不出返回 (None, None)。"""
+    p = [_num(r, 'sec_turnover_sgdmn') / _num(r, 'sec_turnover_mnshares')
+         for r in _rows()
+         if _num(r, 'sec_turnover_mnshares') and _num(r, 'sec_turnover_sgdmn')]
+    return (min(p), max(p)) if p else (None, None)
+
+
+_SD = _sdav_identity()
+_DD = _ddav_days()
+_SW = _swaps_gap()
+_EQ = _eqix_share()
+_FX = _fx_share()
+_VE = _velocity_stats()
+_RTO = _rto_only_months()
+_IO = _iron_share()
+_PR = _price_range()
+# 加密永续那一节的首月（实测 2025-11）。同 _breaks() 的做法：能读 CSV 就读，不写死。
+_CRYPTO0 = _first_present('vol_crypto_contracts')
+
+
 def _breaks():
     out = []
     # 台指授权换手：MSCI Taiwan 合约到期不再续约，SGX 改挂 FTSE Taiwan。
@@ -181,6 +376,207 @@ def _breaks():
 # 所以 `_TTM_YOY`、`_ttm_names_zh()`、`_ttm_deriv_zh()` 三样一并删除，不留死代码。
 # 「衍生品那一侧一张滚动图都没有」那句提醒也随之作废：现在全页只有一种口径，
 # 证券与衍生品两侧读的是同一种同比。
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 名词释义（SPEC 的 `glossary`，排在所有 exhibit 之前）
+#
+# ━━ 与页尾 notes / 图注的分工 ━━
+# notes 与图注说的是「这一张图这个月该怎么读」（含当月读数、当月实测的毛刺量）；
+# 这一块说的是「这些词是什么意思」，一年到头是同一段 ⇒ 这里**不写当月读数**。
+# 出现的数只有两类：把定义钉住的结构性量（恒等式的实测偏差、掉期占多大、
+# 单列产品占合计多少、换手率反推倍数的浮动区间）与恒等式本身；**一个都不写死**，
+# 全部在 import 期从 series/sgx.csv 现算（同本文件其余图注的做法）。
+# 唯一的两个字面常数是官方文件里的：GIFT Nifty 两处口径的 FY2026 读数
+# （20,699,069 / 24,357,137，出处 fetch/sgx.py 口径坑 2 与 docs/verify/sgx.md，
+# 那两个数印在报告里、不随本仓的月份走）与铁矿石的 Dec-2015 对账值 988,532
+# （SGX 新闻稿原文 "Iron Ore Derivatives volume was 988,532"，同一处出处）。
+#
+# ━━ 为什么是这 14 个词（选词判断）━━
+# 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头里，而且
+# **不看定义就会读错**。按「读错会出什么事」分四类：
+#   ① 缩写与它的分母   SDAV / DDAV / 张（contracts）—— 本页两条头条都是「日均」，
+#      而证券侧的恒等式成立、衍生品侧**不成立**（交易日那一行是证券市场口径）。
+#      不点破，读者会拿交易日去反推衍生品月量；张数不点破，读者会拿本页的
+#      日経225 张数直接去比 JPX 的日経225 张数 —— 那正是 build/notional.py 与
+#      series/contract_specs.csv 明文说不可比的那种比法（根因是合约乘数）。
+#   ② 「合计」不是页上那几条的和   当月成交合计（含不上页面的掉期）、
+#      股指期货合计（单列产品只占中位七成）、外汇期货合计（不含 FX 期权，
+#      单列两条又各去掉 Mini / FlexC）—— 页面上同时画着合计与几条分项，
+#      相加对不上是本页最容易被当成「数据错了」的一处。
+#   ③ 同名不同数 / 派生量   GIFT Nifty 50（官方另一节同名行是 NSE-IX 全市场口径）、
+#      铁矿石（本仓跨小节自己汇总的一条）、加权平均成交价（分解图里轧出来的，
+#      不是公司披露的数）—— 读串的代价是整条线系统性偏高或偏低而图形完全正常。
+#   ④ 口径边界   换手率（官方只算 primary listed securities，且只印整数 pp）、
+#      上市证券只数（不含债券，且数的是证券不是公司）、上市家数 / 募资额
+#      （家数不含 RTO、募资额含 RTO）、未平仓（OI，月末截面）、永续期货
+#      （无到期日，且不计入商品合计）。
+# **有意不收**：
+#   · m/m、y/y、3Y %ile、pp/bp —— 全站通用读图约定，summary.note 已逐条讲过；
+#   · 「口径断点」「慢腿」「存量 vs 流量」的**总则**、按千 / 按百万的显示缩放、
+#     单月同比的代价 —— 页尾 notes 第 2、3、5、7 条与逐张图注讲的就是这几件事在
+#     本页的落点，释义板再讲一遍就是两处各写一份（未平仓单列一条是因为 OI 这个
+#     **词**本身要解释：它含掉期、是月末截面，总则不重复）；
+#   · 成交额 / 市值 / IPO 这类本页没有特殊口径的常识词；
+#   · 页面上根本不出现的列（sec_trading_days、掉期、MSCI 台湾）—— 它们只在
+#     真正用得上的那一条释义里被顺带点名，不各占一条。
+# ══════════════════════════════════════════════════════════════════════════════
+_GLOSSARY = [
+    ('SDAV',
+     '官方缩写 Securities Daily Average：证券市场当月成交<b>金额</b>的日均值'
+     '（S$mn/day），是 SGX 财报与新闻稿引用最多的那个数，本页头条第一格与'
+     '「日均成交额 SDAV」画的都是它。证券这一侧恒等式成立：'
+     '<code>当月成交额 ÷ 当月证券市场交易日数 = SDAV</code>'
+     + (f'（{_SD[0]} 个月现算，最大相对差 {_SD[1]:.3f}%，量级就是 SDAV 取整到 '
+        f'S$mn 的舍入）' if _SD[0] else '')
+     + ' ⇒ 「当月成交额」与「日均成交额 SDAV」<b>不是两个指标</b>，'
+       '只差一个当月开市天数。⚠️ 这条恒等式<b>只在证券侧成立</b>，衍生品侧见下一条。'),
+
+    ('DDAV',
+     '官方缩写 Derivatives Daily Average Volume：衍生品当月成交的日均<b>张数</b>'
+     '（contracts/day），也是与 HKEX / CME 跨所可比的那一条。'
+     '⚠️ <b>不能</b>用「当月成交合计 ÷ 交易日数」反推：官方那一行交易日数括号里写的是 '
+     '(Stock Market) / (Securities)，是<b>证券市场</b>的交易日，'
+     '衍生品的假期表与夜盘归属日都不一样'
+     + (f' —— 用官方两个数反算出来的隐含天数在 {_DD[2]:.1f}–{_DD[3]:.1f} 天之间，'
+        f'{_DD[0]} 个月里<b>没有一个月</b>等于当月证券交易日数'
+        f'（硬拿证券交易日去除，相对差中位 {_DD[4]:.1f}%、最大 {_DD[5]:.1f}%）'
+        if _DD[0] else '')
+     + '。所以本页月总量与日均两条都直接取官方值，谁也不从谁推。'),
+
+    # 「不做千张换算」的主语是**入库**（出处 fetch/sgx.py：「本模块不做任何换算」），
+    # 不是「本页」—— 本页有 11 张图做了按千 / 按百万的**显示**缩放（页尾说明第 7 条），
+    # 写成「本页」就与那一条打架。
+    # 「单边计数」出处 fetch/sgx.py 的列口径表；**计数惯例一致 ≠ 张数可比**：
+    # 张数跨所不可比的根因是合约乘数，见 build/notional.py 的模块 docstring 与
+    # series/contract_specs.csv（JPX_N225_MINI 一行：JPX 官方产品页写明 mini 是
+    # 大板的 1/10、micro 是 1/100；CME_EQUITY_INDEX 一行：ES $50/点 vs MES $5/点）。
+    # 本仓连 SGX 一条合约的乘数都没有实测（同表 SGX_DERIV 一行「乘数零个实测」），
+    # 更无从断言它与 JPX / HKEX 的同标的合约等大。
+    ('张（contracts）',
+     '衍生品各列的单位，官方新闻稿里写作 "lots"，与本页的「张」是同一个东西。'
+     '<b>入库、汇总表与末尾核对表</b>一律用官方原值、不做千张 / 万张换算'
+     '（图上另有按千 / 按百万的<b>显示</b>缩放，只作用于图、不作用于表，'
+     '见页尾说明第 7 条）。'
+     'SGX 的成交张数按<b>单边</b>计（一手买 ＋ 一手卖记 1 张），与 CME / HKEX 是'
+     '同一种计数惯例 —— 同一笔成交在哪一家都不会被记两次。'
+     '⚠️ 但<b>计数惯例一致不等于张数能直接比大小</b>：那还要看合约乘数'
+     '（JPX 的日経225 mini 是大板的 1/10、micro 是 1/100，CME 的 ES 是 $50/点、'
+     'MES 是 $5/点），本仓也没有 SGX 任何一条合约的乘数实测。'
+     '⇒ 跨所比规模走 <code>build/notional.py</code> 的定基美元名义额，<b>不比张数</b>。'
+     '<b>单边计数本身还有一个例外是 GIFT Nifty</b>：'
+     f'{_NIFTY_BREAK} 之前官方按「买卖腿孰高」计量、之后才改成买卖双边合计，'
+     '断点两侧不是同一把尺子（见下面那条与页尾口径说明）。'),
+
+    ('换手率',
+     '官方行名 Overall Turnover Velocity（年化换手率）。本页原样入库，'
+     '只保留官方印出的<b>整数百分点</b>'
+     # 全是整数与「有几个不是」两种说法都留着：官方哪天开始印小数，这句会自己改口。
+     + ((f'（{_VE[0]} 个月全部是整数，读数区间 {_VE[2]:.0f}–{_VE[3]:.0f}%）'
+         if _VE[1] == _VE[0] else
+         f'（{_VE[0]} 个月里 {_VE[1]} 个是整数，读数区间 {_VE[2]:.0f}–{_VE[3]:.0f}%）')
+        if _VE[0] else '')
+     + ' ⇒ 这一行的变化一律是整 pp。⚠️ 它<b>算不出来</b>：官方脚注写明分子（成交额）'
+       '与分母（市值）都只取 primary listed securities，而本页的「当月成交额」与'
+       '「月末总市值」是全市场口径 —— 拿这两列相除去反推'
+     + (f'，倍数在 {_VE[4]:.1f}–{_VE[6]:.1f} 之间浮动（中位 {_VE[5]:.1f}），'
+        f'<b>不是一个常数</b>。' if _VE[0] else '，得不到官方那条线。')),
+
+    ('上市证券只数',
+     '月末在册的上市<b>证券只数</b>（存量），官方脚注<b>不含</b> GDR、对冲基金与'
+     '<b>债券</b>。两处别接错：① 它数的是<b>证券</b>、不是公司，'
+     '与「当月新上市家数 / 当月退市家数」（companies）不是同一套计数，'
+     '两者不能相减去对账；② 「当月新债券挂牌数」再多也<b>不会</b>加进这一条 —— '
+     '债券本来就不在它的口径里。'),
+
+    ('当月成交合计',
+     '衍生品当月成交总张数 ＝ <b>期货 ＋ 期权 ＋ 掉期</b>（官方三节各自的 Total）。'
+     '本页只画前两条：掉期与期货同框会被压成一条贴地线'
+     + (f'（占合计全期中位 {_SW[3]:.3f}%、最大 {_SW[4]:.2f}%）' if _SW[0] else '')
+     + '，所以不上页面 ⇒ <b>「其中：期货」＋「其中：期权」比合计少的那一点就是掉期</b>，'
+       '不是漏了数。'
+     + (f'（{_SW[0]} 个月现算：{_SW[1]} 个月三项相加与合计逐位相等，'
+        f'其余最大差 {_SW[2]:.0f} 张，是官方自己的印刷差。）' if _SW[0] else '')),
+
+    ('未平仓（OI）',
+     'open interest：<b>月末</b>仍未了结的合约张数，产品范围与「当月成交合计」相同'
+     '（同样含掉期），但<b>不是同一类量</b> —— 成交是当月累计发生的流量，'
+     '未平仓是某一天的<b>截面（存量）</b>。⇒ 两者不能相加、也不宜直接比大小；'
+     '把 12 个月末快照加起来不指代任何真实的量，所以它的同比只能走点对点'
+     '（月末 vs 去年同月月末）。'),
+
+    ('股指期货合计',
+     '官方 Equity Index Futures 小节的 <code>Total</code>，<b>不是</b>本页单列那几条'
+     '产品的和：'
+     + (f'A50 ＋ 日経225 ＋ MSCI 新加坡三条全期中位只占它 {_EQ[0]:.0f}%，'
+        f'把另外两组里的 GIFT Nifty 与 FTSE 台湾也算进来才 {_EQ[1]:.0f}%，'
+        if _EQ[0] else '')
+     + '剩下的是官方另行分列的其它指数合约。⇒ 单列的那几条是<b>挑出来看的</b>'
+       '（A50 对着 HKEX、日経225 对着 JPX），不是合计的穷举，'
+       '别拿它们相加去凑合计、也别把它们当成合计的分部拆解。'
+       '⚠️ 另一处：「日経225 期货」只含标准合约，<b>不含</b> Mini / USD / Micro / TR / '
+       'ESG-REIT 那几个变体（官方各自单列）。'),
+
+    ('GIFT Nifty 50',
+     '本页这一条是 <b>SGX-ICI 成交、SGX 自己清算</b>的口径。'
+     '⚠️ 官方同一份报告里<b>另有一节</b>（GIFT Nifty Overall Market Volume）印着'
+     '同名的一行，那是 NSE-IX <b>整个市场</b>的量、不全归 SGX：'
+     '官方 FY2026 两处分别是 20,699,069 与 24,357,137 张，差 18% —— '
+     '拿错那一节会把本页这条整体抬高。'
+     f'另：{_NIFTY_BREAK} 起计数口径由「买卖腿孰高」改为买卖双边合计，'
+     '断点两侧不可直连（页尾口径说明里有断点两侧水平差为什么不做归因）。'),
+
+    # 与「股指期货合计」同一形状的坑，出处 fetch/sgx.py 的列口径表三行：
+    # vol_fx_futures_contracts「不含 FX 期权」、vol_usdcnh「不含 Mini / FlexC」、
+    # vol_inrusd「不含 FlexC」。Ex15 与汇总表把合计与两条分项画在同一根轴上，
+    # 相加对不上是本页第二处最容易被当成「数据错了」的地方（第一处是掉期）。
+    ('外汇期货合计',
+     '官方 Foreign Exchange <u>Futures</u> Volume 小节的 <code>Total</code>，'
+     '<b>不含 FX 期权</b> ⇒ 它<b>不是</b> SGX 全部外汇衍生品的量，'
+     '跨所对外汇业务规模时先看对面那个数含不含期权。'
+     '与「股指期货合计」同一个坑：单列的两条各有自己的合约边界 —— '
+     '「USD/CNH 期货」只含标准合约、<b>不含</b> Mini 与 FlexC，'
+     '「INR/USD 期货」<b>不含</b> FlexC（官方各自单列）'
+     # 上界给一位小数：整数会印成「100%」，读成「有的月份两条就是全部」，
+     # 而实测最大 99.5%，never 到 100 —— 那一位小数正是这条释义的论据。
+     + (f'，两条相加占合计全期中位 {_FX[2]:.1f}%（{_FX[0]} 个月现算，'
+        f'区间 {_FX[1]:.1f}–{_FX[3]:.1f}%）' if _FX[0] else '')
+     + '，剩下的是官方另行分列的其它货币对与合约变体。'
+       '⇒ 画在同一根轴上的三条<b>相加对不上</b>，不是漏了数。'),
+
+    ('铁矿石',
+     '<b>本仓自己汇总的一条</b>，不是官方某一行的 Total：把各成交量小节里行名含 '
+     '"Iron Ore" 的行（62% / 65% / 58% / IODEX / Lump Premium，'
+     '<b>期货 ＋ 期权 ＋ 掉期</b>，含 OTC 清算腿）全部相加。'
+     '口径与官方对得上 —— <code>fetch/sgx.py</code> 拿 SGX 新闻稿逐位核过'
+     '（Dec-2015 ＝ 988,532）。它落在「商品合计」里面'
+     + (f'，是那一档里最大的一块（全期中位占 {_IO:.0f}%）。' if _IO else '。')),
+
+    ('永续期货',
+     'perpetual futures：<b>没有到期日</b>、不按月 / 按季到期换月的期货合约。'
+     '本页这一列 ＝ Bitcoin ＋ Ethereum 两只永续期货的合计，'
+     + (f'官方从 {_CRYPTO0} 那期起才印这一节' if _CRYPTO0 else '官方近年才新增这一节')
+     + '（左边那一大段空白是产品还没上线，<b>不是 0</b>）。'
+       '⚠️ 它<b>不计入</b>「商品合计」—— 官方的 Commodities 定义里没有加密，'
+       '页尾口径说明里有逐项对账。'),
+
+    ('上市家数 / 募资额',
+     '发行那一组的几行<b>分母互不相同</b>：「当月新上市家数」＝ Mainboard ＋ Catalist 的 '
+     'IPO 家数，<b>不含</b> RTO（借壳上市，官方单列一行）；而「IPO / RTO 募资额」'
+     '<b>含</b> RTO，且官方脚注写明不含超额配售权（若行使）。'
+     '⇒ 两行相除得不到「平均每家募到多少」'
+     + (f' —— 实测有 {_RTO} 个月家数是 0、募资额却大于 0（那几个月只有 RTO）'
+        if _RTO else '')
+     + '。「当月退市家数」同样只数 Mainboard ＋ Catalist。'),
+
+    ('加权平均成交价',
+     '<b>不是公司披露的数</b>，是量价分解那张图里本页自己轧出来的派生量：'
+     '<code>当月成交额 ÷ 当月成交股数</code>（S$/股'
+     + (f'，全期实测 {_PR[0]:.2f}–{_PR[1]:.2f}' if _PR[0] else '')
+     + '）。它同时含两件事：市场本身的涨跌，以及<b>成交结构变化</b>'
+       '（单价高的标的成交占比上升，即使每只票都没涨，这个数也会被抬高）。'
+       '⇒ 它<b>不是</b>股价指数的收益率，本仓也没有 STI 点位序列可以把两者分开。'),
+]
 
 
 SPEC = {
@@ -389,6 +785,10 @@ SPEC = {
         # 4 根完整年柱（数据允许时取最近 4 个）+ 1 根 YTD，同 JPX / TMX / MIAX。
         'years': 4,
     }],
+
+    # 名词释义：排在所有 exhibit 之前。选词的判断与「有意不收哪些词」写在 _GLOSSARY
+    # 上面那一段注释里（为什么是这 13 个词、按「读错会出什么事」分的四类）。
+    'glossary': _GLOSSARY,
 
     # ── 量本身：水平值 + 次轴同比（2026-09 起本页已无 level_yoy，见上面那段）──
     'notes': [
