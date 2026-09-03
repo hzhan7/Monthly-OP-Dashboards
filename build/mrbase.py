@@ -130,6 +130,7 @@ import pandas as pd
 import axisfmt
 import brief as B
 import chartscale
+import glossary as gloss           # 名词释义的版式层与护栏，与 single.py 共用
 import mrwin                       # 窗口左端与排版的裁决层（可单测：python3 build/mrwin.py）
 import payload_guard
 import pctile
@@ -353,6 +354,11 @@ _TOP = {
     # ── 可选钩子与自定义文案 ──────────────────────────────────────────────
     'guidance',      #   dict 指引桥的源表；只有能填满六列的家才有
     'brief_extra',   #   callable(ctx) -> str  brief 的第 5 句（字段表达不了的部分）
+    'glossary',      #   list[(词, 释义)] | callable(ds) -> 同 —— 页顶「名词释义」。
+                     #        排在**所有 exhibit 之前**（CONTRACT §1）。底座只负责
+                     #        拼版式（build/glossary.py）与位置，一个字的措辞都不写：
+                     #        七家的词不一样（世芯是美元功能货币、日月光有 ATM/非 ATM、
+                     #        创意有 turnkey/NRE），共用一段释义等于给六家写错。
     'notes',         #   list[str] 追加到页尾说明末尾
     'note_extra',    #   dict slug -> str 追加到**那一张图自己的图注**末尾。
                      #        页尾说明是全页共用的，可「这张图的主序列为什么取这一列」
@@ -3387,6 +3393,13 @@ def build(spec, out_dir=None, quiet=False):
                            '图表与派生算法源自本机 <code>monthly-op-dashboards</code> 项目 · '
                            '仅供个人研究，不构成投资建议'),
     }
+    g = spec.get('glossary')
+    if callable(g):                    # 要从 CSV 现算结构性数字的家传函数（收 ds）
+        g = g(ds)
+    gh = gloss.render(g, where=f'{spec["ticker"]} glossary')
+    if gh:
+        payload['glossary'] = gh
+
     _c = [0]
     payload = md2b_deep(payload, _c)
     if _c[0] and not quiet:

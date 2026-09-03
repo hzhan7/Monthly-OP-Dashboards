@@ -60,6 +60,7 @@ import pandas as pd
 
 import axisfmt
 import chartscale
+import glossary as gloss   # 名词释义的版式层与护栏（build/glossary.py），全站共用
 import mrwin              # 窗口排版的裁决层（通栏 / x 标签抽稀），与台湾半导体 7 家共用
 import payload_guard
 import pctile
@@ -236,7 +237,7 @@ def col_is_ratio(c):
 
 SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              'headline', 'groups', 'slow_cols', 'breaks', 'notes',
-             'decomp', 'level_yoy', 'headline_style'}
+             'decomp', 'level_yoy', 'headline_style', 'glossary'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
@@ -4086,6 +4087,15 @@ class Page:
             'footer': f'{self.spec["name"]} · {src_head} · charts only, no commentary · '
                       f'个人研究用，不构成投资建议',
         }
+        # 名词释义：排在**所有 exhibit 之前**（CONTRACT §1）。内容全部来自
+        # spec['glossary']，底座一个字都不写 —— 这一页的词该怎么定义是那一页自己的
+        # 口径判断，与 notes 同一条分工。不给这个字段就整块不渲染（page.js 判空）。
+        g = self.spec.get('glossary')
+        if callable(g):                       # 需要从 CSV 现算结构性数字的家传函数
+            g = g(self)
+        gh = gloss.render(g, where=f'{self.ticker} glossary')
+        if gh:
+            payload['glossary'] = gh
         # 抬头右侧「官方发布于 X」。台账按月钉死，所以只查 data_through 这一个月；
         # 查不到就**整个字段不写** —— 渲染端判的是字段在不在，给 None 会印出一句空断言。
         day = source_dates().lookup(self.series_dir, self.ticker, str(latest))

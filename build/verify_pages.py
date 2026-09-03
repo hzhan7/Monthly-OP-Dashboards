@@ -523,6 +523,102 @@ def check_exhibit(tag, ex, short, long_):
         warn(where, f'{kind} 是双轴但没给 ylab2，右轴没有标题')
 
 
+def _leaves(x):
+    """任意嵌套的 list / dict 里所有字符串叶子。词条覆盖检查用。"""
+    if isinstance(x, str):
+        return [x]
+    if isinstance(x, dict):
+        return [y for v in x.values() for y in _leaves(v)]
+    if isinstance(x, (list, tuple)):
+        return [y for v in x for y in _leaves(v)]
+    return []
+
+
+GLOSS_SHAPE = re.compile(
+    r'^<h4>名词释义</h4><dl>(?:<dt>[^<>]+</dt><dd>.+?</dd>)+</dl>$', re.S)
+
+
+def check_glossary(tag, d):
+    """页顶「名词释义」：结构、词宽，以及**词条是不是这一页上真有的词**。
+
+    前两项与 build/glossary.py 的构建期护栏同源（那边硬失败、这边查产物）——
+    两道都留着，因为 payload 不是只有生成器写得出：手改过一次 data/*.js 的人
+    绕过的正是构建期那一道。
+
+    第三项是这一道**独有**的，也是页面所有者提这块板时的原话：
+    「下面的 table 或者 graph 里出现的名词，在这个板块里面做解释」。
+    ⇒ 释义表与页面内容之间有一条方向明确的约束：**词条必须是页面上出现过的词**，
+    不是一本通用金融词典。查法是把整页可见文字（图题 / 序列名 / 纵轴 / 图注 /
+    汇总表行头列头与表注 / 核对表列头 / headline / brief / notes）连成一条大字符串，
+    逐个词条去里面找。
+    找不到只记 WARN 不记 ERROR：词条常写成「客单 / 客流」这种并列或带限定语的形式，
+    机械匹配必有假阳性（这里已经按 `/`、`、`、括号拆过一轮）；
+    判成 ERROR 会让人为了让 CI 变绿去改**释义**，那是本末倒置。
+    """
+    g = d.get('glossary')
+    if not g:
+        warn(tag, '没有 glossary —— 页顶「名词释义」这一块是空的（页面所有者要求'
+                  '每页都有：表与图里出现的名词都要在这块里解释）')
+        return
+    if not GLOSS_SHAPE.match(g.strip()):
+        err(tag, 'glossary 不是 <h4>名词释义</h4><dl><dt>…</dt><dd>…</dd>…</dl> 结构 —— '
+                 '.glossary 的 CSS 只认这一种（dl 是两列 grid），别的结构照渲成一列')
+        return
+    sys.path.insert(0, HERE)
+    try:
+        import glossary as _G
+    except Exception:
+        return
+    finally:
+        if sys.path and sys.path[0] == HERE:
+            sys.path.pop(0)
+    dts = _G.terms(g)
+    for t in dts:
+        w = _G.dt_px(t)
+        if w > _G._DT_MAX_PX:
+            err(tag, f'glossary 词条 {t!r} 估算宽 {w:.0f}px > {_G._DT_MAX_PX:.0f}px —— '
+                     f'第一列是 max-content，一个长词把所有释义挤成窄柱')
+    if len(set(dts)) != len(dts):
+        err(tag, f'glossary 有重复词条：{sorted({t for t in dts if dts.count(t) > 1})}')
+
+    hay = [str(d.get(k) or '') for k in ('headline', 'brief', 'title', 'subtitle')]
+    hay += [str(x) for x in (d.get('notes') or [])]
+    S = d.get('summary') or {}
+    hay += [str(S.get('note') or '')] + [str(x) for x in (S.get('heads') or [])]
+    for r in (S.get('rows') or []):
+        hay.append(str(r.get('label') or ''))
+    for e in (d.get('exhibits') or []):
+        hay += [str(e.get(k) or '') for k in ('title', 'ylab', 'note', 'src_extra')]
+        for s_ in (e.get('series') or []):
+            hay.append(str((s_ or {}).get('name') or ''))
+        # exhibit 里还有几处作者手写的短文本，形状逐 kind 不同（cols/rows/heads
+        # 有的是字符串数组、有的是对象数组、kind:'table' 的 rows 还是二维数组）——
+        # 这里只要「所有字符串叶子」，所以按结构递归展平，不逐 kind 写分支。
+        hay += _leaves(e.get('cols')) + _leaves(e.get('rows')) + _leaves(e.get('heads'))
+    T = d.get('table') or {}
+    hay += [str(T.get('title') or ''), str(T.get('note') or '')]
+    hay += _leaves(T.get('heads')) + _leaves(T.get('rows'))
+    text = re.sub(r'<[^>]+>', '', ' '.join(hay)).lower()
+    missing = []
+    for t in dts:
+        # 词条常带并列与限定语：「客单 / 客流」「comp（可比销售）」「零售月 / 财季」。
+        # 任何一个分片在页面上出现过就算数 —— 这一道防的是「写了一本通用词典」，
+        # 不是逐字校对。
+        cand = [t] + re.split(r'[/、|，,与]', re.sub(r'[（(].*?[)）]', ' ', t))
+        cand += re.findall(r'[（(]([^)）]+)[)）]', t)
+        if not any(c.strip() and c.strip().lower() in text for c in cand):
+            missing.append(t)
+    # 判据是**比例**不是「有没有」：单个词条查不到是正常的 —— 释义板里总要有一两个
+    # 「解释别的词用得上、但页面上不直接出现」的口径概念（/cost/ 的「可比零售周」
+    # 就是：整页别处一次都没有，它存在的理由正是解释 comp 为什么不等于两个月相除）。
+    # 这一道要抓的是另一种事：整块写成了一本与本页无关的通用金融词典。
+    # 所以过半查不到才报 —— 一两条例外不制造常驻 WARN，通篇跑偏一定报。
+    if missing and len(missing) * 2 > len(dts):
+        warn(tag, f'glossary {len(dts)} 个词条里有 {len(missing)} 个在本页的图/表/图注里'
+                  f'一次都没出现：{missing} —— 释义板解释的应当是**本页出现过的**名词，'
+                  f'不是通用金融词典')
+
+
 def check_payload(path):
     tag = os.path.basename(path)
     jc = js_check(path)
@@ -569,6 +665,7 @@ def check_payload(path):
     # 所以手滑写成 Markdown 的 `**粗体**` 同样只会印出四个星号 —— 而它排在整页最上面，
     # 是全页第一段被读到的文字。
     _md(f'{tag} glossary', d.get('glossary'))
+    check_glossary(tag, d)
     for e in d.get('exhibits') or []:
         for f_ in ('note', 'src_extra', 'title', 'ylab'):
             _md(f'{tag} Exhibit {e.get("n")}.{f_}', e.get(f_))
