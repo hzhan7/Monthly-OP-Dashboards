@@ -878,10 +878,19 @@
       }
       lv = lv.concat(bridgeNet(ex, n));
     } else if (kind === 'stacked_dual') {
+      /* 与 bridge_bar 同一道理：段可以为负（负段从零线往下堆），所以纵轴要罩住
+         「正向堆到哪」「负向堆到哪」两条包络，而不是每列的净合计 —— 合计会把
+         +100/−40 的一列读成 60，那 40 的负段直接被挤到画布外面去。
+         全段非负时负包络恒为 0，min/max 与从前逐字节相同（既有 22 张图不动）。 */
+      var sp_, sn_, sv_;
       for (i = 0; i < n; i++) {
-        var tot = 0;
-        for (s = 0; s < ex.stacks.length; s++) tot += ex.stacks[s].values[i] || 0;
-        lv.push(tot);
+        sp_ = 0; sn_ = 0;
+        for (s = 0; s < ex.stacks.length; s++) {
+          sv_ = ex.stacks[s].values[i];
+          if (!isNum(sv_)) continue;
+          if (sv_ >= 0) sp_ += sv_; else sn_ += sv_;
+        }
+        lv.push(sp_); lv.push(sn_);
       }
     } else lv = ex.values.slice();
 
@@ -899,7 +908,10 @@
     /* 那 28% 顶部留白是给右轴折线的逐点百分比标签的（它们被抬到柱顶之上的白底里）。
        没有右轴线时那批标签根本不存在，留白就成了纯空白 —— 100% 堆叠的柱顶在 100，
        轴却画到 128。所以按有没有 line 分两档。既有五页都给了 line，取值不变。 */
-    else if (kind === 'stacked_dual') { y0 = 0; y1 = mx * (rhsOf(ex) ? 1.28 : 1.06); }
+    /* y0 的 1.15 与 qtr_bar / seasonality / grouped_bars 同源：负包络非空时给它留
+       15% 白，否则最下面那段贴着画布底边。全段非负时 mn = 0（负包络恒 0），
+       Math.min 取 0，与从前写死的 y0 = 0 完全一致。 */
+    else if (kind === 'stacked_dual') { y0 = Math.min(0, mn * 1.15); y1 = mx * (rhsOf(ex) ? 1.28 : 1.06); }
     else if (kind === 'bars_labeled') { y0 = 0; y1 = mx * 1.13; }
     /* 以下四个与 gsx.py 同名函数的 set_ylim 一一对应（qtr_bar 的 1.32 是给竖排标签留的） */
     else if (kind === 'qtr_bar') { y0 = Math.min(0, mn * 1.15); y1 = mx * 1.32; }
@@ -1522,19 +1534,28 @@
         txt(g, Xc(n - 1) + 7, d.y, d.t, { size: 8, anchor: 'start', fill: d.c });
       });
     } else if (kind === 'stacked_dual') {
-      var ws = BW(0.62), base = [];
-      for (i = 0; i < n; i++) base.push(0);
+      /* 两条基线：非负段从零线往上堆（base），负段往下堆（negBase）。从前只有一条，
+         负段算出来 Y(lo) < Y(hi)，高度被 Math.max(0, …) 夹成 0 —— 整段**既不画也不报错**，
+         数据静静地消失。段间那条 1.5px 缝改按「在本方向上是不是第一段」给，不再按 s
+         是不是 0：全段非负时正向第一段永远是 s=0，两者等价（既有 22 张图逐像素不变），
+         而负向的第一段可能落在中间任意一层。 */
+      var ws = BW(0.62), base = [], negBase = [], hadP = [], hadN = [];
+      for (i = 0; i < n; i++) { base.push(0); negBase.push(0); hadP.push(false); hadN.push(false); }
       for (s = 0; s < ex.stacks.length; s++) {
         var st = ex.stacks[s], labst = [];
         for (i = 0; i < n; i++) {
-          var lo = base[i], hi = base[i] + st.values[i];
-          var hgt = Math.max(0, Y(lo) - Y(hi) - (s ? 1.5 : 0));
-          el('rect', { x: Xc(i) - ws / 2, y: Y(hi), width: ws, height: hgt, fill: col(st.color) }, g);
+          var vsd = st.values[i], dn = isNum(vsd) && vsd < 0;
+          var lo = dn ? negBase[i] : base[i], hi = lo + vsd;
+          var gap = (dn ? hadN[i] : hadP[i]) ? 1.5 : 0;
+          var hgt = Math.max(0, Math.abs(Y(lo) - Y(hi)) - gap);
+          /* 缝永远开在朝零线的那一侧：正段在下沿（y 不动、高度减），负段在上沿（y 下移）。 */
+          el('rect', { x: Xc(i) - ws / 2, y: Math.min(Y(lo), Y(hi)) + (dn ? gap : 0),
+            width: ws, height: hgt, fill: col(st.color) }, g);
           if (st.label && hgt > 8)
             labst.push({ i: i,
               el: txt(g, Xc(i), (Y(lo) + Y(hi)) / 2 + 2.4, comma(st.values[i], 0),
                 { size: 6.6, fill: col(st.label_color) }) });
-          base[i] = hi;
+          if (dn) { negBase[i] = hi; hadN[i] = true; } else { base[i] = hi; hadP[i] = true; }
         }
         /* 段内数值同样会横向连成一片（cboe Ex5 @375px 的「11,836」「12,215」重叠 3.3px）。
            一段一抽：同一段的标签在同一带高度上，互相压的只会是左右邻居。 */

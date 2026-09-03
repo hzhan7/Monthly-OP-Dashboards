@@ -48,6 +48,14 @@
 > 算出的刻度与页面上画的对不上：`assets/charts.js`（右轴 `ticks(...)`）、
 > `build/axisfmt.py` 的 `fix_all`、`build/mrbase.py` 的 `align_sim`。
 
+> ⚠️ **左轴**量程（`lv` 取值 + 各 kind 的 `y0`/`y1` 分支）是与上面那条**不同**的另一组
+> **三份副本**：`assets/charts.js`、`build/axisfmt.py` 的 `_left_vals` / `_left_range`、
+> `tools/align_replica.py` 的 `left_values_of` / `compute_axes`。
+> `mrbase.align_sim` 与 `build/tsm.py` / `build/axp.py` 里的同名函数都是调
+> `axisfmt._left_range`，改了 axisfmt 就自动跟上，不必单独改。
+> 三份不同步时页面**不报错**，症状是「图注写的轴行为」与「引擎画出来的」对不上；
+> 唯一的机器判据是 `python3 tools/align_replica.py --all data`。
+
 格式器名：`f0 f1 f0c int pct0 pct1 pct0z pp0 pp1 x0 usd0 usd1 usd2`。
 颜色名只许用 `C.*` 常量名：`NAVY BLUE MBLUE GRAY GREEN RED WHITE GRID AXIS INK`（也可直接写 `#RRGGBB`，但别这么干 —— 这套色已过色盲安全校验）。
 
@@ -275,6 +283,11 @@
   Chrome 实验性的 `--force-dark-mode` 会强制反转页面，此时 `heat_matrix` 里接近白色的格子会被反成
   深色而格内字仍是深色 → 读不出来（`gs_bar`/`gs_line` 的白底气泡本来就有同样毛病）。
 - `heat_matrix` 不支持 `break_at` / `ycap`；`stacked_dual` 不支持截轴（截一段堆叠柱等于把总量画错）。
+- `stacked_dual` 的**段可以为负**（2026-09-03 起）：负段从零线往下堆（两条基线，同
+  `bridge_bar`），左轴取正/负两条包络、`y0` 相应放到 `min(0, mn*1.15)`。此前负段的高度被
+  `Math.max(0, …)` 夹成 0，**既不画也不报错**，数据静静地消失。
+  但它的**右轴**仍写死 `ticks(0, ymax, 6)` / `r0 = 0`：右轴序列转负照样被顶到画布外，
+  §8 `stacks` 那条「不要改用 `stacked_dual`」的警告讲的是右轴，依然成立。
 - **SCHW 的 exhibit 编号在 2026-08-15 整体改过一次。** 本文件、`assets/charts.js` 与
   `build/wealth.py` 的注释里凡是写「schw ExN」的，引用的都是**改号前**的编号
   （旧 2..19 → 新 2..16：删掉旧 Ex10/12/14/15，旧 Ex11 上移到第 3 位，新增一张

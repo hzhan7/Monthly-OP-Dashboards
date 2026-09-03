@@ -110,8 +110,24 @@ def _left_vals(ex):
     if k == 'grouped_bars':
         return [v for g in ex['groups'] for v in g['values']]
     if k == 'stacked_dual':
+        # 与 charts.js 同源：段可以为负（负段从零线往下堆），纵轴要罩住「正向堆到哪」
+        # 「负向堆到哪」两条包络，而不是每列的净合计 —— 合计会把 +100/−40 的一列读成
+        # 60，那 40 的负段被挤到画布外。全段非负时负包络恒为 0，min/max 与从前相同。
         n = len(ex['stacks'][0]['values'])
-        return [sum((st['values'][i] or 0) for st in ex['stacks']) for i in range(n)]
+        out = []
+        for i in range(n):
+            sp = sn = 0.0
+            for st in ex['stacks']:
+                v = st['values'][i]
+                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                    continue
+                if v >= 0:
+                    sp += v
+                else:
+                    sn += v
+            out.append(sp)
+            out.append(sn)
+        return out
     if k in ('gs_bar', 'gs_line', 'gs_line_avg', 'bars_labeled', 'diverging_bars', 'qtr_bar'):
         return list(ex.get('values') or [])
     return None
@@ -134,7 +150,9 @@ def _left_range(ex):
     elif k == 'stacked_dual':
         # 与 charts.js 同源：顶部留白只在有右轴线时才需要（那批逐点标签被抬到柱顶
         # 之上的白底里）。两处必须一起改，否则 Python 侧的轴模型与引擎画出来的不是同一个。
-        y0, y1 = 0.0, mx * (1.28 if _rhs(ex) is not None else 1.06)
+        # y0 的 1.15 同 qtr_bar / seasonality / grouped_bars：负包络非空时给它留 15% 白。
+        # 全段非负时 mn = 0（负包络恒 0），min 取 0，与从前写死的 0.0 一致。
+        y0, y1 = min(0.0, mn * 1.15), mx * (1.28 if _rhs(ex) is not None else 1.06)
     elif k == 'bars_labeled':
         y0, y1 = 0.0, mx * 1.13
     elif k == 'qtr_bar':
