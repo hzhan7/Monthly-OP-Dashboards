@@ -1379,6 +1379,15 @@ def build_payload(raw, specs, fx, kconst):
     lvl_keys = [k for k in MEM_KEYS if LEVEL_OK[k]]
     grow_keys = [k for k in MEM_KEYS if EXACT[k]]
     band_keys = [k for k in MEM_KEYS if not EXACT[k]]
+    # 「没有水平值的家」不是 band_keys —— 这是本页最容易写错的一处。
+    # band_keys 问的是「增长能不能给点值」：多产品块且有块缺常数 ⇒ 只能给区间。
+    # nolvl_keys 问的是「水平值算不算得出来」：任何一个块缺常数就落进来。
+    # 两者差着 onlyblk_keys：整家只有一个产品块，常数在增长里被完全约掉 ⇒
+    # 增长精确（不在 band_keys），但水平值那个常数不会被约掉（在 nolvl_keys）。
+    # 凡是要说「谁不在 Exhibit 3 / 汇总表第 ① 组里」，一律用 nolvl_keys，
+    # 用 band_keys 会不声不响地漏掉 onlyblk_keys 那几家。
+    nolvl_keys = [k for k in MEM_KEYS if not LEVEL_OK[k]]
+    onlyblk_keys = [k for k in nolvl_keys if EXACT[k]]
     if not grow_keys:
         skip('没有任何一家的增长口径是精确的（每家都有 ≥2 个产品块且含未定价块），'
              '本页连一条可信的指数线都画不出来')
@@ -1566,7 +1575,7 @@ def build_payload(raw, specs, fx, kconst):
     if gap_prods:
         gap_note = (
             f'本页 {len(gap_prods)} 个 product_id 填不出 {mlab(BASE)} 基期常数，'
-            f'因此 <b>{"、".join(DISP[k] for k in band_keys)}</b> 没有水平值。'
+            f'因此 <b>{"、".join(DISP[k] for k in nolvl_keys)}</b> 没有水平值。'
             f'两类缺口对读者的意义完全不同，页面必须分开写：<ul>'
             + (f'<li><b>{GAP_KIND_ZH[GAP_INST]}</b></li>{gap_html(inst_prods)}'
                if inst_prods else '')
@@ -1579,7 +1588,8 @@ def build_payload(raw, specs, fx, kconst):
     # ── Exhibit 2：指数化折线（只画增长口径精确的家）──
     # 必须单画的是「增长精确但没有水平值」的家（常数被完全约掉的那种）——
     # 它们没有美元水平值，压根没法并进「其他 N 家合计」那条线里。
-    must = [k for k in grow_keys if not LEVEL_OK[k]]
+    # 这正是 onlyblk_keys（定义见上面覆盖度分档处），这里只借一个贴合本图的名字。
+    must = onlyblk_keys
     pool = sorted([k for k in grow_keys if LEVEL_OK[k]], key=lambda k: -float(lvl[k][CUR]))
     draw = must + pool[:max(0, TOP_N - len(must))]
     rest = [k for k in pool if k not in draw]
@@ -1660,10 +1670,10 @@ def build_payload(raw, specs, fx, kconst):
                       'locked at Jan-19. Exchanges with any unpriced product block are absent '
                       'by construction, not by omission'),
         'note': ('<b>这是全页唯一一张跨所比水平值的图，也是唯一一张真的需要基期常数的图。</b>'
-                 + (f'只有 {len(ord3)} 家上榜：<b>{"、".join(DISP[k] for k in band_keys)}</b> '
+                 + (f'只有 {len(ord3)} 家上榜：<b>{"、".join(DISP[k] for k in nolvl_keys)}</b> '
                     '至少有一个产品块填不出基期常数，而水平值里那个常数<b>不会被约掉</b>'
                     '（它决定块与块之间的权重），所以宁可不画也不能给一个编出来的数。'
-                    if band_keys else
+                    if nolvl_keys else
                     f'<b>12 家全部上榜</b>：本期每一家的每一个产品块都有基期常数，'
                     f'水平值因而全都算得出来 —— 这是本页最强的一种状态。')
                  + gap_note
@@ -2001,7 +2011,7 @@ def build_payload(raw, specs, fx, kconst):
         'note': ('<b>三组的可信度不一样，读之前先看组标题。</b>'
                  f'第 ① 组是水平值（US$bn/日）：因为价格与汇率都锁在 {mlab(BASE)}，'
                  '它可以横向相加与排名 —— 但<b>只有基期常数齐备的家才有这一组</b>，'
-                 f'缺席的 {len(band_keys)} 家不是没数据，是那个常数在水平值里不会被约掉。'
+                 f'缺席的 {len(nolvl_keys)} 家不是没数据，是那个常数在水平值里不会被约掉。'
                  '第 ② 组是指数化增长，<b>12 家一个不缺</b>：单产品块的家常数被完全约掉，'
                  '给点值；多产品块且有块缺常数的家给<b>紧界区间</b>（写成 a–b），'
                  '那是未知常数取遍所有非负值时该指标的<b>全部可能取值</b>，两端都取得到，'
