@@ -56,7 +56,30 @@ assets/style.css    版式
 series/*.csv        历史序列（唯一真值，入库）[注]
                     一家可以有不止一份：hood_q / axp_trust / lseg_part_* /
                     ibkr_pr（IBKR 月度新闻稿的佣金口径，2016-02 起）等
+series/cost_seg_q.csv   /cost/ 的 SEC 腿，季度/财年分部收入（US / CA / Other Intl）。
+                    ⚠ **口径是 TOTAL REVENUE（净销售额 + 会员费），不是净销售额** ——
+                    FY2025 三段合计 275,235 而 total net sales 是 269,912，差的 5,323
+                    正是当年会员费。**不要和 series/cost.csv 的 net_sales_bn 画在同一根轴上**
+series/cost_tkt_q.csv   同上，季度 Sales / Ticket / Traffic 分部表（源是 8-K 的 EX-99.2，
+                    比同季 10-Q 早约一周到）
+series/cost_fy.csv      同上，财年利润表 + 分国家仓数 + 面积（10-K）。
+                    ⚠ 表里有**两列口径标记**，画分部图之前必须先读：
+                    · `seg_oi_basis` —— 分部经营利润在 FY2020 处有口径断点。公司
+                      FY2022 10-K 起把股权激励摊进分部，且只重述了 FY2020-21，
+                      FY2019 及更早从未重述。混着画会读出一段纯属改分摊的假拐点
+                      （实测其他国际 3.83%→3.76% 像是下滑，同口径下其实是上升）。
+                      **合并口径的 `op_income_mn` 不受影响**，断的只是分部拆法。
+                    · `preopen_src` —— 记的是开办费这一笔的**来路**
+                      （loader-folded / issuer-folded / not-disclosed），不是「含没含」：
+                      `sga_mn` 对**全部年份**都已含开办费，`preopen_mn` 是其中那一笔。
+                      所以要算「不含开办费的 SG&A」，无条件 `sga_mn - preopen_mn` 即可，
+                      不要按标记分支（旧名 `sga_folded_preopen` 正是这么被读错的）。
+series/cost_cohort.csv  同上，10-K「Average Sales Per Warehouse」开业年份矩阵
 fetch/<t>.py        各家的无人值守抓取器：latest_month() / update()
+fetch/cost_sec.py   /cost/ 的**第二个数据源**：SEC 申报层（CIK 0000909832 的 10-K/10-Q/8-K），
+                    与 fetch/cost.py 并列、各写各的 CSV、互不读写。季度/年度节奏，
+                    由 monthly_run.cost_sec() 单独一步驱动（**不能挂成 fetch/cost.py 的慢腿**，
+                    理由见 docs/CRON_WIRING.md §2.5）
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所走这条）
@@ -260,6 +283,15 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 ## 数据源
 
 各家的源、发布节奏、口径坑写在 `fetch/<t>.py` 的模块 docstring 里，那是第一手记录。
+
+⚠ **「一页一个源」不再普遍成立：`/cost/` 有两个。** 除了 GlobeNewswire 的月度销售稿
+（`fetch/cost.py` → `series/cost.csv`），2026-09 起还接了 SEC 申报层
+（`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写四张 `series/cost_*.csv`：
+分部收入、客单与客流、财年单店经济、开业年份矩阵 —— 这三类数字月度稿里**一件都没有**。
+两条腿节奏完全不同（月度 vs 季度/年度），所以在 `monthly_run.py` 里是**两步**而不是一步；
+接线与「为什么不能合成一步」见 `docs/CRON_WIRING.md` §2.5。
+读这四张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
+
 几条踩过的坑：
 
 - **HOOD**：Akamai 按 **TLS 指纹（JA3）** 拦客户端，不是按 UA。`curl` / `urllib` /

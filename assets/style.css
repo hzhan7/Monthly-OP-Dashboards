@@ -90,6 +90,33 @@ h1 { margin: 0 0 6px; font-size: 25px; font-weight: 700; letter-spacing: -0.015e
 }
 .brief[hidden] { display: none; }
 
+/* ── 名词释义：三块叠在一起，必须三种长相 ────────────────────────────────────
+   抬头下面连着三块文字：.headline（窄条 + 左边框，读数）、.brief（带框方块 +
+   navy 顶边，本月解读）、.glossary（本块，常年不变的定义）。上面 .brief 那段
+   已经说过一次：两块共用一种视觉，读者会当成同一类内容，第二块直接跳过。
+   三块就更险 —— 所以这里既不用边框方块也不用左边条，改用**底色平面 + 定义列表**：
+   灰底一眼就是「参考资料」，不是「这个月的话」。
+
+   排成两列（词 | 释义）而不是「词：释义」挤成一段：释义常有两三行，挤成一段之后
+   下一个词的起点淹在上一条的末尾里，扫读时找不到词在哪。用 grid 而不是浮动或
+   表格：max-content 让第一列自动收到最长的那个词的宽度，词一改不用回来调数字。 */
+.glossary { margin: -6px 0 26px; padding: 13px 16px 14px; background: var(--plane); }
+.glossary h4 { margin: 0 0 9px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--ink-3); }
+.glossary dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px;
+  margin: 0; font-size: 12.5px; line-height: 1.7; }
+/* dd 自带 margin-inline-start: 40px（浏览器缺省），在 grid 里会把第二列整体右推 40px，
+   窄屏下释义被挤成一条竖着的细柱。必须归零。 */
+/* dt 不加 white-space: nowrap，但**必须**进下面那条 overflow-wrap 名单。
+   `grid-template-columns: max-content` 本来就按「不折行」算第一列的宽，所以加不加 nowrap
+   都一样 —— 真正缺的是**断词**。实测：放一个不含空格的长词条，375px 视口下
+   documentElement.scrollWidth − clientWidth = 137px，整页出现横向滚动条，正是
+   tools/visual_qa.py 的 HSCROLL 判据（跟 mtk 那条长链接同一个坑）；900px 断点把 dl 压成
+   单列也救不了它（单列下那个 dt 仍量到 479.8px，容器只有 343px）。 */
+.glossary dt { margin: 0; font-weight: 700; color: var(--ink); }
+.glossary dd { margin: 0; color: var(--ink-2); }
+.glossary[hidden] { display: none; }
+
 /* ── exhibit 网格 ── */
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 30px; }
 .grid.full { grid-template-columns: 1fr; }
@@ -165,6 +192,10 @@ footer code { font-size: 10.5px; }
   .inner { padding: 20px 16px 32px; }
   h1 { font-size: 21px; }
   .masthead { flex-direction: column; gap: 4px; }
+  /* 释义改上下排：768px 视口 .inner 可用宽只有 736px，两列时第一列吃掉最长那个词的
+     宽度，剩给释义的不足半屏，中文一行放不下十个字，每条都碎成四五行。 */
+  .glossary dl { grid-template-columns: 1fr; gap: 2px 0; }
+  .glossary dd { margin-bottom: 7px; }
 }
 
 /* ══ 总仓新增：顶部导航 + 首页总览 ══════════════════════════════════════════
@@ -212,6 +243,13 @@ footer code { font-size: 10.5px; }
 table.sum tbody tr:last-child { background: none; font-weight: 400; }
 table.sum tbody tr:last-child td:first-child { background: #fff; }
 table.sum td.cur { font-weight: 700; }
+
+/* 夹在图中间的表格 exhibit（page.js 给 kind:'table' 的卡片挂 .tblex）关掉同一条高亮，
+   理由跟汇总表一样但更硬：附录核对表的最后一行**按构造**就是最新一期，加粗是对的；
+   而单位经济性这种表的最后一行只是又一个普通项目，把它加粗 + 蓝底，等于凭空给读者
+   一个「这一行是合计」的暗示 —— 表里根本没有合计行时，这是纯粹的误导。 */
+.card.tblex tbody tr:last-child { background: none; font-weight: 400; }
+.card.tblex tbody tr:last-child td:first-child { background: #fff; }
 /* 分栏线画在「水平值」与「变化率」之间。page.js 给 summary.sep 指定的那一列
    （通常是 m/m）打 sep 类，所以线画在**左**缘 —— 语义是「从这一列起是变化率」。 */
 table.sum td.sep { border-left: 1px solid #bbbbbb; }
@@ -252,7 +290,8 @@ table.sum td.lo  { color: var(--red); }     /* 分位低 */
    overflow-wrap 只在「一个词单独占满一行都放不下」时才切词，对放得下的文字是彻底的
    no-op，所以这里一次性覆盖所有会渲染作者手写长文的容器（今天只有 notes 里有长链接，
    但 brief／图注／页脚随时可能加一条），不会动到任何现有版式。 */
-.brief p, .headline, .card .src, .card .note, .prose li, footer { overflow-wrap: break-word; }
+.brief p, .glossary dt, .glossary dd, .headline, .card .src, .card .note, .prose li,
+footer { overflow-wrap: break-word; }
 
 /* 光有阴影还不够明确，真的溢出时（由 page.js 实测 scrollWidth 后挂 class）再加一行字 */
 .tblwrap.scrollable::after {

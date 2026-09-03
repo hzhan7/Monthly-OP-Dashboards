@@ -7,9 +7,13 @@
     python3 monthly_run.py --dry-run          # 抓取与生成都做，但不 commit/push
     python3 monthly_run.py --force            # 数据没变也重新生成并推送（改了图表代码后用）
 
-跑的东西分三类，删一家只动第一类的一行（完整清单见 docs/CRON_WIRING.md）：
+跑的东西分四类，删一家只动第一类的一行（完整清单见 docs/CRON_WIRING.md）：
     TICKERS   28 家有自己数据源的公司（11 家其它 + 7 家台湾半导体 + 10 家新交易所），
               逐家抓 → 逐家生成
+    第二源    cost_sec  /cost/ 的 SEC 申报层（10-K/10-Q/8-K，季度与年度节奏，四张
+              series/cost_*.csv）。也不是 ticker、也自成一步，但它只有 /cost/ 一个消费者，
+              所以**只在 cost 落在本轮名单里时才跑**（公共表那三张不看 --only，它看）。
+              为什么不能挂成 fetch/cost.py 的慢腿：见 cost_sec() 的 docstring
     公共表    三张，都**不是 ticker**、都不进 TICKERS，各自一步：
               fee_rates    季度费率，六个单公司页共用 → 有新季度就重跑那六页
               mops_remarks MOPS 備註原文，七个半导体页共用 → 有新月份就重跑那七页
@@ -40,6 +44,8 @@
 （否则一张附表就能让 34 张页面全部不发），但失败必须计入末行的 PARTIAL ——
 它们的故障在页面上是**看不见**的（fx 只让换算偏一点、mops_remarks 只让七页少一句
 引文与一列），末行是唯一的故障信号。
+`cost_sec` 同理，而且更隐蔽：它冻住时 /cost/ 的红点跟的仍是**月度腿**的 data_through，
+首页照样绿点、照样印着最新月份，页面上一点异常都没有。
 
 ## 四道体检闸门（2026-09 补接了后三道；任何一道不过 = 整轮不发，末行 FAILED）
 
@@ -1020,6 +1026,173 @@ def one(t, force):
     return 'REBUILT', ('慢腿回补/历史改数' if touched else out.splitlines()[-1][:60])
 
 
+def _cost_sec_behind(probe):
+    """源上最新 10-K/10-Q 的报告期比 `series/cost_seg_q.csv` 还新 → 返回要打印的那句话。
+
+    追平了返回 None。**任何一种「对账做不成」也一律返回一句话**（文件没了、列名改了、
+    读崩了）：一道自己坏掉之后就再不开口的对账，等于没有对账 —— 与 run_gate() 那条
+    「闸门被悄悄删掉必须响」、slow_pending() 那条「列前缀一列都没匹配上就告警」同规矩。
+
+    判据为什么落在 `period_end` 这一列上：探针取的是 10-K/10-Q 的 `reportDate`，
+    而 cost_seg_q.csv 的行**正是从同一批申报的 XBRL context 里解出来的**，两者天生同尺 ——
+    10-Q 的 reportDate = 该季末 = 那一季 Q 行的 period_end，10-K 的 = 财年末 = FY 行的
+    period_end。2026-09-03 实测两边都是 2026-05-10（FY26Q3），对得上。
+    8-K 那条腿（cost_tkt_q.csv）**不在这条判据里**，也不该在：它比同季 10-Q 早约一周，
+    拿它对账会在那六天里天天误报。
+    """
+    p = os.path.join(SERIES, 'cost_seg_q.csv')
+    try:
+        if not os.path.exists(p):
+            return (f'update() 跑完了但 series/cost_seg_q.csv 不存在 —— 对账做不成，'
+                    f'源上最新报告期 {probe}')
+        with open(p, encoding='utf-8', newline='') as f:
+            rows = list(csv.reader(f))
+        if not rows or 'period_end' not in rows[0]:
+            return (f'series/cost_seg_q.csv 里没有 period_end 列 —— 多半是上游改了表头，'
+                    f'这条对账就此静默失效。源上最新报告期 {probe}')
+        i = rows[0].index('period_end')
+        have = max((r[i] for r in rows[1:] if i < len(r) and r[i].strip()), default='')
+        if have >= probe:
+            return None
+        return (f'源上最新 10-K/10-Q 报告期 {probe}，而 series/cost_seg_q.csv 最新只到 '
+                f'{have or "（空表）"} —— update() 跑完却没长出这一期，'
+                f'多半是分部轴/成员又换了一代而解析器没认出来（fetch/cost_sec.py 口径坑 4）。'
+                f'请人工核一遍那篇申报的 XBRL。')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        return (f'对账自身出错（{type(e).__name__}: {e}）—— 源上最新报告期 {probe}，'
+                f'本轮没有核对过 SEC 腿是否掉期')
+
+
+def cost_sec():
+    """刷新 /cost/ 的**第二个数据源** —— SEC 申报层那四张 series/cost_*.csv，返回失败清单。
+
+    ══ 为什么是独立一步，而不是 fetch/cost.py 里的一条慢腿 ══
+    三条理由，任何一条单独都足以否掉「塞进 fetch/cost.py::update()」那个写法：
+
+    1. **`one()` 根本走不到那儿。** 它在 import fetch 模块**之前**先问 `not_due('cost')`，
+       而 `not_due` 读的是 data/cost.js 的 `data_through` —— 那个字段由**月度腿**独家推动
+       （`build/cost.py` 的 `LATEST = df.index[-1]`，df 就是 series/cost.csv）。月度稿一落地
+       （COST 闸门 = 月末后第 2 天，实测第 5 天发），`through >= due` 成立，`one()` 直接
+       返回 NOCHANGE、连 fetch/cost.py 都不 import。而 SEC 腿一年四次的到货日**恰好全落在
+       月度腿已经追平的日子里**（10-Q 在季末后 3-4 周、10-K 后 5-6 周，那时当月甚至下个月的
+       销售稿都发完了），于是慢腿写法的实际效果是「永远不跑」—— 且它长得和健康的安静日
+       一模一样，正是 README「不出声的失败」那一类。
+       （2026-09-03 实测：data_through=2026-08、候选月 2026-08 ⇒ `not_due('cost')` 为真。）
+    2. **SLOW_LEGS 顶不上来。** `slow_pending()` 的判据是逐列扫 `series/<t>.csv` 的最后非空
+       月，而这条腿写的是另外四个文件，`series/cost.csv` 里一列都没有。就算硬给它登记几列，
+       `_due_month()` 算的是**月度**应到月份，而这是季度/年度源 —— 一年里有八个月它都会被
+       判成「欠货」，闸门被顶成天天下载，正是 SLOW_LEGS 那条 ⚠「不要为永久停发的列建登记」
+       要防的形状。
+    3. **炸的范围反了。** 慢腿写法下 SEC 侧任何一个解析错误都从 `fetch/cost.py::update()`
+       抛出去 → `one('cost')` 记 FAIL → 那天**月度**的新销售数据也不写、data/cost.js 不重建。
+       让季度腿的故障扣住月度腿，是「一家失败不拖累其余二十七家」的反面。独立一步之后，
+       SEC 腿失败只让末行变 PARTIAL，月度腿照发。
+       （附带一条：`one()` 把 `update()` 的返回值当**月份**存进 commit message 的 `months[t]`，
+        把 `seg:FY26Q3|Q` 混进去，commit 标题会变成「更新数据: cost seg:FY26Q3|Q,…」。）
+
+    所以照 `mops_remarks()` 的形状办：不是 ticker、不进 TICKERS、不进 `build/roster.py` 的
+    LAG / GROUPS（它没有自己的页 —— 它喂的是**已经注册过**的 /cost/ 那一张，再登记一次
+    只会让 `check_registry()` 天天告警说两张名单对不上），跑在按家循环之后，自己去催重建。
+
+    ══ 闸门：没有日历闸门，也**没有**把 `latest_quarter()` 当跳过闸门用 ══
+    `fetch/cost_sec.py` 给了一个事实探针 `latest_quarter()`，第一反应是照 mops_remarks 的
+    事实闸门接（源没翻页就整步跳过）。**实测之后没有这么接**，两条：
+
+    · **它一点都不便宜。** 探针走的是 `_submissions()`，而那个函数每次都把 subs.json 与
+      subs-001.json 从缓存里删掉重下（模块自己写明了理由：件会从 recent 滚进 -001，
+      缓存住会让那批件两边都读不到）。所以探针与整轮 `update()` **打的是同样那两个请求**。
+      本机 2026-09-03 实测（缓存热）：探针 0.65 / 1.24 / 1.97s，整轮 update 1.34 / 1.56 /
+      1.76s —— 跳过一次省下的是半秒 CPU，不是一次网络往返。真能省的只有冷缓存那
+      88 MB / 2 分钟，而 cache/ 在 cron 机器上是持久的（`tools/prune_cache.py` 的 POLICY
+      是白名单，cost_sec 这一族没登记、不会被清），那 2 分钟一辈子也就付一次。
+    · **它会把 8-K 那条腿瞎掉一个星期。** `latest_quarter()` 只看 10-K/10-Q，而
+      `series/cost_tkt_q.csv` 的源是 8-K 的 EX-99.2，实测比同季 10-Q 早约一周
+      （FY26Q3：8-K 2026-05-28、10-Q 2026-06-03）。拿 10-Q 的报告期当闸门，那六天里新一季的
+      客单/客流在源上挂着而这边不取 —— 「晚开闸一天就是公开页面挂旧数据一天」，
+      拿六天陈旧换半秒 CPU，方向反了。
+
+    ⇒ 与 `fx()` 同一个结论、同一条论证：**每轮都跑**。代价是两个 JSON 请求（约 420 KB）
+      加一秒多的本地解析；没有新申报时四张 CSV 逐字节不变、`update()` 返回 []。
+      **别再把 `latest_quarter()` 改回跳过闸门** —— 上面那两组数是量过的。
+
+    ══ 那 `latest_quarter()` 用在哪 —— 对账，不是闸门 ══
+    `update()` 返回 [] 有两种含义：「源上真没有新申报」与「有新申报但解析器没认出来」，
+    而这两种在日志里长得一模一样（README「不出声的失败」的判据）。所以每轮拿探针的报告期
+    与 `series/cost_seg_q.csv` 的最新 `period_end` 对一次账（判据与边界见 `_cost_sec_behind`）：
+    源比库新 = 掉了一期。这是 `fetch/cboe.py::_crosscheck_report_month` 那条「用**独立于
+    解析器**的外部判据对账」的同款，只是这条腿的解析器不归本文件管，就把对账放在调用侧。
+    对账不上**计入 fails**（→ PARTIAL），而且这个警报**是黏的**：它会一直响到有人去修解析器
+    或确认源真的变了。黏警报确实招人烦，但另一头是「一期数据永久缺席而末行天天
+    NOTHING_TO_DO」—— 本仓宁可吵。
+
+    ══ 有新东西为什么必须自己重建 data/cost.js（这一步不能省）══
+    与 `mops_remarks()` 同一个理由。`series_fingerprint()` glob 的是 `series/cost*.csv`，
+    这四张表**本来就在它的 glob 里**，所以「内容变了」这个触发条件天然成立 —— 但那个触发器
+    只在 `one('cost')` 里被读，而本步跑在按家循环**之后**，`one('cost')` 早就 NOCHANGE 走人了。
+    没有下面这次 `sh(builder('cost'))`，CSV 更新了而页面永远读不到。
+    触发条件用指纹而不是 `if added`，也是照 `one()` 的 docstring：`update()` 首次建表返回 []
+    （旧表不存在，谈不上「新增了哪几期」），`cost_fy.csv` 的重述取最新值也不产生新主键 ——
+    两种都得重建。
+
+    ══ 失败为什么只记 PARTIAL、不阻断 ══
+    SEC 腿失败时四张 CSV 原地不动，`build/cost.py` 照旧画上一季 —— 页面是**旧但不错**的，
+    不属于「宁可不发也不发错」要拦的那个「错」；为它扣住当天全部 34 页（提交是整个 data/
+    一起走的，抛异常 = 全站不发）代价明显更大。但它必须响：/cost/ 的红点跟的是**月度腿**的
+    `data_through`，SEC 腿冻在上个季度时首页照样绿点、照样印着最新月份，末行的 PARTIAL 是
+    唯一的故障信号 —— 与 `fx()` 那条是同一论证。
+
+    ══ 只在 `'cost' in todo` 时跑（与 fee_rates / fx / mops_remarks 刻意不同）══
+    那三张是**公共表**（六页 / 六页 / 七页共用），跳过它们等于调试单家时把共用底座一起冻住，
+    所以它们不看 `--only`。这条腿只有一个消费者，而那个消费者就是 TICKERS 里的 `cost`：
+    `--only cme` 没有任何理由去打 EDGAR，更没有理由改写 data/cost.js。生产环境 `todo` 恒等于
+    `TICKERS`，所以 cron 的行为与「不看 --only」完全一样，差别只在人手调试时。
+    """
+    p = os.path.join(HERE, 'fetch', 'cost_sec.py')
+    if not os.path.exists(p):
+        return []                          # 与 mops_remarks / fee_rates / fx 同：删了就当没有
+    # 探针先打、update 后跑：对账要问的是「update 跑完之后库里追不追得上源」，
+    # 探针放在后面会把 update 这一轮刚写进去的东西也算进「源」的那一侧，对账就自证了。
+    try:
+        mod = load(p, 'fetch_cost_sec')
+        probe = mod.latest_quarter(CACHE)
+        before = series_fingerprint('cost')
+        added = mod.update(SERIES, CACHE) or []
+    except Exception as e:
+        print(f'{"cost_sec":<10} FAIL     {type(e).__name__}: {str(e)[:120]}')
+        return ['cost_sec']
+    # 指纹只在这一步的前后各取一次，中间没有别的东西碰 series/cost*.csv
+    # （按家循环早跑完了），所以差异必然来自 SEC 腿，与月度腿无关。
+    touched = series_fingerprint('cost') != before
+
+    bad = []
+    behind = _cost_sec_behind(probe)
+    if behind:
+        print(f'{"cost_sec":<10} FAIL     对账不上：{behind}')
+        bad.append('cost_sec')
+
+    if not added and not touched:
+        print(f'{"cost_sec":<10} NOCHANGE 无新申报（源上最新 10-K/10-Q 报告期 {probe}）')
+        return bad
+    if added:
+        print(f'{"cost_sec":<10} NEW      {len(added)} 条: {", ".join(added[:6])}'
+              + (' …' if len(added) > 6 else ''))
+    else:
+        # 指纹变了但没有新主键 —— 首次建表，或 10-K 重述了历史（cost_fy 取最新申报值）。
+        # 与 one() 的 REBUILT 分开标是同一个理由：这两件事在日志里必须能分开看。
+        print(f'{"cost_sec":<10} REBUILT  四张表内容有变但无新主键（首次建表 / 官方重述）')
+
+    cmd = builder('cost')
+    if cmd is None:
+        # /cost/ 页被删掉了：跳过，不记失败（同 build_cross / mops_remarks 的处理）。
+        return bad
+    try:
+        sh(cmd)
+    except Exception as e:
+        print(f'{"cost":<10} FAIL     SEC 腿更新后重建失败: {str(e)[:100]}')
+        bad.append('cost_sec')
+    return bad
+
+
 def mops_remarks():
     """刷新 series/mops_remarks.csv（七家台湾半导体的 MOPS 備註原文），返回失败清单。
 
@@ -1284,6 +1457,16 @@ def main():
             ok.append(t)
             if st == 'NEW':
                 months[t] = msg
+
+    # /cost/ 的第二个数据源（SEC 10-K/10-Q/8-K，CIK 0000909832）：分部收入 / 客单客流 /
+    # 财年单店经济 / 开业年份矩阵，四张 series/cost_*.csv。**必须在按家循环之后单独一步**：
+    # `one()` 在 import fetch 之前先问 `not_due('cost')`，而那个判断读的 data_through 由
+    # **月度腿**独家推动 —— 月度销售稿一落地闸门就关死，而 SEC 腿的到货日全落在关死之后。
+    # 塞进 fetch/cost.py 当慢腿等于「永远不跑」，且长得和健康的安静日一模一样。
+    # 有新申报时它自己去催 build/cost.py 重建（循环里那次 build 读的还是旧 CSV）。
+    # 完整推理（含为什么不拿 latest_quarter() 当跳过闸门）在 cost_sec() 的 docstring 里。
+    if 'cost' in todo:
+        fails += cost_sec()
 
     # MOPS 備註原文：七家台湾半导体页的 brief 引文与核对表那一列共用一份 series，
     # 不是 ticker、不进 TICKERS（理由与失败语义全在 mops_remarks() 的 docstring 里）。

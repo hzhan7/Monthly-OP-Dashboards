@@ -1,4 +1,4 @@
-# charts.js 图型数据契约（17 种 kind 全量）
+# charts.js 图型数据契约（引擎 17 种 kind 全量；另有 1 种由 page.js 自渲，见 §0 末）
 
 引擎：`assets/charts.js`（零依赖 SVG，不 fetch、不算数）。
 <!-- 这里以前写着行数。别再写：每动一次就过期一次，而它不承载任何判断。 -->
@@ -39,6 +39,19 @@
 
 画布最终高 = `height || 默认高` + x 标签带（`xrot=90` → 48、`45` → 36、`0` → 22）。
 
+> **`kind: 'table'` 不在上表里，也不该在。** 它是一张夹在图中间的 HTML 表，由
+> `assets/page.js` 自己渲染 —— exhibits 循环里 `ex.kind === 'table'` 那一支在
+> `window.Exhibits.card()` **之前**就 return 了，引擎一行都不参与
+> （字段见 `build/CONTRACT.md` §3 的同名小节）。
+>
+> 所以能写进 `exhibits[]` 的 `kind` 一共 18 种，而**引擎认得的仍然是 17 种** ——
+> 两个数不是一回事，`build/verify_pages.py` 把它们分成 `KINDS` 与 `PAGE_KINDS`
+> 两个集合正为此。数引擎的 kind 时按 17 数，别把 `table` 算进来。
+>
+> 漏掉那道拦截的后果不是「这张表画不出来」，而是**整页从这里往下全空**：未知 kind
+> 掉进 `draw()` 的 `else` 分支当 `values[]` 柱图，而这种 exhibit 没有 `values`，
+> 抛 TypeError，本页此图之后的 exhibit 一张都不渲染。
+
 ---
 
 ## 1. 所有 kind 通用的字段
@@ -46,7 +59,7 @@
 | 字段              | 类型               | 必填 | 说明                                                                                                                                          |
 |-------------------|--------------------|------|-----------------------------------------------------------------------------------------------------------------------------------------------|
 | `n`               | int                | ✓    | Exhibit 编号，渲染成卡片标题 `Exhibit n: title`，也进 SVG 的 aria-label                                                                       |
-| `kind`            | string             | ✓    | 必须是上表 17 个之一。**引擎对未知 kind 不报错**：走 `else` 分支当 `values[]` 柱图，多半是一片空白                                            |
+| `kind`            | string             | ✓    | 必须是上表 17 个之一（`'table'` 除外 —— 它到不了引擎，见 §0 末那段）。**引擎对未知 kind 的反应取决于它带不带 `values`**：带 `values` 的（拼错 kind 那种）走 `else` 分支被当成 `values[]` 柱图静默画出来；不带 `values` 的（例如没被 page.js 拦下的 `kind:'table'`）在 `assets/charts.js` 的 `lv = ex.values.slice()` 处抛 TypeError，**本页此图之后的 exhibit 一张都不渲染** —— 见 §0 末那段 |
 | `title`           | string             | ✓    | 标题（不含 `Exhibit n:` 前缀，前缀由引擎加）                                                                                                  |
 | `xlabels`         | string[]           | 见下 | 该图自己的 x 轴标签。缺省则用 `opt.xlabels`（= `DASH.xlabels`，或 `ex.x==='long'` 时的 `DASH.xlabels_long`）。**长度为 0 就渲染成「无数据」** |
 | `x`               | `'long'`           |      | 由 page.js 解释：改用 `DASH.xlabels_long`                                                                                                     |

@@ -19,6 +19,9 @@ check_specs.main()     contract_specs 结构体检 → 不过就 FAILED 退出
 for t in TICKERS:      28 家，逐家隔离：not_due? → fetch → build
     one(t)             一家失败只让这一家 FAIL，其余照常发布
                        ↓
+cost_sec()             /cost/ 的第二个数据源（SEC 申报层，季度/年度）→ 有新申报就重跑 /cost/
+                       只在 cost 落在本轮名单里时才跑（**它看 --only，下面三张公共表不看**）
+                       ↓
 mops_remarks()         MOPS 月报備註栏（七家半导体页共用）→ 有新月份就重跑那七页
 fee_rates()            季度费率表（六个单公司页共用）→ 有新季度就重跑那六页
 fx()                   月度汇率表（横截面页共用）    → 不重跑任何页，见下
@@ -201,6 +204,67 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 任何异常表现 —— 没有断笔、没有空值、没有红点（fx.csv 不上任何页面抬头），
 只是份额与增长整体偏一点点。末行的 `PARTIAL` 是它唯一的故障信号。
 
+### 2.5 `/cost/` 的第二个数据源：`cost_sec`（2026-09 接入）
+
+`/cost/` 是全仓**唯一一页有两个数据源**的：
+
+| 腿 | 源 | 写什么 | 节奏 | 闸门 |
+|---|---|---|---|---|
+| 月度腿 | GlobeNewswire 月度销售稿（`fetch/cost.py`） | `series/cost.csv` | 零售月结束后首个周三 | 日历闸门，`LAG=(7,7)`、`EARLY` 默认 → 月末后第 2 天（见 §2.3） |
+| SEC 腿 | EDGAR CIK **0000909832** 的 10-K / 10-Q / 8-K(EX-99.2)（`fetch/cost_sec.py`） | `series/cost_seg_q.csv` / `cost_tkt_q.csv` / `cost_fy.csv` / `cost_cohort.csv` | 8-K 季末后约 4 周、10-Q 后 3-4 周、10-K 后 5-6 周 | **无闸门，每轮都跑**（理由见下） |
+
+失败处理与三张公共表同档：**计入失败清单 → `PARTIAL`，不阻断本轮**。
+
+**它为什么不是 `fetch/cost.py` 里的一条慢腿**（三条，任一条单独都够）：
+
+- `one()` 在 import fetch 模块**之前**先问 `not_due('cost')`，而那个判断读的 `data_through`
+  由**月度腿独家**推动（`build/cost.py` 的 `LATEST = df.index[-1]`，df 就是 `series/cost.csv`）。
+  月度稿一落地闸门就关死，而 SEC 腿的到货日**全部**落在关死之后（10-Q 在季末后 3-4 周，
+  那时当月的销售稿早发完了）。2026-09-03 实测 `not_due('cost')` 为真、日志里那行就是
+  `cost NOCHANGE 线上已追平候选月 2026-08` —— 慢腿写法的实际效果是「永远不跑」。
+- `SLOW_LEGS` 也顶不上来：`slow_pending()` 逐列扫的是 `series/<t>.csv`，而这条腿写的是
+  另外四个文件。硬登记几列的话，`_due_month()` 算的是**月度**应到月份，而这是季度源 ——
+  一年里八个月都会被判「欠货」，闸门被顶成天天下载，正是 `SLOW_LEGS` 那条
+  ⚠「不要为永久停发的列建登记」的形状。
+- 炸的范围反了：慢腿写法下 SEC 侧的解析错误会让 `one('cost')` 记 FAIL，
+  连那天**月度**的新销售数据也一起不发。
+
+**为什么不给它套闸门 —— 包括不拿 `latest_quarter()` 当跳过闸门**（这条是量过的，别回退）：
+
+- `fetch/cost_sec.py::latest_quarter()` 走的是 `_submissions()`，而那个函数每次都把
+  `subs.json` / `subs-001.json` 从缓存里删掉重下（件会从 recent 滚进 -001，缓存住会让那批件
+  两边都读不到）。所以**探针与整轮 `update()` 打的是同样那两个请求**。
+  2026-09-03 本机实测（缓存热）：探针 0.65 / 1.24 / 1.97s，整轮 update 1.34 / 1.56 / 1.76s ——
+  跳过一次省的是半秒 CPU，不是一次网络往返。真能省的只有**冷缓存**那 88 MB / 2 分钟，
+  而 `cache/` 在 cron 机器上是持久的（`tools/prune_cache.py` 的 `POLICY` 是白名单，
+  `cost_sec` 这一族没登记、不会被清），那两分钟一辈子只付一次。
+- 而且它会把 8-K 那条腿**瞎掉一个星期**：`latest_quarter()` 只看 10-K/10-Q，而
+  `cost_tkt_q.csv` 的源是 8-K 的 EX-99.2，实测比同季 10-Q 早约一周
+  （FY26Q3：8-K 2026-05-28、10-Q 2026-06-03）。拿 10-Q 的报告期当闸门，那六天里新一季的
+  客单/客流在源上挂着而这边不取 —— 拿六天陈旧换半秒 CPU，方向反了。
+
+⇒ 结论与 `fx` 同款：**每轮都跑**，代价是两个 JSON 请求（约 420 KB）+ 一秒多本地解析；
+没有新申报时四张 CSV 逐字节不变、`update()` 返回 `[]`。
+
+**`latest_quarter()` 改用在对账上，不是闸门**：`update()` 返回 `[]` 有两种含义 ——
+「源上真没有新申报」与「有新申报但解析器没认出来」，两者在日志里长得一模一样
+（README「不出声的失败」的判据）。所以每轮拿探针的报告期与 `series/cost_seg_q.csv` 的最新
+`period_end` 对一次账（两边天生同尺：10-Q 的 `reportDate` = 该季末 = Q 行的 `period_end`），
+源比库新就说明掉了一期 → 计入失败清单。这是 `fetch/cboe.py::_crosscheck_report_month`
+那条「用独立于解析器的外部判据对账」的同款，只是解析器不归 `monthly_run.py` 管，
+就把对账放在调用侧。**这个警报是黏的**（会一直响到有人去修），刻意如此 ——
+另一头是「一期数据永久缺席而末行天天 `NOTHING_TO_DO`」。
+对账**不覆盖 8-K 那条腿**，也不该覆盖：它比同季 10-Q 早约一周，拿它对账会天天误报。
+
+**有新东西时它自己重跑 `build/cost.py`**（同 `mops_remarks` 要自己重跑那七页）：
+触发器是 `series_fingerprint('cost')` 的前后差（`glob` 的 `series/cost*.csv` 本来就包含这四张表），
+不是 `if added` —— `update()` 首次建表返回 `[]`，`cost_fy.csv` 的官方重述取最新值也不产生新主键。
+
+**它写盘只落在 `series/` 与 `cache/cost_sec/`**（后者已 gitignore），
+`PUBLISH = ['data', 'series']` 覆盖得住，`guard_dirty_tree()` 看不到它。
+唯一的边角：`_write()` 先写 `series/cost_*.csv.tmp` 再 `os.replace`，
+真在这两句之间被杀掉才会留下 `.tmp` —— 那个残留在 `series/` 里，会被 `git add series` 收走。
+
 ---
 
 ## 3. 生成器怎么找：`builder(t)`
@@ -272,6 +336,30 @@ python3 build/make_shells12.py  # 应少写一个壳
 它是 `-eu` / `-apac` 拆分前的旧合页）—— 逐步清单与实测输出见 `docs/DELIVERY.md §4.4`，
 比这里的推演可靠，删页时照那一节做。
 
+### 删掉 `/cost/` 的 SEC 腿意味着什么（它不是「一家」，删法也不一样）
+
+`cost_sec` **不在上面那张「5 处注册 + 3 个文件」的清单里** —— 它没有页、没有 `data/<t>.js`、
+不在 `TICKERS` / `CROSS` / `roster.GROUPS` / `roster.LAG` 里任何一处，所以 `check_registry()`
+既不认识它、也不会因为它告警。删它 = 删两处：
+
+```bash
+#   monthly_run.py   main() 里 `if 'cost' in todo: fails += cost_sec()` 那两行
+#                    （函数 cost_sec() 与 _cost_sec_behind() 留着不会被调用，想清干净就一起删）
+rm fetch/cost_sec.py
+rm series/cost_seg_q.csv series/cost_tkt_q.csv series/cost_fy.csv series/cost_cohort.csv
+rm -rf cache/cost_sec        # 88 MB，可重下
+```
+
+⚠ **两处的顺序与后果**：`monthly_run.py` 那两行删掉、`fetch/cost_sec.py` 还留着，是**静默停更**
+（没人调用它，四张 CSV 就此冻住，而 `/cost/` 的红点跟的是月度腿、照样是绿的）；
+反过来只删 `fetch/cost_sec.py` 不删那两行是**安全**的 —— `cost_sec()` 第一句就是
+「文件不在就返回空清单」，与 `mops_remarks` / `fee_rates` / `fx` 同款。所以真要删，
+**先删 `monthly_run.py` 那两行**，别只删文件。
+
+⚠ **删四张 CSV 之前先看 `build/cost.py` 还读不读它们**：`/cost/` 页上凡是分部收入 /
+客单客流 / 财年单店经济 / 开业年份矩阵的图都由它们喂，CSV 没了那些图会缺数据。
+月度腿（`series/cost.csv`）与它们**互不读写**，所以只删 SEC 腿不会影响月度那部分。
+
 ### 忘了其中一处会怎样
 
 `monthly_run.check_registry()` 每轮开跑前对一次名单，**只告警不退出**
@@ -340,4 +428,5 @@ python3 build/make_shells12.py  # 应少写一个壳
 | `series/contract_specs.csv` 74 行里 33 行没填基期价，其中 **7 个 product_id 的缺口落在 `/exchanges12/` 的成员腿上**（清单见 `docs/DELIVERY.md` §3.1） | 页已上线（按降级规则生成 `data/exchanges12.js`）：水平值与占比图只画常数齐备的家，增长类图 12 家全上 —— 缺常数的多块家给紧上下界而不是点值；缺口清单由运行时算出并打进页面正文（`build/exchanges12.py` 的 GAP_REASONS） | 补常数那一步 |
 | ⛔ **不是待办**：`ICE_STIR` / `ICE_MLTIR` 的基期价**永远留空** | 两者已在 `build/pools.py` 用 `contracts_only=True` 显式声明为永久张数口径；理由见 `docs/DELIVERY.md` §3.2。**不要再去撞 ICE 的 reCAPTCHA** | 已定案 |
 | `ndaq` 的 headline 在慢腿上（见 §2.2 注） | 红点与闸门被迫拆成两条腿；改法是动 spec，不是动接线 | 页面口径 |
-| `--only` 不跳过 `fee_rates` / `fx` / `build_cross` | 调试单家时仍会打 ECB 与费率源（各一个站） | 沿用既有行为，未改 |
+| `--only` 不跳过 `fee_rates` / `fx` / `mops_remarks` / `build_cross` | 调试单家时仍会打 ECB、费率源与 TWSE（各一个站） | 沿用既有行为，未改 |
+| `cost_sec` **是唯一看 `--only` 的一步** | 它只有 `/cost/` 一个消费者，`--only cme` 没理由去打 EDGAR、更没理由改写 `data/cost.js`；生产环境 `todo` 恒等于 `TICKERS`，cron 行为与不看 `--only` 完全一样 | 有意为之，见 §2.5 |

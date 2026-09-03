@@ -39,6 +39,13 @@ SHELL = '''<!doctype html>
      不会留下一个空的带框方块（尚未接入的那几家就是这种情况）。 -->
 <div class="brief" id="brief" hidden></div>
 
+<!-- 名词释义：由 data/<t>.js 的 glossary 字段注入，位置在**所有 exhibit 之前** ——
+     不认识词的人是在看第一张图之前卡住的，把释义放页尾等于没放。
+     与 brief 分工不同：brief 讲「这个月的读数该怎么读」，随月份变；
+     glossary 讲「这些词是什么意思」，一年到头都是同一段。
+     同样带 hidden：没给 glossary 的页面不会留下一个空的带框方块。 -->
+<div class="glossary" id="glossary" hidden></div>
+
 <!-- 通栏区：汇总表 + 标了 full 的长历史图（127 根柱塞进半栏每根不到 3px） -->
 <div class="grid full" id="lead"></div>
 
