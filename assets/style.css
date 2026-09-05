@@ -192,6 +192,11 @@ footer code { font-size: 10.5px; }
   .inner { padding: 20px 16px 32px; }
   h1 { font-size: 21px; }
   .masthead { flex-direction: column; gap: 4px; }
+  /* meta 在宽屏是 nowrap（抬头右侧一行到底、不折行才像 PDF 抬头）。窄屏必须放开：
+     有「发布更快的腿」的页面（ndaq / lseg）meta 会多出「· 更快的列已到 X（Y 发）」
+     那半句，串长从 ~310px 涨到 ~530px，nowrap 下在 ~560px 视口以下顶穿 body
+     产生横向滚动条。tools/visual_qa.py 的 VIEWPORTS 只有 1280/768，测不到这一段。 */
+  .masthead .meta { white-space: normal; }
   /* 释义改上下排：768px 视口 .inner 可用宽只有 736px，两列时第一列吃掉最长那个词的
      宽度，剩给释义的不足半屏，中文一行放不下十个字，每条都碎成四五行。 */
   .glossary dl { grid-template-columns: 1fr; gap: 2px 0; }

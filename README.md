@@ -287,11 +287,13 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 
 ⚠ **「一页一个源」不再普遍成立：`/cost/` 有两个。** 除了 GlobeNewswire 的月度销售稿
 （`fetch/cost.py` → `series/cost.csv`），2026-09 起还接了 SEC 申报层
-（`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写四张 `series/cost_*.csv`：
-分部收入、客单与客流、财年单店经济、开业年份矩阵 —— 这三类数字月度稿里**一件都没有**。
+（`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写五张 `series/cost_*.csv`：
+分部收入、客单与客流、财年单店经济、开业年份矩阵，以及 `cost_fy_be.csv`（FY2011–FY2015 的
+合并损益回填，只喂 Exhibit 16 的两条盈亏平衡线，用的是上一代 XBRL 元素名）——
+这几类数字月度稿里**一件都没有**。
 两条腿节奏完全不同（月度 vs 季度/年度），所以在 `monthly_run.py` 里是**两步**而不是一步；
 接线与「为什么不能合成一步」见 `docs/CRON_WIRING.md` §2.5。
-读这四张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
+读这几张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
 
 几条踩过的坑：
 
@@ -388,9 +390,16 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   判据可机检：`python3 tools/check_yoy_caliber.py`。
 - **量价分解**：把成交额（或收入）的增长按恒等式拆成量与价两部分，全仓三类派生量 ——
   股数 × 均价、笔数 × 每笔金额、张数 × 每张费率 —— 含义互不相通，图注强制写明
-  「它不是什么」。横轴口径统一为**日历年 + 当年 YTD**：一格 = 一个完整日历年
-  （对上一年同 12 个月），末格 = 当年 YTD（对去年同月窗口）。缺同口径（金额，数量）
-  配对的页面明说「不具备数据条件」，不硬拆（db1 / enx / ice / ndaq 页各有一条说明）。
+  「它不是什么」。**横轴口径不统一，逐页由数据决定，每张图的图注自己写明是哪一种**：
+  ① 日历年 + 当年 YTD（一格 = 一个完整日历年，对上一年同 12 个月；末格对去年同月窗口）
+  —— asx / hkex / jpx / lseg / miax / sgx / tmx×3 共 9 张，源数据只有季度或年度费率；
+  ② 逐月（一格 = 一个月，对去年同月）—— cme Ex16、schw Ex5、cboe Ex11、hood Ex6、
+  lpla Ex6 共 5 张，两条腿都逐月披露才做得成；③ 其余 5 张是季度桶或横截面对比
+  （cost Ex15、exchanges-apac Ex15、exchanges-eu Ex15、exchanges-na Ex5/Ex8）。
+  ⚠️ 2026-09-04 之前这一行写的是「横轴口径**统一为**日历年 + 当年 YTD」——
+  那句话在 cme / schw 改月度桶时就已经不成立，cboe 只是又多了一张；现按 `data/*.js`
+  的实际清点重写。缺同口径（金额，数量）配对的页面明说「不具备数据条件」，
+  不硬拆（db1 / enx / ice / ndaq 页各有一条说明）。
 - **brief**：11 家老单公司页 + 台湾半导体 7 家 + `/wealth/` 的页顶 ~300 字数据总结。
   规则库在 `build/brief.py`（只算事实），句子由各家生成器自己拼（`build/mrbase.py`
   也 `import brief`，7 家共用底座拼出来的那几句 + spec 的 `brief_extra` 钩子）；

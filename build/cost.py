@@ -2355,20 +2355,40 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════════
     _COH_CSV = os.path.join(SERIES_DIR, 'cost_cohort.csv')
     _FY_CSV = os.path.join(SERIES_DIR, 'cost_fy.csv')
-    for _p in (_COH_CSV, _FY_CSV):
+    #: 盈亏平衡回填表（FY2011–FY2015 的合并损益四个数）。所有者 2026-09-04 指令：
+    #: 「盈亏平衡也从 FY2011 开始算」。它与 cost_fy.csv 是**两张表、两代 XBRL 元素名**，
+    #: 理由写在 fetch/cost_sec.py 的 FY_BE_FIRST / FY_BE_TAGS 上。
+    #: 列为什么这么窄：盈亏平衡只吃净销售额 / 会员费 / 商品成本 / SG&A 四个比率输入
+    #: （折成金额那一步用的是队列矩阵的 Totals 行，不是仓店数），而这四个数老年份
+    #: 在 XBRL 里全都有；仓数 / 面积 / 分部那二十多列老年份确实没有，也用不上。
+    _FYBE_CSV = os.path.join(SERIES_DIR, 'cost_fy_be.csv')
+    for _p in (_COH_CSV, _FY_CSV, _FYBE_CSV):
         if not os.path.exists(_p):
             raise SystemExit(f'找不到源数据: {_p}（Exhibit 16/17 用的是 10-K 年度表，'
                              f'不是月度新闻稿）')
     _coh = pd.read_csv(_COH_CSV)
     _fyd = pd.read_csv(_FY_CSV)
+    _fybe = pd.read_csv(_FYBE_CSV)
     for _c, _cols, _f in ((_coh, ['vintage', 'cohort', 'n_whses', 'fiscal_year',
                                   'avg_sales_musd'], 'cost_cohort.csv'),
-                          (_fyd, ['fy', 'weeks', 'net_sales_mn', 'wh_total'], 'cost_fy.csv')):
+                          (_fyd, ['fy', 'weeks', 'net_sales_mn', 'wh_total'], 'cost_fy.csv'),
+                          (_fybe, ['fy', 'weeks', 'net_sales_mn', 'memb_fee_mn',
+                                   'merch_cost_mn', 'sga_mn'], 'cost_fy_be.csv')):
         _m = [c for c in _cols if c not in _c.columns]
         if _m:
             raise SystemExit(f'series/{_f} 缺列 {_m}')
     # 年度表按财年建索引，两块（Ex16 / Ex17）共用；'FY2025' → 2025
     _fyd = _fyd.assign(y=_fyd['fy'].str.slice(2).astype(int)).set_index('y').sort_index()
+    _fybe = _fybe.assign(y=_fybe['fy'].str.slice(2).astype(int)).set_index('y').sort_index()
+    # ── 两张年度表不许重叠 ──────────────────────────────────────────────────────
+    # 重叠不会报错，只会让同一个财年的盈亏平衡比率取决于**下面哪一行 update 先跑** ——
+    # 而两代元素名在重叠年（FY2016/FY2017）指的确实是同一个数，所以两条路都「像是对的」，
+    # 分叉时页面上看不出任何异样。fetch 侧已经按 `< FY_FIRST` 切了，这里是第二把锁。
+    _ovl = sorted(set(_fybe.index) & set(_fyd.index))
+    if _ovl:
+        raise SystemExit(f'cost_fy_be.csv 与 cost_fy.csv 在 FY{_ovl} 上重叠 —— 回填表只该'
+                         f'装 cost_fy.csv 左端之外的年份（fetch/cost_sec.py 的 FY_BE_FIRST '
+                         f'与 FY_FIRST 界定），重叠会让同一年有两个口径的来源')
 
     def _cohort_footnote():
         """按路径加载 fetch/cost_sec.py，取那张图的脚注原文 COHORT_FOOTNOTE。
@@ -2404,11 +2424,6 @@ def main():
     _COH_YRS = sorted({int(y) for y in _coh['fiscal_year']})
     if _COH_YRS != list(range(_COH_YRS[0], _COH_YRS[-1] + 1)):
         raise SystemExit(f'拼接后的财年不连续: {_COH_YRS} —— 横轴中间断了一列')
-
-    # 聚合行的标签里带 &（「2016 & Before」），而下面 src_extra / note 走的是 innerHTML：
-    # HTML5 对孤立的 & 是宽容的（照literal 渲），但那是「碰巧没坏」，标签一旦变成
-    # 「2016 &amp; Prior」之类就会被吃掉。转义一次，成本为零。
-    _hesc = lambda s: str(s).replace('&', '&amp;')
 
     def _ckey(c):
         """行序：聚合行最老 → 逐个开业年份 → Totals 收尾（engine_kinds §1 要求从旧到新）。
@@ -2595,6 +2610,7 @@ def main():
     # ── 图注里要印的量，一个都不写死 ────────────────────────────────────────────
     _COH_LAST = _COH_YRS[-1]
     _coh_newest = max((c for c in _data_labs if '&' not in c), key=lambda c: int(c))
+    _coh_first = min((c for c in _data_labs if '&' not in c), key=int)   # 最老的单年队列
     _first_new = _cval[(_coh_newest, int(_coh_newest))]          # 最新队列的首年（年化）值
     _sys_avg = _cval[(_COH_TOT, _COH_LAST)]                      # Totals 行最新一格
     #: 落在**最新那份 10-K 的 10 列窗口之外**的列数。图注引它来说明「印出来的脚注管到哪」——
@@ -2627,10 +2643,19 @@ def main():
     # **必须走逐列行集**（护栏 C 的 `_col_rows`），不能对全部 21 行求和 —— 后者会把
     # FY2020 那一列算成 4,099 家的销售额，而当年在册只有 795 家。
     _coh_impl = {y: sum(_cnt[c] * _cval[(c, y)] for c in _col_rows(y)) for y in _COH_YRS}
-    # 定义域缩到「cost_fy.csv 有那一年」的交集：左端五列没有合并净销售额可比，
-    # 硬取会是一个裸 KeyError —— 够响，但报文一个字都不说明发生了什么。
-    _GAP_YS = [y for y in _COH_YRS if y in _fyd.index]
-    _coh_gap = {y: 1 - _coh_impl[y] / float(_fyd.at[y, 'net_sales_mn']) for y in _GAP_YS}
+    # 合并净销售额：主表（FY2016 起）+ 回填表（FY2011–FY2015）。两张表不重叠（上面刚锁过），
+    # 所以这个 dict 的每一年只有一个来源。定义域仍然取交集而不是硬取：哪天回填表被砍短，
+    # 这里会是一个裸 KeyError —— 够响，但报文一个字都不说明发生了什么。
+    _NS = {int(y): float(_fyd.at[y, 'net_sales_mn']) for y in _fyd.index}
+    _NS.update({int(y): float(_fybe.at[y, 'net_sales_mn']) for y in _fybe.index})
+    _GAP_YS = [y for y in _COH_YRS if y in _NS]
+    _coh_gap = {y: 1 - _coh_impl[y] / _NS[y] for y in _GAP_YS}
+    #: 缺口序列里**反而收窄**的年份。原来图注写的是「N 个财年一路走阔到今天」——
+    #: 那句话在只有 FY2016 起十列时勉强成立，回填到 FY2011 之后当场变成假话
+    #: （本期 FY2013 / FY2014 / FY2018 / FY2024 四年收窄）。不写死「走阔」这个断言，
+    #: 逐年比一遍再决定怎么说；哪天序列变成真单调，下面那句会自己改口。
+    _gap_narrow = [y for i, y in enumerate(_GAP_YS)
+                   if i and _coh_gap[y] < _coh_gap[_GAP_YS[i - 1]]]
     # ── 单位经济性（Exhibit 17 的全部算术）提前到这里算 ──────────────────────
     # 它本来长在 Exhibit 17 那一块里。搬上来是因为所有者要把「盈亏平衡销售额」
     # 写进本图 Totals 那一行（2026-09-03 指令），于是 16 与 17 必须**共用同一份**
@@ -2638,23 +2663,35 @@ def main():
     # 不会报错。它读的是 _fyd（年度表）与 _cval（本块刚解出来的队列矩阵），
     # 两样在这里都已经就位。
     # ── 每年一份口径无关的比率 + 两个均店销售口径 ────────────────────────────────
-    def _e17_calc(y):
-        r = _fyd.loc[y]
+    def _be_ratio(r):
+        """一行年度损益 → 盈亏平衡的两条边（比率）。**两张年度表共用这一个式子。**
+
+        抽出来是因为它现在有两个调用方：Ex17 的 `_e17_calc`（读 cost_fy.csv，FY2016 起）
+        与回填的 FY2011–FY2015（读 cost_fy_be.csv）。各写一遍的分叉长这样：图上左五列
+        与右十列用的不是同一个定义，而它们在同一行里连着画，页面不会报错。
+
+        盈亏平衡 = 覆盖 SG&A 需要的销售额 ÷ 单位销售额的贡献率。
+        上沿 hi：贡献只算商品毛利 g（一分会员费都不给这家店）。
+        下沿 lo：把会员费按公司平均费率 m 记进贡献（g + m）。
+        两者都是**比率**，与均店销售的口径无关，也与 52/53 周无关（分子分母同期）——
+        FY2012 是 53 周财年，但那不影响这两个比率，只影响绝对额。
+        """
         ns = float(r.net_sales_mn)
         g = (ns - float(r.merch_cost_mn)) / ns          # 商品毛利率（对净销售额）
         s = float(r.sga_mn) / ns                        # SG&A 率（已含开办费）
         m = float(r.memb_fee_mn) / ns                   # 会员费率
+        return {'g': g, 's': s, 'm': m, 'hi': s / g, 'lo': s / (g + m)}
+
+    def _e17_calc(y):
+        r = _fyd.loc[y]
+        ns = float(r.net_sales_mn)
         wh = float(r.wh_total)
         coh = _cval.get((_COH_TOT, y))                  # 队列表 Totals 行（披露的均店销售）
-        # 盈亏平衡 = 覆盖 SG&A 需要的销售额 ÷ 单位销售额的贡献率。
-        # 上沿：贡献只算商品毛利 g（一分会员费都不给这家店）。
-        # 下沿：把会员费按公司平均费率 m 记进贡献（g + m）。两者都是**比率**，与均店
-        # 销售的口径无关 —— 折成金额时才需要挑一个口径，见 note。
         return {
-            'ns': ns, 'g': g, 's': s, 'm': m, 'wh': wh, 'coh': coh,
+            **_be_ratio(r),
+            'ns': ns, 'wh': wh, 'coh': coh,
             'memb': float(r.memb_fee_mn), 'gp': ns - float(r.merch_cost_mn),
             'sga': float(r.sga_mn), 'oi': float(r.op_income_mn),
-            'hi': s / g, 'lo': s / (g + m),
             'ns_wh': ns / wh,
             'first': _cval.get((str(y), y)),            # 当年新开队列的首年（年化）销售
         }
@@ -2722,19 +2759,28 @@ def main():
     # 在这里算而不是在下面追加行的地方算：Ex16 的 note 要引这两行的首末读数，
     # 而 note 拼好的时候行还没接上去。一处算、两处用，不许各算一遍。
     #
-    # ── 护栏 H：左端那几列必然是 None，而 None 在这条链路上**没有任何东西在拦** ──
-    # cost_fy.csv 从 FY2016 起，所以 FY2011–FY2015 五格算不出来。下面 note 引首末读数时
-    # **不许**再按位置取 [0] —— 那会印出「本期 FY2011 是 $None–Nonemn」。而
-    # build/payload_guard.py 的 _BAD 只认 nan / infinity / inf，**认不出 'None'**：
-    # 这句会一路写进 data/cost.js 并渲染上线。全链路唯一一条没人拦的路径，只能在这里自己拦。
-    _be_vals = {k: [None if (y not in _E or not _E[y]['coh']) else round(_E[y][k] * _E[y]['coh'])
+    # ── 比率表：Ex17 窗口（cost_fy.csv）+ 回填（cost_fy_be.csv），合起来铺满 15 列 ──
+    # 所有者 2026-09-04 指令：「盈亏平衡也从 FY2011 开始算」。左端五年靠回填表，
+    # 用的是**同一个** `_be_ratio` 式子（见那里的 docstring）。
+    _BE_R = {int(y): _be_ratio(_fybe.loc[y]) for y in _fybe.index}
+    _BE_R.update({y: _E[y] for y in _E17_YS})           # 右段直接复用 Ex17 已算好的那份
+    #
+    # ── 护栏 H：算不出来的年份必须是 None，而 None 在这条链路上**没有任何东西在拦** ──
+    # 折成金额要两样东西：该年的比率（_BE_R）与该年的队列 Totals（_cval）。缺任何一样
+    # 这一格就是 None，而下面 note 引首末读数时**不许**按位置取 [0] —— 那会印出
+    # 「本期 FY2011 是 $None–Nonemn」。build/payload_guard.py 的 _BAD 只认
+    # nan / infinity / inf，**认不出 'None'**：那句会一路写进 data/cost.js 并渲染上线。
+    # 全链路唯一一条没人拦的路径，只能在这里自己拦。
+    _be_vals = {k: [None if (y not in _BE_R or not _cval.get((_COH_TOT, y)))
+                    else round(_BE_R[y][k] * _cval[(_COH_TOT, y)])
                     for y in _COH_YRS] for k in ('lo', 'hi')}
     _BE_YS = [y for y, v in zip(_COH_YRS, _be_vals['lo']) if v is not None]
     if not _BE_YS:
-        raise SystemExit('盈亏平衡两行一格都算不出来 —— cost_fy.csv 与队列矩阵的财年没有交集')
+        raise SystemExit('盈亏平衡两行一格都算不出来 —— 两张年度表与队列矩阵的财年没有交集')
     if _BE_YS != [y for y in _COH_YRS if y >= _BE_YS[0]]:
         raise SystemExit(f'盈亏平衡两行从 FY{_BE_YS[0]} 起仍有空格 —— 它是逐年现算的，'
-                         f'中间不该有洞；有洞说明 cost_fy.csv 中间缺了一年')
+                         f'中间不该有洞；有洞说明 cost_fy.csv 与 cost_fy_be.csv 拼起来'
+                         f'中间缺了一年（两张表的接缝在 FY{_E17_YS[0]}）')
     _bi0 = _COH_YRS.index(_BE_YS[0])
     _be_lo0, _be_hi0 = _be_vals['lo'][_bi0], _be_vals['hi'][_bi0]
     _be_lo1, _be_hi1 = _be_vals['lo'][-1], _be_vals['hi'][-1]
@@ -2776,9 +2822,10 @@ def main():
                 f'<b>本图与 Exhibit 17 的数据源不是月度销售新闻稿</b>（卡片下方 Source 行印的是'
                 f'全页共用的那一个），本页其余各图才是。')
     _COH_NOTE = (
-        f'<b>除末两行外全部是公司披露值，没有一个数是我们算的</b>：{len(_data_labs)} 行'
-        f'（{len(_AGGS)} 条老店池行「{_hesc(_AGGS[0])}」…「{_hesc(_AGGS[-1])}」+ '
-        f'{len(_data_labs) - len(_AGGS)} 个单列的开业队列）+ Totals 行，'
+        f'<b>除末两行外全部是公司披露值，没有一个数是我们算的</b>：'
+        f'{len(_data_labs) - len(_AGGS)} 行<b>纯单年开业队列</b>'
+        f'（{_coh_first}…{_coh_newest}，<b>一行就是那一年开业的那一批店</b>，'
+        f'不含任何更早开的店）+ Totals 行，'
         f'横向 {len(_COH_YRS)} 个财年 FY{_COH_YRS[0]}–FY{_COH_LAST}，'
         f'FY{_COH_LAST} 在册 {_colden[_COH_LAST]:,} 家。'
         # ── 拼接：为什么敢接、接出来是什么形状、为什么到不了更早 ──
@@ -2795,18 +2842,28 @@ def main():
         f'并表且往年不重述，那个断点恰好落在本图最左列的<b>外侧</b>，这也正是这 '
         f'{len(_COH_YRS)} 列内部可以整段横读、不需要画任何列级断点的原因。'
         # ── ⚠️ 三种空白，引擎画成同一个灰 ──
-        f'<b>⚠️ 图上有三种空白，颜色完全一样，只能靠行标签分</b>：'
+        f'<b>⚠️ 图上有两种空白，颜色完全一样，只能靠行标签分</b>：'
         f'（a）<b>{_null_pre} 格「那时还没开业」</b> —— 每个队列行开业年左边的那一片；'
         f'（b）<b>{_null_fold} 格「被公司折进老店池行了」</b> —— 一个队列在 10-K 上最多单列 '
         f'9 个财年，第 10 年起就被并进那一份的「& Before」行。'
         f'本图里 {"、".join(_fold_rows)} 这 {len(_fold_rows)} 队的右端就是这么停的，'
         f'<b>不是缺数据，更不是那几年没销售</b>；它们的行标签上标着「·FYnn并入」，'
-        f'并入之后它们的销售额进了下面某一条老店池行里；'
-        f'（c）<b>{_null_win} 格「那条老店池行不在这一份 10-K 的窗口里」</b> —— '
-        f'{len(_AGGS)} 条老店池行各来自一份 10-K，各自只活在那一份的 10 列窗口内。'
-        f'<b>这 {len(_AGGS)} 条老店池行是<u>嵌套</u>的，不是并列的</b>：家数上逐层相含'
-        f'（{" → ".join(f"{_cnt[c]:,}" for c in _AGGS)}，每一层正好等于上一层加上当年新开的'
-        f'那一队，逐层零容差实测），所以<b>不要把它们竖着相加</b>。'
+        f'并入之后它们的销售额进了那一份 10-K 的老店池行里，而<b>老店池行本图不画</b>'
+        f'（下一条）；'
+        f'<b>⚠️ 公司那 {len(_AGGS)} 条「老店池行」本图<u>不画</u></b>：每份 10-K 除 9 条'
+        f'单年队列外还印一条「(V−9) &amp; Before」，{len(_COH_VS)} 份拼起来就是 '
+        f'{len(_AGGS)} 条（{" → ".join(f"{_cnt[c]:,}" for c in _AGGS)} 家）。'
+        f'它们<u>嵌套</u>、不并列 —— 后一条 = 前一条 + 当年新开的那一队（逐层零容差实测），'
+        f'竖着看像 {len(_AGGS)} 个并列的队列，其实是同一批老店被数了 {len(_AGGS)} 遍，'
+        f'所以本图只画纯单年队列。'
+        f'<b>但它们仍在幕后干活</b>：下面「口径缺口」那一段的逐列分母、以及左端 '
+        f'{_den_nest} 列分母的凭据，全靠这六条才凑得出当年在册的 '
+        f'{_colden[_COH_YRS[0]]:,}–{_colden[_COH_LAST]:,} 家'
+        f'（画出来的 {len(_data_labs) - len(_AGGS)} 条单年队列合计只有 '
+        f'{sum(_cnt[c] for c in _data_labs if "&" not in c):,} 家）。'
+        f'<b>代价说在明处：FY{_COH_YRS[0]} 那一列只剩 Totals 与末两行</b> —— '
+        f'{_COH_YRS[0]} 及更早开业的那 {_cnt[_AGGS[0]]:,} 家，公司从来没按开业年份单列过，'
+        f'只有那一个聚合数，<b>拆不开</b>。'
         + f'<b>脚注照抄公司原文</b>：「{_cohort_footnote()}」—— 这是 {_COH_NEW} 那一份的脚注，'
         f'讲的也是它自己那 10 列（FY{_E17_YS[0]}–FY{_COH_LAST}）；'
         + (f'左端 {_n_outside} 列适用的是更早那几份 10-K 的脚注（措辞逐年在变，'
@@ -2824,28 +2881,38 @@ def main():
         f'更老的几队看着更短，那是被折进老店池行截断的，不是它们停止增长了），'
         f'这里面含物价涨幅，不能整段读成客流或客单的改善。'
         f'<b>口径缺口 —— 印出来，但不给它编理由</b>：把每一列按家数还原成系统销售额'
-        f'（逐列只取<b>覆盖该列最早那份 10-K</b> 的行集 —— 那一组正好是当年在册仓店的一次'
-        f'不重不漏的划分；{len(_AGGS)} 条老店池行嵌套，全塞进一列会把分母重复计到'
+        f'（逐列只取<b>覆盖该列最早那份 10-K</b> 的行集，<b>含那一列的老店池行 ——'
+        f'它图上不画，但账要算它</b>：那一组正好是当年在册仓店的一次不重不漏的划分；'
+        f'{len(_AGGS)} 条老店池行嵌套，全塞进一列会把分母重复计到'
         f'{sum(_cnt[c] for c in _data_labs):,} 家），'
         f'Σ(家数 × 格值) = ${_coh_impl[_COH_LAST]:,}mn（${_coh_impl[_COH_LAST] / 1000:.1f}bn），'
         f'而 FY{_COH_LAST} 合并净销售额是 ${_ns_last:,.0f}mn（${_ns_last / 1000:.1f}bn），'
         f'差 {_coh_gap[_COH_LAST]:.1%}；这个缺口在 FY{_GAP_YS[0]} 是 {_coh_gap[_GAP_YS[0]]:.1%}，'
-        f'{len(_GAP_YS)} 个财年一路走阔到今天'
-        f'（更早的 {len(_COH_YRS) - len(_GAP_YS)} 列算不了这个缺口：本仓的年度合并损益表 '
-        f'<code>series/cost_fy.csv</code> 从 FY{_GAP_YS[0]} 起才有）。'
-        f'<b>10-K 没有一个字说这张图的分子含什么、不含什么</b>，所以本页只印缺口本身。'
+        f'{len(_GAP_YS)} 个财年总体走阔'
+        + (f'，但<b>不是单调的</b> —— 其中 {len(_gap_narrow)} 年反而收窄'
+           f'（{"、".join(f"FY{y}" for y in _gap_narrow)}），所以别把它读成一条趋势线'
+           if _gap_narrow else '，且逐年单调走阔')
+        + (f'（更早的 {len(_COH_YRS) - len(_GAP_YS)} 列算不了这个缺口：本仓的年度合并'
+           f'损益表从 FY{_GAP_YS[0]} 起才有）。' if len(_GAP_YS) < len(_COH_YRS) else
+           f'（{len(_COH_YRS)} 列<b>一列不缺</b>：FY{_E17_YS[0]} 起读 '
+           f'<code>series/cost_fy.csv</code>，左端 FY{_COH_YRS[0]}–FY{_E17_YS[0] - 1} 读回填表 '
+           f'<code>series/cost_fy_be.csv</code>）。')
+        + f'<b>10-K 没有一个字说这张图的分子含什么、不含什么</b>，所以本页只印缺口本身。'
         f'两条听起来顺理成章的解释，一条在本页数据上当场被证伪、另一条无据：'
         f'（1）「期末家数 vs 期间平均家数」——矩阵每一列的分母（当年已开业队列的家数之和）'
         f'与当年披露的<b>期末</b>仓店数逐年相等（{_den_ok}/{len(_COH_YRS)} 个财年直接对上，'
         f'FY{_COH_LAST} 是 {_wh_last} 对 {_wh_last}；另 {_den_nest} 列早于 '
-        f'<code>cost_fy.csv</code> 的起点、没有这条外部对照，改由 {len(_AGGS)} 条老店池行的嵌套恒等式'
-        f'从右端已对上的 {_cnt[_AGGS[-1]]:,} 家逐层零容差减出来）'
+        f'<code>cost_fy.csv</code> 的起点、没有这条外部对照 —— 左端那张回填表 '
+        f'<code>cost_fy_be.csv</code> 只装损益、<b>不装仓店数</b>（老年份 XBRL 里 '
+        f'<code>NumberOfStores</code> 根本没打标签），所以那 {_den_nest} 列改由 '
+        f'{len(_AGGS)} 条老店池行的嵌套恒等式从右端已对上的 {_cnt[_AGGS[-1]]:,} 家'
+        f'逐层零容差减出来）'
         + ('' if _wh_avg is None else
            f'，而改用期间平均家数（{_wh_avg:.0f}）只会把合并口径的均店销售推到 '
            f'${_ns_last / _wh_avg:.0f}mn、离图上的 ${_sys_avg}mn <b>更远</b>')
         + f'；（2）「电商销售不进这张图」—— 10-K 既没这么说也没否认，那是猜，不是口径。'
-        f'<b>怎么读</b>：一行一个开业队列（或一条老店池行），往右是它的每一个财年；'
-        f'三种空白见上。'
+        f'<b>怎么读</b>：<b>一行 = 那一年开业的那一批店</b>（不是「那年及以前」），'
+        f'往右是它的每一个财年；两种空白见上。'
         f'最新队列首年 ${_first_new}mn 与系统均店 ${_sys_avg}mn 之间的那一段就是新店爬坡。'
         # ── 末两行（盈亏平衡）不是公司披露值，必须在这里说清 ──
         f'<b>⚠️ 末两行不是公司披露值，是推导的盈亏平衡区间</b>（算法、两条假设与'
@@ -2856,11 +2923,24 @@ def main():
         f'本期 FY{_BE_YS[0]} 是 ${_be_lo0}–{_be_hi0}mn、FY{_COH_LAST} 是 '
         f'${_be_lo1}–{_be_hi1}mn。接进这张矩阵是为了让「某一队爬到第几年才过线」'
         f'能在同一张图上竖着读，不用跳到下一张表。'
-        f'<b>这两行左端 {len(_COH_YRS) - len(_BE_YS)} 格是空的，那是<u>第四种</u>空白</b>：'
-        f'既不是「还没开业」也不是「被折走」，而是<b>算不出来</b> —— 它要用当年的合并损益，'
-        f'而本仓的年度表 <code>series/cost_fy.csv</code> 从 FY{_BE_YS[0]} 起才有。'
-        f'空着不代表那几年不需要过平衡线。'
-        f'<b>⚠️ 但别按颜色读这两行</b>：色阶是全矩阵共用的（引擎按所有有限值的 5/95 '
+        # ── 两行现在铺满 15 列，而它的输入来自**两张表、两代 XBRL 元素名** ──
+        f'<b>这两行铺满 {len(_BE_YS)} 列（FY{_BE_YS[0]}–FY{_COH_LAST}），'
+        f'但输入来自两张表</b>：FY{_E17_YS[0]} 起读 <code>series/cost_fy.csv</code>'
+        f'（Exhibit 17 用的同一张），FY{_BE_YS[0]}–FY{_E17_YS[0] - 1} 读回填表 '
+        f'<code>series/cost_fy_be.csv</code> —— 老年份的净销售额 / 会员费 / 商品成本在 '
+        f'XBRL 里是<b>上一代元素名</b>（<code>SalesRevenueNet</code> 那一套），'
+        f'新名字无维度时指的是<b>总收入</b>而不是净销售额，两代混用会在 FY{_E17_YS[0]} '
+        f'那一列悄悄换个口径，所以本仓两代各存一张表、只在重叠年对过账。'
+        f'比率式子是<b>同一个</b>（两张表共用 <code>_be_ratio</code>），'
+        f'且与 52/53 周无关 —— 分子分母同期，FY2012 那个 53 周财年只影响绝对额、'
+        f'不影响这两条比率。SG&amp;A 两侧都是<b>含开办费</b>的口径（老年份开办费在损益表上'
+        f'单列，回填时折进去了，与 FY{_E17_YS[0]}–FY2019 同一条 <code>loader-folded</code> '
+        f'路），不折就会在接缝处多出一个纯属口径的台阶。'
+        + (f'左端仍有 {len(_COH_YRS) - len(_BE_YS)} 格空着 —— 那是<u>第三种</u>空白：'
+           f'既不是「还没开业」也不是「被折走」，而是<b>算不出来</b>，'
+           f'空着不代表那几年不需要过平衡线。'
+           if len(_BE_YS) < len(_COH_YRS) else '')
+        + f'<b>⚠️ 但别按颜色读这两行</b>：色阶是全矩阵共用的（引擎按所有有限值的 5/95 '
         f'分位定色），而它们的语义与队列各行相反 —— 队列是越高越好，平衡线是越高越难达标，'
         f'于是同一种绿色在这两行上的含义正好反过来。引擎没有逐行色阶这个开关，'
         f'所以只能在这里点名，读数请看格子里的数字。')
@@ -2884,6 +2964,43 @@ def main():
         _COH_LABS.append(_lab)
         _coh_matrix.append(_be_vals[_k])              # 上面算好的那一份，不重算
 
+    # ── 只画纯单年队列：老店池行退到幕后（所有者 2026-09-04 指令）───────────────
+    # 「几几年及以前的 xxx 家，这部分不要。我只需要单独一年一年的开业的，纯粹的那年的数据」。
+    # 每份 10-K 印一条「YYYY & Before」，拼起来的这几条是**嵌套**的
+    # （本期六条：592 ⊂ 607 ⊂ 633 ⊂ 663 ⊂ 686 ⊂ 715），竖着看像几个并列的队列，
+    # 其实是同一批老店被反复数了几遍 —— 读者横扫标签时几乎必然把它们竖着相加。
+    # 删的是**画法**，不是数据。条数随 vintage 数变，所以图注那边一律现算，别写死。
+    #
+    # ⚠️ 过滤只发生在**这一步**，绝不能上移到 `_COH_LABS`（上面那句
+    # `sorted(_coh['cohort'].unique(), key=_ckey)`）或 CSV 那一侧：老店池行是这张矩阵里
+    # 唯一的「老店」载体，本期画出来的 14 条单年队列合计只有 322 家，而任何一年在册
+    # 都是 592–914 家。上移的后果分两档，都实测过：
+    #   · 只过滤 `_COH_LABS`：`_col_rows()` 仍然照 `f'{v-9} & Before'` 造老店池行标签，
+    #     于是 `_cnt[c]` 是一个**裸 KeyError**（2512 / `_coh_impl`），报文一个字都不解释；
+    #   · 连 `_col_rows()` 一起改成只留单年队列：护栏 C 才轮到开口 —— FY2025 那一列的
+    #     分母塌成 199 家、加权均值 219.02 对印出来的 272，而 `_coh_impl` 的口径缺口
+    #     从 7.8% 暴涨到 **83.9%**（Σ 只剩 43,584mn 对合并净销售额 269,912mn）。
+    # 那不是「少画几行」，是把这张图的全部对账拆掉。所以：**全集验完，只在这里挑要画的行**。
+    _DRAW, _draw_matrix = (list(t) for t in zip(*(
+        (c, r) for c, r in zip(_COH_LABS, _coh_matrix) if '&' not in c)))
+
+    # ── 护栏 J：过滤只准拿走老店池行，且拿走之后空格账要重新对得上 ────────────────
+    # 这个 zip 过滤是靠 '&' 这个字符认行的。哪天队列标签里混进一个 &（比如公司把
+    # 表头改成 "2016 & Prior"、或者我们自己给某行加了个 "A & B" 的注脚），它会**静默**
+    # 多吃掉一行 —— 图上少一队，没有任何东西会响。所以把「拿走的正好是 _AGGS」写死。
+    if len(_COH_LABS) - len(_DRAW) != len(_AGGS):
+        raise SystemExit(f'画出来的行数不对：全集 {len(_COH_LABS)} 行、画 {len(_DRAW)} 行，'
+                         f'差 {len(_COH_LABS) - len(_DRAW)} 条，而老店池行只有 {len(_AGGS)} 条 —— '
+                         f"过滤条件 \"'&' not in c\" 多吃或少吃了行，先去看行标签里的 &")
+    # 画出来的空格 = (a) 还没开业 + (b) 被折走 + 末两行左端算不出来的那一片。
+    # 护栏 E′（上面）数的是**全集**，这一条数的是**画面**；两条各管一侧，缺一条就会
+    # 出现「note 里的 (a)(b) 与图上实际的灰格对不上」而没人发现。
+    _be_null = 2 * (len(_COH_YRS) - len(_BE_YS))
+    _n_draw_null = sum(1 for r in _draw_matrix for v in r if v is None)
+    if _n_draw_null != _null_pre + _null_fold + _be_null:
+        raise SystemExit(f'画面上的空格 {_n_draw_null} 格 ≠ (a){_null_pre} + (b){_null_fold} + '
+                         f'末两行 {_be_null} —— note 里逐类点名的数字与图上对不上了')
+
     # ── 显示标签：**只在这里**把内部键换成给人看的字 ────────────────────────────────
     # `_cval` / `_cnt` 的键必须一路保持 CSV 原字符串（'2011 & Before' / '2012' /
     # 'Totals'）—— Exhibit 17 靠这两个键取值，而它用的是 `.get()`：键改错了不报错，
@@ -2905,15 +3022,19 @@ def main():
             return f'{y0}开业 {_cnt[c]}家·FY{(y0 + 9) % 100:02d}并入'
         return f'{y0}开业 {_cnt[c]}家'
 
-    _rlab = {c: _rowlab(c) for c in _COH_LABS if c not in (_BE_LO, _BE_HI)}
+    _rlab = {c: _rowlab(c) for c in _DRAW if c not in (_BE_LO, _BE_HI)}
 
     # ── 护栏 F：行标签宽度预算 ──────────────────────────────────────────────────
     # 行标签栏的宽度 row_lab_w 是从**最长行标签**现算出来的，它直接吃掉画布：15 列时，
     # 标签每多 1 个宽度单位，每一格就窄约 0.55px。而下限本来就被两条中文推导行标签
     # 钉在 22 单位上 —— 只要其余标签都不超过它，标签栏宽度**一个字都不用改**。
-    # 实测对照：把老店池行写成「2011 & Before（592 家 · FY2020 10-K）」（37 单位）会让
-    # row_lab_w 从 116 涨到 188、桌面格宽从 64.6px 掉到 56.4px，而 768px 那一档的列标签
-    # 净间隙从 +2.0px 掉到 +0.5px —— 一个字的措辞会把那一档推到悬崖边上。
+    # 这个预算的来历（2026-09-03 实测，当时老店池行还画在图上）：把它写成
+    # 「2011 & Before（592 家 · FY2020 10-K）」（37 单位）会让 row_lab_w 从 116 涨到 188、
+    # 桌面格宽从 64.6px 掉到 56.4px，768px 那一档的列标签净间隙从 +2.0px 掉到 +0.5px ——
+    # 一个字的措辞就能把那一档推到悬崖边上。
+    # ⚠️ 老店池行现在**不画了**（见上面 `_DRAW`），所以那个具体场景今天已经不可能发生；
+    # 留着这段是因为**判据**没变 —— 今天顶着上限的是队列行（「2016开业 29家·FY25并入」
+    # 正好 22 单位，与两条中文平衡行齐平），下一次把标签写长一点照样会撞上。
     # 所以把这个预算写成断言，别让它靠自觉。
     _labw = lambda s: sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
     _LAB_BUDGET = max(_labw(_BE_LO), _labw(_BE_HI))          # 本期 22
@@ -2933,9 +3054,9 @@ def main():
                   f'FY{_COH_YRS[0]}–FY{_COH_LAST} ({_COH_VS[0]}–{_COH_VS[-1]} 10-Ks), '
                   f'+ Implied Break-Even: New Warehouse ${_first_new}mn vs '
                   f'System Average ${_sys_avg}mn vs Break-Even ${_be_lo1}–{_be_hi1}mn'),
-        'rows': [_rlab.get(c, c) for c in _COH_LABS],
+        'rows': [_rlab.get(c, c) for c in _DRAW],
         'cols': [f'FY{y}' for y in _COH_YRS],
-        'matrix': _coh_matrix,
+        'matrix': _draw_matrix,
         'fmt': 'usd0',
         'legend': '均店销售（$mn/店·年）',
         # 默认的 row_lab_w=32 会让行标签压到格子里去；这里按最长行标签定宽，不猜常数。
@@ -2947,10 +3068,14 @@ def main():
         # （原来写的是「最长的是聚合行『2016 & Before』」，而实际上一直是中文那两条）。
         'row_lab_w': max(32, round(max(
             _labw(lab) for lab in ([_BE_LO, _BE_HI] + list(_rlab.values()))) * 4.8) + 10),
-        # cell_h 从 20 调到 17：行数从 13 涨到 23，20 会把卡片撑到近 500px 高。
-        # 17 仍在引擎允许的 13–26 内，格内字号上界随之从 9 降到 8.84（chh0×0.52），
-        # 而 15 列时字号本来就由格宽定、够不到那个上界，实际一个像素都没变小。
-        'row_head': '开业年份（队列）', 'cell_h': 17,
+        # cell_h 现算，不写死：约束是卡片别撑过 ~360px 高（本期 17 行 → 21px）。
+        # 行数一路变过（13 → 23 → 现在 17，六条老店池行退到幕后），每次都手改一个
+        # 常数意味着每次都要重新量一遍卡片高度，而漏改是静默的（引擎把 13–26 之外的
+        # 值直接夹住，不报错）。所以按行数反算，并夹进引擎允许的 13–26。
+        # 360 而不是原来那个隐含的 ~390：删掉六条老店池行之后这张图有一半是灰格，
+        # 把格子撑高只是把空白摊得更大。
+        'row_head': '开业年份（队列）',
+        'cell_h': max(13, min(26, 360 // max(1, len(_DRAW)))),
         'src_extra': _COH_SRC,
         'note': _COH_NOTE,
     })
@@ -3101,6 +3226,22 @@ def main():
         f'（{_EL["s"]:.3%}/{_EL["g"] + _EL["m"]:.3%} = {_EL["lo"]:.1%}）。'
         f'区间口径从 FY{_E17_YS[0]} 的 {_e17_y0["lo"]:.1%}–{_e17_y0["hi"]:.1%} '
         f'收窄到今天的 {_EL["lo"]:.1%}–{_EL["hi"]:.1%}。'
+        # ── 两张图的窗口不一样，必须说，不然读者会以为其中一张漏了 ──
+        f'<b>⚠️ 本表的窗口是 FY{_E17_YS[0]}–FY{_E17_YS[-1]}，而<u>同一条平衡线</u>在 '
+        f'Exhibit 16 上画到了 FY{_BE_YS[0]}</b>（本期 ${_be_lo0}–{_be_hi0}mn）。'
+        f'不是其中一张漏了：平衡线只吃四个比率输入（净销售额 / 会员费 / 商品成本 / '
+        f'SG&amp;A），这四个数 FY{_BE_YS[0]} 起的 XBRL 里都有（回填在 '
+        f'<code>series/cost_fy_be.csv</code>，老一代元素名）；'
+        f'而本表 <b>A 段与 C 段的分母</b> —— 期末全球仓店数、分国家仓店数 —— '
+        f'FY{_E17_YS[0]} 之前 XBRL 里<b>一个标签都没打</b>'
+        f'（无维度与带 <code>country:</code> 维度的 <code>NumberOfStores</code> '
+        f'逐份 instance 实测，FY{_E17_YS[0] - 1} 及更早一条都没有）；'
+        f'面积与自有/租赁从来就不在 XBRL 里，只能解 Item 2 的 HTML，而老年份的版式'
+        f'与现有那几条正则对不上。'
+        f'<b>C 段的分子（分部经营利润）反倒 FY{_BE_YS[0]} 起就有标签</b> —— 缺的是分母，'
+        f'所以把本表拉到 FY{_BE_YS[0]}，多出来的 {_E17_YS[0] - _BE_YS[0]} 列<b>不是「全空」</b>，'
+        f'而是 A、C 两段空着、D 段只剩口径 ① 一半 —— 仍然是一张空掉大半的表。'
+        f'窗口因此按<b>列全满</b>定，而不是按某一段能算到哪定。'
         f'<b>假设 1（也是这条带只能当上界的原因）</b>：它按公司<b>全口径</b>的 SG&amp;A 率'
         f'给一家店记账，而那一行里含总部与电商的成本 —— Costco 把仓店薪酬、<b>全部</b>'
         f'总部薪酬、几乎全部折旧摊销、信用卡手续费、水电与开办费统统计入这一行，'

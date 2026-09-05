@@ -60,6 +60,7 @@ import pandas as pd
 
 import axisfmt
 import chartscale
+import brief as B         # 数据总结（brief）的规则库与字数护栏（build/brief.py），全站共用
 import glossary as gloss   # 名词释义的版式层与护栏（build/glossary.py），全站共用
 import mrwin              # 窗口排版的裁决层（通栏 / x 标签抽稀），与台湾半导体 7 家共用
 import payload_guard
@@ -235,13 +236,35 @@ def col_is_ratio(c):
     return ycal.classify(c['col']) == ycal.RATIO and unit_is_ratio(c.get('unit'))
 
 
+def _mark_section(ex, start, want):
+    """把 `ex[start:]` 这一段想要的分节标题记在临时键 `_section` 上（2026-09 新增）。
+
+    只记不判：真正「哪一张起标题、哪一张算延续」由 payload() 末尾那一轮收口统一决定。
+    分两步而不是就地判断，是因为**同一个 section 可以跨好几个 group** —— 就地判断
+    就得让每个挂载点自己知道「我是不是这一节的第一张」，而它看不到别的组。
+
+    `want` 为空 = 这一段没声明 ⇒ 不写 `_section`，收口时视为「沿用上一节」，
+    不会打断一个已经开着的 section，也不会凭空起一个空标题。
+    """
+    if not want:
+        return
+    for e_ in ex[start:]:
+        e_['_section'] = str(want)
+
+
 SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              'headline', 'groups', 'slow_cols', 'breaks', 'notes',
-             'decomp', 'level_yoy', 'headline_style', 'glossary'}
+             'decomp', 'level_yoy', 'headline_style', 'glossary',
+             # ── 以下三个 2026-09 新增，全部**加性、可选**：不给就一个字节都不变 ──
+             # 'brief'：页顶「本月读数怎么读」，与 glossary 同一套分派（字面量或
+             #   callable(page)）。此前只有手写生成器写得出，spec 页一律空着。
+             # 'headline_section' / 'season_section'：头条派生的那两段图（①② 与 ④）
+             #   由 spec 自己命名章节 —— 它们不属于任何一个 group，没有别的挂载点。
+             'brief', 'headline_section', 'season_section'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section'}
 GROUP_REQUIRED = {'zh', 'cols'}
 
 # ── groups[].mix —— 「总量柱 + 分项 100% 占比堆叠」两张图 ─────────────────────
@@ -318,14 +341,14 @@ DECOMP_KEYS = {'zh', 'kind', 'granularity', 'value', 'qty',
                'value_total_col', 'qty_total_col', 'weight_col',
                'price_zh', 'price_unit', 'price_fmt', 'price_scale',
                'bench_value', 'bench_qty', 'share_zh', 'mix_zh',
-               'year_start_month', 'year_label', 'years', 'note'}
+               'year_start_month', 'year_label', 'years', 'note', 'section'}
 DECOMP_REQUIRED = {'zh', 'kind', 'granularity', 'value', 'qty',
                    'price_zh', 'price_unit', 'price_fmt'}
 # ── level_yoy —— 「水平值柱 + 次轴单月同比」那几张（一律排在页尾）─────────────
 # 旧名 `ttm_yoy`：次轴曾是 12 个月滚动合计的同比。2026-09 按页面所有者的指令改成
 # **单月同比**（当月对去年同月，本列除本列），键名、函数名与标题一并跟着改 ——
 # 留着 `ttm_yoy` 这个名字，就是让配置替一张不再做滚动合计的图署名。
-LEVEL_YOY_KEYS = {'zh', 'level', 'note'}
+LEVEL_YOY_KEYS = {'zh', 'level', 'note', 'section'}
 LEVEL_YOY_REQUIRED = {'zh', 'level'}
 
 # 源表的量列有两种粒度，本仓两种都有（SGX 的 sec_turnover_* 是当月总量，
@@ -401,6 +424,27 @@ class SpecError(SystemExit):
 def mlab(p):
     """Period('2026-06') → 'Jun-26'（与 gsx.mlab / 既有 12 家一致）。"""
     return p.strftime('%b-%y')
+
+
+def through_gap(latest, newest):
+    """副标题与页注里那半句「；数据月止于 X」。两者相等时返回空串。
+
+    ⚠ 措辞别改成「头条口径止于 X」：本仓的「口径」一律指**测量基准**
+    （「IR 月报口径」「Nordic + Baltic 口径」，exchanges_apac.py 里还有
+    「分解口径 vs 头条口径」的同比对照），拿它表示时间边界是给一个高频词
+    加第二种意思。「数据月」才是本仓对 data_through 的既有叫法
+    （见汇总表的组标题「头条指标（决定本页数据月）」与核对表那条
+    「表尾若有月份晚于本页数据月 X」——本文件里都能 grep 到）。
+
+    `newest` 是整表最后一行的月份，`latest` 是 data_through（头条列共同最新月）。
+    有「发布更快的腿」的页面上两者会差一期 —— 那些更晚的月份是真的印出来的
+    （核对表多一行、快腿各列的图各自多画一根柱），所以「覆盖 … newest」没写错；
+    但它与抬头的「数据截至 latest」并排出现时，单看任何一句都读不出另一句的存在。
+    ndaq 2026-09 就是这样：抬头「2026 年 7 月」、副标题「覆盖 Sep-05 – Aug-26」，
+    两行之间没有任何一个字解释这一个月的落差是从哪来的。
+    ⇒ 只在有落差时补这半句；没落差的页（绝大多数）一个字都不变。
+    """
+    return f'；数据月止于 {mlab(latest)}' if newest != latest else ''
 
 
 _MLAB_MON = {m: i + 1 for i, m in enumerate(
@@ -1203,6 +1247,7 @@ def _norm_decomp(d, where):
         'year_label': str(d.get('year_label', 'start')),
         'years': int(d.get('years', DECOMP_YEARS)),
         'note': str(d.get('note') or ''),
+        'section': str(d['section']) if d.get('section') else None,
     }
     if out['price_fmt'] not in FMT_INFO:
         raise SpecError(f"{where} 的 price_fmt={out['price_fmt']!r} 不是引擎实有的格式器名；"
@@ -1289,6 +1334,7 @@ def _norm_level_yoy(t, where):
         'zh': str(t['zh']),
         'level': lvl,
         'note': str(t.get('note') or ''),
+        'section': str(t['section']) if t.get('section') else None,
     }
 
 
@@ -1409,6 +1455,7 @@ class Page:
                 raise SpecError(f'groups[{gi}]（{g["zh"]}）一列都没有')
             self.groups.append({
                 'zh': g['zh'], 'cols': cols,
+                'section': str(g['section']) if g.get('section') else None,
                 'mix': _norm_mix(g['mix'], f'groups[{gi}]（{g["zh"]}）.mix')
                 if g.get('mix') else None})
 
@@ -3905,9 +3952,13 @@ class Page:
         if got is None:
             return None, why
         latest, common = got
+        # glossary / brief 的 callable 拿得到页面钉死的那个数据月 —— 各列自己的
+        # [-1] 会串到发布更快的腿上，同一页对同一指标给出两个互斥读数。
+        self.latest = latest
         idx = list(self.df.index)
         newest = idx[-1]
         ex, n = [], 2
+        _h0 = 0
         self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
         # 「同一列画了几条同比」的账 + 撞上之后的告警，见 log_yoy_bar()。
         # 同样每次组装从零记：重复调用 payload() 时不能把上一轮的图号带进来。
@@ -3934,11 +3985,13 @@ class Page:
                 ex.append(self.ex_history(n, c)); n += 1
             for c in self.head:                               # ② 同比
                 ex.append(self.ex_yoy(n, c)); n += 1
+        _mark_section(ex, _h0, self.spec.get('headline_section'))
 
         # 「派生图没出成」的账本：③ 的 mix 也会往里记，所以要在 ③ 之前开。
         self.skipped = list(self.mix_skipped)
 
         for g in self.groups:                                 # ③ 每组多列对比
+            _g0 = len(ex)
             # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」两张。
             # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
             # 也不该在阅读顺序上互相插队）。
@@ -3967,13 +4020,17 @@ class Page:
                         continue
                     ex.append(e)
                     n += 1
+            _mark_section(ex, _g0, g.get('section'))
 
+        _s0 = len(ex)
         for c in self.head:                                   # ④ 季节性
             e = self.ex_season(n, c)
             if e is not None:
                 ex.append(e); n += 1
+        _mark_section(ex, _s0, self.spec.get('season_section'))
 
         for g in self.groups:                                 # ⑤ 存量列单独成图
+            _g0 = len(ex)
             eaten = set()
             if g['mix'] and g['mix']['total']['stock']:
                 pair, eaten = self.mix_pair(n, g)
@@ -3985,22 +4042,38 @@ class Page:
                 e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
                 if e is not None:
                     ex.append(e); n += 1
+            _mark_section(ex, _g0, g.get('section'))
 
         # ⑥ 量价分解 与 ⑦「水平值 + 单月同比」：**一律追加在最末**（核对表之前）。
         # 不能插在 ③ 里：图号一移，正文与图注里所有「见 Exhibit k」的交叉引用全错，
         # 而那种错不会报任何异常。新图型往后加，既有图号一个都不动。
         for d in self.decomp:
+            _d0 = len(ex)
             e, why = self.ex_decomp(n, d)
             if e is None:
                 self.skipped.append(why)
                 continue
             ex.append(e); n += 1
+            _mark_section(ex, _d0, d.get('section'))
         for t_ in self.level_yoy:
+            _d0 = len(ex)
             e, why = self.ex_level_yoy(n, t_)
             if e is None:
                 self.skipped.append(why)
                 continue
             ex.append(e); n += 1
+            _mark_section(ex, _d0, t_.get('section'))
+
+        # 分节标题收口：`_mark_section` 只是把「这一段想要什么标题」记在 `_section` 上，
+        # 真正决定「哪一张图起标题」在这里 —— 想要的标题与上一张相同就不重复起，
+        # 于是「一个 section 跨好几个 group」只要在这些 group 里都写同一个字符串即可。
+        _last = None
+        for e_ in ex:
+            want = e_.pop('_section', None)
+            if want and want != _last:
+                e_['section'] = want
+            if want:
+                _last = want
 
         # ── 标题里的「YYYY-MM 起」与图窗左端对不上时补一句（见 title_since_zh）──
         # 放在这里而不是各 ex_* 里：判据只跟最终 payload 有关（标题 + 横轴），
@@ -4073,7 +4146,8 @@ class Page:
             'data_through': str(latest),
             'through_label': f'{latest.year} 年 {latest.month} 月',
             'subtitle': f'数据源 {src_head} · 覆盖 {mlab(idx[0])} – {mlab(newest)}'
-                        f'（{len(idx)} 个月）· 本币 {self.spec["ccy"]} · '
+                        f'（{len(idx)} 个月{through_gap(latest, newest)}）'
+                        f'· 本币 {self.spec["ccy"]} · '
                         f'版式沿用 Goldman Sachs GIR monthly-metrics note · 只出图，不带观点',
             'headline': headline,
             'hub_line': hub,
@@ -4096,11 +4170,33 @@ class Page:
         gh = gloss.render(g, where=f'{self.ticker} glossary')
         if gh:
             payload['glossary'] = gh
+        # 数据总结（brief）：与 glossary **同一套分派**（字面量或 callable(page)）。
+        # 分工也一样 —— 版式与 230–380 字护栏在 build/brief.py，措辞在 spec 自己那边：
+        # 「措辞是口径的一部分」。R1–R6 只算事实，句子由各页自己拼。
+        # 不给这个字段就整块不渲染（页壳里那个 div 判空 hidden）。
+        br = self.spec.get('brief')
+        if callable(br):
+            br = br(self)
+        if br:
+            payload['brief'] = B.render(br)
         # 抬头右侧「官方发布于 X」。台账按月钉死，所以只查 data_through 这一个月；
         # 查不到就**整个字段不写** —— 渲染端判的是字段在不在，给 None 会印出一句空断言。
         day = source_dates().lookup(self.series_dir, self.ticker, str(latest))
         if day:
             payload['source_date'] = day
+        # ── 有「发布更快的腿」时，抬头还欠一句：那多出来的一期是什么时候发的 ──────
+        # newest > latest ⇒ 整表已经有比数据月更晚的月份（只有快腿那几列有值），
+        # 而**那些月份是真的印在页面上的**：核对表多一行，快腿各列的图各自多画一根柱。
+        # 只印 source_date 的话，抬头那句「官方发布于 <latest 的发布日>」对页面上最新的
+        # 那部分内容就是假的 —— ndaq 2026-09 就撞上了：抬头写 2026-08-05（07 月那期），
+        # 而页面上画着的 Aug-26 是 2026-09-02 才发的，日期就躺在同一张台账里。
+        # ⚠ 不能改成「查 newest」了事：CONTRACT 的 `source_date` 明写**不许把新一期的
+        # 发布日安到旧月份上**。所以另起字段、自带月份标签，两句话各自成立、互不冒充。
+        if newest != latest:
+            fast = source_dates().lookup(self.series_dir, self.ticker, str(newest))
+            if fast:
+                payload['source_date_fast'] = fast
+                payload['source_date_fast_label'] = mlab(newest)
         return payload, None
 
     # ────────────────────── 口径与方法说明 ──────────────────────
@@ -4110,7 +4206,8 @@ class Page:
         out = [
             f'<b>数据源与口径。</b>全部数值来自本仓 <code>series/{self.spec["csv"]}</code>，'
             f'{strip_source(self.spec["source"])}。'
-            f'覆盖 {mlab(idx[0])} – {mlab(newest)}（{len(idx)} 个月）。'
+            f'覆盖 {mlab(idx[0])} – {mlab(newest)}'
+            f'（{len(idx)} 个月{through_gap(latest, newest)}）。'
             f'本页所有数值、格式化与口径判断都在 Python 侧完成，页面只画不算。'
             f'本币 {self.spec["ccy"]}；跨币种换算不在本页做（另由 build/notional.py 处理），'
             f'本页只按本币标注。',

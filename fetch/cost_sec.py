@@ -9,11 +9,13 @@
   (c) 单店平均收入 + 新开一家仓的盈亏平衡测算。
 所以本模块与 fetch/cost.py **并列**，各写各的 CSV，互不读写对方的文件。
 
-四张表 → 四个函数，一次 update() 全写：
+五张表 → 五个函数，一次 update() 全写：
   series/cost_seg_q.csv    季度 / 财年分部收入（10-K/10-Q 的 XBRL instance）
   series/cost_tkt_q.csv    季度 Sales/Ticket/Traffic 分部表（8-K EX-99.2 补充资料）
   series/cost_fy.csv       财年利润表 + 分国家仓数 + 面积（10-K 的 XBRL + Item 2 HTML）
   series/cost_cohort.csv   10-K「Average Sales Per Warehouse」开业年份矩阵（纯 HTML）
+  series/cost_fy_be.csv    FY2011–FY2015 合并损益回填，**只喂盈亏平衡两条线**
+                           （老一代 XBRL 元素名，见 FY_BE_TAGS / FY_BE_FIRST）
 
 ═══ 源与节奏 ═══
 · 申报清单 https://data.sec.gov/submissions/CIK0000909832.json
@@ -24,7 +26,7 @@
 · EDGAR 不设 Cloudflare，标准库 urllib + 带邮箱的 User-Agent 即可；UA 里没有联系方式
   整站 403。SEC 限速 <10 req/s，本模块串行 + sleep，远低于上限。
 
-═══ 全局口径坑（四张表都要知道）═══
+═══ 全局口径坑（各表都要知道）═══
 1. **companyfacts API 会静默丢掉所有带维度的事实。** `https://data.sec.gov/api/xbrl/
    companyfacts/CIK0000909832.json` 里 `Revenues` 只有合并口径，分部那三条**一条都没有**
    —— 不是报错，是这个接口的设计就只收无维度事实。用它去做分部会得到一张空表而全程没有
@@ -115,20 +117,22 @@
 所以第二次跑几乎不联网 —— 这也是幂等性测试能跑得动的原因。
 
 ═══ 幂等 ═══
-四张 CSV 每次**整表重写**（不是追加），内容完全由申报决定，因此没有新申报时
+五张 CSV 每次**整表重写**（不是追加），内容完全由申报决定，因此没有新申报时
 输出逐字节相同。monthly_run.py:937 的 `series_fingerprint` 按内容 hash 触发重建，
-且它 glob 的是 `series/cost*.csv` —— 本模块这四张表**都在它的 glob 里**，
+且它 glob 的是 `series/cost*.csv` —— 本模块这几张表**都在它的 glob 里**，
 输出但凡每次都动一个字节，`/cost/` 就会天天无谓重建。
 """
 import csv
 import datetime
 import html as _html
+import io
 import json
 import os
 import re
 import sys
 import time
 import urllib.request
+import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 
@@ -164,6 +168,39 @@ XBRL_FROM = '2011-01-01'
 #: 再往前只能拿 `SalesRevenueNet` 硬凑，且仓数那几列必然全空 —— 那种半空的行
 #: 正是 README「缺列一律失败」要挡的东西，所以宁可把序列砍短。
 FY_FIRST = 2016
+
+#: `cost_fy_be.csv` 的下界。这张**回填表**只装 FY2011–FY{FY_FIRST-1}，且**只装
+#: 盈亏平衡算得动的那几列**（合并损益五个数），不装仓数、面积、分部 —— 那几样老年份
+#: 确实没有（见 FY_FIRST 的注释，那条仍然成立）。
+#: 为什么另起一张表而不是把 `cost_fy.csv` 的左端放宽：`cost_fy.csv` 的家规是
+#: 「除 optional 三列外每一列都必须有值」，把 FY2011–FY2015 塞进去就得把二十多列
+#: 一起挪进 optional —— 那等于给**所有**年份（含 FY2016 起那十年）的缺列发了长期
+#: 许可证，而那条护栏正是 README「缺列一律失败」的执行版。回填另立一张窄表，
+#: 两边各自保持满列，是 `cost_tkt_q_ir.csv` 已经走过的同一条路。
+#: 左端 2011 不是「能翻多早翻多早」：墨西哥合资公司自 FY2011 第一天（2010-08-30）
+#: 起并表且往年不重述（口径坑 2 / FY2011_START），FY2010 与 FY2011 不可比。
+FY_BE_FIRST = 2011
+
+#: 老口径（FY2015 及更早）的元素名。**与 FY_TAGS 是两代，不是同一套的别名**：
+#:   · 净销售额 FY2015 及更早叫 `SalesRevenueNet`（无维度）；FY2018 10-K 起改叫
+#:     `RevenueFromContractWithCustomerExcludingAssessedTax`，而那个名字**无维度时
+#:     是总收入不是净销售额**（FY2016 无维度值 118,719 = 总收入），净销售额要靠
+#:     `ProductOrServiceAxis` 拆出来 —— 所以两代绝不能并进一个元组「都接受」，
+#:     那样 FY2016 会静默拿到总收入当净销售额。两代各走各的 dict，只在 FY2016 那一年
+#:     重叠着对过一次账（116,073 / 2,646 / 102,901 两代逐个相等，实测）。
+#:   · 会员费老名字长得不像话，是 us-gaap 当年的分类法原样。
+#:   · 商品成本 `CostOfGoodsSold` → 新era 的 `CostOfGoodsAndServicesSold`。
+#: 全部要求**无维度**（`not dims`）—— `SalesRevenueNet` 同时还带分部轴（SEG_REV_TAGS
+#: 就在用它），不卡这一条会把某个地区的数当成合并数。
+FY_BE_TAGS = {
+    'net_sales_mn': 'SalesRevenueNet',
+    'memb_fee_mn': 'RevenueFromEnrollmentAndRegistrationFeesExcludingHospitalityEnterprises',
+    'total_rev_mn': 'Revenues',
+    'merch_cost_mn': 'CostOfGoodsSold',
+    'sga_mn': 'SellingGeneralAndAdministrativeExpense',
+    'preopen_mn': 'PreOpeningCosts',
+    'op_income_mn': 'OperatingIncomeLoss',
+}
 
 #: cost_cohort.csv 的下界：FY2019 10-K **没有**这张图（实测 "Year Opened" 找不到），
 #: FY2020 10-K 起才有。别把下界写成「能翻多早翻多早」，会得到一堆解析失败。
@@ -272,36 +309,137 @@ def _submissions(cache_dir):
     return out
 
 
+def _index_rows(raw):
+    """EDGAR 人读版申报索引页 → 逐行 (cells, tr 内层 HTML)。
+
+    `cells[3]` 是 Type 那一格（`EX-99.2` / `EX-101.INS` / `10-Q` …），是**语义**判据；
+    文件名那一格是 `cells[2]`。两个调用点都只认 Type，不拼文件名、不猜后缀。
+    """
+    for tr in re.finditer(r'(?is)<tr[^>]*>(.*?)</tr>', raw):
+        body = tr.group(1)
+        cells = [re.sub(r'\s+', ' ', _html.unescape(re.sub(r'<[^>]+>', '', c.group(1)))).strip()
+                 for c in re.finditer(r'(?is)<t[dh][^>]*>(.*?)</t[dh]>', body)]
+        yield cells, body
+
+
 def _instance(cache_dir, f):
     """一篇申报的 XBRL instance 字节。
 
-    两种形状，顺序不能反：
+    三条路，顺序不能反：
       · 2019-12 起是 inline XBRL，SEC 会额外生成 `<primaryDocument 去掉 .htm>_htm.xml`，
         直接命中；
       · 更早的是独立 instance，文件名没有规律（`cost-20180819.xml` / `d123456d10q.xml`
         都出现过），只能读 `index.json` 挑：`.xml` 结尾、不是 `_cal/_def/_lab/_pre.xml`、
         不是 `FilingSummary.xml`、不是 `*-index.xml`，且开头 4KB 里出现 `xbrl`。
         最后那条是必须的 —— 目录里还躺着 `R*.htm` 的兄弟 xml 和图形附件。
+      · **`index.json` 漏列时**改读人读版索引 `<accession>-index.htm`。
+
+    ══ 第三条路是干什么的（2026-09-05 加）══
+    `index.json` 会漏列，而且此刻就在漏 —— 这不是新发现，本仓一个月前就为另一个发行人
+    写下过同一条结论：见 `fetch/rates_lpla.py:206-214`（四份 LPLA 的 8-K，
+    「文档在，只是 index.json 这条索引看不见它」），那里给的处方就是
+    「改从 `<acc>-index.html` 取文件名」（rates_lpla.py:284）。
+
+    实测 0000909832-17-000022（10-Q@2017-12-21，FY18Q1）：
+      · `index.json` → HTTP 200，**583 字节，只有 4 项**，全是包装文件
+        （`-index-headers.html` / `-index.html` / `.txt` / `-xbrl.zip`），一个 `.xml` 都没有；
+      · 同一个目录的 HTML 清单 → **73 个文件**，`cost-20171126.xml` 好端端挂着；
+      · 直接 GET 那个文件 → HTTP 200，863,287 字节，开头就是
+        `<?xml …?><!--XBRL Document Created with Wdesk from Workiva-->`。
+    也就是说**申报是完整的，坏的是那份 JSON 清单**。上面第二条路那圈循环因此一个候选都
+    遍历不到，直接掉进最后那句 raise，把整个 cost_sec 步打成 FAIL
+    （[seg] 挂 → [tkt] 连带「表 1（分部收入）没解」，五张表里两张写不成）。
+
+    在册的 62 篇 10-K/10-Q 里只有这一篇是这样，所以这是「一篇的索引坏了」，
+    不是「2017 那一代版式不支持」—— 别拿它去加什么按年份的跳过表。
+
+    人读版索引那一行的 Type 格恰好是 `EX-101.INS`（实测该行 cells =
+    ['5', 'XBRL INSTANCE DOCUMENT', 'cost-20171126.xml', 'EX-101.INS', '863287']），
+    linkbase 各自是 `EX-101.CAL/DEF/LAB/PRE`、schema 是 `EX-101.SCH`，
+    所以这条路认 Type 就够了，不需要第二条路那套后缀排除 —— 与本模块
+    `_ex992_url()` 认 `EX-99.2` 是同一个成语。
+
+    第四条路（`<accession>-xbrl.zip`）是兜底：它和人读版索引是**两条独立的索引**，
+    JSON 与 HTML 同时坏的日子它还在。zip 里只有 instance + xsd + 四条 linkbase，
+    所以沿用第二条路那组后缀排除；⚠ 遍历顺序按 zip 成员名排序，与 `index.json`
+    那圈的目录顺序**不同**（判据相同，顺序不同）。
     """
     acc = f['accession'].replace('-', '')
     base = f'{ARCHIVE}/{acc}/'
+    tried = []
     try:
         return _fetch(cache_dir, f'inst-{acc}.xml', base + f['primary'][:-4] + '_htm.xml')
     except CostSecError:
         pass
+
+    def _probe(b, url):
+        """开头 4KB 有 `xbrl` 才算数；不算数就把缓存删掉，免得下轮当好文件读。"""
+        if b'xbrl' in b[:4000]:
+            return True
+        os.remove(os.path.join(cache_dir or os.path.join(ROOT, 'cache'),
+                               'cost_sec', f'inst-{acc}.xml'))
+        tried.append(f'{url} 开头 4KB 里没有 xbrl')
+        return False
+
     idx = json.loads(_fetch(cache_dir, f'idx-{acc}.json', base + 'index.json'))
-    for it in idx['directory']['item']:
-        n = it['name']
+    listed = [it['name'] for it in idx['directory']['item']]
+    for n in listed:
         if not n.endswith('.xml') or n == 'FilingSummary.xml':
             continue
         if n.endswith(('_cal.xml', '_def.xml', '_lab.xml', '_pre.xml', '-index.xml')):
             continue
         b = _fetch(cache_dir, f'inst-{acc}.xml', base + n)
-        if b'xbrl' in b[:4000]:
+        if _probe(b, base + n):
             return b
-        os.remove(os.path.join(cache_dir or os.path.join(ROOT, 'cache'),
-                               'cost_sec', f'inst-{acc}.xml'))
-    raise CostSecError(f'{f["form"]}@{f["filed"]} {f["accession"]} 找不到 XBRL instance')
+
+    # ── 第三条路：index.json 漏列 → 人读版索引 ────────────────────────────────
+    tried.append('index.json 只列了 %d 项（%s）'
+                 % (len(listed), '、'.join(listed[:4]) or '空'))
+    try:
+        raw = _fetch(cache_dir, f'idxhtm-{acc}.htm',
+                     f'{base}{f["accession"]}-index.htm').decode('utf-8', 'replace')
+    except CostSecError as e:
+        raw = None
+        tried.append(str(e))          # 取不到 ≠ 没有，原因必须带到最后那句里
+    if raw:
+        for cells, body in _index_rows(raw):
+            if len(cells) >= 4 and cells[3] == 'EX-101.INS':
+                href = re.search(r'href="([^"]+)"', body)
+                if not href:
+                    continue
+                b = _fetch(cache_dir, f'inst-{acc}.xml', 'https://www.sec.gov' + href.group(1))
+                if _probe(b, href.group(1)):
+                    return b
+        tried.append(f'{f["accession"]}-index.htm 里没有 Type 为 EX-101.INS 的行')
+
+    # ── 第四条路：<accession>-xbrl.zip ───────────────────────────────────────
+    try:
+        z = _fetch(cache_dir, f'xbrlzip-{acc}.zip', base + f'{f["accession"]}-xbrl.zip')
+    except CostSecError as e:
+        z = None
+        tried.append(str(e))
+    if z:
+        try:
+            with zipfile.ZipFile(io.BytesIO(z)) as zf:
+                for n in sorted(zf.namelist()):
+                    bn = os.path.basename(n)
+                    if not bn.endswith('.xml') or bn == 'FilingSummary.xml':
+                        continue
+                    if bn.endswith(('_cal.xml', '_def.xml', '_lab.xml',
+                                    '_pre.xml', '-index.xml')):
+                        continue
+                    b = zf.read(n)
+                    if b'xbrl' in b[:4000]:
+                        return b
+            tried.append('-xbrl.zip 里没有像 instance 的成员')
+        except zipfile.BadZipFile:
+            tried.append('-xbrl.zip 打不开（不是合法 zip）')
+
+    # 四条路都没拿到 —— 把**每条路各自为什么没拿到**写进报错。
+    # 不写的话，「SEC 限速取不到」与「这篇真的没有 instance」会长得一模一样，
+    # 那正是 README「第四类：不出声的失败」要拦的形状。
+    raise CostSecError('%s@%s %s 找不到 XBRL instance：%s'
+                       % (f['form'], f['filed'], f['accession'], '；'.join(tried)))
 
 
 def _facts(raw):
@@ -685,10 +823,7 @@ def _ex992_url(cache_dir, accession):
     acc = accession.replace('-', '')
     raw = _fetch(cache_dir, f'idx8k-{acc}.htm',
                  f'{ARCHIVE}/{acc}/{accession}-index.htm').decode('utf-8', 'replace')
-    for tr in re.finditer(r'(?is)<tr[^>]*>(.*?)</tr>', raw):
-        body = tr.group(1)
-        cells = [re.sub(r'\s+', ' ', _html.unescape(re.sub(r'<[^>]+>', '', c.group(1)))).strip()
-                 for c in re.finditer(r'(?is)<t[dh][^>]*>(.*?)</t[dh]>', body)]
+    for cells, body in _index_rows(raw):
         if len(cells) >= 4 and cells[3] == 'EX-99.2':
             href = re.search(r'href="([^"]+)"', body)
             if href:
@@ -1029,6 +1164,7 @@ def _latest_fy_facts(cache_dir, filings):
     val, src = defaultdict(dict), defaultdict(dict)
     stores = defaultdict(dict)
     store_src = defaultdict(dict)
+    beval, besrc = defaultdict(dict), defaultdict(dict)
     consol_oi_hist = defaultdict(lambda: defaultdict(list))
     for f in sorted((x for x in filings if x['form'] == '10-K' and x['filed'] >= XBRL_FROM),
                     key=lambda x: x['filed']):
@@ -1052,13 +1188,21 @@ def _latest_fy_facts(cache_dir, filings):
                 if local == tag and dk == want:
                     val[(s, e)][col] = v
                     src[(s, e)][col] = (f['filed'], f['accession'])
+            # 老口径（FY2015 及更早）顺手收一份，喂 `build_fy_be`。两代分开装在
+            # `beval` 里，不与 `val` 混 —— 理由见 FY_BE_TAGS 的注释（同一个名字在
+            # 两代里指的不是同一个数）。这里不按年份筛：筛在 `build_fy_be` 里，
+            # 那样 FY2016/FY2017 这两年（老名字仍在印）能当重叠年对一次账。
+            for col, tag in FY_BE_TAGS.items():
+                if local == tag and not dims:
+                    beval[(s, e)][col] = v
+                    besrc[(s, e)][col] = (f['filed'], f['accession'])
             if local == 'OperatingIncomeLoss' and not dims:
                 consol_oi_hist[(s, e)][v].append(f['accession'])
             reg = _seg_region_oi(local, dims)
             if reg:
                 val[(s, e)][FY_SEG_OI[reg]] = v
                 src[(s, e)][FY_SEG_OI[reg]] = (f['filed'], f['accession'])
-    return val, src, stores, consol_oi_hist
+    return val, src, stores, consol_oi_hist, beval, besrc
 
 
 def _assert_consolidated_oi_stable(consol_oi_hist):
@@ -1155,7 +1299,7 @@ def _reconcile_openings(y, xbrl_op, item2_op, wtot):
 
 def build_fy(cache_dir, filings, mdna_fy):
     """→ (header, rows)。XBRL 出利润表与分国家仓数，10-K HTML 出面积与自有/租赁。"""
-    val, src, stores, consol_oi_hist = _latest_fy_facts(cache_dir, filings)
+    val, src, stores, consol_oi_hist, _, _ = _latest_fy_facts(cache_dir, filings)
     _assert_consolidated_oi_stable(consol_oi_hist)
     restate_filed = next((f['filed'] for f in filings
                           if f['accession'] == SEG_OI_RESTATE_ACC), None)
@@ -1329,6 +1473,101 @@ def collect_mdna_fy(cache_dir, filings):
         if sent:
             out[int(f['report'][:4])] = _mdna_numbers(sent)
     return out
+
+
+# ═════ 表 5：盈亏平衡回填 series/cost_fy_be.csv ═════
+#
+# 单位：百万美元。列：fy, period_start, period_end, weeks, net_sales_mn, memb_fee_mn,
+#       total_rev_mn, merch_cost_mn, sga_mn, preopen_mn, op_income_mn, preopen_src, src_acc
+#
+# ── 这张表存在的理由 ──
+# /cost/ Exhibit 16 那张队列矩阵横跨 FY2011–FY2025，而接在它下面的两条「盈亏平衡」线
+# 只能从 FY2016 起画 —— 因为它们读 `cost_fy.csv`，而那张表的左端是 FY_FIRST。
+# 页面所有者 2026-09-04 的指令是「盈亏平衡也从 FY2011 开始算」。
+# 盈亏平衡只需要**四个比率输入**：净销售额、会员费、商品成本、SG&A（金额那一步用的是
+# 队列矩阵 Totals 行，不是仓店数），而这四个数 FY2011–FY2015 在 XBRL 里**全都有**，
+# 只是元素名是上一代的（FY_BE_TAGS）。`cost_fy.csv` 拿不到的是仓数 / 面积 / 分部那二十
+# 多列 —— 那些跟盈亏平衡一点关系都没有。所以：窄表回填，宽表不动。
+#
+# ── `sga_mn` 是**折进开办费之后**的口径，与 cost_fy.csv 一致 ──
+# 这五年开办费都是损益表上单列的一行（46/37/51/63/65），和 FY2016–FY2019 一样，
+# 所以走同一条 `loader-folded`：本模块把它加进 `sga_mn`，`preopen_mn` 另存一列备查。
+# 不折的后果不是「差一点」，是**恰好在 FY2016 那一列出现一个纯属口径的台阶** ——
+# 而那条线在图上是连着画的，读者看到的会是一个假拐点。
+#
+# ── ⚠️ FY2011 的 SG&A 被重述过，这是本表唯一的雷 ──
+# FY2011 10-K 的损益表有第四条费用行 "Provision for impaired assets and closing costs,
+# net" = 9，SG&A 印的是 8,682。FY2012 10-K 删掉了那一行、把它并进 SG&A，FY2011 重述成
+# 8,691（经营利润两版都是 2,439，一分没动）。本模块「最新申报覆盖旧值」的写法自动落在
+# 8,691 上 —— 但这件事**不能只写在注释里**：下面那条恒等式就是它的执行版，
+# 万一哪天取到 8,682，恒等式会差 9 而当场抛，不会静默写一个差 9 的 SG&A 率。
+
+
+def build_fy_be(cache_dir, filings):
+    """→ (header, rows)。FY_BE_FIRST..FY_FIRST-1 的合并损益，只喂盈亏平衡两条线。
+
+    自己再解一遍 XBRL（而不是让 update() 把 `_latest_fy_facts` 提到 leg() 外面共用）：
+    instance 是**内容缓存永不过期**的，第二遍只有解析开销、一个请求都不会多发；
+    而把它提到外面就等于在逐表隔离层之外留一条逃逸路径 —— 那一处抛，
+    fy / cohort / 本表三条本来好好的腿会被一起带走。update() 的 docstring
+    专门讲过这个形状，别为了省一遍解析把它破掉。
+    """
+    _val, _src, _stores, _hist, beval, besrc = _latest_fy_facts(cache_dir, filings)
+    head = ['fy', 'period_start', 'period_end', 'weeks',
+            'net_sales_mn', 'memb_fee_mn', 'total_rev_mn', 'merch_cost_mn', 'sga_mn',
+            'preopen_mn', 'op_income_mn', 'preopen_src', 'src_acc']
+    cols = ('net_sales_mn', 'memb_fee_mn', 'total_rev_mn', 'merch_cost_mn',
+            'sga_mn', 'preopen_mn', 'op_income_mn')
+    keys = sorted((k for k in beval if FY_BE_FIRST <= int(k[1][:4]) < FY_FIRST),
+                  key=lambda k: k[1])
+    rows = []
+    for (s, e) in keys:
+        y = int(e[:4])
+        v = beval[(s, e)]
+        miss = [c for c in cols if c not in v]
+        if miss:
+            raise CostSecError(
+                f'FY{y} 缺老口径 XBRL 标签 {miss}（元素名见 FY_BE_TAGS）—— 拒绝写半空的行。'
+                f'这张表只有七个数，缺一个盈亏平衡那一年就算不出来，而算不出来的那一格'
+                f'在图上与「那年不需要过线」长得一模一样。')
+        w = _weeks(s, e)
+        if w not in (52, 53):
+            raise CostSecError(f'FY{y} 的会计期 {s}→{e} 是 {w} 周，不是 52/53 周')
+        ns, mf, tr = (_mn(v[c], f'FY{y} {c}') for c in
+                      ('net_sales_mn', 'memb_fee_mn', 'total_rev_mn'))
+        mc, sga, po, oi = (_mn(v[c], f'FY{y} {c}') for c in
+                           ('merch_cost_mn', 'sga_mn', 'preopen_mn', 'op_income_mn'))
+        # ── 恒等式 1：净销售额 + 会员费 = 总收入 ──
+        # 老口径的净销售额与会员费是两个**独立**的标签（不像新口径是同一个标签的两个
+        # ProductOrServiceAxis 成员），所以这一条是真的在对账，不是同义反复。
+        if ns + mf != tr:
+            raise CostSecError(
+                f'FY{y} 净销售额 {ns} + 会员费 {mf} = {ns + mf} ≠ 总收入 {tr} —— '
+                f'三个标签里至少有一个不是我们以为的那个数（老口径元素名见 FY_BE_TAGS）')
+        # ── 恒等式 2：总收入 − 商品成本 − SG&A（含开办费） = 经营利润 ──
+        # 这一条同时把上面那颗雷（FY2011 的 SG&A 8,682 vs 重述后 8,691）钉死：
+        # 取到未重述那一版，这里会差 9 而抛。
+        sga_all = sga + po
+        if tr - mc - sga_all != oi:
+            raise CostSecError(
+                f'FY{y} 损益恒等式不成立：总收入 {tr} − 商品成本 {mc} − SG&A(含开办费) '
+                f'{sga_all}（= {sga} + {po}）= {tr - mc - sga_all}，而经营利润是 {oi}，'
+                f'差 {tr - mc - sga_all - oi}。FY2011 差 9 的话就是拿到了**未重述**的 SG&A '
+                f'8,682（见本节注释），说明「最新申报覆盖旧值」这条没生效。')
+        acc = max(besrc[(s, e)][c] for c in cols)[1]
+        rows.append([f'FY{y}', s, e, w, ns, mf, tr, mc, sga_all, po, oi,
+                     PREOPEN_LOADER, acc])
+    # ── 财年必须连续且铺满，中间不许有洞 ──
+    # 盈亏平衡两条线是逐年现算的：中间缺一年，图上就是两段之间夹一个灰格，
+    # 而那个灰格与「那年算不出来」「那年还没开业」在引擎里画成同一个颜色。
+    got = [int(r[0][2:]) for r in rows]
+    want = list(range(FY_BE_FIRST, FY_FIRST))
+    if got != want:
+        raise CostSecError(
+            f'cost_fy_be.csv 的财年是 {got}，应当是 {want} —— 回填表要么铺满 '
+            f'FY{FY_BE_FIRST}–FY{FY_FIRST - 1}，要么整张不写；缺中间某一年会在图上'
+            f'留一个说不清的空格。')
+    return head, rows
 
 
 # ═════ 表 4：开业年份矩阵 series/cost_cohort.csv ═════
@@ -1627,7 +1866,7 @@ def _crosscheck_openings(fy_head, fy_rows, coh_head, coh_rows):
                   file=sys.stderr)
 
 
-#: 四张表各自的写盘参数。`optional` 里放的每一列，**留空的理由都必须能从数据本身看出来**：
+#: 五张表各自的写盘参数。`optional` 里放的每一列，**留空的理由都必须能从数据本身看出来**：
 #:   mdna_*      源里那句话本来就不带数（写进去就是编）
 #:   preopen_mn  FY2022 起源里不再单列开办费 —— 同一行的 `preopen_src` 会是 `not-disclosed`
 #: `wh_open_*` **不在这里**：FY2016 那四格现在由 Item 2 的开业表补上（见 `_reconcile_openings`），
@@ -1637,21 +1876,23 @@ _TABLES = {
     'tkt': ('cost_tkt_q.csv', ('fq', 'basis'), ('mdna_tc_tkt', 'mdna_tc_frq')),
     'fy': ('cost_fy.csv', ('fy',), ('preopen_mn', 'mdna_tkt_pct', 'mdna_frq_pct')),
     'cohort': ('cost_cohort.csv', ('vintage', 'cohort', 'fiscal_year'), ()),
+    # 回填表**一列都不许空**：它只有七个数，每一个都是盈亏平衡那两条线的直接输入。
+    'fybe': ('cost_fy_be.csv', ('fy',), ()),
 }
 
 
 def update(series_dir, cache_dir=None):
-    """把 SEC 侧的四张表全部重算并写盘，返回新增主键列表（形如 `seg:FY26Q3|Q`）。
+    """把 SEC 侧的五张表全部重算并写盘，返回新增主键列表（形如 `seg:FY26Q3|Q`）。
 
-    幂等：没有新申报时四张 CSV 逐字节不变、返回 []。
-    **首次创建四张表时也返回 []**（旧表不存在，谈不上「新增了哪几期」）——
+    幂等：没有新申报时五张 CSV 逐字节不变、返回 []。
+    **首次创建五张表时也返回 []**（旧表不存在，谈不上「新增了哪几期」）——
     那一次由 monthly_run.py 的内容指纹变化触发重建，报的是 REBUILT 而不是 NEW。
 
     ═══ 失败语义：**逐表隔离地写，但整体地报错** ═══
     这是想清楚过的，不是图省事，所以把推理留在这里。
 
-    原先四张表串在一条直线上，任何一处 raise 都会让**已经解析成功的另外三张**
-    一并写不成。四张表来自四份互不相干的披露（10-K/10-Q 的 XBRL、8-K 的 EX-99.2、
+    原先各表串在一条直线上，任何一处 raise 都会让**已经解析成功的其余几张**
+    一并写不成。这几张表来自互不相干的披露（10-K/10-Q 的 XBRL、8-K 的 EX-99.2、
     10-K 的 Item 2 HTML、10-K 里那张手画的图），一张的版式变化跟另外三张的正确性
     没有任何关系 —— 让开业年份矩阵的一次解析失败把分部收入序列一起摁住，
     是在为「整齐」付真实的代价。
@@ -1714,6 +1955,9 @@ def update(series_dir, cache_dir=None):
     built['fy'] = leg('fy', lambda: build_fy(cache_dir, filings,
                                              collect_mdna_fy(cache_dir, filings)))
     built['cohort'] = leg('cohort', lambda: build_cohort(cache_dir, filings))
+    # 回填表与 `fy` 各自独立成腿：两者读的是**两代**元素名（FY_BE_TAGS vs FY_TAGS），
+    # 老 10-K 的版式变化跟 FY2016 起那十年的正确性没有关系，反之亦然。
+    built['fybe'] = leg('fybe', lambda: build_fy_be(cache_dir, filings))
 
     # 净开店数的第三条腿（cost_fy × cost_cohort）。两张表都在才做得成；
     # 少了一张就**明说跳过了**，不许让「没做」和「做了且通过」在日志里长得一样。
@@ -1725,7 +1969,7 @@ def update(series_dir, cache_dir=None):
 
     if errs:
         raise CostSecError(
-            f'四张表里 {len(errs)} 张没写成（其余的已按各自的护栏写盘，是完整且正确的）：'
+            f'五张表里 {len(errs)} 张没写成（其余的已按各自的护栏写盘，是完整且正确的）：'
             + '；'.join(f'[{t}] {m}' for t, m in errs))
     return added
 

@@ -16,11 +16,16 @@ report_registry()      注册名单体检          只告警，不退出（本�
 guard_dirty_tree()     data|series 之外的脏树 → FAILED 退出
 check_specs.main()     contract_specs 结构体检 → 不过就 FAILED 退出
                        ↓
+taiwan_fx()            台湾六页共用的 NTD/USD 底座（series/tsm_fx.csv）→ **必须在循环之前**
+                       它是唯一跑在循环**前面**的公共表，理由见下（2026-09 新增）
+                       ↓
 for t in TICKERS:      28 家，逐家隔离：not_due? → fetch → build
     one(t)             一家失败只让这一家 FAIL，其余照常发布
                        ↓
+taiwan_fx_rebuild()    汇率有新月份时补重建那六页里**循环没碰过**的几张
+                       ↓
 cost_sec()             /cost/ 的第二个数据源（SEC 申报层，季度/年度）→ 有新申报就重跑 /cost/
-                       只在 cost 落在本轮名单里时才跑（**它看 --only，下面三张公共表不看**）
+                       只在 cost 落在本轮名单里时才跑（**它看 --only，四张公共表都不看**）
                        ↓
 mops_remarks()         MOPS 月报備註栏（七家半导体页共用）→ 有新月份就重跑那七页
 fee_rates()            季度费率表（六个单公司页共用）→ 有新季度就重跑那六页
@@ -41,7 +46,32 @@ data_changed()?        忽略首行构建日期的正文比较 → 有变化才 
   而 `build_cross()` 紧接其后、每轮无条件全跑一遍。再喊一次是重复劳动。
   `fee_rates` 不一样 —— 读它的是**单公司页**，那六家这一轮可能整轮都没被碰过。
 
-**三张公共表都不是 ticker，也都不进 `TICKERS`**：一张表被六页 / 六页 / 七页共用（费率六个
+`taiwan_fx()` 是**唯一一张跑在按家循环之前**的公共表，因为它被读的时机不一样：
+上面三张（備註 / 费率 / 汇率）都是「页面正文要用」，晚一步只是内容旧一轮；
+`series/tsm_fx.csv` 却是 **build 的硬前置** —— 营收有 M 月而汇率没有 M 月，
+`build/mrbase.py:898` 直接抛 `SpecError: series/tsm_fx.csv 缺月份 [M]`，那一家当轮 FAIL。
+
+而这张表由 `fetch/tsm.py` 维护，被 **六页** 读（tsm / umc / ase / mtk / nanya / guc），
+其中 **umc / ase / mtk / nanya / guc 五家在 `TICKERS` 里全排在 tsm 前面**。
+也就是说「谁先披露完营收，谁就先撞上这堵墙」，一年里迟早轮得到：
+
+> **2026-09-05 实测**：UMC 的 6-K 先到（2026-08），TSMC 的 xlsx 还停在 7 月、
+> `tsm_fx.csv` 也还停在 2026-07。`--only umc,tsm` 复现 `umc FAIL`，
+> `--only tsm,umc` 两家都 `NEW` —— 同一天、同一份数据，差别只有顺序。
+
+更糟的是它**自我掩盖**：`fetch/umc.py` 已经把 2026-08 写进 `series/umc.csv` 了，
+所以下一轮 `series_fingerprint` 不再变化 → `one()` 走 NOCHANGE 分支、连 build 都不再试。
+`FAIL` 只在第一轮出现一次，之后每天都是干干净净的 `NOCHANGE`，而 `data/umc.js`
+永远停在 2026-07 —— 又是 `one()` docstring 里「长得和健康的安静日一模一样」那个坑。
+
+`taiwan_fx()` **不套下载闸门**（与 `fx()` 同理）：H.10 是美联储周更，月均在次月第 1 个
+营业日就算得全，与台湾任何一家的披露节奏无关；套上按家闸门等于让底座陪最晚的那家一起等。
+它**要**补重建消费页（与 `fee_rates()` 同理、与 `fx()` 相反）：读它的是单公司页，
+那几家这一轮可能整轮没被碰过。补重建放在循环**之后**并跳过循环已建过的那几家 ——
+在循环前建等于拿旧 CSV 白建一遍。实测汇率多一个月会改动页面正文：`data/tsm.js` 里
+那句季度对表从「当季 7 月已实现 32.22」变成「当季 7、8 月已实现 32.13」。
+
+**另外三张公共表都不是 ticker，也都不进 `TICKERS`**：一张表被六页 / 六页 / 七页共用（费率六个
 单公司页、汇率六张横截面页、備註七张半导体页），挂在某一家的 ticker 下面，那一家被删掉时
 另外几页的分母就跟着消失了。同理**都不进 `build/roster.py` 的 `LAG` / `GROUPS`** ——
 那两处一个喂首页红点、一个被 `not_due()` 读，而公共表没有页、没有 `data/<t>.js`、
@@ -172,13 +202,16 @@ LSEG 是反方向的同一条规则：它的头条在**快腿**（Tradeweb）上
 EARLY_BY 从 `(5, 33)` 收成 `(7, 7)`，闸门两档并成第 11 天。
 实测发布日全表见 `fetch/spgi.py` docstring 的「发布节奏」一节。）
 
-### 2.4 三张公共表
+### 2.4 四张公共表
 
 | | 闸门 | 失败怎么处理 |
 |---|---|---|
+| `taiwan_fx` | **无，且刻意不给它套**（H.10 周更，与台湾各家披露节奏无关） | 计入失败清单 → PARTIAL；抓不到时六页里**没有新营收月的那几家一点信号都不会有**，所以它必须自己记一条 |
 | `fee_rates` | 无（每天查一次，有新季度才写） | 计入失败清单 → PARTIAL |
 | `fx` | **无，且刻意不给它套** | 计入失败清单 → PARTIAL |
 | `mops_remarks` | 无日历闸门，用**事实闸门**：TWSE OpenAPI 的 `資料年月` | 计入失败清单 → PARTIAL，**七页照发** |
+
+（`taiwan_fx` 与另外三张的分别：它跑在按家循环**之前**，因为它是 build 的硬前置而不是页面正文的一部分 —— 完整理由见 §1。）
 
 **为什么 `mops_remarks` 不套 LAG**：它的闸门是证交所**汇总完全市场**才翻的那个
 `資料年月`，模块 `latest_month()` 每轮问一次（一条 ~600KB JSON，比 fx 的 10 条 SDMX 还便宜）。
@@ -211,9 +244,9 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 | 腿 | 源 | 写什么 | 节奏 | 闸门 |
 |---|---|---|---|---|
 | 月度腿 | GlobeNewswire 月度销售稿（`fetch/cost.py`） | `series/cost.csv` | 零售月结束后首个周三 | 日历闸门，`LAG=(7,7)`、`EARLY` 默认 → 月末后第 2 天（见 §2.3） |
-| SEC 腿 | EDGAR CIK **0000909832** 的 10-K / 10-Q / 8-K(EX-99.2)（`fetch/cost_sec.py`） | `series/cost_seg_q.csv` / `cost_tkt_q.csv` / `cost_fy.csv` / `cost_cohort.csv` | 8-K 季末后约 4 周、10-Q 后 3-4 周、10-K 后 5-6 周 | **无闸门，每轮都跑**（理由见下） |
+| SEC 腿 | EDGAR CIK **0000909832** 的 10-K / 10-Q / 8-K(EX-99.2)（`fetch/cost_sec.py`） | `series/cost_seg_q.csv` / `cost_tkt_q.csv` / `cost_fy.csv` / `cost_cohort.csv` / `cost_fy_be.csv` | 8-K 季末后约 4 周、10-Q 后 3-4 周、10-K 后 5-6 周 | **无闸门，每轮都跑**（理由见下） |
 
-失败处理与三张公共表同档：**计入失败清单 → `PARTIAL`，不阻断本轮**。
+失败处理与四张公共表同档：**计入失败清单 → `PARTIAL`，不阻断本轮**。
 
 **它为什么不是 `fetch/cost.py` 里的一条慢腿**（三条，任一条单独都够）：
 
@@ -244,7 +277,7 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
   客单/客流在源上挂着而这边不取 —— 拿六天陈旧换半秒 CPU，方向反了。
 
 ⇒ 结论与 `fx` 同款：**每轮都跑**，代价是两个 JSON 请求（约 420 KB）+ 一秒多本地解析；
-没有新申报时四张 CSV 逐字节不变、`update()` 返回 `[]`。
+没有新申报时五张 CSV 逐字节不变、`update()` 返回 `[]`。
 
 **`latest_quarter()` 改用在对账上，不是闸门**：`update()` 返回 `[]` 有两种含义 ——
 「源上真没有新申报」与「有新申报但解析器没认出来」，两者在日志里长得一模一样
@@ -257,7 +290,7 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 对账**不覆盖 8-K 那条腿**，也不该覆盖：它比同季 10-Q 早约一周，拿它对账会天天误报。
 
 **有新东西时它自己重跑 `build/cost.py`**（同 `mops_remarks` 要自己重跑那七页）：
-触发器是 `series_fingerprint('cost')` 的前后差（`glob` 的 `series/cost*.csv` 本来就包含这四张表），
+触发器是 `series_fingerprint('cost')` 的前后差（`glob` 的 `series/cost*.csv` 本来就包含这五张表），
 不是 `if added` —— `update()` 首次建表返回 `[]`，`cost_fy.csv` 的官方重述取最新值也不产生新主键。
 
 **它写盘只落在 `series/` 与 `cache/cost_sec/`**（后者已 gitignore），
@@ -346,18 +379,20 @@ python3 build/make_shells12.py  # 应少写一个壳
 #   monthly_run.py   main() 里 `if 'cost' in todo: fails += cost_sec()` 那两行
 #                    （函数 cost_sec() 与 _cost_sec_behind() 留着不会被调用，想清干净就一起删）
 rm fetch/cost_sec.py
-rm series/cost_seg_q.csv series/cost_tkt_q.csv series/cost_fy.csv series/cost_cohort.csv
+rm series/cost_seg_q.csv series/cost_tkt_q.csv series/cost_fy.csv series/cost_cohort.csv series/cost_fy_be.csv
 rm -rf cache/cost_sec        # 88 MB，可重下
 ```
 
 ⚠ **两处的顺序与后果**：`monthly_run.py` 那两行删掉、`fetch/cost_sec.py` 还留着，是**静默停更**
-（没人调用它，四张 CSV 就此冻住，而 `/cost/` 的红点跟的是月度腿、照样是绿的）；
+（没人调用它，五张 CSV 就此冻住，而 `/cost/` 的红点跟的是月度腿、照样是绿的）；
 反过来只删 `fetch/cost_sec.py` 不删那两行是**安全**的 —— `cost_sec()` 第一句就是
 「文件不在就返回空清单」，与 `mops_remarks` / `fee_rates` / `fx` 同款。所以真要删，
 **先删 `monthly_run.py` 那两行**，别只删文件。
 
-⚠ **删四张 CSV 之前先看 `build/cost.py` 还读不读它们**：`/cost/` 页上凡是分部收入 /
-客单客流 / 财年单店经济 / 开业年份矩阵的图都由它们喂，CSV 没了那些图会缺数据。
+⚠ **删五张 CSV 之前先看 `build/cost.py` 还读不读它们**：`/cost/` 页上凡是分部收入 /
+客单客流 / 财年单店经济 / 开业年份矩阵 / Exhibit 16 那两条盈亏平衡线的图都由它们喂，
+CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.py` **硬要求**的
+（文件不在就 `SystemExit`），不像别的表那样只是少几张图。
 月度腿（`series/cost.csv`）与它们**互不读写**，所以只删 SEC 腿不会影响月度那部分。
 
 ### 忘了其中一处会怎样

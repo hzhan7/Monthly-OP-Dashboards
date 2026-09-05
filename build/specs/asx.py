@@ -100,6 +100,8 @@ import csv
 import math
 import os
 
+import brief as B   # 页顶数据总结的规则库（build/brief.py），全站共用
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CSV = os.path.join(_ROOT, 'series', 'asx.csv')
 
@@ -859,6 +861,112 @@ def _breaks():
     return sorted(out, key=lambda b: b['month'])
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 页顶数据总结（brief）
+# ══════════════════════════════════════════════════════════════════════════
+def _brief(page):
+    """~300 字的「本月读数怎么读」。规则库在 build/brief.py，句子在这里拼。
+
+    分工照 CONTRACT：那边只算事实（R1 峰值扫描 / R2 基数护栏 / R3 日历护栏 /
+    R4 单位恒等 / R5 标注 / R6 有效位），措辞归各页自己 —— **措辞是口径的一部分**。
+    分寸的样板是 `build/ibkr.py::compose_brief()`（既是上限也是下限）：
+    四句四层、每句一个意思，每个数都当场从序列算出来，一处硬编码都没有。
+
+    ═══ ASX 独有，别家不能照抄 ═══
+    · **R3 日历护栏对两条头条列用了就是造假。** `adt_cash_total_audbn` 与
+      `adv_futures_and_options_contracts` 是官方口径的**日均值**，交易日已经除过；
+      再套一次 `calendar_split()` 会凭空造出一个不存在的「日历修正」，而且长得跟真的
+      一样。CME / Cboe / HKEX 那几页也是这个形状，`build/brief.py` 的 R3 文档里点了名。
+    · **但本页确实有 R3 的合法适用对象** —— `trades_cash_total` 是当月合计笔数，
+      没有被日均化。⚠ 必须配**同一个市场板块**的交易日列：现货配 `trading_days_cash`、
+      ASX 24 配 `trading_days_futures`、ETO 配 `trading_days_eto`。
+      三套分母在 128 个月里有 31 个月不全相同（最近一次 2026-06 是 21 / 22 / 21），
+      混用会在这些月份里给出一个方向与大小都错的修正 —— 它比「根本不该做修正」
+      更隐蔽，因为看起来做了对的事，只是分母取错了板块。ibkr 那边三条量共用一套
+      美股日历，那个前提在这里不成立。
+    · 第四句的恒等式用**官方自己印的**每笔均值（`avg_value_per_trade_aud`），
+      不是我们拿成交额除笔数凑出来的 —— 所以它不标「推导值」。
+    """
+    # ⚠ `B.pct()` 收的是**比值**（0.087 → +8.7%），不是百分数。样板 ibkr 里两种写法
+    #   并存（`B.pct(be['yy'])` 与 `abs(be['mm']) * 100:.1f` 手工格式化），照抄时
+    #   很容易给已经是比值的量再乘一次 100 —— 实测会印出「环比 +2095.2%」这种数，
+    #   而且**任何护栏都不会响**：它是个合法的浮点数，字数也照样在 230–380 里。
+    df, i_p = page.df, page.latest
+    idx = list(df.index)
+    i = idx.index(i_p)
+    ms = [str(m) for m in idx]
+    n = len(ms)
+
+    adt = df['adt_cash_total_audbn'].values.astype(float)
+    adv = df['adv_futures_and_options_contracts'].values.astype(float)
+    trades = df['trades_cash_total'].values.astype(float)
+    tdc = df['trading_days_cash'].values.astype(float)
+    apt = df['avg_value_per_trade_aud'].values.astype(float)
+    val = df['value_cash_total_audbn'].values.astype(float)
+
+    # ── s1 规模：两条头条在全样本里的位置。两条都单调上行时 peak_scan 会跳过，
+    #    所以显式不跳 —— 「谁创了新高、谁的峰值停在哪个月」正是这一层要讲的。
+    pk = B.peak_scan(ms, [('现货 ADT', adt), ('ASX 24 ADV', adv)], i,
+                     skip_monotonic=False)
+    at, off = pk['at_peak'], pk['off_peak']
+    if at and off:
+        s1 = (f'{B.mo(ms[i])}月现货日均成交额 <b>A${B.num(adt[i], 2)}bn</b>、'
+              f'ASX 24 日均 <b>{B.num(adv[i] / 1000, 0)}千张</b>；'
+              f'两条头条里{"、".join(nm for nm, _ in at)}是{n}个月最高，'
+              f'{"、".join(nm for nm, _ in off)}的峰值停在'
+              f'{B.peak_months_txt(off)}月。')
+    else:
+        r_a, r_f = B.rank_of(adt, i), B.rank_of(adv, i)
+        s1 = (f'{B.mo(ms[i])}月现货日均成交额 <b>A${B.num(adt[i], 2)}bn</b>'
+              f'（{n}个月里第{r_a}）、ASX 24 日均 <b>{B.num(adv[i] / 1000, 0)}千张</b>'
+              f'（第{r_f}）—— 两条头条本月都不在自己的峰值上。')
+
+    # ── s2 基数：环比与同比反号时，上月排第几。不给这个会把回落读成转向。
+    be = B.base_effect(adt, i)
+    prev_txt = '最高月' if be['prev_is_max'] else ('第%d高月' % be['prev_rank'])
+    s2 = (f'现货同比{B.pct(be["yy"])}、环比{B.pct(be["mm"])}；'
+          f'上月 A${B.num(adt[i - 1], 2)}bn 是全样本{prev_txt}，'
+          f'本月读数在{n}个月里排第{be["rank"]}。')
+
+    # ── s3 日历：当月合计笔数配现货自己的交易日列（见 docstring 的 ASX 独有一节）。
+    cs = B.calendar_split(trades, tdc, i)
+    s3 = (f'先扣日历：本月{tdc[i]:.0f}个交易日比上月{"多" if cs["dday"] > 0 else "少"}'
+          f'{abs(cs["dday"]):.0f}天，当月成交笔数表面{B.pct(cs["raw"])}、'
+          f'日均实{B.pct(cs["per_day"])}。')
+
+    # ── s4 分母：官方自己印的每笔均值 —— 二元恒等式 + 一句落点（样板的深度上限）。
+    pu = B.per_unit(val * 1e9, trades, i)
+    land = ('金额涨在单笔规模上，不是靠笔数堆出来的' if pu['yoy'] > 0
+            else '单子在变碎，成交额的增量来自笔数而不是单笔规模')
+    s4 = (f'分母：平均每笔金额 <b>A${B.num(apt[i], 0)}</b>，同比{B.pct(pu["yoy"])}，'
+          f'是当月成交额{B.pct(pu["num_yoy"])}除以笔数{B.pct(pu["den_yoy"])}的商 —— '
+          f'{land}。')
+
+    return [s1, s2, s3, s4]
+
+
+# ── 分节标题（2026-09）───────────────────────────────────────────────────────
+# 36 张图此前没有任何分节，读者从头到尾看到的是一条不断的图流。CME / Cboe 两页靠
+# **图号顺序**表达板块（它们是手写生成器，顺序想怎么排就怎么排）；spec 页做不到那样
+# 自由排序，但 `section` 能把板块**明说出来**，效果不比隐含的顺序差。
+#
+# ⚠️ 为什么存量单独成一节，而不是跟着各自的流量走：底座的产图顺序是
+# ①②头条 → ③流量组 → ④季节性 → ⑤存量组 → ⑥量价分解，**存量统一排在流量之后**，
+# 这条循环是 10 家 spec 页共用的。为一家去改它，代价是另外 9 家的图号整体平移。
+# 所以这里顺着它走 —— 而且这个走法本身站得住：CME 也是把月末未平仓排在全部流量图
+# 之后（它的 Ex13），本页 notes 里那条「存量与流量分开读」讲的正是同一件事。
+# 存量那一节内部的顺序，照流量那半页的叙事重排了一遍（衍生品 → 上市 → 清算 →
+# 托管 → 保证金 → 参与者），让两半页读起来是同一条线。
+_SEC_HEAD = '一、规模与增速：两条头条指标'
+_SEC_CASH = '二、现货市场'
+_SEC_D24 = '三、ASX 24 衍生品（期货与期货期权）'
+_SEC_ETO = '四、股票期权（ASX Clear ETO）'
+_SEC_LIST = '五、上市、融资与退市'
+_SEC_CLR = '六、清算与结算（当月发生额）'
+_SEC_SEA = '七、季节性：头条两条与同月常态比'
+_SEC_STOCK = '八、月末存量截面（期末口径，与上面的流量不可相加）'
+_SEC_DEC = '九、现货成交额的量价分解'
+
 SPEC = {
     'ticker': 'asx',
     'name': 'ASX Limited',
@@ -881,18 +989,28 @@ SPEC = {
     ],
 
     'groups': [
-        {'zh': '现货成交额', 'cols': [
+        {'zh': '现货日均成交额', 'cols': [
             {'col': 'adt_cash_total_audbn', 'zh': '日均成交额（含场外报告）',
              'unit': 'A$bn/day', 'fmt': 'f2'},
             {'col': 'adt_cash_onmarket_audbn', 'zh': '日均成交额（仅场内）',
              'unit': 'A$bn/day', 'fmt': 'f2'},
-            {'col': 'value_cash_total_audbn', 'zh': '当月成交额（含场外报告）',
-             'unit': 'A$bn/month', 'fmt': 'f1'},
+        ],
+         'section': _SEC_CASH},
+
+        # 2026-09 单独成组：这一列此前与两条日均同组，因为单位不同被底座拆成第二张图，
+        # 而拆出来的那张是单桶 ⇒ gs_bar ⇒ **带次轴单月同比**，于是撞上 §6.6 的 R4
+        # （单月口径必须写进 title / ylab2 / legend / yoy.name 四处之一，写在图注里
+        # 不算数）。组名是这四处里唯一由 spec 说了算的，所以口径写进组名 ——
+        # 单独成组是为了别把「次轴：单月同比」误标到上面那张没有次轴的日均图上。
+        {'zh': '现货当月成交额·仅场内（次轴：单月同比）', 'cols': [
             {'col': 'value_cash_onmarket_audbn', 'zh': '当月成交额（仅场内）',
              'unit': 'A$bn/month', 'fmt': 'f1'},
-        ]},
+        ],
+         'section': _SEC_CASH},
 
-        {'zh': '现货成交构成', 'cols': [
+        {'zh': '现货成交额与成交构成', 'cols': [
+            {'col': 'value_cash_total_audbn', 'zh': '当月成交额（含场外报告）',
+             'unit': 'A$bn/month', 'fmt': 'f1'},
             {'col': 'value_open_trading_audbn', 'zh': '连续竞价',
              'unit': 'A$bn/month', 'fmt': 'f1'},
             {'col': 'value_auctions_audbn', 'zh': '集合竞价',
@@ -901,8 +1019,33 @@ SPEC = {
              'unit': 'A$bn/month', 'fmt': 'f1'},
             {'col': 'value_tradereport_audbn', 'zh': '场外成交事后报告',
              'unit': 'A$bn/month', 'fmt': 'f1'},
-        ]},
+        ],
+         'section': _SEC_CASH,
+         # 2026-09 新增。本页此前**一张占比图都没有**，而这条加总关系逐位精确
+         # （128/128 个月，最大相对残差 2.2e-16 —— 那是 float64 相加的舍入残渣）。
+         # 站规：「合计 + 分项的组画两张图 —— 合计柱 + 次轴同比，分项 100% 堆叠占比」
+         # （README「图型选择」一节）。CME 与 Cboe 2026-09 那两轮改版各自新增的
+         # 也正是这一张。
+         # 残差**恒为 0**，所以不给 residual_zh —— 给了会硬失败（底座不许替一个
+         # 不存在的残差段起名）。
+         'mix': {
+             'total': 'value_cash_total_audbn',
+             'parts': ['value_open_trading_audbn', 'value_auctions_audbn',
+                       'value_centrepoint_audbn', 'value_tradereport_audbn'],
+             # 右轴那条线只给**最薄、又必须单独读**的那一段（Cboe Ex7 的做法）：
+             # Centre Point 常年 5.4%–9.9% 厚，在 0–100 的堆叠里几个百分点的变化
+             # 看不出来，而「自家暗池占多少」恰恰是这张图最值得单独读的一段。
+             'rhs_share': 'value_centrepoint_audbn',
+             'note': '柱高是官方印的当月成交额原值，四段之和逐月复算与它相等'
+                     '（底座硬校验，对不上就停机）。',
+             'share_note': '<b>这张答的是「结构往哪边走」，不是「有多大」</b> —— '
+                           '规模看上一张的柱高。四段的分母是官方自己印的当月成交额合计，'
+                           '不是四段自归一，所以每一段读的都是「占全部现货成交额的比重」。',
+         }},
 
+        # 组名 2026-09 去掉了「三列各成一图」—— 那是**渲染层怎么做**，不是读者要知道的
+        # 事（CME / Cboe 两页的标题一律是结论或口径，没有一处交代实现）。「次轴：单月
+        # 同比」留着：它是口径，而且 §6.6 的 R4 判据只认标题/轴名/图例/序列名这四处。
         # 三列三个单位（trades/day、trades/month、A$/trade）⇒ 三个单桶 ⇒ 三张 gs_bar，
         # 次轴都是**单月同比**，而本表里没有同单位的第四条列可以同轴。
         # 单月是全站唯一口径（CONTRACT §6.1 第 1 条），而 §6.6 的自动判据要求它
@@ -913,14 +1056,15 @@ SPEC = {
         # 几天市」这一层就是这么读出来的。
         # 2026-09 之前页尾另有一张「现货成交笔数：水平值与 12 个月滚动同比」专图；
         # 全站改单月口径后它与本组第一张完全重复，已删。
-        {'zh': '成交笔数与单笔金额（三列各成一图，次轴：单月同比）', 'cols': [
+        {'zh': '成交笔数与单笔金额（次轴：单月同比）', 'cols': [
             {'col': 'adt_cash_trades', 'zh': '日均成交笔数',
              'unit': 'trades/day', 'fmt': 'f0c'},
             {'col': 'trades_cash_total', 'zh': '当月成交笔数',
              'unit': 'trades/month', 'fmt': 'f0c'},
             {'col': 'avg_value_per_trade_aud', 'zh': '平均每笔金额',
              'unit': 'A$/trade', 'fmt': 'f0c'},
-        ]},
+        ],
+         'section': _SEC_CASH},
 
         # 官方到 2019-10 才把这个数排进现货**表**；在那之前它只印在正文的波动率要点里，
         # 是同一个数的另一处印刷（26 期重叠逐位相同，见 fetch/asx.py 口径坑 21）。
@@ -928,7 +1072,8 @@ SPEC = {
         {'zh': f'S&P/ASX 200 VIX（{_span_zh("vix_asx200_avg")}）', 'cols': [
             {'col': 'vix_asx200_avg', 'zh': '月内日均值',
              'unit': 'index level', 'fmt': 'f1'},
-        ]},
+        ],
+         'section': _SEC_CASH},
 
         {'zh': 'ASX 24 期货与期货期权 ADV', 'cols': [
             {'col': 'adv_futures_and_options_contracts', 'zh': '合计',
@@ -937,7 +1082,8 @@ SPEC = {
              'unit': 'contracts/day', 'fmt': 'f0c'},
             {'col': 'adv_options_on_futures_contracts', 'zh': '其中：期货期权',
              'unit': 'contracts/day', 'fmt': 'f0c'},
-        ]},
+        ],
+         'section': _SEC_D24},
 
         # ── ASX 24 分品种：源是另一份官方文件（Monthly SFE Trading Report）──────────
         # 四条同为 contracts/month、量级同在百万级，同轴可比。起点现算写进组名 ——
@@ -955,7 +1101,115 @@ SPEC = {
              'unit': 'contracts/month', 'fmt': 'f0c'},
             {'col': 'contracts_90d_bankbill_futures', 'zh': '90 日银行票据期货',
              'unit': 'contracts/month', 'fmt': 'f0c'},
-        ]},
+        ],
+         'section': _SEC_D24},
+
+        # ── 2026-09 新增：分品种结构 ─────────────────────────────────────────
+        # 本组**只声明合计这一列**，四条分项列声明在上一组里 —— 底座的「被 mix 吃掉的
+        # 列」是 `eaten & 本组declared`，所以上一组那张分品种水平值折线**照画不误**。
+        # 这是刻意的：CME 的做法就是水平值与占比各一张，占比答「谁在挤谁」、
+        # 水平值答「各自有多大」，两张缺一不可（`build/cme.py` 的 ex4 / ex15）。
+        # 残差实测恒正、1.80%–5.94%（75 个月），所以**必须**给 residual_zh ——
+        # 有残差却不给名字会硬失败。残差是官方在 SFE 报告里没有单列的那些品种。
+        {'zh': f'ASX 24 分品种结构（{_span_zh("contracts_spi200_futures")}）', 'cols': [
+            {'col': 'contracts_futures_total', 'zh': 'ASX 24 期货合计',
+             'unit': 'contracts/month', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_D24,
+         'mix': {
+             'total': 'contracts_futures_total',
+             'parts': ['contracts_spi200_futures', 'contracts_3y_bond_futures',
+                       'contracts_10y_bond_futures', 'contracts_90d_bankbill_futures'],
+             'residual_zh': '其他品种（电力 / 新西兰 / 30 天银行间 / 20 年国债 / 农产品等）',
+             # SPI 200 从 14.7% 一路薄到 4.5%，在 0–100 的堆叠里是一条越来越窄的缝；
+             # 而「股指腿在整个 ASX 24 里还剩多少」正是这张图最该被单独读出来的一段。
+             'rhs_share': 'contracts_spi200_futures',
+             'note': '⚠️ 这里的合计是 <b>ASX 24 期货</b>（不含期货期权），'
+                     '与本节第一张 ADV 图的「期货与期货期权合计」不是同一个口径；'
+                     '单位也不同（这里是当月张数，那里是日均张数）。',
+             'share_note': '<b>四条分项出自另一份官方文件</b>（Monthly SFE Trading '
+                           'Report），合计出自月度活动报告 —— 所以残差不是「算错了」，'
+                           '而是 SFE 报告没有单列的那些品种。'
+                           '⚠️ 张数占比<b>不等于</b>名义额占比，更不等于风险敞口占比：'
+                           '同样一张，3 年期与 10 年期国债期货的 DV01 差三倍以上。',
+         }},
+
+        {'zh': '股票期权（ASX Clear ETO）ADV', 'cols': [
+            {'col': 'adv_single_stock_options_contracts', 'zh': '单股期权',
+             'unit': 'contracts/day', 'fmt': 'f0c'},
+            {'col': 'adv_index_options_contracts', 'zh': '指数期权',
+             'unit': 'contracts/day', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_ETO},
+
+        {'zh': '二次融资', 'cols': [
+            {'col': 'capital_secondary_total_audmn', 'zh': '二次融资合计',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+            {'col': 'capital_secondary_audmn', 'zh': '其中：窄口径（不含换股对价）',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+            {'col': 'capital_other_scrip_audmn', 'zh': '其中：换股对价等',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_LIST},
+
+        # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
+        {'zh': f'上市融资·旧口径（{_span_zh("capital_initial_raised_audmn", dead=True)}）',
+         'cols': [
+            {'col': 'capital_initial_raised_audmn', 'zh': 'IPO 实际募资额',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+            {'col': 'capital_total_raised_incl_other_audmn', 'zh': '募资总额（含其他）',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_LIST},
+
+        # 新口径：起点现算（= 上市融资那条断点的月份）。
+        {'zh': f'上市融资·新口径（{_span_zh("capital_new_quoted_audmn")}）', 'cols': [
+            {'col': 'mktcap_new_listings_audmn', 'zh': '新上市实体挂牌市值',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+            {'col': 'capital_new_quoted_audmn', 'zh': '新增挂牌资本合计',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_LIST},
+
+        # 家数进出同轴：两列同为 entities、同一个量级（新上市个位到几十家、
+        # 退市 −40…−4 家），画在一起才读得出「净进出」，也让两列都摆脱单桶 gs_bar
+        # 的单月同比。起点不同（新上市 2017-10、退市 2024-05）由底座的 lines 断笔处理，
+        # **不会**把缺口连成直线。
+        {'zh': f'上市与退市实体数（新上市自 {_first_present("new_listed_entities")}、'
+               f'退市自 {_first_present("delisted_entities")}）', 'cols': [
+            {'col': 'new_listed_entities', 'zh': '当月新上市实体数',
+             'unit': 'entities', 'fmt': 'f0'},
+            {'col': 'delisted_entities', 'zh': '当月退市实体数（负值）',
+             'unit': 'entities', 'fmt': 'f0'},
+        ],
+         'section': _SEC_LIST},
+
+        # 官方 2024-05 才开始印的两列金额（含负值，见 notes）。起点现算。
+        {'zh': f'挂牌资本净增与退市市值（{_span_zh("capital_net_new_quoted_audmn")}）',
+         'cols': [
+            {'col': 'capital_net_new_quoted_audmn', 'zh': '扣除退市后的净增挂牌资本',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+            {'col': 'mktcap_delisted_audmn', 'zh': '退市实体市值（负值）',
+             'unit': 'A$mn', 'fmt': 'f0c'},
+        ],
+         'section': _SEC_LIST},
+
+        # 2026-09 拆组：这一组原先流量与存量混在一起，而底座把存量列**统一挪到
+        # 页面后半段**（阶段⑤）画 —— 一个组的位置因此同时决定了两处，两边不可能都排对。
+        # 拆开之后流量与存量各自归各自那一节，组的语义也更准。
+        {'zh': 'OTC 利率衍生品清算（当月发生额，双边计数）', 'cols': [
+            {'col': 'otc_notional_cleared_audbn', 'zh': '当月清算名义额',
+             'unit': 'A$bn/month', 'fmt': 'f0'},
+            {'col': 'billable_cash_cleared_audbn', 'zh': '可计费现货清算额',
+             'unit': 'A$bn/month', 'fmt': 'f0'},
+        ],
+         'section': _SEC_CLR},
+
+        {'zh': '结算报文量', 'cols': [
+            {'col': 'settlement_msgs_mn', 'zh': '结算报文量',
+             'unit': 'mn messages/month', 'fmt': 'f2'},
+        ],
+         'section': _SEC_CLR},
 
         # 未平仓是**月末快照**，与上面的当月成交量是两件事（成交量是流量、OI 是存量），
         # 所以四列一律 stock=True：底座会把它们各自拆成一张期末口径的图、
@@ -969,14 +1223,8 @@ SPEC = {
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
             {'col': 'oi_90d_bankbill_futures', 'zh': '90 日银行票据期货',
              'unit': 'contracts', 'fmt': 'f0c', 'stock': True},
-        ]},
-
-        {'zh': '股票期权（ASX Clear ETO）ADV', 'cols': [
-            {'col': 'adv_single_stock_options_contracts', 'zh': '单股期权',
-             'unit': 'contracts/day', 'fmt': 'f0c'},
-            {'col': 'adv_index_options_contracts', 'zh': '指数期权',
-             'unit': 'contracts/day', 'fmt': 'f0c'},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
         # 存量单列一组：点对点同比正是期末口径唯一合法的读法。
         # 新上市家数搬到下面「新上市与退市」组 —— 它原先在这里是**单桶独苗**，
@@ -986,84 +1234,36 @@ SPEC = {
         {'zh': '上市实体（月末在册，存量）', 'cols': [
             {'col': 'listed_entities_total', 'zh': '月末在册实体数',
              'unit': 'entities', 'fmt': 'f0c', 'stock': True},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
-        {'zh': '二次融资', 'cols': [
-            {'col': 'capital_secondary_total_audmn', 'zh': '二次融资合计',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-            {'col': 'capital_secondary_audmn', 'zh': '其中：窄口径（不含换股对价）',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-            {'col': 'capital_other_scrip_audmn', 'zh': '其中：换股对价等',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-        ]},
-
-        # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
-        {'zh': f'上市融资·旧口径（{_span_zh("capital_initial_raised_audmn", dead=True)}）',
-         'cols': [
-            {'col': 'capital_initial_raised_audmn', 'zh': 'IPO 实际募资额',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-            {'col': 'capital_total_raised_incl_other_audmn', 'zh': '募资总额（含其他）',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-        ]},
-
-        # 新口径：起点现算（= 上市融资那条断点的月份）。
-        {'zh': f'上市融资·新口径（{_span_zh("capital_new_quoted_audmn")}）', 'cols': [
-            {'col': 'mktcap_new_listings_audmn', 'zh': '新上市实体挂牌市值',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-            {'col': 'capital_new_quoted_audmn', 'zh': '新增挂牌资本合计',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-        ]},
-
-        # 家数进出同轴：两列同为 entities、同一个量级（新上市个位到几十家、
-        # 退市 −40…−4 家），画在一起才读得出「净进出」，也让两列都摆脱单桶 gs_bar
-        # 的单月同比。起点不同（新上市 2017-10、退市 2024-05）由底座的 lines 断笔处理，
-        # **不会**把缺口连成直线。
-        {'zh': f'上市与退市实体数（新上市自 {_first_present("new_listed_entities")}、'
-               f'退市自 {_first_present("delisted_entities")}）', 'cols': [
-            {'col': 'new_listed_entities', 'zh': '当月新上市实体数',
-             'unit': 'entities', 'fmt': 'f0'},
-            {'col': 'delisted_entities', 'zh': '当月退市实体数（负值）',
-             'unit': 'entities', 'fmt': 'f0'},
-        ]},
-
-        # 官方 2024-05 才开始印的两列金额（含负值，见 notes）。起点现算。
-        {'zh': f'挂牌资本净增与退市市值（{_span_zh("capital_net_new_quoted_audmn")}）',
-         'cols': [
-            {'col': 'capital_net_new_quoted_audmn', 'zh': '扣除退市后的净增挂牌资本',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-            {'col': 'mktcap_delisted_audmn', 'zh': '退市实体市值（负值）',
-             'unit': 'A$mn', 'fmt': 'f0c'},
-        ]},
-
-        {'zh': 'OTC 利率衍生品清算（双边计数）', 'cols': [
-            {'col': 'otc_notional_cleared_audbn', 'zh': '当月清算名义额',
-             'unit': 'A$bn/month', 'fmt': 'f0'},
+        {'zh': 'OTC 利率衍生品清算（月末未平仓，双边计数）', 'cols': [
             {'col': 'otc_open_notional_audbn', 'zh': '月末未平仓名义额',
              'unit': 'A$bn', 'fmt': 'f0c', 'stock': True},
-            {'col': 'billable_cash_cleared_audbn', 'zh': '可计费现货清算额',
-             'unit': 'A$bn/month', 'fmt': 'f0'},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
-        {'zh': '托管与结算', 'cols': [
+        {'zh': '托管证券市值', 'cols': [
             {'col': 'chess_holdings_audbn', 'zh': 'CHESS 托管证券市值',
              'unit': 'A$bn', 'fmt': 'f0c', 'stock': True},
             {'col': 'austraclear_holdings_audbn', 'zh': 'Austraclear 托管证券市值',
              'unit': 'A$bn', 'fmt': 'f0c', 'stock': True},
-            {'col': 'settlement_msgs_mn', 'zh': '结算报文量',
-             'unit': 'mn messages/month', 'fmt': 'f2'},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
         # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
         {'zh': f'参与者保证金·旧口径（{_span_zh("margin_cash_onbs_audbn", dead=True)}）',
          'cols': [
             {'col': 'margin_cash_onbs_audbn', 'zh': '表内现金保证金',
              'unit': 'A$bn', 'fmt': 'f1', 'stock': True},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
         {'zh': f'参与者保证金·新口径（{_span_zh("margin_total_audbn")}）', 'cols': [
             {'col': 'margin_total_audbn', 'zh': '保证金总额',
              'unit': 'A$bn', 'fmt': 'f1', 'stock': True},
-        ]},
+        ],
+         'section': _SEC_STOCK},
 
         # 参与者两列自 2016-07 起（2016-01…2016-06 的 MAR 里根本没有这一行，
         # 见 fetch/asx.py 口径坑 15），起点比页面主体晚半年 —— 标题现算说明。
@@ -1072,12 +1272,16 @@ SPEC = {
              'unit': 'entities', 'fmt': 'f0', 'stock': True},
             {'col': 'participants_asx24_total', 'zh': 'ASX 24（衍生品）参与者',
              'unit': 'entities', 'fmt': 'f0', 'stock': True},
-        ]},
+        ],
+         'section': _SEC_STOCK},
     ],
 
     # 这三列是**已停发的旧口径**，最新月留空是正常状态，不许参与门槛判定。
     # slow_cols 的语义（「最新月留空是正常的，不进门槛」）与它们完全吻合；
     # 不这么标，整页的发布门槛会被永久钉死在 2023-09 / 2024-07。
+    'headline_section': _SEC_HEAD,
+    'season_section': _SEC_SEA,
+
     'slow_cols': [
         'capital_initial_raised_audmn',
         'capital_total_raised_incl_other_audmn',
@@ -1090,6 +1294,7 @@ SPEC = {
     # 恒等式是定义式，零假设零误差；唯一能出错的是分子分母不同口径，
     # 核查过程与全部实测数字见 _NOTE_DECOMP（import 期从 CSV 现算）。
     'decomp': [{
+        'section': _SEC_DEC,
         'zh': '现货成交额',
         # ⚠ 派生量是**每笔平均成交额**，衡量订单碎片化程度，不是价。
         #   写成 share_price 会让底座印出「成交量加权平均成交价」那一套措辞 ——
@@ -1133,6 +1338,7 @@ SPEC = {
     # 名词释义：排在所有 exhibit 之前。选词的判断与「有意不收哪些词」写在 _GLOSSARY
     # 上方的注释块里（判据：本页图题 / 序列名 / 纵轴 / 行头里出现过，且不看定义就会读错）。
     'glossary': _GLOSSARY,
+    'brief': _brief,
 
     'notes': [
         'OTC 利率衍生品清算名义额是**双边计数**（官方脚注 "Cleared notional value is '
@@ -1298,16 +1504,48 @@ if _LATE:
 else:
     _NOTE_STARTS = ('本页各图的窗口自序列首月起，且每一列都从窗口左边缘就有值。')
 
+# 每一处界内空格的病因，一格一句。**这张表与 `_HOLES` 必须一一对应** —— 下面那道
+# 断言就是干这个的：本仓踩过太多次「句子是静态的、页面是现算的」（见 commit 0fc24f5，
+# 一轮清掉 107 条假话）。空格数是现扫出来的，病因是手写的，两边一旦走散，页面就会
+# 印出「有 3 处」却只解释得清 1 处，读者看不出另外两处是什么、为什么留空。
+#
+# 三处都是同一类事故：官方把千分位逗号与小数点印反了（fetch/asx.py 口径坑 19 / 23）。
+# 三处的真值**都反推得出来**，但反推用的都不是「当期官方公告原值」，所以一律留空 ——
+# 这条线一旦因为「这次反推更准」就松动，就再没有客观标准了。
+_HOLE_WHY = {
+    ('avg_value_per_trade_aud', '2016-09'):
+        '把每笔均值的千分位逗号<b>印成了小数点</b>（4.852 应为 4,852）。真值算得出来'
+        '（同表的成交额 ÷ 笔数 = 4,851.6，下一年同期报告的 pcp 列也印着 4852）',
+    ('adv_index_options_contracts', '2020-01'):
+        '把指数期权日均张数的千分位逗号<b>印成了小数点</b>（43.485 应为 43,485；'
+        '同行另外三列 35,544 / 36,901 / 46,281 用的都是逗号）。真值算得出来'
+        '（同表月总张数 913,176 ÷ 当月 21 个交易日 = 43,484.57）',
+    ('billable_cash_cleared_audbn', '2025-08'):
+        '<b>方向反过来</b>：把可计费现货清算额的小数点<b>印成了千分位逗号</b>'
+        '（166,019 应为 166.019；同行另外三列 142.742 / 316.749 / 271.170 都是三位小数）。'
+        '真值算得出来（同表本财年累计 316.749 − 上月 150.730 = 166.019）',
+}
+_hole_gap = [k for k in _HOLES if k not in _HOLE_WHY]
+_hole_extra = [k for k in _HOLE_WHY if k not in _HOLES]
+if _hole_gap or _hole_extra:
+    raise SystemExit(
+        'asx spec：界内空格与病因表对不上 —— CSV 里扫出来却没写病因的 %s；'
+        '写了病因却在 CSV 里不存在的 %s。'
+        '前者会让图注宣称「逐格记着」却漏掉一格，后者会替一个不存在的空格背书。'
+        '两种都得人来看：先去 fetch/asx.py 的 _KNOWN_SOURCE_GAPS 核对，再改这张表。'
+        % (_hole_gap, _hole_extra))
+
 if _HOLES:
     _NOTE_HOLES = (
         f'<b>有 {len(_HOLES)} 处「界内空格」：线在中间断一格，是官方那一期 PDF 自己坏了。</b>'
         + '；'.join(f'<code>{c}</code> 缺 {m}' for c, m in _HOLES)
-        + '。病因在 <code>fetch/asx.py</code> 的 <code>_KNOWN_SOURCE_GAPS</code> 里逐格记着：'
-          '2016-09 那一期把每笔均值的千分位逗号<b>印成了小数点</b>（4.852 应为 4,852）。'
-          '真值算得出来（同表的成交额 ÷ 笔数 = 4,851.6，下一年同期报告的 pcp 列也印着 4852），'
-          '但那都不是<b>当期官方公告原值</b>，所以留空。'
-          '<b>断一格远好过一个看不出来的错数</b> —— 那个错值只有真值的千分之一，'
-          '画上去是一根扎到零的刺。'
+        + '。病因在 <code>fetch/asx.py</code> 的 <code>_KNOWN_SOURCE_GAPS</code> 里逐格记着，'
+          '三处是同一类事故 —— 官方把千分位逗号与小数点印反了：'
+        + '；'.join(f'<b>{m}</b> {_HOLE_WHY[(c, m)]}' for c, m in _HOLES)
+        + '。<b>但那都不是当期官方公告原值</b>，所以三处一律留空 —— 反推得出就写进去，'
+          '往后就再也分不清哪些数是 ASX 印的、哪些是我们凑的。'
+          '<b>断一格远好过一个看不出来的错数</b> —— 印错那一格与真值差着一千倍，'
+          '画上去要么是一根扎到零的刺，要么把同一张图上别的线整条压平。'
           '<b>上面列出的就是全表仅有的界内空格</b>（这一行不是手写的，是每次出图时'
           '拿 <code>series/asx.csv</code> 逐列现扫出来的）。'
           '<b>另有一处曾经的空格已经补上，值得说清补的是什么：</b>'
