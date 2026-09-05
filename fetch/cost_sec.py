@@ -125,12 +125,14 @@
 import csv
 import datetime
 import html as _html
+import io
 import json
 import os
 import re
 import sys
 import time
 import urllib.request
+import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 
@@ -307,36 +309,137 @@ def _submissions(cache_dir):
     return out
 
 
+def _index_rows(raw):
+    """EDGAR 人读版申报索引页 → 逐行 (cells, tr 内层 HTML)。
+
+    `cells[3]` 是 Type 那一格（`EX-99.2` / `EX-101.INS` / `10-Q` …），是**语义**判据；
+    文件名那一格是 `cells[2]`。两个调用点都只认 Type，不拼文件名、不猜后缀。
+    """
+    for tr in re.finditer(r'(?is)<tr[^>]*>(.*?)</tr>', raw):
+        body = tr.group(1)
+        cells = [re.sub(r'\s+', ' ', _html.unescape(re.sub(r'<[^>]+>', '', c.group(1)))).strip()
+                 for c in re.finditer(r'(?is)<t[dh][^>]*>(.*?)</t[dh]>', body)]
+        yield cells, body
+
+
 def _instance(cache_dir, f):
     """一篇申报的 XBRL instance 字节。
 
-    两种形状，顺序不能反：
+    三条路，顺序不能反：
       · 2019-12 起是 inline XBRL，SEC 会额外生成 `<primaryDocument 去掉 .htm>_htm.xml`，
         直接命中；
       · 更早的是独立 instance，文件名没有规律（`cost-20180819.xml` / `d123456d10q.xml`
         都出现过），只能读 `index.json` 挑：`.xml` 结尾、不是 `_cal/_def/_lab/_pre.xml`、
         不是 `FilingSummary.xml`、不是 `*-index.xml`，且开头 4KB 里出现 `xbrl`。
         最后那条是必须的 —— 目录里还躺着 `R*.htm` 的兄弟 xml 和图形附件。
+      · **`index.json` 漏列时**改读人读版索引 `<accession>-index.htm`。
+
+    ══ 第三条路是干什么的（2026-09-05 加）══
+    `index.json` 会漏列，而且此刻就在漏 —— 这不是新发现，本仓一个月前就为另一个发行人
+    写下过同一条结论：见 `fetch/rates_lpla.py:206-214`（四份 LPLA 的 8-K，
+    「文档在，只是 index.json 这条索引看不见它」），那里给的处方就是
+    「改从 `<acc>-index.html` 取文件名」（rates_lpla.py:284）。
+
+    实测 0000909832-17-000022（10-Q@2017-12-21，FY18Q1）：
+      · `index.json` → HTTP 200，**583 字节，只有 4 项**，全是包装文件
+        （`-index-headers.html` / `-index.html` / `.txt` / `-xbrl.zip`），一个 `.xml` 都没有；
+      · 同一个目录的 HTML 清单 → **73 个文件**，`cost-20171126.xml` 好端端挂着；
+      · 直接 GET 那个文件 → HTTP 200，863,287 字节，开头就是
+        `<?xml …?><!--XBRL Document Created with Wdesk from Workiva-->`。
+    也就是说**申报是完整的，坏的是那份 JSON 清单**。上面第二条路那圈循环因此一个候选都
+    遍历不到，直接掉进最后那句 raise，把整个 cost_sec 步打成 FAIL
+    （[seg] 挂 → [tkt] 连带「表 1（分部收入）没解」，五张表里两张写不成）。
+
+    在册的 62 篇 10-K/10-Q 里只有这一篇是这样，所以这是「一篇的索引坏了」，
+    不是「2017 那一代版式不支持」—— 别拿它去加什么按年份的跳过表。
+
+    人读版索引那一行的 Type 格恰好是 `EX-101.INS`（实测该行 cells =
+    ['5', 'XBRL INSTANCE DOCUMENT', 'cost-20171126.xml', 'EX-101.INS', '863287']），
+    linkbase 各自是 `EX-101.CAL/DEF/LAB/PRE`、schema 是 `EX-101.SCH`，
+    所以这条路认 Type 就够了，不需要第二条路那套后缀排除 —— 与本模块
+    `_ex992_url()` 认 `EX-99.2` 是同一个成语。
+
+    第四条路（`<accession>-xbrl.zip`）是兜底：它和人读版索引是**两条独立的索引**，
+    JSON 与 HTML 同时坏的日子它还在。zip 里只有 instance + xsd + 四条 linkbase，
+    所以沿用第二条路那组后缀排除；⚠ 遍历顺序按 zip 成员名排序，与 `index.json`
+    那圈的目录顺序**不同**（判据相同，顺序不同）。
     """
     acc = f['accession'].replace('-', '')
     base = f'{ARCHIVE}/{acc}/'
+    tried = []
     try:
         return _fetch(cache_dir, f'inst-{acc}.xml', base + f['primary'][:-4] + '_htm.xml')
     except CostSecError:
         pass
+
+    def _probe(b, url):
+        """开头 4KB 有 `xbrl` 才算数；不算数就把缓存删掉，免得下轮当好文件读。"""
+        if b'xbrl' in b[:4000]:
+            return True
+        os.remove(os.path.join(cache_dir or os.path.join(ROOT, 'cache'),
+                               'cost_sec', f'inst-{acc}.xml'))
+        tried.append(f'{url} 开头 4KB 里没有 xbrl')
+        return False
+
     idx = json.loads(_fetch(cache_dir, f'idx-{acc}.json', base + 'index.json'))
-    for it in idx['directory']['item']:
-        n = it['name']
+    listed = [it['name'] for it in idx['directory']['item']]
+    for n in listed:
         if not n.endswith('.xml') or n == 'FilingSummary.xml':
             continue
         if n.endswith(('_cal.xml', '_def.xml', '_lab.xml', '_pre.xml', '-index.xml')):
             continue
         b = _fetch(cache_dir, f'inst-{acc}.xml', base + n)
-        if b'xbrl' in b[:4000]:
+        if _probe(b, base + n):
             return b
-        os.remove(os.path.join(cache_dir or os.path.join(ROOT, 'cache'),
-                               'cost_sec', f'inst-{acc}.xml'))
-    raise CostSecError(f'{f["form"]}@{f["filed"]} {f["accession"]} 找不到 XBRL instance')
+
+    # ── 第三条路：index.json 漏列 → 人读版索引 ────────────────────────────────
+    tried.append('index.json 只列了 %d 项（%s）'
+                 % (len(listed), '、'.join(listed[:4]) or '空'))
+    try:
+        raw = _fetch(cache_dir, f'idxhtm-{acc}.htm',
+                     f'{base}{f["accession"]}-index.htm').decode('utf-8', 'replace')
+    except CostSecError as e:
+        raw = None
+        tried.append(str(e))          # 取不到 ≠ 没有，原因必须带到最后那句里
+    if raw:
+        for cells, body in _index_rows(raw):
+            if len(cells) >= 4 and cells[3] == 'EX-101.INS':
+                href = re.search(r'href="([^"]+)"', body)
+                if not href:
+                    continue
+                b = _fetch(cache_dir, f'inst-{acc}.xml', 'https://www.sec.gov' + href.group(1))
+                if _probe(b, href.group(1)):
+                    return b
+        tried.append(f'{f["accession"]}-index.htm 里没有 Type 为 EX-101.INS 的行')
+
+    # ── 第四条路：<accession>-xbrl.zip ───────────────────────────────────────
+    try:
+        z = _fetch(cache_dir, f'xbrlzip-{acc}.zip', base + f'{f["accession"]}-xbrl.zip')
+    except CostSecError as e:
+        z = None
+        tried.append(str(e))
+    if z:
+        try:
+            with zipfile.ZipFile(io.BytesIO(z)) as zf:
+                for n in sorted(zf.namelist()):
+                    bn = os.path.basename(n)
+                    if not bn.endswith('.xml') or bn == 'FilingSummary.xml':
+                        continue
+                    if bn.endswith(('_cal.xml', '_def.xml', '_lab.xml',
+                                    '_pre.xml', '-index.xml')):
+                        continue
+                    b = zf.read(n)
+                    if b'xbrl' in b[:4000]:
+                        return b
+            tried.append('-xbrl.zip 里没有像 instance 的成员')
+        except zipfile.BadZipFile:
+            tried.append('-xbrl.zip 打不开（不是合法 zip）')
+
+    # 四条路都没拿到 —— 把**每条路各自为什么没拿到**写进报错。
+    # 不写的话，「SEC 限速取不到」与「这篇真的没有 instance」会长得一模一样，
+    # 那正是 README「第四类：不出声的失败」要拦的形状。
+    raise CostSecError('%s@%s %s 找不到 XBRL instance：%s'
+                       % (f['form'], f['filed'], f['accession'], '；'.join(tried)))
 
 
 def _facts(raw):
@@ -720,10 +823,7 @@ def _ex992_url(cache_dir, accession):
     acc = accession.replace('-', '')
     raw = _fetch(cache_dir, f'idx8k-{acc}.htm',
                  f'{ARCHIVE}/{acc}/{accession}-index.htm').decode('utf-8', 'replace')
-    for tr in re.finditer(r'(?is)<tr[^>]*>(.*?)</tr>', raw):
-        body = tr.group(1)
-        cells = [re.sub(r'\s+', ' ', _html.unescape(re.sub(r'<[^>]+>', '', c.group(1)))).strip()
-                 for c in re.finditer(r'(?is)<t[dh][^>]*>(.*?)</t[dh]>', body)]
+    for cells, body in _index_rows(raw):
         if len(cells) >= 4 and cells[3] == 'EX-99.2':
             href = re.search(r'href="([^"]+)"', body)
             if href:
