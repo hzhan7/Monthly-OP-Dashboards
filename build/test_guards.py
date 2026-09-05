@@ -202,12 +202,29 @@ class TestRenderRegression(unittest.TestCase):
         rows = _remark_rows()
         if not rows:
             self.skipTest('series/mops_remarks.csv 不可读，跳过')
-        seen = 0
+        pages = {t for t, _ in rows}           # 用这张表的那几页（=七家半导体页）
+        newest = max(m for _, m in rows)
+        seen, ahead = 0, []
         for name, _, body in _published_briefs():
             t = name[:-3]
+            if t not in pages:
+                continue                       # 交易所页等，本来就不在这张表里
             month = _data_through(name)
             if (t, month) not in rows:
-                continue                       # 不在回补窗口内的页（交易所页等）
+                # 唯一合法的缺席：这一页跑在了共享 MOPS 表**前面**。
+                # 各家自己的申报最早次月第 4 天就到，而 MOPS 全市场汇总要等最后一家
+                # 申报完（实测第 13 天，见 monthly_run.mops_remarks 的 docstring）——
+                # 中间那十天里，先披露的那一两页本来就比这张表新。
+                # 2026-09-05 实测：umc 的 6-K 已到 2026-08，而 CSV 还停在 2026-07。
+                # 原来这里写的是无条件 `continue` + 末尾 `seen >= 7`，于是那十天里
+                # 每天都会误报一次「测试无效」——而 test_guards 是 preflight 闸门，
+                # 误报一次就是整轮不发。
+                if month > newest:
+                    ahead.append((t, month))
+                    continue
+                self.fail(f'{name} 的 data_through={month} 不晚于 CSV 最新月 {newest}，'
+                          f'却在 CSV 里找不到 ({t}, {month}) —— 接线多半断了'
+                          f'（页面路径变了 / CSV 的 ticker 拼写变了）')
             seen += 1
             want = rows[(t, month)]
             with self.subTest(page=name):
@@ -218,7 +235,12 @@ class TestRenderRegression(unittest.TestCase):
                 else:
                     self.assertEqual(got, [],
                                      f'{name} 本月 CSV 里备注为空，页面却印出了引文')
-        self.assertGreaterEqual(seen, 7, '一页都没对上，测试无效（CSV 或页面路径变了？）')
+        # 每一页都要有着落：要么逐字对上了，要么明确是「跑在表前面」。
+        # 这比原来的 `seen >= 7` 更严 —— 原来某页悄悄消失只会让计数少一个，
+        # 而 7 这个数字自己是硬编码的，页数一变就得改。
+        self.assertEqual(seen + len(ahead), len(pages),
+                         f'用这张表的有 {len(pages)} 页，只扫到 {seen} 页对上 + '
+                         f'{len(ahead)} 页跑在表前面 —— 有页面没被扫到，测试无效')
 
 
 class TestRenderBounds(unittest.TestCase):
