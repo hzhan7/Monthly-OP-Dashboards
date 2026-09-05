@@ -1226,6 +1226,7 @@ def _norm_decomp(d, where):
         'year_label': str(d.get('year_label', 'start')),
         'years': int(d.get('years', DECOMP_YEARS)),
         'note': str(d.get('note') or ''),
+        'section': str(d['section']) if d.get('section') else None,
     }
     if out['price_fmt'] not in FMT_INFO:
         raise SpecError(f"{where} 的 price_fmt={out['price_fmt']!r} 不是引擎实有的格式器名；"
@@ -1312,6 +1313,7 @@ def _norm_level_yoy(t, where):
         'zh': str(t['zh']),
         'level': lvl,
         'note': str(t.get('note') or ''),
+        'section': str(t['section']) if t.get('section') else None,
     }
 
 
@@ -1432,6 +1434,7 @@ class Page:
                 raise SpecError(f'groups[{gi}]（{g["zh"]}）一列都没有')
             self.groups.append({
                 'zh': g['zh'], 'cols': cols,
+                'section': str(g['section']) if g.get('section') else None,
                 'mix': _norm_mix(g['mix'], f'groups[{gi}]（{g["zh"]}）.mix')
                 if g.get('mix') else None})
 
@@ -3928,6 +3931,9 @@ class Page:
         if got is None:
             return None, why
         latest, common = got
+        # glossary / brief 的 callable 拿得到页面钉死的那个数据月 —— 各列自己的
+        # [-1] 会串到发布更快的腿上，同一页对同一指标给出两个互斥读数。
+        self.latest = latest
         idx = list(self.df.index)
         newest = idx[-1]
         ex, n = [], 2
