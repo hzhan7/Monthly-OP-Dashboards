@@ -1064,7 +1064,7 @@ def _cost_sec_behind(probe):
 
 
 def cost_sec():
-    """刷新 /cost/ 的**第二个数据源** —— SEC 申报层那四张 series/cost_*.csv，返回失败清单。
+    """刷新 /cost/ 的**第二个数据源** —— SEC 申报层那五张 series/cost_*.csv，返回失败清单。
 
     ══ 为什么是独立一步，而不是 fetch/cost.py 里的一条慢腿 ══
     三条理由，任何一条单独都足以否掉「塞进 fetch/cost.py::update()」那个写法：
@@ -1127,7 +1127,7 @@ def cost_sec():
 
     ══ 有新东西为什么必须自己重建 data/cost.js（这一步不能省）══
     与 `mops_remarks()` 同一个理由。`series_fingerprint()` glob 的是 `series/cost*.csv`，
-    这四张表**本来就在它的 glob 里**，所以「内容变了」这个触发条件天然成立 —— 但那个触发器
+    这五张表**本来就在它的 glob 里**，所以「内容变了」这个触发条件天然成立 —— 但那个触发器
     只在 `one('cost')` 里被读，而本步跑在按家循环**之后**，`one('cost')` 早就 NOCHANGE 走人了。
     没有下面这次 `sh(builder('cost'))`，CSV 更新了而页面永远读不到。
     触发条件用指纹而不是 `if added`，也是照 `one()` 的 docstring：`update()` 首次建表返回 []
@@ -1179,7 +1179,7 @@ def cost_sec():
     else:
         # 指纹变了但没有新主键 —— 首次建表，或 10-K 重述了历史（cost_fy 取最新申报值）。
         # 与 one() 的 REBUILT 分开标是同一个理由：这两件事在日志里必须能分开看。
-        print(f'{"cost_sec":<10} REBUILT  四张表内容有变但无新主键（首次建表 / 官方重述）')
+        print(f'{"cost_sec":<10} REBUILT  五张表内容有变但无新主键（首次建表 / 官方重述）')
 
     cmd = builder('cost')
     if cmd is None:
@@ -1459,7 +1459,7 @@ def main():
                 months[t] = msg
 
     # /cost/ 的第二个数据源（SEC 10-K/10-Q/8-K，CIK 0000909832）：分部收入 / 客单客流 /
-    # 财年单店经济 / 开业年份矩阵，四张 series/cost_*.csv。**必须在按家循环之后单独一步**：
+    # 财年单店经济 / 开业年份矩阵 / 盈亏平衡回填，五张 series/cost_*.csv。**必须在按家循环之后单独一步**：
     # `one()` 在 import fetch 之前先问 `not_due('cost')`，而那个判断读的 data_through 由
     # **月度腿**独家推动 —— 月度销售稿一落地闸门就关死，而 SEC 腿的到货日全落在关死之后。
     # 塞进 fetch/cost.py 当慢腿等于「永远不跑」，且长得和健康的安静日一模一样。

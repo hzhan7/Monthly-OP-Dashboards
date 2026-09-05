@@ -287,11 +287,13 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 
 ⚠ **「一页一个源」不再普遍成立：`/cost/` 有两个。** 除了 GlobeNewswire 的月度销售稿
 （`fetch/cost.py` → `series/cost.csv`），2026-09 起还接了 SEC 申报层
-（`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写四张 `series/cost_*.csv`：
-分部收入、客单与客流、财年单店经济、开业年份矩阵 —— 这三类数字月度稿里**一件都没有**。
+（`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写五张 `series/cost_*.csv`：
+分部收入、客单与客流、财年单店经济、开业年份矩阵，以及 `cost_fy_be.csv`（FY2011–FY2015 的
+合并损益回填，只喂 Exhibit 16 的两条盈亏平衡线，用的是上一代 XBRL 元素名）——
+这几类数字月度稿里**一件都没有**。
 两条腿节奏完全不同（月度 vs 季度/年度），所以在 `monthly_run.py` 里是**两步**而不是一步；
 接线与「为什么不能合成一步」见 `docs/CRON_WIRING.md` §2.5。
-读这四张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
+读这几张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
 
 几条踩过的坑：
 
