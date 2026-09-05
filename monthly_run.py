@@ -40,10 +40,13 @@
 10 家新交易所随时可能被用户删掉，这条隔离对它们尤其要紧：删剩的残渣最多让一家 FAIL，
 不会让另外二十七家停发。
 
-三张公共表走的是**同一条原则的另一半**：它们不属于任何一家，失败时也不阻断本轮
+四张公共表走的是**同一条原则的另一半**：它们不属于任何一家，失败时也不阻断本轮
 （否则一张附表就能让 34 张页面全部不发），但失败必须计入末行的 PARTIAL ——
 它们的故障在页面上是**看不见**的（fx 只让换算偏一点、mops_remarks 只让七页少一句
 引文与一列），末行是唯一的故障信号。
+`taiwan_fx` 是这里唯一半个例外：它挂了，六页里**本轮有新营收月**的那几家会当场 build
+失败、看得见；**没有新营收月**的那几家一点信号都没有，而它们下个月照样要撞墙 ——
+所以它同样得自己记一条（它还是唯一跑在按家循环**之前**的一张，见它自己的 docstring）。
 `cost_sec` 同理，而且更隐蔽：它冻住时 /cost/ 的红点跟的仍是**月度腿**的 data_through，
 首页照样绿点、照样印着最新月份，页面上一点异常都没有。
 
@@ -114,10 +117,19 @@ EXCHANGES = [
     'sgx',     # SGX              次月第 6-13 天，中位第 9
     'ndaq',    # Nasdaq           份额腿次月第 10 个工作日（IR 腿第 2-6 天）
 ]
-# 顺序 = 首页与导航的展示顺序，也是这里的执行顺序（无依赖，纯为日志好读）
+# 顺序 = 首页与导航的展示顺序，也是这里的执行顺序。
+# ⚠ 「纯为日志好读、各家之间无依赖」这句话 2026-09-05 之前一直写在这里，而它是**错的**：
+#   umc / ase / mtk / nanya / guc 的 build 都要读 series/tsm_fx.csv，那张表由 fetch/tsm.py
+#   维护，而 tsm 排在这五家**后面** —— 谁先披露完营收，谁当轮就 build 失败（实测打死过 /umc/）。
+#   现在那条依赖由 taiwan_fx() 在按家循环**之前**满足，所以这张表的顺序确实可以随便改了；
+#   但**别再往里加新的跨家依赖**：这里没有任何东西会检查它，代价是当轮 FAIL + 之后每轮静默 NOCHANGE。
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
            'msci', 'spgi', 'axp', 'nanya', 'guc', 'alchip', 'mtk', 'umc', 'ase',
            'tsm'] + EXCHANGES
+# 读 series/tsm_fx.csv 的六页（那张表由 fetch/tsm.py 维护，见 taiwan_fx）。
+# 前五家在 TICKERS 里都排在 tsm 前面 —— 这正是 taiwan_fx 存在的理由。
+TAIWAN_FX_PAGES = ['tsm', 'umc', 'ase', 'mtk', 'nanya', 'guc']
+
 # 横截面页没有自己的数据源，等成员都更新完之后再生成。
 # 这里的名字是**目录名 / data 文件名**（连字符）；生成器文件名是下划线的
 # build/exchanges_na.py —— 两者的对应由 builder() 负责，不在这张表里体现。
@@ -1307,6 +1319,87 @@ def fee_rates():
     return bad
 
 
+def taiwan_fx():
+    """台湾六页共用的 NTD/USD 底座：series/tsm_fx.csv。
+
+    返回 `(失败清单, 本次新增的汇率月份)`：前者交给 main() 计入总状态，
+    后者交给 taiwan_fx_rebuild()（它跑在按家循环之后，理由见那个函数）。
+
+    ══ 为什么必须跑在按家循环之前 ══
+    这张表由 fetch/tsm.py 维护，却被 **六页** 读：tsm / umc / ase / mtk / nanya / guc。
+    build 那一侧是硬要求 —— 营收有 M 月而汇率没有 M 月，mrbase.py:898 直接抛
+    `SpecError: series/tsm_fx.csv 缺月份 [M]`，那一家当轮 FAIL。
+    而 TICKERS 里 **umc / ase / mtk / nanya / guc 五家全排在 tsm 前面**，
+    也就是说「谁先披露完营收，谁就先撞上这堵墙」，一年里迟早轮得到。
+
+    2026-09-05 实测现场：UMC 的 6-K 先到（2026-08），TSMC 的 xlsx 还停在 7 月，
+    tsm_fx.csv 也还停在 2026-07 —— `--only umc,tsm` 复现 umc FAIL、`--only tsm,umc`
+    两家都 NEW，同一天同一份数据，差别只有顺序。
+
+    这类停更还会**自我掩盖**：fetch 那一步已经把 2026-08 写进 series/umc.csv 了，
+    所以下一轮 `series_fingerprint` 不再变化，one() 走 NOCHANGE 分支、连 build 都不再试，
+    FAIL 只在第一轮出现一次，之后每天都是干干净净的 NOCHANGE，
+    而 data/umc.js 永远停在 2026-07（与 one() docstring 里 ndaq 那一段是同一类病）。
+
+    ══ 为什么不套下载闸门 ══
+    与 fx() 同理：汇率的推进**不依赖任何一家台湾公司披不披露**。H.10 是美联储周更，
+    月均在次月第 1 个营业日就算得全（fetch/tsm.py 文首第 2 节），套上按家的披露闸门
+    等于让底座陪着最晚的那一家一起等。代价是每轮多一个 federalreserve.gov 请求。
+
+    ══ 为什么失败不吞 ══
+    底座抓不到时，六家里凡是本轮有新营收月的都会跟着 build 失败 —— 但**没有新月份的
+    那几家什么信号都不会有**，而它们下个月照样要撞墙。所以这里自己返回一条失败，
+    让末行的总状态说出来。
+    """
+    p = os.path.join(HERE, 'fetch', 'tsm.py')
+    if not os.path.exists(p):
+        return [], []
+    try:
+        added = load(p, 'fetch_tsm').update_fx(SERIES, CACHE) or []
+    except Exception as e:
+        print(f'{"tsm_fx":<10} FAIL     {type(e).__name__}: {str(e)[:120]}')
+        return ['tsm_fx'], []
+    if not added:
+        print(f'{"tsm_fx":<10} NOCHANGE 无新月份')
+        return [], []
+    print(f'{"tsm_fx":<10} NEW      {len(added)} 个月: {", ".join(added[-6:])}')
+    # 重建交给 taiwan_fx_rebuild()，它跑在按家循环**之后** —— 在这儿重建等于拿旧 CSV
+    # 白建一遍，紧接着循环里又建一次。
+    return [], added
+
+
+def taiwan_fx_rebuild(added, already):
+    """汇率有新月份时，把本轮**没被按家循环重建过**的消费页补重建一遍。
+
+    与 fee_rates() 结尾那段是同一个修法（读它的是单公司页，那几家可能整轮都没被碰过），
+    差别只在这里会先跳过循环里已经重建过的：taiwan_fx 跑在循环之前，
+    循环里那几家若自己也有新营收月，早就拿着新汇率建过一次了，再建一遍是白做。
+
+    为什么不能省掉这一步：汇率不只喂那条汇率线。实测 2026-09-05，tsm_fx.csv 多一个
+    2026-08 之后 data/tsm.js 里那句季度对表从「当季 7 月已实现 32.22，按它算需高 5.7%」
+    变成「当季 7、8 月已实现 32.13，按它算需高 5.3%」—— 页面上是会变的正文，
+    营收却还停在 7 月、按家循环那一侧是 NOCHANGE，没人会去催它。
+
+    与 fee_rates 一样**不看 `--only`**：CSV 已经变了，六页里没重建的那几张就是旧的，
+    这与调试时只想跑一家无关。
+    """
+    if not added:
+        return []
+    bad = []
+    for t in TAIWAN_FX_PAGES:
+        if t in already:
+            continue
+        cmd = builder(t)
+        if cmd is None:
+            continue
+        try:
+            sh(cmd)
+        except Exception as e:
+            print(f'{t:<10} FAIL     汇率更新后重建失败: {str(e)[:100]}')
+            bad.append(t)
+    return bad
+
+
 def fx():
     """刷新公共汇率底座 series/fx.csv，返回失败清单（成功时空表）。
 
@@ -1447,7 +1540,13 @@ def main():
         print(f'FAILED 未知 ticker: {bad}')
         sys.exit(1)
 
+    # 台湾六页的共享汇率底座：**必须在按家循环之前**（理由见 taiwan_fx 的 docstring）。
+    # 与下面那几步不同，它不是「循环之后的收尾」而是「循环之前的地基」——
+    # 循环里那五家的 build 要读它，晚一步就是当轮 FAIL + 之后每轮静默 NOCHANGE。
+    pre_fails, fx_added = taiwan_fx()
+
     ok, fails, months = [], [], {}
+    fails += pre_fails
     for t in todo:
         st, msg = one(t, a.force)
         print(f'{t:<10} {st:<8} {msg}')
@@ -1457,6 +1556,9 @@ def main():
             ok.append(t)
             if st == 'NEW':
                 months[t] = msg
+
+    # 汇率底座的补重建：必须在按家循环**之后** —— 循环里已经拿新汇率建过的那几家要跳过。
+    fails += taiwan_fx_rebuild(fx_added, set(ok) | set(fails))
 
     # /cost/ 的第二个数据源（SEC 10-K/10-Q/8-K，CIK 0000909832）：分部收入 / 客单客流 /
     # 财年单店经济 / 开业年份矩阵 / 盈亏平衡回填，五张 series/cost_*.csv。**必须在按家循环之后单独一步**：
