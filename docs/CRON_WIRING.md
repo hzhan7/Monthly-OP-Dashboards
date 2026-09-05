@@ -211,7 +211,7 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 | 腿 | 源 | 写什么 | 节奏 | 闸门 |
 |---|---|---|---|---|
 | 月度腿 | GlobeNewswire 月度销售稿（`fetch/cost.py`） | `series/cost.csv` | 零售月结束后首个周三 | 日历闸门，`LAG=(7,7)`、`EARLY` 默认 → 月末后第 2 天（见 §2.3） |
-| SEC 腿 | EDGAR CIK **0000909832** 的 10-K / 10-Q / 8-K(EX-99.2)（`fetch/cost_sec.py`） | `series/cost_seg_q.csv` / `cost_tkt_q.csv` / `cost_fy.csv` / `cost_cohort.csv` | 8-K 季末后约 4 周、10-Q 后 3-4 周、10-K 后 5-6 周 | **无闸门，每轮都跑**（理由见下） |
+| SEC 腿 | EDGAR CIK **0000909832** 的 10-K / 10-Q / 8-K(EX-99.2)（`fetch/cost_sec.py`） | `series/cost_seg_q.csv` / `cost_tkt_q.csv` / `cost_fy.csv` / `cost_cohort.csv` / `cost_fy_be.csv` | 8-K 季末后约 4 周、10-Q 后 3-4 周、10-K 后 5-6 周 | **无闸门，每轮都跑**（理由见下） |
 
 失败处理与三张公共表同档：**计入失败清单 → `PARTIAL`，不阻断本轮**。
 
@@ -244,7 +244,7 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
   客单/客流在源上挂着而这边不取 —— 拿六天陈旧换半秒 CPU，方向反了。
 
 ⇒ 结论与 `fx` 同款：**每轮都跑**，代价是两个 JSON 请求（约 420 KB）+ 一秒多本地解析；
-没有新申报时四张 CSV 逐字节不变、`update()` 返回 `[]`。
+没有新申报时五张 CSV 逐字节不变、`update()` 返回 `[]`。
 
 **`latest_quarter()` 改用在对账上，不是闸门**：`update()` 返回 `[]` 有两种含义 ——
 「源上真没有新申报」与「有新申报但解析器没认出来」，两者在日志里长得一模一样
@@ -257,7 +257,7 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 对账**不覆盖 8-K 那条腿**，也不该覆盖：它比同季 10-Q 早约一周，拿它对账会天天误报。
 
 **有新东西时它自己重跑 `build/cost.py`**（同 `mops_remarks` 要自己重跑那七页）：
-触发器是 `series_fingerprint('cost')` 的前后差（`glob` 的 `series/cost*.csv` 本来就包含这四张表），
+触发器是 `series_fingerprint('cost')` 的前后差（`glob` 的 `series/cost*.csv` 本来就包含这五张表），
 不是 `if added` —— `update()` 首次建表返回 `[]`，`cost_fy.csv` 的官方重述取最新值也不产生新主键。
 
 **它写盘只落在 `series/` 与 `cache/cost_sec/`**（后者已 gitignore），
@@ -346,18 +346,20 @@ python3 build/make_shells12.py  # 应少写一个壳
 #   monthly_run.py   main() 里 `if 'cost' in todo: fails += cost_sec()` 那两行
 #                    （函数 cost_sec() 与 _cost_sec_behind() 留着不会被调用，想清干净就一起删）
 rm fetch/cost_sec.py
-rm series/cost_seg_q.csv series/cost_tkt_q.csv series/cost_fy.csv series/cost_cohort.csv
+rm series/cost_seg_q.csv series/cost_tkt_q.csv series/cost_fy.csv series/cost_cohort.csv series/cost_fy_be.csv
 rm -rf cache/cost_sec        # 88 MB，可重下
 ```
 
 ⚠ **两处的顺序与后果**：`monthly_run.py` 那两行删掉、`fetch/cost_sec.py` 还留着，是**静默停更**
-（没人调用它，四张 CSV 就此冻住，而 `/cost/` 的红点跟的是月度腿、照样是绿的）；
+（没人调用它，五张 CSV 就此冻住，而 `/cost/` 的红点跟的是月度腿、照样是绿的）；
 反过来只删 `fetch/cost_sec.py` 不删那两行是**安全**的 —— `cost_sec()` 第一句就是
 「文件不在就返回空清单」，与 `mops_remarks` / `fee_rates` / `fx` 同款。所以真要删，
 **先删 `monthly_run.py` 那两行**，别只删文件。
 
-⚠ **删四张 CSV 之前先看 `build/cost.py` 还读不读它们**：`/cost/` 页上凡是分部收入 /
-客单客流 / 财年单店经济 / 开业年份矩阵的图都由它们喂，CSV 没了那些图会缺数据。
+⚠ **删五张 CSV 之前先看 `build/cost.py` 还读不读它们**：`/cost/` 页上凡是分部收入 /
+客单客流 / 财年单店经济 / 开业年份矩阵 / Exhibit 16 那两条盈亏平衡线的图都由它们喂，
+CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.py` **硬要求**的
+（文件不在就 `SystemExit`），不像别的表那样只是少几张图。
 月度腿（`series/cost.csv`）与它们**互不读写**，所以只删 SEC 腿不会影响月度那部分。
 
 ### 忘了其中一处会怎样
