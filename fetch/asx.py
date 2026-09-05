@@ -239,13 +239,17 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     月份支持缩写（`… - Jan 2025`）、**标题不带年份时数据月 = 发布月 − 1**
     （2017-10、2017-11、2018-02/03/08/11 等期标题只有月名）。
 
-19. **2016–2018 那一代排版会把千分位逗号印成小数点，错值本身完全合法。**
-    实测两例，方向相反，所以不是「早期版本都要 ×1000」这种能一刀切的东西：
+19. **官方会把千分位逗号与小数点印反，错值本身完全合法。**
+    ⚠ 这条原先写的是「2016–2018 那一代排版」—— **那个窗口假设是错的**，
+    2026-09 在 2020-01 与 2025-08 各抓到一例（口径坑 23）。这不是某一代版式的
+    历史遗留，是随时会复发的排版事故，所以判据不能按年份写。
+    早期实测两例，方向相反，所以也不是「早期版本都要 ×1000」这种能一刀切的东西：
         2016-09 本期列 `Average value per trade ($)` = `4.852`（真值 4,852）
         2018-01 的 pcp 列同一行         = `4.433`（那是 2017-01 的值，真值 4,433）
     底层字符是真的 U+002E，不是渲染成句点的逗号 ⇒ 解析没错，是官方印错了。
     这种错**过不了任何一条加总恒等式**（这一行不参与任何加总），也不会让 `_validate`
     报缺列 —— 它就是一个安安静静小一千倍的数，画在图上是一根扎到零的刺。
+    （口径坑 23 补了两道判据：同一行小数点风格自证 + `ADV × 交易日 = 月总量` 乘法恒等式。）
     ⇒ 靠**跨期自证**抓：t 期报告的第 2 个值列就是 t−12 月的值，拿它撞 series 里已有的
     那一行。本次回补用这条把 2016-01…2017-09 的 776 格全撞了一遍，760 格一致，
     16 格不一致里 13 格是精度（见下）、2 格是后期报告自己印错、1 格就是 2016-09 这个。
@@ -320,6 +324,36 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
         · **与 MAR 对账**：该期报告页尾 `Total Exchange` 的当月量 = 同月 MAR 的
           `contracts_futures_and_options_total`，**74/74 全等**。这一条同时证明
           「文件配对到了正确的月份」与「值列没有整体串行」。
+
+23. **口径坑 19 的错印在 2020-01 与 2025-08 各复发一次，方向互为镜像。**
+    2026-09 用本模块现成的媒体中心索引下载两期原件、PyMuPDF `rawdict` 逐字符核对，
+    两处都是**官方排版错误**，不是 `_num()` 的问题：
+        2020-01 `Index options volume / Average daily contracts` 本月列印 `43.485`
+            （`.` 是真 U+002E，Calibri，同行另外三列 `35,544`/`36,901`/`46,281`
+            用的都是千分位逗号）。同表 `Total contracts` 913,176 ÷ 本节交易日 21
+            = 43,484.57 ⇒ 真值应为 43,485。
+        2025-08 `Total billable cash market value cleared ($billion)` 本月列印
+            `166,019`（`,` 是真 U+002C，ArialMT，同行另外三列 `142.742`/`316.749`/
+            `271.170` 都是三位小数）⇒ 真值应为 166.019。
+    **两格一律留空，不写替代值** —— 反推用的都是「同一张表里另外两个数相除/相加」，
+    与坑 19 已经明令拒绝的 108.913e9 ÷ 22,449,067 = 4,851.6 是同一类反推。
+    这条线一旦因为「这次反推更准」就松动，就再没有客观标准了。两条登记见
+    `_KNOWN_SOURCE_GAPS`。
+
+    ⇒ 补了两道判据，都不需要历史数据、不需要猜量级阈值：
+    · **同一行小数点风格自证**（`_decimal_style_check()`）。`_num()` 把千分位逗号吃掉
+      之后，「这个字符串里有没有 `.`」原样留在解析结果里。同一个指标的
+      「本月 / 去年同月 / 本财年 YTD / 去年同期 YTD」四列出自同一次排版，理应用同一种
+      记数习惯；混用就是官方把两个符号印反了的物证。回溯三次已知事故
+      （2016-09 / 2020-01 / 2025-08）三次命中。
+      ⚠ 已在 `_KNOWN_SOURCE_GAPS` 登记过的格**跳过**，让它照旧走
+      `_drop_source_errors()` 的「先核对错值再删」那条路 —— 否则官方哪天重发修正版，
+      这道判据会先一步把整月拦死，那条核对就永远跑不到了。
+    · **`ADV × 交易日 = 月总量` 乘法恒等式**（`_RATE_IDENTITIES`）。官方在同一张表里
+      同时印日均与月总量，这层关系此前一条都没查过 —— 而现有 5 条恒等式清一色是加法，
+      从设计上就不管单个数的小数点位置。实测 128 个月 × 5 组配对，合法残差最大
+      1.02e-3（官方把 ADV 四舍五入到整张），2020-01 那格是 0.999，
+      容差取 `_RATE_TOL = 5e-3`（合法侧 5 倍余量，错值侧差两个数量级）。
 
 ━━ 依赖 ━━ pymupdf（import 名 fitz）。不依赖 pandas / requests。
 """
@@ -626,6 +660,28 @@ def _num(tok):
     if not re.fullmatch(r'-?\d+(?:\.\d+)?', t):
         return None
     return ('-' + t) if (neg and not t.startswith('-')) else t
+
+
+def _decimal_style_mixed(vals):
+    """同一行的值列里小数点风格不一致 -> 说明字符串；一致返回 None。
+
+    `_num()` 已经把千分位逗号吃掉，但**有没有 `.`** 这个信息原样留在它返回的字符串里。
+    同一个指标的「本月 / 去年同月 / 本财年 YTD / 去年同期 YTD」四列出自**同一次排版**，
+    理应用同一种记数习惯：要么都是三位小数的金额，要么都是不带小数的张数。
+    混用是官方把千分位逗号与小数点印反了的物证（口径坑 19 / 23）。
+
+    为什么用这条而不是「跟前后月比量级」：这条不需要历史数据、不需要猜阈值，而且
+    上市融资、上市数变动这些列本来就会真实地大起大落（口径坑 10 / 11），量级判据
+    在那些列上必然与真实业务尖峰打架。回溯三次已知事故三次命中：
+        2016-09 ['4.852', '5710', '4.701', '5784']
+        2020-01 ['43.485', '35,544', '36,901', '46,281']
+        2025-08 ['166,019', '142.742', '316.749', '271.170']
+    """
+    dotted = [v for v in vals if v and '.' in v]
+    plain = [v for v in vals if v and '.' not in v]
+    if dotted and plain:
+        return '带小数点的 %s，不带的 %s' % (dotted, plain)
+    return None
 
 
 def _page_rows(page):
@@ -970,7 +1026,7 @@ def parse_mar(path, skip_first_page=False, month=None):
         if v:
             table.setdefault((section, sub, k), v)
 
-    out = {}
+    out, raw_cols = {}, {}
     for name, sec, want_sub, aliases, _since, _until in COLUMN_SPEC:
         for alias in aliases:
             if want_sub is not None:
@@ -983,6 +1039,7 @@ def parse_mar(path, skip_first_page=False, month=None):
                 v = cand[0] if len(cand) == 1 else (None if not cand else cand[0])
             if v:
                 out[name] = v[0]        # 口径坑 4：永远取值列从左数第 1 个
+                raw_cols[name] = v      # 口径坑 23 的判据要看**整组**值列，不止第 1 个
                 break
 
     # 口径坑 16：极少数期的量块「值列相对标签整体上移一行」（实测 127 期只有 2017-04）。
@@ -1002,6 +1059,26 @@ def parse_mar(path, skip_first_page=False, month=None):
                   % (_who, name, v[0], why, '入库' if ok else '不入库，保持留空'))
             if ok:
                 out[name] = v[0]
+
+    # 口径坑 23：同一行小数点风格自证。放在这里（out 已建齐）而不是行循环里，
+    # 是为了拿得到 CSV 列名 —— 判据要按 (数据月, 列名) 去查黑名单。
+    #
+    # ⚠ 已登记的格**跳过，不拦**：让它照旧流到 `_fetch_one` 里的 `_drop_source_errors()`，
+    #   由那边「先核对错值还是那个错值，再删」。官方哪天重发修正版，那条核对会当场炸出来；
+    #   如果在这里就把整月拦死，那条核对永远跑不到，我们就再也发现不了官方已经修好了。
+    # month 为 None（不经 `_fetch_one` 的裸调用）时查不了黑名单，整条判据跳过。
+    if month is not None:
+        for name, v in raw_cols.items():
+            if (month, name) in _KNOWN_SOURCE_GAPS:
+                continue
+            bad = _decimal_style_mixed(v)
+            if bad:
+                raise AsxFetchError(
+                    '%s 的 %s 一行里小数点风格不一致：%s —— 几乎总是官方把千分位逗号'
+                    '与小数点印反了（见模块 docstring 口径坑 19 / 23，2016-09 / 2020-01 / '
+                    '2025-08 三次实测都是这个签名）。真值即使反推得出也不写替代值：'
+                    '核对之后把这一格登记进 `_KNOWN_SOURCE_GAPS` 留空。拒绝写入'
+                    % (month, name, bad))
 
     # 口径坑 21：VIX 在 2019-10 之前只印在正文要点里。
     # 两处都有时**必须逐位相同** —— 这条撞法是把「正文那句话就是表里那个数」
@@ -1204,6 +1281,36 @@ _IDENTITIES = [
      'capital_secondary_total_audmn', 0.5),
 ]
 
+# (说明, ADV 列, 交易日列, 月总量列)。官方在同一张表里**同时**印日均与月总量，
+# 这层关系是乘法，与上面清一色的加法恒等式形状不同，所以单独一张表、单独一个相对容差：
+# 加法那边的绝对容差随量级走不动（合计张数容差 0.0、成交额 0.002），乘法这边的残差
+# 天生正比于量级（官方把 ADV 四舍五入到整张），只能按相对值判。
+#
+# 这张表是口径坑 23 补的。此前 `_IDENTITIES` 五条全是加法，**从设计上就不管单个数的
+# 小数点位置**——2020-01 `adv_index_options_contracts` 印成 43.485（真值 43,485）
+# 因此一路畅通到页面上，画成一根扎到零的刺。
+#
+# 容差 5e-3 的来历（实测，不是拍的）：128 个月 × 下面 5 组配对，合法残差最大
+# 1.021e-3（2023-09 的期货期权），2020-01 那一格是 9.990e-1。合法侧留 5 倍余量，
+# 与错值差两个数量级。
+_RATE_TOL = 5e-3
+_RATE_IDENTITIES = [
+    ('期货 ADV × 交易日 = 期货月总张数',
+     'adv_futures_contracts', 'trading_days_futures', 'contracts_futures_total'),
+    ('期货期权 ADV × 交易日 = 期货期权月总张数',
+     'adv_options_on_futures_contracts', 'trading_days_futures',
+     'contracts_options_on_futures_total'),
+    ('期货与期货期权 ADV × 交易日 = 合计月总张数',
+     'adv_futures_and_options_contracts', 'trading_days_futures',
+     'contracts_futures_and_options_total'),
+    ('单股期权 ADV × 交易日 = 单股期权月总张数',
+     'adv_single_stock_options_contracts', 'trading_days_eto',
+     'contracts_single_stock_options_total'),
+    ('指数期权 ADV × 交易日 = 指数期权月总张数',
+     'adv_index_options_contracts', 'trading_days_eto',
+     'contracts_index_options_total'),
+]
+
 
 def _check_identities(month, rec):
     """用官方自己在同一张表里印出来的加总关系做体检。
@@ -1223,6 +1330,20 @@ def _check_identities(month, rec):
                 '%s 加总恒等式不成立：%s —— %s 之和 %.6f，官方印的 %s = %.6f。'
                 '这是解析串行的典型症状（见模块 docstring 口径坑 3 / 16），拒绝写入'
                 % (month, desc, parts, sum(pv), total, tv))
+
+    # 乘法一族（口径坑 23）：抓的不是「装错格子」，是**单个数的小数点位置错了**。
+    # 加法恒等式对这类错天生无感 —— 错的那一格根本不参与任何加法。
+    for desc, adv, days, total in _RATE_IDENTITIES:
+        av, dv, tv = _f(rec, adv), _f(rec, days), _f(rec, total)
+        if None in (av, dv, tv) or tv == 0:
+            continue                     # 该月官方没印齐这三行，交给 _validate 判
+        rel = abs(av * dv - tv) / abs(tv)
+        if rel > _RATE_TOL:
+            raise AsxFetchError(
+                '%s 乘法恒等式不成立：%s —— %s=%s × %s=%s = %.6f，官方印的 %s = %.6f，'
+                '相对残差 %.3e > 容差 %.0e。几乎总是官方把千分位逗号与小数点印反了'
+                '（见模块 docstring 口径坑 19 / 23），拒绝写入'
+                % (month, desc, adv, av, days, dv, av * dv, total, tv, rel, _RATE_TOL))
 
 
 def _identity_gate(rec, name):
@@ -1311,6 +1432,25 @@ _KNOWN_SOURCE_GAPS = {
     ('2016-09', 'avg_value_per_trade_aud'):
         ('4.852', '官方 2016-09 期把千分位逗号印成小数点（口径坑 19），真值 4,852 '
                   '只能由别处佐证 ⇒ 留空'),
+
+    # 口径坑 23：同一类错印在 2020-01 与 2025-08 各复发一次，方向互为镜像。
+    # 2026-09 用媒体中心索引下载两期原件、PyMuPDF `rawdict` 逐字符核过，坏字符是真的
+    # U+002E / U+002C（Calibri / ArialMT 正文字体，与同行其余数字同字号同字体），
+    # 既不是渲染伪影，也不是 `_num()` 解析错 —— 是官方自己印错：
+    #     2020-01 ['43.485', '35,544', '36,901', '46,281']  本月列印成小数点
+    #     2025-08 ['166,019', '142.742', '316.749', '271.170']  本月列印成千分位逗号
+    # 两条反推都精确到底（913,176 ÷ 21 = 43,484.57；FY YTD 316.749 − 上月 150.730
+    # = 166.019），**但仍然不写替代值** —— 它们与坑 19 已经明令拒绝的
+    # 108.913e9 ÷ 22,449,067 = 4,851.6 是同一类反推（同一张表里另外两个数相除/相加）。
+    # 若因为「这两例反推更准」就破例，那条纪律就变成了「反推不够准才不许填」，
+    # 从此没有客观标准。⇒ 一律留空。
+    ('2020-01', 'adv_index_options_contracts'):
+        ('43.485', '官方 2020-01 期把指数期权 ADV 的千分位逗号印成小数点（口径坑 23），'
+                   '真值 43,485 只能由同表 913,176 ÷ 21 反推 ⇒ 留空'),
+    ('2025-08', 'billable_cash_cleared_audbn'):
+        ('166019', '官方 2025-08 期把可计费现货清算额的小数点印成千分位逗号'
+                   '（口径坑 23，与坑 19 方向相反），真值 166.019 只能由同表 FY YTD 列'
+                   '316.749 − 上月 150.730 反推 ⇒ 留空'),
 }
 
 # 列名写错的黑名单条目会**静默失效**（那一格照旧被 `missing` 拦下，而黑名单那条谁也没在用），
