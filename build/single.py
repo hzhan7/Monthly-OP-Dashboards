@@ -4476,16 +4476,13 @@ def main(argv=None):
     # docs/VISUAL_QA.md 的幂等核对那一步都在教这条命令）就会**静默**把 6 页的
     # payload 覆盖回 decomp/level_yoy/seasonality 那套旧图列 —— 页面不报错、闸门也全过，
     # 只是图列悄悄换了一套。这是本轮路由审计查出的唯一真撞车口子，故在这里单向堵死。
-    # 判据与 mrbase.owned_elsewhere() 同源：看 build/<t>.py 里有没有 mrbase 字样。
-    owned = []
-    for t in ts:
-        shell = os.path.join(HERE, f'{t}.py')
-        try:
-            with open(shell, encoding='utf-8') as fh:
-                if 'mrbase' in fh.read():
-                    owned.append(t)
-        except OSError:
-            pass
+    # 2026-09 判据放宽：从「build/<t>.py 里有没有 mrbase 字样」改成「build/<t>.py 在不在」，
+    # 与 monthly_run.builder() 同源（那边也只看文件在不在，不认名字）。
+    # 起因是 ice：它从 build/specs/ 改成了手写的 build/ice.py，而手写页里没有 mrbase 这个词，
+    # 旧判据认不出来 —— 只要 spec 还在，跑一次 `--all` 就会把它的 payload 覆盖回旧图列。
+    # 放宽之后这一支同时盖住两类被别处接管的页（mrbase 薄壳 与 手写生成器），
+    # 而「specs 有、build/<t>.py 没有」的那 9 家交易所不受影响。
+    owned = [t for t in ts if os.path.exists(os.path.join(HERE, f'{t}.py'))]
     if owned:
         for t in owned:
             print(f'[{t}] 跳过：本页已归 build/mrbase.py（build/{t}.py 是薄壳），'

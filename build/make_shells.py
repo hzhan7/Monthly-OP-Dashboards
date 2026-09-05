@@ -10,8 +10,12 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+# ⚠️ ice 在这里，不在 make_shells12.singles() 的枚举里 —— 它 2026-09 从 build/specs/
+#    改成了手写的 build/ice.py，spec 已删，那边的枚举源（build/specs/ ∪ build/mrspecs/）
+#    再也扫不到它。不写进这份名单，下次改版式重铺壳就会**静默漏掉** /ice/ 那一页。
+#    （tsm 也在这儿，同样的历史原因；两处都要在才算齐。）
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
-           'msci', 'spgi', 'axp', 'tsm', 'wealth']
+           'msci', 'spgi', 'axp', 'tsm', 'wealth', 'ice']
 
 SHELL = '''<!doctype html>
 <html lang="zh-CN">
