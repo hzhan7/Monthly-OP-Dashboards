@@ -117,7 +117,12 @@ EXCHANGES = [
     'sgx',     # SGX              次月第 6-13 天，中位第 9
     'ndaq',    # Nasdaq           份额腿次月第 10 个工作日（IR 腿第 2-6 天）
 ]
-# 顺序 = 首页与导航的展示顺序，也是这里的执行顺序（无依赖，纯为日志好读）
+# 顺序 = 首页与导航的展示顺序，也是这里的执行顺序。
+# ⚠ 「纯为日志好读、各家之间无依赖」这句话 2026-09-05 之前一直写在这里，而它是**错的**：
+#   umc / ase / mtk / nanya / guc 的 build 都要读 series/tsm_fx.csv，那张表由 fetch/tsm.py
+#   维护，而 tsm 排在这五家**后面** —— 谁先披露完营收，谁当轮就 build 失败（实测打死过 /umc/）。
+#   现在那条依赖由 taiwan_fx() 在按家循环**之前**满足，所以这张表的顺序确实可以随便改了；
+#   但**别再往里加新的跨家依赖**：这里没有任何东西会检查它，代价是当轮 FAIL + 之后每轮静默 NOCHANGE。
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
            'msci', 'spgi', 'axp', 'nanya', 'guc', 'alchip', 'mtk', 'umc', 'ase',
            'tsm'] + EXCHANGES
