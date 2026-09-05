@@ -1002,6 +1002,61 @@ def latest_month(cache_dir):
     return latest
 
 
+def update_fx(series_dir, cache_dir, fx_src=None):
+    """只把新月份写进 series/tsm_fx.csv，返回新增月份列表（已排序）。
+
+    **为什么它必须能脱离 tsm.csv 单独跑**（2026-09-05 拆出来的）：
+    tsm_fx.csv 是挂在台湾六页上的**共享宏观序列** —— tsm / umc / ase / mtk /
+    nanya / guc 的 build 都要它覆盖自家营收的每一个月，缺一个月 mrbase.py 就抛
+    `SpecError: series/tsm_fx.csv 缺月份 [...]`。可它只由本模块维护，而
+    monthly_run.TICKERS 里 **umc / ase / mtk / nanya / guc 五家全排在 tsm 前面**。
+    于是「谁家先披露完营收，谁就先撞上『营收有 M 月、汇率还没有 M 月』」——
+    那一轮那一家 build 失败，而下一轮 fetch 已经没有新月份了（NOCHANGE），
+    页面从此静默停在旧月份，长得和健康的安静日一模一样。
+
+    2026-09-05 就是这么打死 /umc/ 的：UMC 的 6-K 先到（2026-08），TSMC 的
+    xlsx 还停在 7 月、tsm_fx.csv 也还停在 2026-07，umc 当轮 FAIL、之后每轮 NOCHANGE。
+    所以 monthly_run.py 在**按家循环之前**单独跑这一步，让共享底座先就位。
+
+    汇率月份的推进**不依赖 TSMC 披不披露**：H.10 是美联储的周更序列，
+    月均在次月第 1 个营业日就算得全（见文首第 2 节），与台湾任何一家的披露节奏无关。
+
+    幂等：已有月份一律不重复追加。fx_src 传入可复用已经抓好的那份，省一次 HTTP。
+    """
+    fx_path = os.path.join(series_dir, FX_CSV)
+    if fx_src is None:
+        fx_src = fetch_fx(cache_dir)
+    fx_fields, fx_rows = _read_csv(fx_path)
+    have_fx = {r['month'] for r in fx_rows}
+    for r in fx_rows:
+        m = r['month']
+        if m in fx_src and abs(fx_src[m][0] - float(r['ntd_per_usd'])) > TOL_FX:
+            raise ValueError('汇率重述/口径漂移：%s 重算 %.4f vs 已入库 %s'
+                             % (m, fx_src[m][0], r['ntd_per_usd']))
+
+    # 只收「已经走完」的月份：当月还没结束时月均是半截数，写进去下次就得改
+    today = _dt.date.today()
+    cur = _mkey(today.year, today.month)
+    new_fx_months = sorted(m for m in fx_src
+                           if m >= FX_SERIES_START and m not in have_fx and m < cur)
+    # H.10 一个月至少有 15 个营业日；明显偏少说明该月数据还没灌全
+    for m in new_fx_months:
+        if fx_src[m][1] < 15:
+            raise ValueError('H.10 %s 只有 %d 个日度观测，月均不可信，本次不写入'
+                             % (m, fx_src[m][1]))
+    # _append_rows 只会往**文件尾**写。下界放到 2013-01 之后，「待写月份早于已入库
+    # 最大月」第一次成为可能（文件被截断、或哪个中间月漏了），那会写出一份乱序 CSV，
+    # 而乱序 CSV 不会报错、只会让下游按行序取「最新月」时静默取错。宁可停下。
+    if have_fx and new_fx_months and min(new_fx_months) < max(have_fx):
+        raise ValueError('待写汇率月份 %s 早于已入库最大月 %s；追加会写出乱序 CSV。'
+                         '先确认 tsm_fx.csv 是不是缺了中间月份'
+                         % (sorted(m for m in new_fx_months if m < max(have_fx)), max(have_fx)))
+    new_fx_rows = [{'month': m, 'ntd_per_usd': '%.4f' % fx_src[m][0]} for m in new_fx_months]
+    if new_fx_rows:
+        _append_rows(fx_path, fx_fields, new_fx_rows)
+    return new_fx_months
+
+
 def update(series_dir, cache_dir):
     """把新月份写进 series/tsm.csv 与 series/tsm_fx.csv，返回新增月份列表（两文件并集，已排序）。
 
@@ -1056,33 +1111,12 @@ def update(series_dir, cache_dir):
     new_rev_rows = [{'month': m, 'revenue_ntd_mn': v, 'yoy_pct': y}
                     for m, v, y in _with_yoy(rev_src, new_rev_months)]
 
-    # ── 汇率 ──
+    # ── 汇率 ── 实际写盘在 update_fx() 里（拆分理由见那个函数的 docstring）。
+    #   这里仍在 _crosscheck_twse_month 之后调用，所以直接 `python3 fetch/tsm.py`
+    #   的行为与拆分前逐字节一致：营收源冻住时不会先把汇率写进去。
+    new_fx_months = update_fx(series_dir, cache_dir, fx_src)
     fx_fields, fx_rows = _read_csv(fx_path)
     have_fx = {r['month'] for r in fx_rows}
-    for r in fx_rows:
-        m = r['month']
-        if m in fx_src and abs(fx_src[m][0] - float(r['ntd_per_usd'])) > TOL_FX:
-            raise ValueError('汇率重述/口径漂移：%s 重算 %.4f vs 已入库 %s'
-                             % (m, fx_src[m][0], r['ntd_per_usd']))
-
-    # 只收「已经走完」的月份：当月还没结束时月均是半截数，写进去下次就得改
-    today = _dt.date.today()
-    cur = _mkey(today.year, today.month)
-    new_fx_months = sorted(m for m in fx_src
-                           if m >= FX_SERIES_START and m not in have_fx and m < cur)
-    # H.10 一个月至少有 15 个营业日；明显偏少说明该月数据还没灌全
-    for m in new_fx_months:
-        if fx_src[m][1] < 15:
-            raise ValueError('H.10 %s 只有 %d 个日度观测，月均不可信，本次不写入'
-                             % (m, fx_src[m][1]))
-    # _append_rows 只会往**文件尾**写。下界放到 2013-01 之后，「待写月份早于已入库
-    # 最大月」第一次成为可能（文件被截断、或哪个中间月漏了），那会写出一份乱序 CSV，
-    # 而乱序 CSV 不会报错、只会让下游按行序取「最新月」时静默取错。宁可停下。
-    if have_fx and new_fx_months and min(new_fx_months) < max(have_fx):
-        raise ValueError('待写汇率月份 %s 早于已入库最大月 %s；追加会写出乱序 CSV。'
-                         '先确认 tsm_fx.csv 是不是缺了中间月份'
-                         % (sorted(m for m in new_fx_months if m < max(have_fx)), max(have_fx)))
-    new_fx_rows = [{'month': m, 'ntd_per_usd': '%.4f' % fx_src[m][0]} for m in new_fx_months]
 
     # ── 一致性闸门：build 脚本要用汇率折美元，营收月必须都有汇率 ──
     all_rev = have_rev | set(new_rev_months)
@@ -1093,10 +1127,9 @@ def update(series_dir, cache_dir):
 
     if new_rev_rows:
         _append_rows(rev_path, rev_fields, new_rev_rows)
-    if new_fx_rows:
-        _append_rows(fx_path, fx_fields, new_fx_rows)
 
-    # 公告日在这里记：上面两个 append 已经返回，这些月份确实在 series 里了。
+    # 公告日在这里记：上面的 append 已经返回（汇率那份在 update_fx 里已落盘），
+    #   这些月份确实在 series 里了。
     # 除了本次新增的月份，还补记「最新月在台账里缺着」的情况 —— 台账是后加的，
     # 早于它入库的月份不会有记录，而幂等重跑时 new_rev_months 是空的，
     # 不带这一句就永远补不上（页面也就永远少那半句）。
@@ -1113,7 +1146,7 @@ def update(series_dir, cache_dir):
 
     print('[tsm] xlsx=%s' % xlsx_url)
     print('[tsm] tsm.csv +%d %s | tsm_fx.csv +%d %s'
-          % (len(new_rev_rows), new_rev_months, len(new_fx_rows), new_fx_months))
+          % (len(new_rev_rows), new_rev_months, len(new_fx_months), new_fx_months))
     return sorted(set(new_rev_months) | set(new_fx_months))
 
 

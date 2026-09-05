@@ -95,7 +95,12 @@ $1 Trillion Per Day in March" …），命中 **88 个数据月**：
   为什么是 7：8−7 = 次月第 1 天开闸，比实测最早值（第 2 天）再早一天。第 3 天出现过 17 次，
   零余量迟早会漏；代价只是每月多几个「还没发」的 HTTP 请求。
 
-发布日只认**两处源头自述**：xlsx 目录名里的 MM.DD.YY，与 HTTP Last-Modified。
+发布日只认**两处源头自述**：工作簿的 HTTP Last-Modified（主源），
+与工作簿内部 docProps/core.xml 的 dcterms:modified（交叉校验）。
+（2026-09 官网改版前主源是 href 目录名里的 MM.DD.YY，改版后 URL 里不再有日期，
+  换成了现在这两处；替换理由与实测值见 _CORE_MODIFIED 上方那段注释。）
+⚠ 发布日定不下来时**只喊不阻断**，`release_date()` 如实返回 None、数据照常入库 ——
+  2026-09 那次整条腿停摆正是因为这个字段会抛。分界线与完整理由见 `_resolve_published`。
 构建日、文件 mtime、下载时刻一律不算（CONTRACT.md §1 `source_date` 那一条）。
 ⚠ 本模块**不自己写 series/source_dates.csv** —— LSEG 四路是并行跑的，四个进程同时
   往同一个共享台账里追加必然打架。发布日由 `release_date()` 返回，交给 LSEG 那一路的
@@ -272,9 +277,11 @@ Tradeweb 以美元，中间还有汇率。
 
 import csv
 import datetime
+import io
 import os
 import re
 import urllib.request
+import zipfile
 
 # ── 常量 ────────────────────────────────────────────────────────────────────
 PART = 'tradeweb'
@@ -500,8 +507,20 @@ def _months_between(start, end):
 # ── 索引页发现 ──────────────────────────────────────────────────────────────
 _XLSX_HREF = re.compile(r'href="([^"]*globalassets[^"]*\.xlsx)"', re.I)
 _HIST_NAME = re.compile(r'historical[-_ ]?adv|adv[-_ ]?and[-_ ]?day[-_ ]?count', re.I)
-# 目录名 08.06.26-july-mar 里的 MM.DD.YY 就是发布日
-_FOLDER_DATE = re.compile(r'/globalassets/newsroom/(\d{2})\.(\d{2})\.(\d{2})-')
+# 发布日。**2026-09 官网改版后这里换过一次源**，两处都不是我们自己编的日期：
+#   旧：href 里的目录名 `/globalassets/newsroom/08.06.26-july-mar/…`，MM.DD.YY 就是发布日；
+#   新：目录名换成 `/<缓存串>/globalassets/newsroom/monthly-activity-reports/2026/august/`，
+#       日期整个没了（实测 2026-09-05 的 href：`/4a4dd2/…/2026/august/tw-historical-adv-and-
+#       day-count-through-august-2026.xlsx`；那个 4a4dd2 每份文件各不相同，是缓存串不是日期）。
+# 现在改用 HTTP Last-Modified 当主源 + 工作簿自己的 docProps/core.xml 交叉校验 ——
+# 仍然是**两处源头自述**，没有退化成单源，也没有退回构建日 / 文件 mtime（CONTRACT.md §1 禁止）。
+_CORE_MODIFIED = re.compile(r'<dcterms:modified[^>]*>(\d{4})-(\d{2})-(\d{2})', re.I)
+# 作者时间戳与上架时间的允许间隔。实测 2026-08 那期：core.xml 说 09-02、Last-Modified 说 09-04。
+# 定 30 天是因为它只用来抓「两个数字根本不是一回事」，不是用来卡发布节奏。
+_AUTHORED_MAX_LAG = 30
+# 发布日相对数据月末的允许窗口。Tradeweb 实测在次月头几天发（2026-08 那期是月末后第 4 天）。
+# 75 天是「宽到不会误伤补发，窄到接不住去年的文件」。
+_PUBLISH_MAX_LAG = 75
 # 文件名自己带数据月：…-through-july-2026.xlsx。这是最硬的新鲜度锚点 ——
 # 它长在**我们真正下载的那个文件**上，抬头句子只是页面文案，可以先改。
 _FILE_MONTH = re.compile(r'through[-_ ]([a-z]+)[-_ ](\d{4})\.xlsx$', re.I)
@@ -517,6 +536,102 @@ _VOL_TN = re.compile(r'Trading Volume of \$([\d.]+)\s*(?:Trillion|tn)\b', re.I)
 _ADV_TN = re.compile(r'Average Daily Volume of \$([\d.]+)\s*(?:Trillion|tn)\b', re.I)
 
 
+def _http_date(raw):
+    """HTTP-date → datetime.date；解析不出返回 None（怎么处置由调用方定，见 _resolve_published）。"""
+    if not raw:
+        return None
+    try:
+        return datetime.datetime.strptime(raw[:25].strip(), '%a, %d %b %Y %H:%M:%S').date()
+    except ValueError:
+        return None
+
+
+def _authored_date(data):
+    """工作簿自己的 docProps/core.xml 里的 dcterms:modified → date；没有就 None。
+
+    这是**文件自述**，与 HTTP 头是两个独立来源：头由 Tradeweb 那边的服务器写，
+    core.xml 由出报表那条工具链写（实测 2026-08 那期 `dc:creator` = Workiva）。
+    两个都指向同一个发布周，才敢认这个发布日。
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            core = z.read('docProps/core.xml').decode('utf-8', 'replace')
+    except (zipfile.BadZipFile, KeyError):
+        return None
+    m = _CORE_MODIFIED.search(core)
+    if not m:
+        return None
+    try:
+        return datetime.date(*(int(x) for x in m.groups()))
+    except ValueError:
+        return None
+
+
+def _resolve_published(url, month):
+    """下工作簿，定发布日。返回 (工作簿字节, published | None)。
+
+    主源是工作簿的 HTTP Last-Modified，两道交叉校验：
+      1. 工作簿内部 docProps/core.xml 的 dcterms:modified（文件自述，独立于 HTTP 头）；
+      2. 数据月自己 —— 发布日必须落在数据月末之后 _PUBLISH_MAX_LAG 天以内。
+    三道都不依赖 href 长什么样。改版把日期从 URL 里拿走之后，这是剩下的全部证据。
+
+    ══ 为什么发布日的判据一条都不抛 ══
+    2026-09 那次停摆就是抛出来的：改版把目录名里的日期拿走，一条**只服务发布日**的
+    正则失配，却把整条腿打死 —— 而那一期的数据完完整整躺在工作簿里，116 个月一格没少。
+    发布日在本仓的实际去向只有 fetch/lseg.py 的 `release_dates()`，那边本来就接受 None
+    （它自己 try/except 兜着，对不上就记 None），而且 `series/source_dates.csv` 至今
+    没有 lseg 行 —— 这个字段在页面上一个字都印不出来。让一个印不出来的字段拦住
+    116 个月的真数据，方向是反的。
+    照 fetch/cme.py:468（同样是「没有 Last-Modified 头」）与 fetch/enx.py:1140 的既定
+    写法：护栏失效只喊不阻断 ——「护栏失效的代价是漏报一阵子，护栏误报的代价是整家停更」。
+
+    ⚠ 分界线在「护的是发布日还是护的是数据」，不在「严不严」：
+      · 体积不够（多半下到了 HTML 错误页）—— 在这里**抛**；
+      · 「文件名说的数据月 vs 索引页抬头说的数据月」不一致 —— 在 discover() 里**抛**。
+      那两条护的是数据本身，一条都没有放松。
+
+    ⚠ 这里做的是**整份下载**而不是 HEAD：交叉校验要读工作簿内容，而 _http_get 那条
+      Cloudflare 回落链路（urllib → curl_cffi）也只支持 GET。字节顺手返回给
+      download_workbook 落盘，所以一轮里只下一次，没有多花请求。
+    """
+    data, headers = _http_get(url)
+    if len(data) < MIN_XLSX_BYTES:
+        raise TradewebFetchError('%s 只有 %d 字节，不像是正常的工作簿' % (url, len(data)))
+
+    published = _http_date(headers.get('Last-Modified') or headers.get('last-modified'))
+    if published is None:
+        print('[lseg_tradeweb] ⚠ 护栏失效：工作簿 %s 的响应里没有可解析的 Last-Modified，'
+              '本期发布日记为「未知」（构建日 / 文件 mtime 不算，CONTRACT.md §1）。'
+              '数据照常入库。' % url)
+        return data, None
+
+    y, mo = (int(x) for x in month.split('-'))
+    month_end = datetime.date(y + mo // 12, mo % 12 + 1, 1) - datetime.timedelta(days=1)
+    lag = (published - month_end).days
+    if not 0 < lag <= _PUBLISH_MAX_LAG:
+        print('[lseg_tradeweb] ⚠ 护栏失效：Last-Modified 说 %s，落在数据月 %s（月末 %s）'
+              '之后第 %d 天，不在 1..%d 天的窗口里 —— 它多半不是这份文件真正的上架时间，'
+              '本期发布日记为「未知」。数据照常入库。'
+              % (published, month, month_end, lag, _PUBLISH_MAX_LAG))
+        return data, None
+
+    authored = _authored_date(data)
+    if authored is None:
+        print('[lseg_tradeweb] ⚠ 护栏失效：工作簿里没读到 docProps/core.xml 的 '
+              'dcterms:modified，本期发布日 %s 只剩 HTTP Last-Modified 一处自述'
+              '（另有数据月窗口兜底）。' % published)
+        return data, published
+
+    gap = (published - authored).days
+    if not 0 <= gap <= _AUTHORED_MAX_LAG:
+        print('[lseg_tradeweb] ⚠ 护栏失效：发布日两处对不上 —— HTTP Last-Modified 说 %s，'
+              '工作簿自己的 dcterms:modified 说 %s（差 %d 天，允许 0..%d）。'
+              '本期发布日记为「未知」。数据照常入库。'
+              % (published, authored, gap, _AUTHORED_MAX_LAG))
+        return data, None
+    return data, published
+
+
 def discover(cache_dir=DEFAULT_CACHE):
     """抓索引页，解析出「历史 ADV 工作簿」的绝对 URL、发布日与自述抬头。
 
@@ -526,7 +641,9 @@ def discover(cache_dir=DEFAULT_CACHE):
 
     返回 dict：
         url            工作簿绝对 URL
-        published      发布日 datetime.date（来自目录名 MM.DD.YY）
+        data           工作簿字节（顺手带出来，download_workbook 直接落盘，不再下第二次）
+        published      发布日 datetime.date，**定不下来时是 None**（不阻断数据，
+                       理由见 _resolve_published 的「为什么发布日的判据一条都不抛」）
         month          数据月 'YYYY-MM'，取自**文件名**里的 through-<month>-<year>
         headline_vol_tn / headline_adv_tn  抬头自述的总成交额与总 ADV（万亿美元，
                                            已四舍五入）；抬头措辞变了就是 None，
@@ -549,12 +666,6 @@ def discover(cache_dir=DEFAULT_CACHE):
             '索引页上「历史 ADV 工作簿」不是唯一命中（命中 %d 个）。页面全部 xlsx：%s'
             % (len(hits), hrefs))
     href = hits[0]
-
-    fd = _FOLDER_DATE.search(href)
-    if not fd:
-        raise TradewebFetchError('工作簿 href 里没有 MM.DD.YY 目录名，取不到发布日：%s' % href)
-    mm, dd, yy = (int(x) for x in fd.groups())
-    published = datetime.date(2000 + yy, mm, dd)
 
     fm = _FILE_MONTH.search(href)
     if not fm or fm.group(1).capitalize() not in _MON_NUM:
@@ -585,8 +696,14 @@ def discover(cache_dir=DEFAULT_CACHE):
             decimals = (len(v.group(1).split('.')[1]) if '.' in v.group(1) else 0,
                         len(a.group(1).split('.')[1]) if '.' in a.group(1) else 0)
 
+    # 发布日放在最后：上面那道「文件名说的月 vs 抬头说的月」不一致时直接抛，
+    # 那种日子不必先把 170KB 的工作簿下下来。
+    url = href if href.startswith('http') else HOST + href
+    data, published = _resolve_published(url, month)
+
     return {
-        'url': href if href.startswith('http') else HOST + href,
+        'url': url,
+        'data': data,
         'published': published,
         'month': month,
         'headline_vol_tn': vol,
@@ -596,25 +713,14 @@ def discover(cache_dir=DEFAULT_CACHE):
 
 
 def download_workbook(found, cache_dir=DEFAULT_CACHE):
-    """下工作簿，落 cache，并用 HTTP Last-Modified 交叉校验目录名里的发布日。"""
-    path = _cache(cache_dir, 'lseg_tradeweb_hist_adv_%s.xlsx' % found['month'])
-    data, headers = _http_get(found['url'])
-    if len(data) < MIN_XLSX_BYTES:
-        raise TradewebFetchError(
-            '%s 只有 %d 字节，不像是正常的工作簿' % (found['url'], len(data)))
-    with open(path, 'wb') as f:
-        f.write(data)
+    """把 discover() 已经取回的工作簿字节落到 cache，返回路径。
 
-    lm = headers.get('Last-Modified') or headers.get('last-modified')
-    if lm:
-        try:
-            lm_date = datetime.datetime.strptime(lm[:25].strip(), '%a, %d %b %Y %H:%M:%S').date()
-        except ValueError:
-            lm_date = None
-        if lm_date and abs((lm_date - found['published']).days) > 2:
-            raise TradewebFetchError(
-                '发布日两处对不上：目录名说 %s，HTTP Last-Modified 说 %s —— '
-                '多半下到了上一期的文件' % (found['published'], lm_date))
+    发布日的两道交叉校验在 discover() → _resolve_published() 里就做完了（改版前
+    那道「目录名 vs Last-Modified」在这里做，是因为当时目录名不用下载就能读到）。
+    """
+    path = _cache(cache_dir, 'lseg_tradeweb_hist_adv_%s.xlsx' % found['month'])
+    with open(path, 'wb') as f:
+        f.write(found['data'])
     return path
 
 
@@ -799,15 +905,21 @@ def fetch_rows(cache_dir=DEFAULT_CACHE):
 
 
 def release_date(cache_dir=DEFAULT_CACHE):
-    """官方最新一期的 (数据月 'YYYY-MM', 发布日 'YYYY-MM-DD', 出处说明)。
+    """官方最新一期的 (数据月 'YYYY-MM', 发布日 'YYYY-MM-DD', 出处说明)；发布日定不下来时 None。
 
-    发布日来自 xlsx 目录名里的 MM.DD.YY，已与 HTTP Last-Modified 交叉校验过
-    （见 download_workbook）。构建日 / 文件 mtime 一律不算数（CONTRACT.md §1）。
+    发布日主源是工作簿的 HTTP Last-Modified，已与工作簿内部 docProps/core.xml 的
+    dcterms:modified、以及「发布日必须落在数据月末之后的窗口」两道交叉校验过
+    （见 _resolve_published）。构建日 / 文件 mtime 一律不算数（CONTRACT.md §1）。
     """
     found = discover(cache_dir)
+    if found['published'] is None:
+        # 如实给 None，不硬凑一个 —— fetch/lseg.py 的 release_dates() 本来就按
+        # 「对不上就记 None」处理（那个 docstring 里对另外三路是同一句话）。
+        return None
     return (found['month'], found['published'].isoformat(),
-            'monthly-activity-reports 页 xlsx 目录名 %s，经 HTTP Last-Modified 交叉校验'
-            % found['published'].strftime('%m.%d.%y'))
+            'monthly-activity-reports 页工作簿 HTTP Last-Modified %s，'
+            '经工作簿内部 dcterms:modified 交叉校验'
+            % found['published'].strftime('%Y-%m-%d'))
 
 
 def latest_month(cache_dir=DEFAULT_CACHE):
@@ -897,10 +1009,14 @@ def write_csv(series_dir=DEFAULT_SERIES, cache_dir=DEFAULT_CACHE, rows=None):
 def main():
     rows = fetch_rows()
     added = write_csv(rows=rows)
-    mon, day, why = release_date()
+    rd = release_date()
     print('lseg_tradeweb: %d 个月 %s → %s，新增 %d 个月'
           % (len(rows), rows[0]['month'], rows[-1]['month'], len(added)))
-    print('最新一期：数据月 %s，发布日 %s（%s）' % (mon, day, why))
+    if rd is None:
+        print('最新一期：数据月 %s，发布日**未知**（上面的 ⚠ 护栏失效说明了原因）'
+              % rows[-1]['month'])
+    else:
+        print('最新一期：数据月 %s，发布日 %s（%s）' % rd)
     last = rows[-1]
     print('自检 %s：总成交额 %.3f tn，总 ADV %.1f bn，加权交易日 %.2f'
           % (last['month'], last['tradeweb_volume_total_usd_tn'],
