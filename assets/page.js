@@ -17,6 +17,8 @@
      glossary?                       名词释义：**这些词是什么意思**，不随月份变
      source                          图脚的 Source 行，所有 exhibit 共用
      source_date?  source_date_note? 官方发布日；源头不标发布日时改印 note 说明原因
+     source_date_fast?               有「发布更快的腿」时，它多出来那一期的发布日，
+     source_date_fast_label?         配 _label（月份）一起印；两个都在才渲染
      stale_source?                   沿用了本地过期缓存时打红标
      xlabels / xlabels_long          短窗口与长历史的 x 轴标签，exhibit 用 x:'long' 选后者
      summary {title,heads,rows,note} Exhibit 1 汇总表。数字**已在 Python 里格式化成字符串**，
@@ -68,9 +70,17 @@
      「这一页为什么没有发布日」本身是信息，静默省掉只会让人以为是坏了
      （首页节奏标签踩过同一个坑：标着「次月中下旬」却停在两个月前，看的人只能判断成故障）。
      两者都没有才真的什么都不印。 */
+  /* 「发布更快的腿」多出来的那一期：它的数**已经印在这一页上**（核对表多一行、
+     快腿各列的图各自多画一根柱），但它的发布日不是上面那个 source_date。
+     两句话必须各自带月份，否则抬头那句发布日对页面上最新的内容就是假的。 */
+  var fastLeg = (D.source_date_fast && D.source_date_fast_label)
+    ? ' · 更快的列已到 ' + D.source_date_fast_label +
+      '（' + D.source_date_fast + ' 发）'
+    : '';
   el('meta').innerHTML = '个人研究用 · 数据截至 ' + D.through_label +
     (D.source_date ? ' · 官方发布于 ' + D.source_date
                    : (D.source_date_note ? ' · ' + D.source_date_note : '')) +
+    fastLeg +
     (D.stale_source ? '<span class="chip">官网下载失败，本次沿用本地缓存</span>' : '');
   set('h1', D.title);
   set('sub', D.subtitle);

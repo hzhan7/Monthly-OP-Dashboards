@@ -36,6 +36,7 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 | `source` | ✓ | 所有 exhibit 共用的 `Source:` 行 |
 | `source_date` | | 官方发布日 `YYYY-MM-DD`，显示在抬头右侧。**必须是源头自己写出来的日期**（文件里的 "Published on"、新闻稿电头、SEC filingDate，或该家 fetch docstring 已认定为发布日的 HTTP `Last-Modified`）。构建日、文件 mtime、下载时刻一律不行 —— 那是一句关于外部世界的事实断言，编不得。台账在 `series/source_dates.csv`，由 `fetch/<t>.py` 摄入该月时按月份钉进去、`build/<t>.py` 查表；**不要在 build 里当场从 `cache/` 解析**（cache 是 gitignore 的，清掉后这半句会静默消失，且缓存里可能躺着比 `data_through` 更新的一期文件，当场解析会把新一期的发布日安到旧月份上）。横截面页用 `latest_of()` 取成员里最晚的那个，缺任何一个成员就整体省略 |
 | `source_date_note` | | 源头**根本不标**发布日时，改印这句话（如 MSCI 的「官方未标注发布日」）。只在 `source_date` 缺席时渲染。用于「这是那个源的固有属性」，**不要**用来搪塞「台账这个月还没记上」那种临时缺口 —— 后者应当留白并等它自愈 |
+| `source_date_fast` + `source_date_fast_label` | | 这一页有「发布更快的腿」（整表最新月 `newest` 晚于 `data_through`）时，**那多出来的一期**的发布日与月份标签，抬头接在 `source_date` 之后印成「· 更快的列已到 Aug-26（2026-09-02 发）」。为什么不直接把 `source_date` 换成查 `newest`：那正是上一格禁止的「把新一期的发布日安到旧月份上」。这两个字段各自带月份、与 `source_date` 互不冒充，**两个都在才渲染**。由 `build/single.py` 在 `newest != latest` 且台账里查得到 `newest` 那一期时自动写入，spec 侧不用管 |
 | `stale_source` | | `True` 时抬头打红标「官网下载失败，本次沿用本地缓存」。**目前没有任何生成器会产生它** —— 现有的 fetch 模块下载失败一律抛异常，那家整个跳过、`data_through` 原地不动，由首页红点报警。渲染分支保留着，但在有 fetch 真走「降级到旧缓存」这条路之前，不要在生成器里设它 |
 | `xlabels` | ✓ | 短窗口 x 轴标签数组 |
 | `xlabels_long` | | 长历史 x 轴标签数组；exhibit 写 `x: 'long'` 时用它 |

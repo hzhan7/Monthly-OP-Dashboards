@@ -403,6 +403,27 @@ def mlab(p):
     return p.strftime('%b-%y')
 
 
+def through_gap(latest, newest):
+    """副标题与页注里那半句「；数据月止于 X」。两者相等时返回空串。
+
+    ⚠ 措辞别改成「头条口径止于 X」：本仓的「口径」一律指**测量基准**
+    （「IR 月报口径」「Nordic + Baltic 口径」，exchanges_apac.py 里还有
+    「分解口径 vs 头条口径」的同比对照），拿它表示时间边界是给一个高频词
+    加第二种意思。「数据月」才是本仓对 data_through 的既有叫法
+    （见汇总表的组标题「头条指标（决定本页数据月）」与核对表那条
+    「表尾若有月份晚于本页数据月 X」——本文件里都能 grep 到）。
+
+    `newest` 是整表最后一行的月份，`latest` 是 data_through（头条列共同最新月）。
+    有「发布更快的腿」的页面上两者会差一期 —— 那些更晚的月份是真的印出来的
+    （核对表多一行、快腿各列的图各自多画一根柱），所以「覆盖 … newest」没写错；
+    但它与抬头的「数据截至 latest」并排出现时，单看任何一句都读不出另一句的存在。
+    ndaq 2026-09 就是这样：抬头「2026 年 7 月」、副标题「覆盖 Sep-05 – Aug-26」，
+    两行之间没有任何一个字解释这一个月的落差是从哪来的。
+    ⇒ 只在有落差时补这半句；没落差的页（绝大多数）一个字都不变。
+    """
+    return f'；数据月止于 {mlab(latest)}' if newest != latest else ''
+
+
 _MLAB_MON = {m: i + 1 for i, m in enumerate(
     ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'])}
@@ -4073,7 +4094,8 @@ class Page:
             'data_through': str(latest),
             'through_label': f'{latest.year} 年 {latest.month} 月',
             'subtitle': f'数据源 {src_head} · 覆盖 {mlab(idx[0])} – {mlab(newest)}'
-                        f'（{len(idx)} 个月）· 本币 {self.spec["ccy"]} · '
+                        f'（{len(idx)} 个月{through_gap(latest, newest)}）'
+                        f'· 本币 {self.spec["ccy"]} · '
                         f'版式沿用 Goldman Sachs GIR monthly-metrics note · 只出图，不带观点',
             'headline': headline,
             'hub_line': hub,
@@ -4101,6 +4123,19 @@ class Page:
         day = source_dates().lookup(self.series_dir, self.ticker, str(latest))
         if day:
             payload['source_date'] = day
+        # ── 有「发布更快的腿」时，抬头还欠一句：那多出来的一期是什么时候发的 ──────
+        # newest > latest ⇒ 整表已经有比数据月更晚的月份（只有快腿那几列有值），
+        # 而**那些月份是真的印在页面上的**：核对表多一行，快腿各列的图各自多画一根柱。
+        # 只印 source_date 的话，抬头那句「官方发布于 <latest 的发布日>」对页面上最新的
+        # 那部分内容就是假的 —— ndaq 2026-09 就撞上了：抬头写 2026-08-05（07 月那期），
+        # 而页面上画着的 Aug-26 是 2026-09-02 才发的，日期就躺在同一张台账里。
+        # ⚠ 不能改成「查 newest」了事：CONTRACT 的 `source_date` 明写**不许把新一期的
+        # 发布日安到旧月份上**。所以另起字段、自带月份标签，两句话各自成立、互不冒充。
+        if newest != latest:
+            fast = source_dates().lookup(self.series_dir, self.ticker, str(newest))
+            if fast:
+                payload['source_date_fast'] = fast
+                payload['source_date_fast_label'] = mlab(newest)
         return payload, None
 
     # ────────────────────── 口径与方法说明 ──────────────────────
@@ -4110,7 +4145,8 @@ class Page:
         out = [
             f'<b>数据源与口径。</b>全部数值来自本仓 <code>series/{self.spec["csv"]}</code>，'
             f'{strip_source(self.spec["source"])}。'
-            f'覆盖 {mlab(idx[0])} – {mlab(newest)}（{len(idx)} 个月）。'
+            f'覆盖 {mlab(idx[0])} – {mlab(newest)}'
+            f'（{len(idx)} 个月{through_gap(latest, newest)}）。'
             f'本页所有数值、格式化与口径判断都在 Python 侧完成，页面只画不算。'
             f'本币 {self.spec["ccy"]}；跨币种换算不在本页做（另由 build/notional.py 处理），'
             f'本页只按本币标注。',
