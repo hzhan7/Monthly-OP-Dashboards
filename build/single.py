@@ -1623,11 +1623,19 @@ class Page:
                             f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）")
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
-        # ── `after_group` 的锚点必须存在且唯一 ────────────────────────────────
+        # ── `after_group` 的锚点必须**写得对**且唯一（这一档是「等人」，硬失败）──────
         # 这条改动最可能的失败模式就是**名字打错**：不校验的话，锚点匹配不上，
         # 这张图会静默掉回页尾 —— 图还在、页面照常上线、闸门全过，
         # 只有对着页面数图号的人才发现所有者要的位置没生效。
         # 重名同理：两个同名 group 时「排在它之后」有两个答案，挑哪个都是猜。
+        #
+        # ⚠️ **这一轮只查「spec 里写的名字对不对」，查的是剔空列之前的组名表。**
+        # 「名字写对了、但那一组本轮整组没有数据（列全空）」是**另一件事**，
+        # 归下面剔空列之后那一段（`decomp_moved`）—— 那一档是等数据，不许硬失败。
+        # 两件事在这里合成一段的代价实测过：锚点组因整列为空而消失时，
+        # 这里放行、`payload()` 的 groups 循环再也不给出那个组名（`_decomp_here` 不触发）、
+        # 页尾那一轮又 `if d['after_group']: continue` ⇒ **两头都没人接**，
+        # 整张分解图凭空不见，`skipped` 空、`decomp_report` 空、退出码 0、闸门全过。
         _gz = [g['zh'] for g in self.groups]
         for i, d in enumerate(self.decomp):
             a = d['after_group']
@@ -1676,9 +1684,39 @@ class Page:
 
         # ── 整列为空的列：跳过并记账（不静默画空图）──
         self.empty = sorted({c['col'] for c in allc if self.df[c['col']].dropna().empty})
+        _declared = {g['zh']: [c['col'] for c in g['cols']] for g in self.groups}
         for g in self.groups:
             g['cols'] = [c for c in g['cols'] if c['col'] not in self.empty]
         self.groups = [g for g in self.groups if g['cols']]
+
+        # ── `after_group` 的锚点组**本轮还在不在**（这一档是「等数据」，不硬失败）─────
+        # 名字对不对上面已经查过了，能走到这里的锚点都是 spec 写对了的；
+        # 组没了只可能是**它声明的列本轮整列为空**，被上面那三行剔掉了整组。
+        # 「等数据 ≠ 等人」：源表少一列不该让整页停更，也不该让这张图凭空消失 ——
+        # 锚点没有着落时**退回缺省位置（页尾）并记一笔**，源表补上列就自动回到原位。
+        #
+        # ⚠️ **没有并进 `self.skipped` 那本账**（红队骨架里写的是它，这里改了落点）：
+        # 那本账的抬头是「本轮未出的派生图」、收尾是「数据补齐后自动回来」，
+        # 而这一档的图**出了**，只是位置退到页尾 —— 塞进去等于印一句「它没出」的假话。
+        # 判例同 `dup_yoy_zh()` 上面那段注释（图已经出了的事不进「未出」那本账）。
+        # 所以另开一本：`build()` 打一行给维护者，页尾印一句给读者，两处都点名到组。
+        self.decomp_moved = []
+        _live = {g['zh'] for g in self.groups}
+        for d in self.decomp:
+            a = d['after_group']
+            if a is None or a in _live:
+                continue
+            gone = [c for c in _declared.get(a, []) if c in self.empty]
+            # 这条字串**同时**进构建日志与页尾，所以一律纯文本：不写 <b>（终端里会
+            # 露出标签），也不写 Markdown 的星号（页尾走 innerHTML，星号原样印出来）。
+            self.decomp_moved.append(
+                f'{d["zh"]}：spec 要它紧跟「{a}」那一组出图，但那一组本轮整组不在页上'
+                f'（它声明的 {len(gone)} 列 '
+                f'{"、".join(gone) or "（列已被别处剔除）"} 整列为空），锚点没有着落，'
+                f'这张图改排页尾')
+            # 锚点作废：置回 None，让页尾那一轮（`payload()` ⑥）接住它。
+            # 不置 None 的话 `_decomp_here` 不触发、页尾又 `continue`，两头都没人接。
+            d['after_group'] = None
 
         # ── groups[].mix：列名 → 列配置，并把「被 mix 吃掉」的列记下来 ──────────────
         #
@@ -4138,23 +4176,29 @@ class Page:
             行结构 (年份, V, Q, P, V均, Q均, BV, BQ, 月数)：完整年月数恒为 12，
             YTD 桶是实际入选月数，**月度桶恒为 1** —— 图注报「窗口内均值」时要用它
             当除数（月度桶下 div = 1，合计与均值是同一个数，正是想要的）。
+
+            ⚠️ **返回的「原因」只说这一桶发生了什么，不说后果。**
+            后果两个桶各不相同：年度桶 5 根柱，废一桶等于整张图不出（那一支自己在
+            call site 补上「，不出这张图」）；月度桶 128 格，废一桶只废**这一格**，
+            图照出、那一格进 `gaps_hole` 那本账。原文里写死「不出这张图」的话，
+            月度桶把它原样带进图注就是印一句假话 —— 图明明出了。
             """
             V = float(v_s.reindex(ms).values.astype(float).sum())
             Q = float(q_s.reindex(ms).values.astype(float).sum())
+            pre = f'{d["zh"]}：{label}的'
             if not (V > 0 and Q > 0):
-                return None, (f'{d["zh"]}：{label}的合计不是正数（金额 {V:g}、数量 {Q:g}），'
-                              f'比值与对数都没有定义，不出这张图')
+                return None, (f'{pre}合计不是正数（金额 {V:g}、数量 {Q:g}），'
+                              f'比值与对数都没有定义')
             div = (float(wcol.reindex(ms).values.astype(float).sum())
                    if wcol is not None else float(len(ms)))
             if not div > 0:
-                return None, (f'{d["zh"]}：{label}的 {d["weight_col"]} 合计为 {div:g}，'
-                              f'除不回展示口径')
+                return None, f'{pre}{d["weight_col"]} 合计为 {div:g}，除不回展示口径'
             row = [y, V, Q, V / Q * d['price_scale'], V / div, Q / div, None, None, len(ms)]
             if bench:
                 BV = float(bv_s.reindex(ms).values.astype(float).sum())
                 BQ = float(bq_s.reindex(ms).values.astype(float).sum())
                 if not (BV > 0 and BQ > 0):
-                    return None, (f'{d["zh"]}：{label}的行业合计不是正数'
+                    return None, (f'{pre}行业合计不是正数'
                                   f'（金额 {BV:g}、数量 {BQ:g}），份额与相对价没有定义')
                 row[6], row[7] = BV, BQ
             return tuple(row), None
@@ -4185,7 +4229,9 @@ class Page:
         for y, ms in sel:
             row, err = agg_one(y, f'{y} 年', ms)
             if err:
-                return None, err
+                # 后果由 call site 补（`agg_one` 只说发生了什么）：年度桶一共 5 根柱，
+                # 废掉一桶就没有「相对上一年」可比，整张图不出。
+                return None, f'{err}，不出这张图'
             agg.append(row)
 
         # 年度 → 柱标签只此一处映射。早先「基期」那句直接印了原始桶年（2015），
@@ -4207,11 +4253,11 @@ class Page:
             lab_t = f'{ylab(y_t)} YTD'
             cur, err = agg_one(y_t, f'{lab_t}（{ms_cur[0]}…{ms_cur[-1]}）', ms_cur)
             if err:
-                return None, err
+                return None, f'{err}，不出这张图'
             base, err = agg_one(y_t - 1, f'{lab_t} 的同比基期（{ms_prev[0]}…{ms_prev[-1]}）',
                                 ms_prev)
             if err:
-                return None, err
+                return None, f'{err}，不出这张图'
             pairs.append((lab_t, cur, base))
             ytd_info = (y_t, ms_cur, ms_prev, lab_t)
 
@@ -4577,26 +4623,71 @@ class Page:
         v_ref = val_ref[0]
         qty_ref = [e for e in refs if e['_cols'] == [qc['col']]]
 
+        # `need` 逐条对应的列名（拼装顺序抄自 `ex_decomp`：先 value / qty，
+        # 有 bench 再追加行业两列）。留空格要点名「哪一列、哪个月缺值」——
+        # 光说「留空」等于让读者猜。顺序一旦对不上就当场报错：点错列名比不点名更糟。
+        need_names = ([vc['col'], qc['col']]
+                      + ([d['bench_value']['col'], d['bench_qty']['col']] if bench else []))
+        if len(need_names) != len(need):
+            raise SpecError(
+                f'decomp「{d["zh"]}」：need 有 {len(need)} 条序列、列名表只有 '
+                f'{len(need_names)} 个 —— `ex_decomp` 里 need 的拼装顺序改过了，'
+                f'这里必须跟着改，否则留空格会点错列名')
+        _pre = f'{d["zh"]}：'      # `agg_one` 原文自带的图名前缀，见下面 `_why` 的说明
+
+        def _why(msg):
+            """`agg_one` 的原文 → 去掉「<图名>：」前缀之后的那一句。
+
+            前缀是给年度桶用的（那一支的原因会进 `self.skipped`，混在别的图里，
+            不带图名认不出是谁）。这里的原因印在**这张图自己**的图注与自检行里，
+            前缀原样留着就是每一格重复一遍图名。除前缀之外一个字不改 ——
+            「合计不是正数（金额 …、数量 …）」那种话必须是构建期原文，不许转述。
+            """
+            return msg[len(_pre):] if msg.startswith(_pre) else msg
+
         pairs = [(mlab(p), [p], [p - 12]) for p in win]
-        xl2, c_q, c_p, net, rows, blanks, gaps = [], [], [], [], [], [], []
+        xl2, c_q, c_p, net, rows, blanks = [], [], [], [], [], []
+        # ── 留空分**两本账**（2026-09 拆开，之前是合成一个 `gaps` 列表）────────────
+        #   `gaps_base` 基期那一行**不在本表里**。本表索引在 `load()` 里补成连续月份，
+        #              所以这一档等价于「基期落在本表首月之前」= 真·左端连续一段。
+        #   `gaps_hole` 基期就在表里，废掉这一格的是**输入自己**：源表那一格空着，
+        #              或者 `agg_one` 判定这一桶取不了对数（合计不是正数等）。
+        # 合成一本的代价实测过（红队注入 `trades_cash_total` 的 2022-05 / 06 两个洞）：
+        # 图注与自检行照旧印「另有**左端** 16 格（Jan-16 – Jun-23）留空……它们的基期
+        # 落在本表首月之前，源表里根本没有那一行」—— 其中 May-22 / Jun-22 / May-23 /
+        # Jun-23 四格的基期**全都在表内**，读者被告知一个错误的原因；而「左端 N 格
+        # （首 – 末）」的措辞还把中段的两个洞伪装成一段横跨七年半的连续左边界。
+        gaps_base, gaps_hole = [], []
         c_b, c_s, c_m = [], [], []
         for lab, ms1, ms0 in pairs:
             p1, p0 = ms1[0], ms0[0]
             xl2.append(lab)
             # 基期不在索引、或任一列两侧任一月缺值 ⇒ **c_q / c_p / net 三处同时留空**。
             # 只留一处会撞底座那道「菱形留空但堆叠段有值」的护栏（下面护栏④）。
-            two = (p0 in idx and all(
-                np.isfinite(float(s.get(p1, np.nan)))
-                and np.isfinite(float(s.get(p0, np.nan))) for s in need))
             r1 = r0 = None
-            if two:
-                r1, e1 = agg_one(p1.year, lab, ms1)
-                r0, e0 = agg_one(p0.year, f'{lab} 的同比基期（{p0}）', ms0)
-                # 单月桶里 agg_one 的报错（合计非正）只该废掉**这一格**，
-                # 不该废掉整张 128 格的图 —— 年度桶只有 5 根柱，那里返回 None 是对的。
-                two = not (e1 or e0)
-            if not two:
-                gaps.append(lab)
+            base_out = p0 not in idx
+            hole = None
+            if not base_out:
+                miss = [f'{nm} 在{w} 缺值'
+                        for nm, s in zip(need_names, need)
+                        for w, p in ((f'本期 {lab}', p1), (f'基期 {mlab(p0)}', p0))
+                        if not np.isfinite(float(s.get(p, np.nan)))]
+                if miss:
+                    hole = '、'.join(miss)
+                else:
+                    r1, e1 = agg_one(p1.year, '本期', ms1)
+                    r0, e0 = agg_one(p0.year, f'同比基期（{p0}）', ms0)
+                    # 单月桶里 agg_one 的报错（合计非正）只该废掉**这一格**，
+                    # 不该废掉整张 128 格的图 —— 年度桶只有 5 根柱，那里返回 None 是对的。
+                    # ⚠️ **只废一格不等于可以不说**：原文逐格带进 `gaps_hole`，
+                    # 图注与自检行都点名到格、到原因，别让读者拿「留空」两个字去猜。
+                    if e1 or e0:
+                        hole = '；'.join(_why(x) for x in (e1, e0) if x)
+            if base_out:
+                gaps_base.append(lab)
+            elif hole is not None:
+                gaps_hole.append((lab, hole))
+            if base_out or hole is not None:
                 for arr in (c_q, c_p, c_b, c_s, c_m, net):
                     arr.append(np.nan)
                 continue
@@ -4721,6 +4812,13 @@ class Page:
                 f'decomp「{d["zh"]}」的净额菱形与 Exhibit {v_ref["n"]} 的次轴金线'
                 f'对不上（可比 {dia_n} 格，最大差 {dia_gap:.3e}pp）—— '
                 f'图注声称两者「是同一条数、逐点相同」，对不上就不许出图')
+
+        # 两本留空账的合计。图注那句「而不是缩到 X 格」是拿**画得出来的格数**说事，
+        # 两本都要减 —— 只减 `gaps_base` 的话，中段有洞时那个数会多算。
+        n_gap = len(gaps_base) + len(gaps_hole)
+        # 「因权重退化而留空」那一段末尾要点名另外哪几本账在下面，非空的才点。
+        _other_gap = '、'.join(x for x, ok in (('基期缺失', gaps_base),
+                                              ('输入缺口', gaps_hole)) if ok)
 
         # ── 统计**只在画得出来的格上算** ─────────────────────────────────────
         # 留空格与两侧不齐的格上 |g_V| ≈ 0 或根本没有值，拿它们算「交叉项 ÷ 净增长」
@@ -4894,18 +4992,35 @@ class Page:
                f'{DECOMP_LN_MIN:.0e}（两期几乎持平），重标定权重 w 是 0/0、'
                f'算出来没有有效位，所以整格留空而不是印一个假的分解。' if blanks else
                f'<b>本轮没有任何一格因权重退化而留空</b>（判据 |ln(V₁/V₀)| < '
-               f'{DECOMP_LN_MIN:.0e}，两期几乎持平时 w = 0/0；这一档与下面那批'
-               f'基期缺失的格是两回事）：最接近的一格是 '
+               f'{DECOMP_LN_MIN:.0e}，两期几乎持平时 w = 0/0'
+               # 「下面那批」指的是下面两本留空账 —— 哪本非空就点哪本的名。
+               # 写死成「基期缺失」的话，某一页哪天只有中段的洞（表首月早于
+               # WIN_FROM 十二个月以上时 `gaps_base` 就是空的，db1 / ndaq / tmx
+               # 那几张表的起点都够早），这句话就会指向一批并不存在的格。
+               + (f'；这一档与下面那批{_other_gap}的格是两回事' if _other_gap else '')
+               + f'）：最接近的一格是 '
                f'{lv_row["lab"]}，|ln(V₁/V₀)| = {lv_min:.6f}，是阈值的 '
                f'{lv_min / DECOMP_LN_MIN:,.0f} 倍。规则留着 —— 它防的是极端巧合，'
                f'「这轮没命中」不是删兜底的理由。')
-            + (f'<b>另有左端 {len(gaps)} 格（{gaps[0]} – {gaps[-1]}）留空</b>，'
+            # ⑦ 留空的另外两本账：**基期落在表外**与**输入自己有洞**各说各的。
+            #    措辞不许互借：前者是「左端连续一段、随窗口右移自动消失」，
+            #    后者是「窗口里任意位置、只有源表补格才会消失」。
+            + (f'<b>另有左端 {len(gaps_base)} 格（{gaps_base[0]} – {gaps_base[-1]}）留空</b>，'
                f'原因与上面那一条无关：它们的<b>基期</b>（各自的去年同月）'
                f'落在本表首月 {mlab(list(self.df.index)[0])} 之前，'
                f'源表里根本没有那一行，单月同比无从算起。'
-               f'横轴仍取本页统一的 {len(xl2)} 格而不是缩到 {len(xl2) - len(gaps)} 格：'
+               f'横轴仍取本页统一的 {len(xl2)} 格而不是缩到 {len(xl2) - n_gap} 格：'
                f'缩了就与本页其余月度图对不齐，「可以逐格上下对读同一个月」那句话'
-               f'随之作废。逐格点名见构建日志的自检行。' if gaps else '')
+               f'随之作废。逐格点名见构建日志的自检行。' if gaps_base else '')
+            + (f'<b>另有 {len(gaps_hole)} 格留空，原因不是「基期落在表外」</b>：'
+               f'这些格的<b>基期就在本表里</b>，废掉它们的是<b>输入自己</b> —— '
+               f'源表那一格空着，或者那一个月的合计取不了对数。'
+               f'逐格点名（括号里是构建期原文）：'
+               + '；'.join(f'<b>{lab}</b>（{why}）' for lab, why in gaps_hole)
+               + f'。这一档<b>不会随窗口右移而消失</b>，要等源表把那一格补上，'
+                 f'与「基期落在本表之外」那一档是两回事，所以分两本账印。'
+                 f'画不出来的格就是画不出来，图上不会有任何柱段或菱形替它站位。'
+               if gaps_hole else '')
 
             + f'<b>⚠️「{d["price_zh"]}」是什么、不是什么。</b>它是 {vc["zh"]} ÷ '
               f'{qc["zh"]} 得到的{kind_zh}。{kind_warn}'
@@ -4956,8 +5071,14 @@ class Page:
             f'菱形 vs Exhibit {v_ref["n"]} 金线最大差 {dia_gap:.1e}pp（{dia_n} 格）；'
             f'三道闭合残差 ≤ {DECOMP_EPS:.0e} 全过'
             + (f'；留空格 {"、".join(blanks)}' if blanks else '；无留空格')
-            + (f'；基期缺失留空 {len(gaps)} 格：{"、".join(gaps)}' if gaps else
-               '；无基期缺失格'))
+            # 自检行同样分两本账印：措辞混用一次，读者就会拿「基期落在表外」去解释
+            # 一个基期明明在表内的洞（红队实测：挖两个洞，这一行照旧印
+            # 「基期缺失留空 16 格」，多出来的四格基期全在表内）。
+            + (f'；基期缺失留空 {len(gaps_base)} 格：{"、".join(gaps_base)}'
+               if gaps_base else '；无基期缺失格')
+            + (f'；输入缺口留空 {len(gaps_hole)} 格：'
+               + '、'.join(f'{lab}（{why}）' for lab, why in gaps_hole)
+               if gaps_hole else '；无输入缺口格'))
         return ex, None
 
     def ex_level_yoy(self, n, t):
@@ -5746,6 +5867,15 @@ class Page:
             out.append('<b>本轮未出的派生图。</b>'
                        + '；'.join(self.skipped)
                        + '。数据补齐后自动回来，不需要改 spec。')
+        # `after_group` 的锚点组本轮整组不在页上 ⇒ 分解图退回缺省位置（页尾）。
+        # **同样没有并进上面那本账**：上面那段说的是「没出」「补齐后回来」，
+        # 而这一档的图**出了**，只是位置变了 —— 塞进去就是一句假话。理由同下面 dup 那段。
+        if getattr(self, 'decomp_moved', None):
+            out.append('<b>本轮改排页尾的分解图。</b>'
+                       + '；'.join(self.decomp_moved)
+                       + '。<b>图本身照常出、每一格的数一个都没变</b>，'
+                         '变的只有它在本页的排序位置：本来该紧跟它的输入之后，'
+                         '现在退到页尾。源表补上那几列之后自动回到原位，不需要改 spec。')
         # 同一条同比画了两遍（只告警的那一档）。**没有并进上面那本账**：
         # 上面那段的收尾是「数据补齐后自动回来」，而这一档的图**已经出了**、
         # 也不会因为数据补齐而变化 —— 塞进去就是两句假话（说它没出、说它会回来）。
@@ -5800,6 +5930,11 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     for why in (getattr(page, 'skipped', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 派生图未出：{why}')
+    # 图出了、但位置从 `after_group` 退回页尾。单独一行、不并进上面那一档：
+    # 上面那行说的是「未出」，这一行说的是「出了但挪了位」，两件事。
+    for why in (getattr(page, 'decomp_moved', None) or []):
+        if not quiet:
+            print(f'[{t}] ⚠️ 分解图改排页尾：{why}')
     # 同一条同比画在两张图上（同族同窗口那一档已经在 log_yoy_bar 里硬失败了，
     # 到这里的都是「留着有信息、但读者会以为看漏了差别」的那一档）。
     # 不硬失败，但必须响：页尾那段是给读者的，这一行是给维护者的。
