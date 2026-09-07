@@ -696,14 +696,18 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 raw = open(fs, "rb").read().decode("utf-8", "replace")
             except OSError:
-                return super().do_GET()
+                return super().do_HEAD() if self.command == "HEAD" else super().do_GET()
             low = raw.lower()
             i = low.find("<head>")
             inj = raw[: i + 6] + ERR_SHIM + raw[i + 6:] if i >= 0 else ERR_SHIM + raw
             return self._send(inj.encode("utf-8"), "text/html; charset=utf-8")
-        return super().do_GET()
+        # 父类的 do_GET 不看 method，HEAD 也照写 body —— HTTP/1.0 时连接随即关掉、
+        # 看不出毛病，开了 keep-alive 就是把 14 KB 正文留在流里，后一个响应从中间
+        # 开始读。走 do_HEAD 那一支（`_send` 自己已经按 self.command 判过了）。
+        return super().do_HEAD() if self.command == "HEAD" else super().do_GET()
 
-    do_HEAD = do_GET
+    def do_HEAD(self):
+        return self.do_GET()
 
 
 class _Server(http.server.ThreadingHTTPServer):
