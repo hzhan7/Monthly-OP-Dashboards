@@ -1058,7 +1058,9 @@ def update_fx(series_dir, cache_dir, fx_src=None):
 
 
 def update(series_dir, cache_dir):
-    """把新月份写进 series/tsm.csv 与 series/tsm_fx.csv，返回新增月份列表（两文件并集，已排序）。
+    """把新月份写进 series/tsm.csv 与 series/tsm_fx.csv，返回 **tsm.csv 的**新增月份（已排序）。
+
+    返回值里**不含**只在 tsm_fx.csv 里新增的月份 —— 理由在函数末尾 return 处。
 
     幂等：已有月份一律不重复追加。
     任何一列解析不出来（如缺去年同月基数、缺当月汇率）→ 抛异常，绝不写 NaN。
@@ -1147,7 +1149,24 @@ def update(series_dir, cache_dir):
     print('[tsm] xlsx=%s' % xlsx_url)
     print('[tsm] tsm.csv +%d %s | tsm_fx.csv +%d %s'
           % (len(new_rev_rows), new_rev_months, len(new_fx_months), new_fx_months))
-    return sorted(set(new_rev_months) | set(new_fx_months))
+    # **只报营收月，不报汇率月**（2026-09-07 改；旧写法是两者的并集）。
+    # 调用方 monthly_run.one() 拿这个返回值当「tsm 这一家进到哪个月了」：NEW/REBUILT
+    # 的分档看它，2026-09-07 之前的 commit 标题也直接印它。而 tsm_fx.csv 是**六页共享的
+    # 宏观底座**，它推进一个月不等于 TSMC 披露了一个月 —— 两者的节奏本来就不同源
+    # （H.10 周更 vs 台湾次月 10 日前）。
+    #
+    # 实测代价：2026-09-05 那轮 TSMC 的 xlsx 还停在 7 月，只有 H.10 推进到 2026-08，
+    # 并集返回 ['2026-08'] → 提交标题写成「更新数据: tsm 2026-08」，而那个提交里
+    # 没有 series/tsm.csv（a8f2211）。标题声称的月份在真值源里根本不存在。
+    #
+    # 现在汇率那一侧由 monthly_run.taiwan_fx() 在按家循环**之前**单独调 update_fx()
+    # 抢先写掉，所以并集在那条路径上恰好总是空的 —— 但那是顺序的副作用，不是保证：
+    # 谁把 taiwan_fx() 挪到循环后面，这个谎就立刻回来。这里按语义修死，不靠顺序。
+    #
+    # 对 one() 的影响是正确方向：汇率单独推进时 added 为空、而 series_fingerprint('tsm')
+    # 通配 series/tsm*.csv 会看见 tsm_fx.csv 变了 → 状态从 NEW 降为 REBUILT
+    # （「指纹变了但没有新月份」正是那个状态存在的理由），页面照样重建，一个字不少。
+    return sorted(new_rev_months)
 
 
 def _guidance_reminder(series_dir, latest_rev_month):

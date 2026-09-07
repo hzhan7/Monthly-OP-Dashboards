@@ -649,6 +649,137 @@ def data_changed():
     return False
 
 
+def _only_filled_blanks(old_line, new_line):
+    """这一行的改动是不是「只把空格填上」（慢腿回补），而不是改了已有的值。
+
+    用 csv.reader 而不是 split(',')：series 里有带引号的文本列（证据串里就有逗号），
+    裸切会把一列切成两列，进而把回补误判成改数。列数对不上（加列/删列）一律算改数 ——
+    那种时候「哪一列动了」本来就说不清，保守报更重的那一种。
+    """
+    try:
+        o = next(csv.reader([old_line]))
+        n = next(csv.reader([new_line]))
+    except Exception:
+        return False
+    if len(o) != len(n):
+        return False
+    diff = [(a, b) for a, b in zip(o, n) if a != b]
+    return bool(diff) and all(a == '' for a, _ in diff)
+
+
+def staged_label():
+    """从**已暂存的 diff** 现算 commit 标题，不采信任何 fetch 模块的自述。
+
+    ## 为什么不能再拿 `update()` 的返回值当标题（2026-09-07 改）
+
+    旧写法是 `', '.join(f'{t} {m}' for t, m in months.items())`，而 `months[t]` 来自
+    `one()` 里 `added = fetch_<t>.update(...)` 的返回值 —— 那是**各 fetch 模块的自述**，
+    没有任何东西核对过它与 `series/` 里真正多出来的行是否一致。两类实测偏差：
+
+    · **多文件模块把并集当自己的月份**。fetch/tsm.py 维护两张表（tsm.csv 与六页共享的
+      tsm_fx.csv），旧 return 是 `sorted(set(new_rev_months) | set(new_fx_months))`。
+      2026-09-05 那轮 TSMC 的 xlsx 还停在 7 月、只有汇率推进到 2026-08，于是它返回
+      ['2026-08'] → 标题写成「更新数据: tsm 2026-08」，而那个提交里**根本没有
+      series/tsm.csv** —— 该文件至今停在 2026-07（`git show --stat a8f2211` 可复现）。
+      fetch/axp.py:867 是同一个形状的五路并集，只是还没赶上这种日子。
+    · **返回值根本不是月份**。fetch/cost.py 的 SEC 腿会返回 `seg:FY26Q3|Q` 这类串，
+      直接进标题就是「更新数据: cost seg:FY26Q3|Q,…」（见 cost_sec() 的 docstring）。
+
+    还有反方向的一半：`months` 只收按家循环里状态为 NEW 的那些，
+    **循环之后**那四步（taiwan_fx_rebuild / cost_sec / mops_remarks / fee_rates）
+    写进 data/ 与 series/ 的东西它一个字都不知道。历史上三个「更新数据: 0 家重建」
+    就是这么来的 —— 提交里明明有改动，标题却说什么都没有。
+
+    改成读 `git diff --cached`：git 记的就是这一次要提交的东西，标题与改动之间
+    再没有可以漂移的中间层。代价是标题按**文件**而不是按公司分组（tsm_fx 与 umc
+    各自成项），但那正是当时真实发生的事。
+
+    返回一句可直接进 commit 标题的话；暂存区里没有 series 改动时退回按页计数。
+    """
+    diff = sh(['git', 'diff', '--cached', '-U0', '--', 'series'])
+    per, stem = {}, None
+
+    def _key(line):
+        k = line[1:].split(',', 1)[0].strip()
+        return k if re.fullmatch(r'\d{4}-\d{2}', k) else None
+
+    for line in diff.splitlines():
+        if line.startswith('+++ ') or line.startswith('--- '):
+            if line.startswith('--- '):
+                continue                  # 只认 +++ 那一侧定文件名，--- 是同一个文件的旧名
+            path = line[4:].strip()
+            stem = None if path == '/dev/null' else \
+                os.path.splitext(os.path.basename(path))[0]
+            # 与 series_fingerprint 同一条排除：source_dates.csv 是全仓共用的发布日台账，
+            # 任何一家记一条它都会变（21 个「更新数据」提交里有 11 个动了它）。
+            # 它进标题只会给每一行加一段与「哪一家进到哪个月」无关的噪声。
+            if stem == 'source_dates':
+                stem = None
+            if stem:
+                per.setdefault(stem, {'add': {}, 'del': {}, 'adds': 0})
+        elif stem and line.startswith('+'):
+            per[stem]['adds'] += 1
+            k = _key(line)                # 月份键才配进标题；cost_* 那几张按财季/年份键
+            if k and k not in per[stem]['add']:      # 的表没有月份键，落到「+N 行」
+                per[stem]['add'][k] = line[1:]
+        elif stem and line.startswith('-'):
+            k = _key(line)
+            if k:
+                per[stem]['del'].setdefault(k, line[1:])
+
+    # 同一个月份既在 + 又在 - 里 ⇒ 那一行**本来就在**，不是新月份。再分两种，因为
+    # 它们在这个仓库里是两件不同的事，one() 也把它们并列写在 REBUILT 那一支里：
+    #
+    #   · **回补**：改动的字段全是从空变成有值 —— 双腿源的慢腿到货，把先落地的
+    #     半截行填满（series/lseg.csv 的 2026-08 就是这个形状，中段几十个空格被填上）。
+    #   · **改数**：本来有值的字段变了值 —— 上游重述。448325a 就是纯重述
+    #     （TSMC 把 2026-07 从 467581 改成 467580）。
+    #
+    # 两者都不能说成「刚入库」，而把回补说成「改数」同样是句假话：那天没有任何数被改。
+    for v in per.values():
+        v['months'], v['refill'], v['restated'] = [], [], []
+        for m, line in v['add'].items():
+            if m not in v['del']:
+                v['months'].append(m)
+            elif _only_filled_blanks(v['del'][m], line):
+                v['refill'].append(m)
+            else:
+                v['restated'].append(m)
+
+    # ── 卫星表并回本家，但**只在本家自己也走到那些月份时** ──
+    # 多文件源很常见（axp 五张、lseg 三张、spgi 两张），逐文件列出来标题会长到没法读。
+    # 但并回去不能按前缀一刀切 —— tsm_fx 正是靠「前缀像 tsm」把 2026-08 记到 tsm 头上的。
+    # 所以判据是**子集**：卫星表的新增月份必须全都出现在 series/<本家>.csv 自己的新增月份里，
+    # 才允许并进去。于是「本家没动、只有卫星表动了」永远并不进去，只能自己成一项 ——
+    # 这正是 a8f2211 那一行该有的样子（tsm 不出现，tsm_fx 出现）。
+    for parent in [t for t in TICKERS if per.get(t, {}).get('months')]:
+        pm = set(per[parent]['months'])
+        for sat in [s for s in list(per) if s.startswith(parent + '_')]:
+            v = per[sat]
+            # adds == len(months)：卫星表这次**只**新增了月份行，没有夹带别的行；
+            # 有夹带就说不清并进去代表什么，宁可让它自己成一项。
+            if v['months'] and v['adds'] == len(v['months']) and set(v['months']) <= pm:
+                del per[sat]
+
+    parts = []
+    for stem in sorted(per):
+        v = per[stem]
+        seg = [','.join(v['months'])] if v['months'] else []
+        seg += [f'{",".join(v[k])} {w}' for k, w in
+                (('refill', '回补'), ('restated', '改数')) if v[k]]
+        if seg:
+            parts.append(f'{stem} ' + ' · '.join(seg))
+        elif v['adds']:
+            parts.append(f'{stem} +{v["adds"]} 行')
+        else:
+            parts.append(f'{stem} 删行')
+    if parts:
+        return ', '.join(parts)
+    # series 一个字节没动而 data/ 变了 = 纯重建（模板改了、或共享底座推动的正文变化）
+    n = len(sh(['git', 'diff', '--cached', '--name-only', '--', 'data']).splitlines())
+    return f'{n} 页重建'
+
+
 def not_due(t):
     """线上数据是否已经追平「按该家披露节奏今天本应有的月份」。
 
@@ -1668,7 +1799,15 @@ def main():
         # 必须和上面那个用同一套口径 —— 否则 --force 跑时 28 家全挂，末行仍是 NOTHING_TO_DO。
         nothing()
         return
-    label = ', '.join(f'{t} {m}' for t, m in months.items()) or f'{len(ok)} 家重建'
+    # 标题现算自**已暂存的 diff**，不再是各 fetch 模块的自述（理由见 staged_label）。
+    # 必须在 `git add` 之后：读的就是这一次要提交的那份改动。
+    label = staged_label()
+    # months 仍然打出来，但只作为「fetch 说它拿到了什么」的运行日志 —— 它与标题不一致
+    # 时那本身就是要看见的信号（2026-09-05 的 tsm 就是：fetch 说 2026-08，
+    # 而 series/tsm.csv 一行没多）。
+    claimed = ', '.join(f'{t} {m}' for t, m in months.items())
+    if claimed and claimed != label:
+        print(f'NOTE  fetch 自述「{claimed}」与暂存改动「{label}」不一致，标题以后者为准')
     sh(['git', 'commit', '-m', f'更新数据: {label}'])
     env = dict(os.environ, GIT_SSH_COMMAND='ssh -o BatchMode=yes')
     r = subprocess.run(['git', 'push'], cwd=HERE, capture_output=True, text=True, env=env)
