@@ -393,5 +393,95 @@ class TestRealRemarks(unittest.TestCase):
                 self.assertIn(r['remark'].strip(), B.quote(r['remark']))
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# E. audit_overdue_headline —— 判据必须与首页红点逐字等价
+# ═══════════════════════════════════════════════════════════════════════════
+# 这一道守的不是「护栏会不会响」，而是**它和红点会不会各说各话**。两边一旦分家，
+# cron 日志与首页就会在同一天给出相反的结论，而那种矛盾没人能一眼判出谁对。
+#
+# 测法照本文件 (b) 的规矩：不造夹具，拿**真判据**去撞 —— 把 index.html:70-85 的
+# stale() 逐行移植成 Python，与 monthly_run.audit_overdue_headline 用的那条算术
+# 在 28 家 × 6 个 data_through × 730 天上逐组对拍。
+#
+# ⚠ 移植时两处最容易写错，都在下面 _js_stale 里标了：
+#   · end.getMonth() 是 **0-indexed**，JS 里 `mo = getMonth()===0 ? 12 : getMonth()`
+#     算的是「end 的前一个月」= 候选月；
+#   · JS 的门槛是 `now >= end + (lag+grace) 天`，而 _due_month(off) 的门槛是
+#     `today >= end + (off-1) 天` —— 故 **off = lag + GRACE + 1**。写成 lag+GRACE
+#     会让护栏比红点早一天开口。这个 ±1 有实测代价：见 docs/DELIVERY.md 里
+#     同一处偏移漏写、让五家闸门整体晚开一天的那条。
+import datetime  # noqa: E402
+
+_MR = None
+_ROSTER = None
+
+
+def _load_once():
+    global _MR, _ROSTER
+    if _MR is None:
+        import importlib.util
+        for name, path in (('_mr_t', os.path.join(ROOT, 'monthly_run.py')),
+                           ('_rost_t', os.path.join(ROOT, 'build', 'roster.py'))):
+            spec = importlib.util.spec_from_file_location(name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if name == '_mr_t':
+                _MR = mod
+            else:
+                _ROSTER = mod
+    return _MR, _ROSTER
+
+
+def _js_stale(lag, through, now, grace):
+    """index.html:70-85 stale() 的逐行移植。now 为 datetime.date。"""
+    for k in range(6):
+        n = now.year * 12 + now.month - 1 - k
+        ey, em0 = n // 12, n % 12                      # em0 = end.getMonth()，0-indexed
+        end = datetime.date(ey, em0 + 1, 1)            # 候选月的下月 1 号 = 月末 + 1
+        mo = 12 if em0 == 0 else em0                   # 候选月 1-12
+        due = end + datetime.timedelta(
+            days=(lag[1] if mo % 3 == 0 else lag[0]) + grace)
+        if now >= due:
+            y = ey - 1 if em0 == 0 else ey
+            return through < f'{y}-{mo:02d}'
+    return False
+
+
+class TestOverdueMatchesRedDot(unittest.TestCase):
+    THROUGHS = ('2025-11', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09')
+    DAYS = 730
+
+    def _disagreements(self, bump):
+        mr, rost = _load_once()
+        grace, d0, bad = rost.GRACE, datetime.date(2026, 1, 1), []
+        for t, lag in sorted(rost.LAG.items()):
+            for through in self.THROUGHS:
+                for i in range(self.DAYS):
+                    today = d0 + datetime.timedelta(days=i)
+                    due = mr._due_month(
+                        (lag[0] + grace + bump, lag[1] + grace + bump), today)
+                    if _js_stale(lag, through, today, grace) != bool(due and through < due):
+                        bad.append((t, through, today))
+        return bad
+
+    def test_identical_to_red_dot(self):
+        bad = self._disagreements(1)                   # 1 = 生产用的那个偏移
+        self.assertEqual(bad, [], f'与首页红点分歧 {len(bad)} 组，前三：{bad[:3]}')
+
+    def test_offset_actually_matters(self):
+        """反向验：这个对拍不是空过的 —— 偏移写错一天，它必须抓到。"""
+        for bump in (0, 2):
+            with self.subTest(bump=bump):
+                self.assertNotEqual(
+                    self._disagreements(bump), [],
+                    f'偏移 lag+GRACE+{bump} 竟无分歧 —— 对拍失去意义，先查 _js_stale')
+
+    def test_no_false_alarm_today(self):
+        """今天真跑一遍：仓库当前状态下不该有任何一家逾期（有就是真出事了）。"""
+        mr, _ = _load_once()
+        self.assertEqual(mr.audit_overdue_headline(), [])
+
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

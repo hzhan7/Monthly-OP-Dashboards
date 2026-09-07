@@ -921,6 +921,82 @@ def audit_stale_cols():
         print(f'  ⚠ 陈旧列审计自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
 
 
+def audit_overdue_headline(today=None):
+    """把只有浏览器端才算得出来的**首页红点**，搬进 cron 日志。返回逾期家的 ticker 列表。
+
+    ═══ 它补的洞，和 audit_stale_cols() 补的不是同一个 ═══
+    两道都在「28 家全 NOCHANGE 也照样开口」这一类里，但问的问题不同：
+
+      · audit_stale_cols() 问「**每一列**离本该有的月份差几个**月**」，宽限
+        STALE_GRACE_MONTHS=3 个月 —— 那三个月是给 lseg RepoClear 这类**设计性**
+        滞后留的（见该常数的注释）。收紧它会把所有慢腿吵醒，正是它自己警告的
+        「每季度假一次的警报，人很快学会无视」。
+      · 本函数问「**头条月份**过没过红点线」，单位是**天**，没有月级宽限。
+
+    粒度、口径、对象都不同，所以并列、不合并。3 个月的宽限意味着「公开页面此刻
+    正挂着可见的旧数据」这件事，audit_stale_cols 要到第三个月才开口 —— 而首页
+    那一刻早就红了，只是**没人看见**：红点是 index.html 在浏览器里现算的
+    （见该文件 stale() 上方那段注释「若在构建时算死，这套东西哪天停跑了，页面会
+    永远显示一片绿」），而读 cron 日志的人永远看不到浏览器。
+
+    ═══ 判据必须与红点逐字对齐，否则这道护栏只会制造分歧 ═══
+    index.html:76-78 的门槛是 `now >= (月末 + 1 天) + (lag + grace) 天`，
+    而 _due_month(off) 的门槛是 `today >= end + (off - 1)`、其中 end 已经是
+    「月末 + 1 天」。两边相等 ⇒ **off = lag + GRACE + 1**，不是 lag + GRACE。
+    这个 +1 不是凑数：docs/DELIVERY.md:551 记着同一处偏移曾经漏写，让五家的闸门
+    整体晚开一天。写成 lag + GRACE 会让本函数比红点早一天开口，于是每逢源头
+    恰在第 (lag+GRACE) 天发布的那个月就假警报一次 —— 又一个「每月假一次」。
+
+    读的字段也照红点来：`data/<t>.js` 的 data_through，与 build/roster.py 喂给
+    首页的 'through' 是同一个（该文件 items.append 那几行）。**不读
+    series/<t>.csv 的 max(month)**：多腿源的 data_through 由头条腿独家推动，
+    拿某个 csv 的最大月去判，慢腿一到货就会把这道护栏骗过去。
+
+    ═══ 为什么计入 fails（→ PARTIAL），而 audit_stale_cols 不计 ═══
+    那一道刻意不改末行（「陈旧不等于本轮失败」），对「某一列落后 3 个月」是对的。
+    本函数触发的含义不同：**站点此刻正挂着旧数据、红点已经亮了**。这与 cost_sec /
+    fee_rates / fx 失败同类 —— 末行是它们唯一会被调度器读到的故障信号。
+    警报是黏的：会一直响到数据真到货或有人去修（同 _cost_sec_behind 的「宁可吵」）。
+
+    整个函数体裹在 except 里，与 audit_stale_cols() / slow_pending() 同规矩：
+    一道**观察**自己出错，绝不能把已经成功的一轮带走。
+
+    `today` 只为测试留缝，生产路径一律走默认值（同 _due_month 的那条缝）。
+    """
+    try:
+        rost = load(os.path.join(HERE, 'build', 'roster.py'), 'roster_overdue')
+        grace = rost.GRACE
+        overdue = []
+        for t in sorted(_LAG_CACHE or rost.LAG):
+            lag = due_lag(t)
+            if lag is None:
+                continue              # 横截面页没有披露节奏，红点也不判它们
+            p = os.path.join(DATA, f'{t}.js')
+            if not os.path.exists(p):
+                continue
+            with open(p, encoding='utf-8') as f:
+                txt = f.read()
+            through = json.loads(
+                txt[txt.index('{'):txt.rindex('}') + 1]).get('data_through')
+            if not through:
+                continue              # 与 index.html:71 的 `!it.through` 同处理
+            due = _due_month((lag[0] + grace + 1, lag[1] + grace + 1), today)
+            if due and through < due:
+                overdue.append((t, through, due))
+        if not overdue:
+            return []
+        print(f'  🔴 头条月份逾期 {len(overdue)} 家（已过红点线 = 月末后第 '
+              f'LAG+{grace}+1 天，首页此刻正显示红点）：')
+        for t, through, due in overdue:
+            print(f'     {t:6s} 页面停在 {through}，本该已有 {due}')
+        print('     处置：先分清是「源真没发」还是「我们没看见」—— 后者按 README'
+              '「第四类」补护栏，别只补一次数据。')
+        return [t for t, _, _ in overdue]
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 头条逾期审计自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+        return []
+
+
 def builder(t):
     """→ 重新生成 `data/<t>.js` 的命令行；三种写法都找不到时返回 None。
 
@@ -1598,6 +1674,10 @@ def main():
     # 陈旧列审计：这一轮唯一「即使 28 家全 NOCHANGE 也照样开口」的检查。
     # 上面每一家的 NOCHANGE 都只说明「今天没抓到新的」，说明不了「这一列还活着」。
     audit_stale_cols()
+    # 头条逾期审计：与上一道并列、口径不同（月级 vs 天级，见该函数 docstring）。
+    # 去重是必须的 —— 一家今天 fetch 失败会先进 fails，它同时逾期就会被记两次，
+    # 末行的 `len(fails)` 与逗号串都会翻倍，读日志的人会以为出了两件事。
+    fails += [t for t in audit_overdue_headline() if t not in fails]
 
     # ── 收尾闸门：产物体检（34 页全部生成完之后、commit 之前）─────────────────
     # 这两道与 preflight 那两道的分界线是「查配置/代码」还是「查产物」：
