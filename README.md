@@ -138,13 +138,19 @@ python3 monthly_run.py --dry-run       # 抓取与生成都做，但不 commit/p
 python3 monthly_run.py --force         # 数据没变也重建并推送（改了图表代码后用）
 ```
 
-改过生成器或引擎之后，三条校验各管一层，谁都替代不了谁：
+改过生成器或引擎之后，四条校验各管一层，谁都替代不了谁：
 
 ```bash
 python3 build/verify_pages.py          # 结构层：payload 契约 + 页面引用，0 ERROR 才算过
 python3 tools/check_yoy_caliber.py     # 口径层：同比口径判据（CONTRACT §6 的机检）
 python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据（轴刻度/越界柱/压字）
+python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门表 vs LAG / EARLY_BY 真值
 ```
+
+最后一条只在**改了 `build/roster.py` 的 `LAG` 或 `monthly_run.py` 的 `EARLY` /
+`EARLY_BY`** 时才可能红 —— 那张表是手抄的代码常量，抄漏了页面上看不出任何异常
+（2026-08-30 给 umc / ase 加 `EARLY_BY` 那次就漏了，一周后才发现）。
+它**不在 cron 路径上**，理由见脚本头。
 
 每家输出一行 `<ticker> <状态> <说明>`，stdout **最后一行**是总状态，调度任务只读这一行：
 

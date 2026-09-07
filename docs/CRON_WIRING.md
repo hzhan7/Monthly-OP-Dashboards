@@ -101,6 +101,11 @@ data_changed()?        忽略首行构建日期的正文比较 → 有变化才 
 **必须写成元组** —— 取值处是 `EARLY_BY.get(t, (EARLY, EARLY))[1 if qe else 0]`，
 写成裸整数会在下标那步 TypeError，崩掉的是**整轮** monthly_run，不只是那一家。
 
+⚠️ **下面 §2.2 / §2.3 两张表是手抄的代码常量，改了 `LAG` / `EARLY_BY` 必须同步改表。**
+有机检：`python3 tools/check_doc_gates.py` 逐行核 28 家的 `LAG` / `EARLY_BY` / 闸门，
+连 §2.3 那句「13 + 15 = 28 家」一起核。它不在 cron 路径上（理由见脚本头），
+跟着 README「改过生成器或引擎之后」那一组一起手工跑。
+
 ### 2.1 定这两个数的判据（本轮 9 家统一按这条）
 
 > **`LAG` 照实测最晚那期定**（红点要的是上界）；
@@ -180,12 +185,22 @@ LSEG 是反方向的同一条规则：它的头条在**快腿**（Tradeweb）上
 | `hood` | (13, 30) | — | 8 / 25 |
 | `nanya` | (13, 13) | — | 8 |
 | `schw` | (14, 21) | — | 9 / 16 |
-| `umc`  | (14, 14) | — | 9 |
-| `ase`  | (15, 15) | — | 10 |
+| `umc`  | (14, 14) | (10, 10) | 4 |
+| `ase`  | (15, 15) | (7, 7) | 8 |
 | `axp`  | (16, 16) | — | 11 |
 | `msci` | (17, 17) | — | 12 |
 | `spgi` | (18, 18) | (7, 7) | 11 |
 | `lpla` | (21, 52) | — | 16 / 47 |
+
+`umc` / `ase` 的 `EARLY_BY` 是 **2026-08-30 补的**（此前两家吃默认 `EARLY=5`，
+本表相应写着「—」与旧闸门第 9 / 10 天，2026-09-07 订正）。判据与 §2.1 同一条
+——「`EARLY` 照实测最早那期定」，这两家减默认 5 天之后仍**晚于**实测最早发布日：
+`umc` 近 12 期实测第 4-8 天、最早第 4 天，默认闸门第 9 天 ⇒ **12/12 期全部迟到**；
+`ase` 99 期实测最早第 8 天（出现 9 次），默认闸门第 10 天 ⇒ **51/99 期迟 1-2 天**。
+⚠ **只动闸门、不动 LAG。** 闸门只经由差值 `LAG − EARLY` 进 `_due_month()`，改哪一边
+对闸门等价；但 LAG 还独自喂着首页红点与 `audit_stale_cols()` 的 due 基线（传的是**裸
+LAG**），改小它会连带压薄红点余量 —— `umc` 会只剩 1 天。逐条推导与「`nanya` 为什么
+刻意不在这张表里」都在 `monthly_run.py` 的 `EARLY_BY` 注释里。
 
 台湾半导体那 6 家（`ase` / `mtk` / `nanya` / `umc` / `alchip` / `guc`）是 2026-08 接入的，
 与 `tsm` 同属一条披露节奏族，但 **LAG 逐家给、不共用一个数**：
@@ -346,7 +361,7 @@ rm -rf sgx/                    # 页面壳
 #   build/roster.py  EXCH 里的       'sgx',  这一行
 #   build/roster.py  LAG 里的        'sgx':  这一行
 #   build/roster.py  META 里的       'sgx':  这一行
-#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq 五家，交易所是后四家）
+#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq / umc / ase 七家，交易所是中间四家）
 
 # ③ 抓取侧（可留可删；留着不会被任何东西调用）
 rm fetch/sgx.py series/sgx.csv  # 想彻底清掉历史数据时才删

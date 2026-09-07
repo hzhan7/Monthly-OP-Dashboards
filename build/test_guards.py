@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""build/payload_guard.py + build/brief.py 两条护栏的单元测试。
+"""build/payload_guard.py + build/brief.py + build/single.py 三条护栏的单元测试。
 
 跑法: python3 build/test_guards.py        （只用标准库 + numpy，不需要 pytest）
 
-这套测试是为「把 MOPS 官方增减原因原文写进 brief」那次改造建的，守两件事：
+这套测试是为「把 MOPS 官方增减原因原文写进 brief」那次改造建的，守两件事（A、B 组）；
+2026-09 加了第三件（D 组，`spike_cap()` 的端点护栏），理由写在那一组的组头上 ——
+一句话：**那条缺陷现网一处都没命中，只能靠注入守**，真产出当不了判据。
 
  (a) **payload_guard 的 nan/inf 正则放宽之后，一个该拦的都没少拦。**
      必须拦的那一组（`$nanbn` / `nan%` / `+naNpp` / `inf` / `infinity` …）是
@@ -391,6 +393,134 @@ class TestRealRemarks(unittest.TestCase):
         for r in self._rows()[:40]:
             with self.subTest(month=r['month'], ticker=r['ticker']):
                 self.assertIn(r['remark'].strip(), B.quote(r['remark']))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D. spike_cap 的端点护栏 —— 盲带哨兵
+# ═══════════════════════════════════════════════════════════════════════════
+# 这一组守的是一个**潜伏**缺陷：`spike_cap()` 的护栏一度写成 `end_hi > cap`（越界才抬），
+# 而引擎真正的失败门槛在**像素**上 —— `assets/charts.js` 的 `spreadY()` 里
+# `lo = M.t + 7`，而 `lines_endlabels` 的端点标签落笔在 `Y(值) + 3.2`。末点落在轴顶下方
+# 不到 3.8px 时标签跌进 `lo` 之下，触发「从上边界顺排」的兜底：**整列端点标签被重排成
+# 一摞**，与各自的线对不上号，而且没有任何东西报错。
+# 换算成读数：cap 至少要比末点高约 1.63%（半栏）/ 1.64%（通栏）。`nice_max` 抬完仍落进
+# 这条盲带的比例实测 6.37%；末点本身正好是整刻度（150 / 250 / 300 / 400 …）时**必然**触发。
+# 现网 9 页一处都没命中，所以这里不能靠真产出当判据 —— 只能注入。
+class TestSpikeCapEndGuard(unittest.TestCase):
+    """引擎几何复刻 + 盲带注入。判据与 `assets/charts.js` 的行号一一对应。"""
+
+    def setUp(self):
+        import single
+        self.S = single
+
+    # ── charts.js 的最小复刻（只复刻本条要用的那几行）──
+    @staticmethod
+    def _spreadY_falls_back(ys, Mt, ph, gap):
+        """charts.js:1291 `spreadY()` 的逐行复刻 → 是否走了顶边兜底。"""
+        lo, hi = Mt + 7, Mt + ph + 3
+        a = sorted(ys)
+        for k in range(1, len(a)):
+            if a[k] - a[k - 1] < gap:
+                a[k] = a[k - 1] + gap
+        over = (a[-1] - hi) if a else 0
+        if over > 0:
+            a = [y - over for y in a]
+        return bool(a and a[0] < lo)
+
+    def _endlabels_fall_back(self, ends, cap, y0, fs):
+        S = self.S
+        Mt = S._fscale(30, fs)                              # charts.js:814（capOn）
+        ph = S._plot_h('lines_endlabels', fs, True, None)   # charts.js:783/823
+        # charts.js:975 Y(v) + :1517/:1518 的 `+ 3.2`
+        ys = [Mt + ph - ((v - y0) / (cap - y0)) * ph + 3.2 for v in ends]
+        return self._spreadY_falls_back(ys, Mt, ph, S._fscale(9.6, fs))
+
+    def test_plot_height_matches_engine(self):
+        """绘区高：半栏 236.5 / 通栏 235.0（**不是** 268−30=238，FS=1 那一档不存在）。"""
+        S = self.S
+        self.assertAlmostEqual(S._plot_h('lines_endlabels', S.FS_MIN), 236.5, places=6)
+        self.assertAlmostEqual(S._plot_h('lines_endlabels', S.FS_MAX), 235.0, places=6)
+        self.assertLess(S._plot_h_min('lines_endlabels'), 235.0)   # 台阶右端更小
+
+    def test_known_blind_band_cases_are_lifted(self):
+        """红队实算的四例：末点 149/cap 150、396→400、300→300、250→250。
+
+        判据分两半 —— ① 旧写法（`end_hi > cap`）不抬时引擎**真的**走顶边兜底；
+        ② 新护栏解出来的 `need` 高于旧 cap（所以会抬）。
+        """
+        S = self.S
+        head_px = 7 - 3.2
+        ph = S._plot_h_min('lines_endlabels')
+        for ends, cap in ([149., 20., 8.], 150.), ([396., 120.], 400.), \
+                         ([300., 44., 12.], 300.), ([250., 90., 30., 9.], 250.):
+            with self.subTest(cap=cap):
+                end_hi = max(ends)
+                self.assertFalse(end_hi > cap, '这一例本来就不在盲带里，样例选错了')
+                for fs in (S.FS_MIN, S.FS_MAX):
+                    self.assertTrue(self._endlabels_fall_back(ends, cap, 0.0, fs),
+                                    f'cap={cap} FS={fs}：引擎复刻没走顶边兜底，样例失效')
+                need = 0.0 + (end_hi - 0.0) / (1 - head_px / ph)
+                self.assertGreater(need, cap, f'cap={cap}：新护栏没有抬 —— 盲带回来了')
+
+    def test_integer_tick_endpoint_always_in_band(self):
+        """末点本身正好落在 `nice_max` 的整刻度上时，旧写法**必然**留在盲带里。"""
+        S = self.S
+        ph = S._plot_h_min('lines_endlabels')
+        for v in (10, 25, 100, 150, 250, 300, 400, 600, 800, 1000, 2500, 30000):
+            with self.subTest(v=v):
+                self.assertEqual(float(S.nice_max(v)), float(v))
+                self.assertGreater(v / (1 - (7 - 3.2) / ph), float(S.nice_max(v)))
+
+    def test_guard_output_clears_the_band(self):
+        """护栏抬完之后，注入的那一批端点全部离顶边够远（引擎复刻不再兜底）。"""
+        S = self.S
+        head_px, ph = 7 - 3.2, S._plot_h_min('lines_endlabels')
+        for end_hi in (149., 250., 298., 396., 1234.5, 98765.):
+            with self.subTest(end_hi=end_hi):
+                cap = float(S.nice_max(end_hi / (1 - head_px / ph)))
+                for fs in (S.FS_MIN, S.FS_MAX):
+                    self.assertFalse(
+                        self._endlabels_fall_back([end_hi, end_hi * .3, end_hi * .08],
+                                                  cap, 0.0, fs),
+                        f'end_hi={end_hi} FS={fs}：抬完仍然走顶边兜底')
+
+    def test_real_spike_cap_clears_the_band(self):
+        """**注入真的 `spike_cap()`**：末点 298（栅栏内最大值）+ 中段一个 3,000 的尖刺。
+
+        旧护栏给出 `nice_max(298) = 300`，末点离轴顶只剩 0.67% —— 落在盲带里。
+        这一条直接把造出来的 exhibit 喂进 `Page.spike_cap()`，拿引擎复刻验它的产出：
+        护栏必须把上界抬到兜底门槛之外，而且那一个尖刺仍然是越界点（截轴没白截）。
+        """
+        S = self.S
+        vals = [80 + (i * 7) % 180 for i in range(60)]
+        vals[30], vals[-1] = 3000., 298.
+        ex = {'n': 4, 'kind': 'lines_endlabels', 'yfloor': 0,
+              'xlabels': [f'M{i}' for i in range(60)],
+              'series': [{'name': 'A', 'values': [float(v) for v in vals]},
+                         {'name': 'B', 'values': [float(40 + (i * 5) % 120)
+                                                  for i in range(60)]}]}
+        page = S.Page.__new__(S.Page)
+        page.ticker, page.cap_ns = 'band', []
+        zh = page.spike_cap(4, ex, [{'fmt': 'f0c', 'unit': 'units'}])
+        self.assertTrue(zh and ex.get('ycap'), 'spike_cap 没有截轴 —— 样例失效')
+        self.assertGreater(ex['ycap'], float(S.nice_max(298.)),
+                           '上界停在 nice_max(末点) 上 —— 端点护栏的盲带回来了')
+        self.assertEqual([v for s in ex['series'] for v in s['values'] if v > ex['ycap']],
+                         [3000.], '越界点不再只是那个尖刺 —— 上界抬过头了')
+        ends = [s['values'][0] for s in ex['series']] + \
+               [s['values'][-1] for s in ex['series']]
+        for fs in (S.FS_MIN, S.FS_MAX):
+            self.assertFalse(self._endlabels_fall_back(ends, float(ex['ycap']), 0.0, fs),
+                             f'FS={fs}：截完仍然会把整列端点标签重排成一摞')
+
+    def test_spike_cap_rejects_a_third_kind(self):
+        """`kind` 不是 lines_endlabels / lines 时必须当场停机（那句 raise 不是死代码）。"""
+        S = self.S
+        page = S.Page.__new__(S.Page)
+        page.ticker = 't'
+        with self.assertRaises(S.SpecError):
+            page.spike_cap(9, {'kind': 'gs_bar', 'series': [], 'xlabels': []},
+                           [{'fmt': 'f0c', 'unit': 'u'}])
 
 
 if __name__ == '__main__':

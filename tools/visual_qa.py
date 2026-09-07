@@ -642,7 +642,20 @@ fr.onload = function(){
 
 # ── 临时 http server ────────────────────────────────────────────────────────
 class _Handler(http.server.SimpleHTTPRequestHandler):
-    """静态服务仓根；对 .html 在内存里注入错误捕获 shim；/__qa__/* 走内存。"""
+    """静态服务仓根；对 .html 在内存里注入错误捕获 shim；/__qa__/* 走内存。
+
+    `protocol_version` 必须是 HTTP/1.1：父类默认 HTTP/1.0，每取一个资源就换一条
+    新连接。`--jobs 4` 是 4 个 Chrome 同时开、每个对同一 host 最多 6 条并发连接，
+    一页几十个资源全走一次性连接 —— accept 队列一满，内核直接丢 SYN，页面上表现
+    为随机某个 `.js` 取不到（`resource load failed: …/data/roster.js`、
+    `…/assets/page.js`），继而该页 0 张图、SVG_COUNT_MISMATCH。实测每跑一轮
+    70 次渲染就有 0~2 次踩中，且**每次换一页**（ase / spgi / wealth / nanya 都中过），
+    与页面本身无关。开 keep-alive 后连接数掉一个量级。
+    `timeout` 是 keep-alive 的配套：连接不再一应一关，得有东西回收闲置线程。
+    """
+
+    protocol_version = "HTTP/1.1"
+    timeout = 30
 
     probe_html = ""
     results = {}
@@ -683,19 +696,25 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 raw = open(fs, "rb").read().decode("utf-8", "replace")
             except OSError:
-                return super().do_GET()
+                return super().do_HEAD() if self.command == "HEAD" else super().do_GET()
             low = raw.lower()
             i = low.find("<head>")
             inj = raw[: i + 6] + ERR_SHIM + raw[i + 6:] if i >= 0 else ERR_SHIM + raw
             return self._send(inj.encode("utf-8"), "text/html; charset=utf-8")
-        return super().do_GET()
+        # 父类的 do_GET 不看 method，HEAD 也照写 body —— HTTP/1.0 时连接随即关掉、
+        # 看不出毛病，开了 keep-alive 就是把 14 KB 正文留在流里，后一个响应从中间
+        # 开始读。走 do_HEAD 那一支（`_send` 自己已经按 self.command 判过了）。
+        return super().do_HEAD() if self.command == "HEAD" else super().do_GET()
 
-    do_HEAD = do_GET
+    def do_HEAD(self):
+        return self.do_GET()
 
 
 class _Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # 默认 5 —— 4 个 Chrome × 每 host 最多 6 条连接，握手挤在一起就溢出（见 _Handler）。
+    request_queue_size = 256
 
 
 def start_server(repo):
