@@ -995,7 +995,22 @@ SPEC = {
             {'col': 'adt_cash_onmarket_audbn', 'zh': '日均成交额（仅场内）',
              'unit': 'A$bn/day', 'fmt': 'f2'},
         ],
-         'section': _SEC_CASH},
+         'section': _SEC_CASH,
+         # 2026-09 页面所有者指令 3：「这个图上再加一条曲线显示比例：日均成交额
+         # （仅场内）/ 日均成交额（含场外报告）」。
+         # 这一桶因此从 lines_endlabels 换成 grouped_bars（两根并排柱 + 右轴比值线）——
+         # 引擎里折线图型**没有次轴**（`docs/CHART_KINDS.md` §4），而 80–91 的比值
+         # 与 3.6–12.0 A$bn/day 同轴会把两根柱压进画布的一成。理由与校验全在
+         # `build/single.py` 的 GROUP_KEYS / ratio_rhs 那两段。
+         # 两列各 128/128 个月满格（2016-01 → 2026-08），逐月 onmarket ≤ total 零反例。
+         'ratio_rhs': {
+             'num': 'adt_cash_onmarket_audbn',
+             'den': 'adt_cash_total_audbn',
+             'zh': '场内成交占比（仅场内 ÷ 含场外报告）',
+             # 本比值 ≡ 100% − 同页「现货成交额与成交构成」那张 100% 堆叠图里
+             # 「场外成交事后报告」那一段。差由底座逐月复算并写进图注，超容差不发页。
+             'dup_part': 'value_tradereport_audbn',
+         }},
 
         # 2026-09 单独成组：这一列此前与两条日均同组，因为单位不同被底座拆成第二张图，
         # 而拆出来的那张是单桶 ⇒ gs_bar ⇒ **带次轴单月同比**，于是撞上 §6.6 的 R4
