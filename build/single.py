@@ -264,8 +264,49 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix', 'section'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs'}
 GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].ratio_rhs —— 「两根并排柱 + 右轴比值线」一张图 ────────────────────
+# 与 `mix` 一样，这是 `groups[].cols` 里各列**彼此独立**那条默认假设的例外：
+# 声明了 ratio_rhs，就是声明「num 这一列 ⊆ den 这一列」这个**包含关系**
+# （num 是 den 的一部分，逐月 num ≤ den 且 den > 0）。声明之后这一桶不再画折线，
+# 改画 `grouped_bars`：两条列各出一根并排柱（左轴，同一单位），比值 num/den×100
+# 走右轴（pct1）。
+#
+# 为什么必须是这个图型：引擎里能双轴的只有 5 种 kind（`docs/CHART_KINDS.md` §4），
+# 其中 `lines` / `lines_endlabels` **没有次轴** —— 不是「payload 没给」，是绘图、
+# 图例、表格、tooltip 四处都不读 `ex.line`。而把 80–91 的无量纲比值塞进 3.6–12.0
+# A$bn/day 的同一根左轴，两条 ADT 线会被压进绘图区高度的一成，等于把这张图作废。
+# `grouped_bars` 是唯一一种「N 条同单位序列 + 可选右轴线」的图型，不动引擎就装得下三样。
+#
+# 比值**由底座现算**，不进 CSV：`COL_KEYS` 是封闭白名单，没有派生列这个概念，
+# 而 spec 引用的列必须真实存在于 CSV，所以「往 CSV 里补一列比值」既绕不过校验，
+# 也会让同一个数在源表和图上各存一份、迟早分叉。
+#
+# 构建期硬校验（全部在 `Page.__init__` 里，见 `ratio_rhs` 那一段）：
+#   ① num / den 必须都在**本组**的 cols 里（拼错的列名会让整张图静默退回折线）；
+#   ② 两列同 unit、同 stock 档，且本组里没有第三列与它们同 unit ——
+#      分桶按 unit 走，有第三列时这一桶就不是「恰好 num 与 den 两列」；
+#   ③ 逐月 den > 0、num ≤ den，有反例就报出月份与两个读数并硬失败；
+#   ④ 可选的 `dup_part`：本页某条 mix 的分项列名，声明「本比值 ≡ 100% − 那一段占比」。
+#      底座会**逐月复算**两者的差，把实测最大差写进图注；差超过 `RATIO_DUP_TOL`
+#      就硬失败（图注里那句「这是同一条序列」会变成假话）。
+RATIO_RHS_KEYS = {'num', 'den', 'zh', 'note', 'dup_part'}
+RATIO_RHS_REQUIRED = {'num', 'den', 'zh'}
+#: `dup_part` 声称的恒等式允许的最大逐月偏差（百分点）。本仓真实的来源只有一种：
+#: 日均口径（各列先除以交易日数再取整）与当月合计口径各自四舍五入的残渣。
+RATIO_DUP_TOL = 0.05
+#: 右轴比值线的候选色，按序取第一个没被并排柱占用的。
+#: **GOLD 不在表里**：本站金色是同比专用色（页面所有者 2026-09 /cboe/ 那一轮的原话
+#: 「不用 GOLD，本站金色是同比专用」），这条线不是同比。
+#: RED 也不在：它是断点与截轴离群值的专用色（见 `MIX_SEG_COLORS` 上方那段）。
+RATIO_RHS_COLORS = ('GREEN', 'MBLUE', 'BLUE', 'NAVY', 'GRAY')
+#: 图注里指认「右轴那条 X 色的线」用的中文色名。**由挑色的结果现算**，不写死一个
+#: 「绿线」—— 柱的配色一变，挑出来的线色就换人，图注里那个词必须跟着换，
+#: 否则页面上写着「绿线」而画面上是蓝线（`stacked_dual` 那处从前就写死过 GREEN）。
+_COLOR_ZH = {'GREEN': '绿', 'MBLUE': '中蓝', 'BLUE': '浅蓝', 'NAVY': '深蓝',
+             'GRAY': '灰', 'GOLD': '金', 'RED': '红'}
 
 # ── groups[].mix —— 「总量柱 + 分项 100% 占比堆叠」两张图 ─────────────────────
 # 这个字段做的是 `groups[].cols` 里那几列**彼此独立**这条默认假设的例外：
@@ -1409,6 +1450,29 @@ def _norm_mix(m, where):
     }
 
 
+def _norm_ratio_rhs(r, where):
+    """一条 `groups[].ratio_rhs` → 归一化 dict。这里只做**机械**校验。
+
+    「num / den 在不在本组」「同不同单位」「逐月 num ≤ den」这三件事都要看别的东西
+    （本组的列表、CSV 的数），一律留给 `Page.__init__` 复算 —— 与 `_norm_mix` 同一分工。
+    `num` / `den` / `dup_part` 写的是**列名**，不是列配置：列配置只在 `groups[].cols`
+    里声明一次，这里引用（理由见 `_norm_mix` 的 docstring）。
+    """
+    if not isinstance(r, dict):
+        raise SpecError(f'{where} 必须是 dict，收到 {type(r).__name__}')
+    _check_keys(r, RATIO_RHS_KEYS, RATIO_RHS_REQUIRED, where)
+    num, den = str(r['num']), str(r['den'])
+    if num == den:
+        raise SpecError(f'{where} 的 num 与 den 是同一列（{num}）—— 一列除以自己'
+                        f'恒为 100%，右轴那条线会是一条直线')
+    if not str(r['zh']).strip():
+        raise SpecError(f'{where} 的 zh 是空的 —— 它是右轴那条线的图例名与轴标题，'
+                        f'空着页面上就只剩一条没有名字的线')
+    return {'num': num, 'den': den, 'zh': str(r['zh']).strip(),
+            'note': str(r.get('note') or ''),
+            'dup_part': str(r.get('dup_part') or '')}
+
+
 def _load_breaks(spec, series_dir):
     """`breaks` 归一化成 [{'month': Period, 'zh': str, 'col': str|None}]。
 
@@ -1481,7 +1545,10 @@ class Page:
                 'zh': g['zh'], 'cols': cols,
                 'section': str(g['section']) if g.get('section') else None,
                 'mix': _norm_mix(g['mix'], f'groups[{gi}]（{g["zh"]}）.mix')
-                if g.get('mix') else None})
+                if g.get('mix') else None,
+                'ratio_rhs': _norm_ratio_rhs(
+                    g['ratio_rhs'], f'groups[{gi}]（{g["zh"]}）.ratio_rhs')
+                if g.get('ratio_rhs') else None})
 
         self.headline_style = str(spec.get('headline_style') or 'band_yoy')
         if self.headline_style not in HEADLINE_STYLES:
@@ -1592,6 +1659,119 @@ class Page:
             # 本组自己声明了哪几列 —— `mix_pair` 拿它把「被吃掉的列」限定在本组内。
             # 跨组引用的语义是「借它的数画结构」，不是「替它把水平值也讲了」。
             g['declared'] = {c['col'] for c in g['cols']}
+
+        # ── groups[].ratio_rhs：列名 → 列配置，并复算「num ⊆ den」这个包含关系 ──────
+        #
+        # 与 mix 同一条分工：`_norm_ratio_rhs` 只做机械校验，凡是要看别的东西
+        # （本组的列表、CSV 的数）的判据都在这里，而且**全部现算、不许写死**。
+        for g in self.groups:
+            r = g.get('ratio_rhs')
+            if not r:
+                continue
+            where = f'groups（{g["zh"]}）.ratio_rhs'
+            own = {c['col']: c for c in g['cols']}
+            miss = [x for x in (r['num'], r['den']) if x not in own]
+            if miss:
+                gone = [x for x in miss if x in self.empty]
+                if gone:
+                    # 整列为空是「等数据」不是「spec 写错」（同 mix）：记账、这一桶
+                    # 退回常规路径，不硬失败。
+                    self.mix_skipped.append(
+                        f'{g["zh"]}：{"、".join(gone)} 整列为空，'
+                        f'并排柱与右轴比值线都不出，这一桶退回常规折线/柱图')
+                    g['ratio_rhs'] = None
+                    continue
+                raise SpecError(
+                    f'{where} 的 {miss} 不在**本组**的 cols 里 —— num/den 写的是列名，'
+                    f'列配置只在 groups[].cols 里声明一次。本组现有列：{sorted(own)}。'
+                    f'（跨组引用不许：这张图画的是这一桶自己的两根柱，'
+                    f'借别的组的列会让那一组的水平值图凭空少一张）')
+            cn, cd = own[r['num']], own[r['den']]
+            if cn['unit'] != cd['unit']:
+                raise SpecError(
+                    f'{where} 的 num（{cn["zh"]}，{cn["unit"]}）与 den（{cd["zh"]}，'
+                    f'{cd["unit"]}）单位不同 —— 单位不同的两列相除得到的「比值」'
+                    f'没有指称，而且分桶按 unit 走，两列根本落不进同一张图')
+            if cn['stock'] != cd['stock']:
+                raise SpecError(
+                    f'{where} 的 num 与 den 一个是流量一个是存量 —— '
+                    f'流量按月累计发生、存量是某一天的截面，相除得到的数没有指称；'
+                    f'存量列在本底座里还各自成图（ex_stock），根本不进这一桶')
+            if cn['stock']:
+                raise SpecError(
+                    f'{where} 引用的是存量列 —— 存量列走 `ex_stock` 各自成图，'
+                    f'不进按单位分的流量桶，声明了也画不出并排柱')
+            # 本桶必须**恰好**是 num 与 den 两列：分桶按 unit 走，同单位还有第三列时
+            # 这一桶会是三根柱 + 一条只解释其中两根的比值线。
+            eaten = set()
+            if g.get('mix'):
+                eaten = ({g['mix']['total']['col']}
+                         | {c['col'] for c in g['mix']['parts']}) & set(own)
+            same = [c for c in g['cols']
+                    if not c['stock'] and c['unit'] == cn['unit'] and c['col'] not in eaten]
+            if {c['col'] for c in same} != {r['num'], r['den']}:
+                raise SpecError(
+                    f'{where}：本组里单位为 {cn["unit"]} 的流量列是 '
+                    f'{[c["zh"] for c in same]}，不是恰好 num 与 den 两列 —— '
+                    f'底座按 unit 分桶、一桶一张图，多出来的列会跟着画成第三根柱，'
+                    f'而右轴那条比值线只解释其中两根。'
+                    f'出路：把多出来的列拆进另一个 group')
+            # ── 包含关系逐月复算：den > 0、num ≤ den。反例报月份与两个读数 ──────
+            sn, sd = self.ser(cn), self.ser(cd)
+            bad_den = [(str(p), float(sd[p])) for p in self.df.index
+                       if np.isfinite(sd[p]) and sd[p] <= 0]
+            if bad_den:
+                raise SpecError(
+                    f'{where} 的 den（{cd["zh"]}）在 '
+                    f'{"、".join(f"{m} = {v:g}" for m, v in bad_den[:6])}'
+                    f'{"（等 %d 个月）" % len(bad_den) if len(bad_den) > 6 else ""} '
+                    f'不是正数 —— 比值 num/den 在那些月要么爆掉、要么变号')
+            bad_le = [(str(p), float(sn[p]), float(sd[p])) for p in self.df.index
+                      if np.isfinite(sn[p]) and np.isfinite(sd[p])
+                      and sn[p] > sd[p] * (1 + 1e-9)]
+            if bad_le:
+                raise SpecError(
+                    f'{where} 声明 num（{cn["zh"]}）是 den（{cd["zh"]}）的一部分，'
+                    f'但 {"、".join(f"{m}：{a:g} > {b:g}" for m, a, b in bad_le[:6])}'
+                    f'{"（等 %d 个月）" % len(bad_le) if len(bad_le) > 6 else ""} '
+                    f'—— 比值 > 100% 的「占比」不是占比，多半是两列口径不同')
+            r['num_col'], r['den_col'] = cn, cd
+
+            # ── 可选：dup_part —— 主动认领「这条比值 ≡ 100% − 某条 mix 里的某一段」──
+            # 本仓判例第 1 条是「同一条序列换个切法再画一遍要删」。这条比值确实与
+            # 占比堆叠里的某一段互为补集，删不掉（右轴那条线是所有者点名要的），
+            # 所以只能在图注里正面交代 —— 而「交代」必须带一个**实测**的差，
+            # 不能只写一句「两者等价」。差由这里逐月复算，超容差就硬失败：
+            # 图注里那句话会因为数据变化变成假话，而假话不会自己响。
+            if not r['dup_part']:
+                continue
+            host = next((h for h in self.groups if h.get('mix')
+                         and r['dup_part'] in {c['col'] for c in h['mix']['parts']}), None)
+            if host is None:
+                raise SpecError(
+                    f'{where} 的 dup_part={r["dup_part"]!r} 不是本页任何一条 mix 的分项 —— '
+                    f'它的语义是「本比值 ≡ 100% − 那张 100% 堆叠图里的那一段」，'
+                    f'那一段不存在就没有重复可交代。'
+                    f'现有分项：{sorted({c["col"] for h in self.groups if h.get("mix") for c in h["mix"]["parts"]})}')
+            c_part = next(c for c in host['mix']['parts'] if c['col'] == r['dup_part'])
+            c_tot = host['mix']['total']
+            sh = self.ser(c_part) / self.ser(c_tot) * 100.0
+            rt = sn / sd * 100.0
+            dif = (rt - (100.0 - sh)).abs().dropna()
+            if dif.empty:
+                raise SpecError(
+                    f'{where} 的 dup_part={r["dup_part"]!r} 与本比值没有一个共同月份 —— '
+                    f'两者对不上任何一期，「等价」这句话无从复算')
+            if float(dif.max()) > RATIO_DUP_TOL:
+                raise SpecError(
+                    f'{where} 声明本比值 ≡ 100% −「{c_part["zh"]}」占比，'
+                    f'但逐月最大差 {float(dif.max()):.4f}pp（{dif.idxmax()}）已超过 '
+                    f'{RATIO_DUP_TOL}pp 的容差 —— 两者不再是同一条序列，'
+                    f'图注里那句「这是同一个数」会是假话。'
+                    f'要么去掉 dup_part，要么先查清两个口径为什么分叉')
+            r['dup'] = {'zh': c_part['zh'], 'gz': host['zh'], 'total_zh': c_tot['zh'],
+                        'max': float(dif.max()), 'max_at': str(dif.idxmax()),
+                        'med': float(dif.median()), 'n': int(dif.size)}
 
         # ── 同一列不许被画成两根柱 ────────────────────────────────────────────
         # mix 的 total 走 `ex_mix_total`；没被本组吃掉的列走常规 `ex_single` / `ex_stock`。
@@ -2300,18 +2480,22 @@ class Page:
         return ex
 
     # ────────────────────── exhibit：分组多列对比 ──────────────────────
-    def ex_group(self, n0, gz, cols):
+    def ex_group(self, n0, gz, cols, rr=None):
         """一组同单位的流量列 → 一张图。返回 exhibit 列表（可能 0 或 1 张）。
 
         · 1 列   → gs_bar（水平柱 + 次轴同比），单条线没有「对比」可言
         · 2–5 列 → lines_endlabels（窗口内逐点稠密时）/ lines（有缺口时）
         · >5 列  → heat_matrix，画的是**同比**而不是水平值（见下面的注释）
+
+        `rr` = 本组的 `ratio_rhs`（可选，见模块头 GROUP_KEYS 那一段）。给了、且本桶
+        恰好是它的 num 与 den 两列时，`ex_lines` 改出 `grouped_bars` + 右轴比值线。
+        不给就走原路径 —— 没声明 ratio_rhs 的 8 个 spec 页逐字节不变。
         """
         if len(cols) == 1:
             return [self.ex_single(n0, gz, cols[0])]
         end = max(self.last_month(c) for c in cols)
         if len(cols) <= MAX_LINES:
-            return [self.ex_lines(n0, gz, cols, end)]
+            return [self.ex_lines(n0, gz, cols, end, rr=rr)]
         return [self.ex_heat(n0, gz, cols, end)]
 
     def ex_single(self, n, gz, c):
@@ -2349,13 +2533,17 @@ class Page:
             + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
 
-    def ex_lines(self, n, gz, cols, end):
+    def ex_lines(self, n, gz, cols, end, rr=None):
         win = self.win_long(end)
         xl = [mlab(p) for p in win]
         vs = [self.vals(c, win) for c in cols]
         # 整组都恒为 0 才跳：其中一条为 0 是有信息的对比，量程由别的列定，图正常。
         if self.flat0_skip(gz, cols, win, vs):
             return None
+        # 声明了 ratio_rhs 且本桶恰好是那两列 → 换 grouped_bars（并排柱 + 右轴比值线）。
+        # 判据写成「恰好」而不是「包含」：多一列就有一根柱不被右轴那条线解释。
+        if rr and {c['col'] for c in cols} == {rr['num'], rr['den']}:
+            return self.ex_ratio_rhs(n, gz, cols, win, xl, rr)
         dense = all(np.isfinite(v).all() for v in vs)
         allv = np.concatenate(vs)
         zero_ok = bool(np.nanmin(allv) >= 0)
@@ -2392,6 +2580,101 @@ class Page:
             f'量纲不同的列由底座自动拆成各自成图。{xl[-1]}：{last}。'
             + ('' if dense else '窗口内有缺月，改用不平滑的 lines 图型：缺口处断笔，'
                                 '不用直线连（平滑图型会把 null 当 0 画出一条塌到零的假线）。')
+            + self.slow_tail(cols)
+            + (self.brk_zh(hit, win) + '。' if hit else ''))
+        return ex
+
+    def ex_ratio_rhs(self, n, gz, cols, win, xl, rr):
+        """声明了 `ratio_rhs` 的那一桶：并排柱（左轴）+ 右轴比值线。
+
+        为什么是 `grouped_bars` 而不是给 `lines_endlabels` 加一条线：
+        `lines` / `lines_endlabels` **没有次轴** —— 不是 payload 没给，是引擎的绘图、
+        图例、表格、tooltip 四处都不读 `ex.line`（`docs/CHART_KINDS.md` §4）。
+        而比值与两条水平值列量纲不同，塞进同一根左轴会把两条主线压成贴底的一条。
+        引擎里能「N 条同单位序列 + 可选右轴线」的只有这一种 kind。
+        """
+        cn, cd = rr['num_col'], rr['den_col']
+        # 柱按 spec 的列序画（读者从上一版折线图带过来的颜色记忆不变：
+        # LINE_COLORS 的前两个就是原来那两条线的颜色）。
+        vs = [self.vals(c, win) for c in cols]
+        bar_colors = [LINE_COLORS[i] for i in range(len(cols))]
+        used = set(bar_colors)
+        c_line = next((x for x in RATIO_RHS_COLORS if x not in used), None)
+        if c_line is None:
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {n}「{gz}」：并排柱已经占掉 '
+                f'{"、".join(sorted(used))}，右轴那条比值线没有颜色可用 —— '
+                f'金色是本站同比专用、红色是断点与截轴专用，两个都不许拿来当数据色')
+        vn, vd = self.vals(cn, win), self.vals(cd, win)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            rv = np.where(np.isfinite(vn) & np.isfinite(vd) & (vd != 0), vn / vd * 100.0, np.nan)
+        fin = rv[np.isfinite(rv)]
+        if not fin.size:
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {n}「{gz}」：{mlab(win[0])}–{mlab(win[-1])} '
+                f'窗口内一个月都算不出比值 —— 右轴会印出一列假刻度而线一个点都没画')
+        i_lo, i_hi = int(np.nanargmin(rv)), int(np.nanargmax(rv))
+        # 标题按**画出来的顺序**列柱名（不是 num/den 的顺序），后面挂一个短的比值名 ——
+        # 与 `ex_lines` 同一条规矩：名字太长就退回条数，免得标题折行把卡片顶开。
+        # 比值名走 `axis_short`（去掉末尾那对解释性括号），全名留在图例与图注里。
+        names = ' / '.join(c['zh'] for c in cols)
+        ex = {
+            'n': n, 'kind': 'grouped_bars', 'fmt': cols[0]['fmt'], 'xlabels': xl,
+            'title': (f'{gz}：{names if len(names) <= 30 else "%d 条序列对比" % len(cols)}'
+                      f'，右轴{axis_short(rr["zh"])}'),
+            'ylab': cols[0]['unit'],
+            'ylab2': f'{axis_short(rr["zh"], 18)}，%（右）',
+            '_cols': [c['col'] for c in cols],       # 见 ex_history 里对 `_cols` 的说明
+            # `bar_labels` 不开（引擎缺省就是关的，这里不写）：本图 128 期 × 2 根柱，
+            # 逐根标数值会糊成一片，逐格读数走右上角「表格」。
+            'groups': [{'name': c['zh'], 'color': cc, 'values': LN(v)}
+                       for c, cc, v in zip(cols, bar_colors, vs)],
+            'line': {'name': f'{rr["zh"]}（RHS）', 'color': c_line, 'values': LN(rv),
+                     'yfmt': 'pct1',
+                     # 右轴住的是一条**水平量**（结构性地贴在 80–90% 一带），不是跨零的
+                     # 同比：强行把 0 纳入量程会把十个百分点的结构压成轴顶的一条直线
+                     # （`assets/charts.js` 给 line/yoy 留的正是这个口子，TSM Ex12 的
+                     # 月均汇率是同一类）。柱全非负 ⇒ 左轴零点比例为 0，
+                     # 右轴下界为正 ⇒ 也为 0，所以两轴零点对齐这一步是空操作、
+                     # 不会印「零点不同高」那行红字。
+                     'zero_base': False},
+        }
+        self.saw_ratio_rhs = True     # 页尾「图型选择规则」按真画出来的图措辞
+        hit = self.mark_breaks(ex, win, cols)
+        # 右轴刻度按引擎同一条算式现算（`charts.js` 的 ticks(min, max, 9)）。
+        # 上面那段注释已经论证过零点对齐在本形状下是空操作，所以这就是最终刻度。
+        rtk = axisfmt.ticks(float(np.nanmin(rv)), float(np.nanmax(rv)), 9)
+        last = '、'.join(f'{c["zh"]} {fmt_val(v[-1], c["fmt"]) or "—"}' for c, v in zip(cols, vs))
+        dup = rr.get('dup')
+        ex['note'] = (
+            f'{self.win_zh(win)}。<b>左轴两根并排柱</b>是同一单位（{cols[0]["unit"]}）的'
+            f'水平值，<b>右轴那条{ _COLOR_ZH.get(c_line, "彩色") }线是{rr["zh"]}</b>'
+            f'（{cn["zh"]} ÷ {cd["zh"]} × 100）。'
+            f'{xl[-1]}：{last}，比值 {share_txt(float(rv[-1]))}%；'
+            f'窗口内在 {share_txt(float(rv[i_lo]))}%（{xl[i_lo]}）到 '
+            f'{share_txt(float(rv[i_hi]))}%（{xl[i_hi]}）之间，中位 '
+            f'{share_txt(float(np.nanmedian(rv)))}%。'
+            f'<b>它必须有自己的一根轴</b>：两根柱走在 '
+            f'{fmt_val(float(np.nanmin(np.concatenate(vs))), cols[0]["fmt"])}–'
+            f'{fmt_val(float(np.nanmax(np.concatenate(vs))), cols[0]["fmt"])} '
+            f'{cols[0]["unit"]}，比值是 0–100 的无量纲数，放进同一根左轴，'
+            f'两根柱会被压进绘图区高度的一成 —— 等于把这张图作废。'
+            f'右轴刻度 {share_txt(rtk[0])}–{share_txt(rtk[-1])}%、<b>不从 0 起</b>：'
+            f'这条线结构性地贴在窗口区间那一带，把 0 纳入量程会让十个百分点的结构'
+            f'压成轴顶的一条直线（引擎给「水平量」右轴留的口子，同比那类跨零序列不适用）。'
+            f'并排柱不标柱顶数值（{len(win)} 期 × {len(cols)} 根会糊成一片），'
+            f'逐格读数走右上角「表格」。'
+            + (rr['note'] or '')
+            + (f'<b>这条比值与本页「{dup["gz"]}」那张 100% 堆叠图里的'
+               f'「{dup["zh"]}」是同一条序列</b>：本比值 ≡ 100% − 那一段占比。'
+               f'两者口径不同（这里是日均、那里是当月合计，各自按官方披露取整），'
+               f'逐月绝对差实测最大 {dup["max"]:.4f}pp（{dup["max_at"]}）、'
+               f'中位 {dup["med"]:.4f}pp，{dup["n"]} 个共同月份全部在 '
+               f'{RATIO_DUP_TOL}pp 以内（这个差由构建期逐月复算，超容差不发页）。'
+               f'本仓判例第 1 条是「同一条序列换个切法再画一遍要删」，'
+               f'这一处留着是因为它在这张图上回答的是另一个问题 —— '
+               f'那张堆叠图回答「四个分项各占多少」，这条线回答「两根柱之间的缺口有多大」，'
+               f'但读者有权知道这两处读到的是同一个数。' if dup else '')
             + self.slow_tail(cols)
             + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
@@ -4012,7 +4295,7 @@ class Page:
         # 近零基数（§6.1 第 5 条）命中的图：每命中一条序列记一笔，
         # `build()` 逐条打印。从零记，理由同上。
         self.nz_ns = []
-        self.saw_group_lines = self.saw_group_heat = False
+        self.saw_group_lines = self.saw_group_heat = self.saw_ratio_rhs = False
         self.decomp_report = []  # decomp 自检行同理，从零记
 
         if self.headline_style == 'bar_yoy':
@@ -4054,7 +4337,7 @@ class Page:
                 else:
                     buckets.append((c['unit'], [c]))
             for _, cs in buckets:
-                for e in self.ex_group(n, g['zh'], cs):
+                for e in self.ex_group(n, g['zh'], cs, rr=g.get('ratio_rhs')):
                     if e is None:
                         continue
                     ex.append(e)
@@ -4320,6 +4603,7 @@ class Page:
         _has_heat = bool(getattr(self, 'saw_group_heat', False))
         _has_mix = any(e.get('kind') == 'stacked_dual' for e in (ex or [])
                        if isinstance(e, dict))
+        _has_rr = bool(getattr(self, 'saw_ratio_rhs', False))
         out.append(
             # ⚠️ 这一段**只讲这一页真画过的那几条规则**。它原来是一段无条件文案，
             # 开头写着「全部由底座按数据形状定」—— 而 `groups[].mix` 让 spec 也能
@@ -4344,7 +4628,12 @@ class Page:
                   '水平值量级差几十倍时会被最大的那列吃掉整条色标。' if _has_heat else '')
                + ('⑤ 声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
                   '（次轴同比，流量走单月、存量走点对点）与分项的 100% 占比堆叠。'
-                  '各段之和逐月复算，对不上就不发页。' if _has_mix else '')))
+                  '各段之和逐月复算，对不上就不发页。' if _has_mix else '')
+               + ('⑥ 声明了 <code>ratio_rhs</code> 的组（num ⊆ den 这个包含关系）'
+                  '不画折线，改画并排柱 + 右轴比值线：引擎里 <code>lines</code> / '
+                  '<code>lines_endlabels</code> 没有次轴，而比值与水平值不同量纲，'
+                  '同轴会把柱压扁。包含关系逐月复算（den &gt; 0、num ≤ den），'
+                  '对不上就不发页。' if _has_rr else '')))
         # ── 同比口径：从 yoy_log 账本现算，逐处点名（写法出自 CONTRACT §6.2；
         #    §6.1 第 3 条的 ⚠️ 明说页尾这段顶替不了逐图那一段，逐图那段在图注里）──
         # 这段话为什么必须由底座生成、图号为什么必须派生，见 log_yoy 的 docstring。
