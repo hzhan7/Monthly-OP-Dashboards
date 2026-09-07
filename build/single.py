@@ -270,7 +270,7 @@ GROUP_REQUIRED = {'zh', 'cols'}
 # ── groups[].ratio_rhs —— 「两根并排柱 + 右轴比值线」一张图 ────────────────────
 # 与 `mix` 一样，这是 `groups[].cols` 里各列**彼此独立**那条默认假设的例外：
 # 声明了 ratio_rhs，就是声明「num 这一列 ⊆ den 这一列」这个**包含关系**
-# （num 是 den 的一部分，逐月 num ≤ den 且 den > 0）。声明之后这一桶不再画折线，
+# （num 是 den 的一部分，逐月 den > 0 且 0 ≤ num ≤ den）。声明之后这一桶不再画折线，
 # 改画 `grouped_bars`：两条列各出一根并排柱（左轴，同一单位），比值 num/den×100
 # 走右轴（pct1）。
 #
@@ -288,11 +288,18 @@ GROUP_REQUIRED = {'zh', 'cols'}
 #   ① num / den 必须都在**本组**的 cols 里（拼错的列名会让整张图静默退回折线）；
 #   ② 两列同 unit、同 stock 档，且本组里没有第三列与它们同 unit ——
 #      分桶按 unit 走，有第三列时这一桶就不是「恰好 num 与 den 两列」；
-#   ③ 逐月 den > 0、num ≤ den，有反例就报出月份与两个读数并硬失败；
+#   ③ 逐月 den > 0、num ≥ 0、num ≤ den，有反例就报出月份与两个读数并硬失败。
+#      `num ≥ 0` 与另外两条同源：包含关系里 num 是 den 的一段，一段不可能是负的。
+#      它同时是图注三句话的前提（比值区间、右轴刻度、两轴零点对齐是空操作），
+#      所以必须是**护栏**而不是注释里的一句假设 —— 见 `Page.__init__` 里 bad_neg 那段。
 #   ④ 可选的 `dup_part`：本页某条 mix 的分项列名，声明「本比值 ≡ 100% − 那一段占比」。
 #      底座会**逐月复算**两者的差，把实测最大差写进图注；差超过 `RATIO_DUP_TOL`
 #      就硬失败（图注里那句「这是同一条序列」会变成假话）。
-RATIO_RHS_KEYS = {'num', 'den', 'zh', 'note', 'dup_part'}
+#      **底座只印它能证明的**（实测最大差 / 中位 / 共同月数 / 容差）。「两者为什么会
+#      有差」是底座证不了的事实断言（口径差？取整差？还是别的），由可选的 `dup_note`
+#      从 spec 承载 —— 从前这句写死成「这里是日均、那里是当月合计」，而两侧同口径、
+#      逐月差恒为 0.0000pp 的组合照样会印出它。
+RATIO_RHS_KEYS = {'num', 'den', 'zh', 'note', 'dup_part', 'dup_note'}
 RATIO_RHS_REQUIRED = {'num', 'den', 'zh'}
 #: `dup_part` 声称的恒等式允许的最大逐月偏差（百分点）。本仓真实的来源只有一种：
 #: 日均口径（各列先除以交易日数再取整）与当月合计口径各自四舍五入的残渣。
@@ -1519,8 +1526,9 @@ def _norm_mix(m, where):
 def _norm_ratio_rhs(r, where):
     """一条 `groups[].ratio_rhs` → 归一化 dict。这里只做**机械**校验。
 
-    「num / den 在不在本组」「同不同单位」「逐月 num ≤ den」这三件事都要看别的东西
-    （本组的列表、CSV 的数），一律留给 `Page.__init__` 复算 —— 与 `_norm_mix` 同一分工。
+    「num / den 在不在本组」「同不同单位」「逐月的包含关系（den > 0、num ≥ 0、
+    num ≤ den）」这三件事都要看别的东西（本组的列表、CSV 的数），一律留给
+    `Page.__init__` 复算 —— 与 `_norm_mix` 同一分工。
     `num` / `den` / `dup_part` 写的是**列名**，不是列配置：列配置只在 `groups[].cols`
     里声明一次，这里引用（理由见 `_norm_mix` 的 docstring）。
     """
@@ -1534,9 +1542,15 @@ def _norm_ratio_rhs(r, where):
     if not str(r['zh']).strip():
         raise SpecError(f'{where} 的 zh 是空的 —— 它是右轴那条线的图例名与轴标题，'
                         f'空着页面上就只剩一条没有名字的线')
+    dup_part, dup_note = str(r.get('dup_part') or ''), str(r.get('dup_note') or '').strip()
+    if dup_note and not dup_part:
+        raise SpecError(
+            f'{where} 给了 dup_note 却没给 dup_part —— dup_note 解释的是「本比值与那条 '
+            f'mix 分项互为补集时，两者为什么还有差」，没有 dup_part 就没有那段可解释，'
+            f'这句话在页面上会挂在半空')
     return {'num': num, 'den': den, 'zh': str(r['zh']).strip(),
             'note': str(r.get('note') or ''),
-            'dup_part': str(r.get('dup_part') or '')}
+            'dup_part': dup_part, 'dup_note': dup_note}
 
 
 def _load_breaks(spec, series_dir):
@@ -1800,7 +1814,7 @@ class Page:
                     f'底座按 unit 分桶、一桶一张图，多出来的列会跟着画成第三根柱，'
                     f'而右轴那条比值线只解释其中两根。'
                     f'出路：把多出来的列拆进另一个 group')
-            # ── 包含关系逐月复算：den > 0、num ≤ den。反例报月份与两个读数 ──────
+            # ── 包含关系逐月复算：den > 0、num ≥ 0、num ≤ den。反例报月份与两个读数 ──
             sn, sd = self.ser(cn), self.ser(cd)
             bad_den = [(str(p), float(sd[p])) for p in self.df.index
                        if np.isfinite(sd[p]) and sd[p] <= 0]
@@ -1810,6 +1824,28 @@ class Page:
                     f'{"、".join(f"{m} = {v:g}" for m, v in bad_den[:6])}'
                     f'{"（等 %d 个月）" % len(bad_den) if len(bad_den) > 6 else ""} '
                     f'不是正数 —— 比值 num/den 在那些月要么爆掉、要么变号')
+            # num < 0 与 den <= 0 是**同一个理由**：包含关系（num ⊆ den）里分子是
+            # den 的一段，一段不可能是负的。护栏漏掉这一条时页面上会同时出三处假话：
+            # 图注写死的「比值是 0–100 的无量纲数」（实测可以到 −304.8%）、
+            # 「右轴刻度不从 0 起」那半句的前提，以及 `ex_ratio_rhs` 里
+            # 「柱全非负 ⇒ 两轴零点对齐是空操作」那段论证 ——
+            # 柱一旦跨零，左轴 y0 = min(0, mn×1.15) < 0、右轴下界也 < 0，
+            # 引擎的 f 就不再是 0（实测 f=0.7778、waste=0.7111 > ALIGN_WASTE_MAX 0.38），
+            # 会走兜底分支、在图上印「左右轴零点不同高」那行红字，
+            # 而图注里那串右轴刻度是**对齐之前**算的，两处对不上。
+            # 三处假话没有一处会自己响，所以判据放在这里、和 den 一起硬失败。
+            bad_neg = [(str(p), float(sn[p]), float(sd[p])) for p in self.df.index
+                       if np.isfinite(sn[p]) and sn[p] < 0]
+            if bad_neg:
+                raise SpecError(
+                    f'{where} 声明 num（{cn["zh"]}）是 den（{cd["zh"]}）的一部分，'
+                    f'但 {"、".join(f"{m}：{a:g}（den {b:g}）" for m, a, b in bad_neg[:6])}'
+                    f'{"（等 %d 个月）" % len(bad_neg) if len(bad_neg) > 6 else ""} '
+                    f'的 num 是负数 —— 一段不可能是负的，比值也就不是占比。'
+                    f'负的分子还会把两根柱拉到零轴以下，引擎的两轴零点对齐随之从'
+                    f'空操作变成真重排（超 ALIGN_WASTE_MAX 就在图上印'
+                    f'「左右轴零点不同高」红字），而图注里的右轴刻度是对齐之前算的。'
+                    f'出路：这两列不是包含关系，去掉 ratio_rhs 各自画水平值')
             bad_le = [(str(p), float(sn[p]), float(sd[p])) for p in self.df.index
                       if np.isfinite(sn[p]) and np.isfinite(sd[p])
                       and sn[p] > sd[p] * (1 + 1e-9)]
@@ -1855,16 +1891,24 @@ class Page:
                     f'要么去掉 dup_part，要么先查清两个口径为什么分叉')
             r['dup'] = {'zh': c_part['zh'], 'gz': host['zh'], 'total_zh': c_tot['zh'],
                         'max': float(dif.max()), 'max_at': str(dif.idxmax()),
-                        'med': float(dif.median()), 'n': int(dif.size)}
+                        'med': float(dif.median()), 'n': int(dif.size),
+                        # 「那张堆叠图回答『几个分项各占多少』」里的那个数：从宿主 mix
+                        # 的 parts 现算。从前写死「四个」—— 宿主换一条 mix 就成假话。
+                        'nparts': len(host['mix']['parts']),
+                        'note': r['dup_note']}
             # ⚠️ **交代必须是双向的。** 上面那条只让比值线那张图指认「我与某张占比图的
             # 某一段是同一个数」；从占比图进来的读者仍然不知道同一个数在别处又出现了一次。
             # 判例第 4 条要的是「页面上交代」，不是「在两张图里挑一张交代」。
             # 所以在**宿主组的 mix 上**回挂同一笔账，由 `ex_mix_share` 印出反向那句。
             # 两句共用这一份现算的差值 ⇒ 不可能一处说 0.02pp、另一处说别的数。
+            # `note` 也共用同一份 `dup_note`：那句解释从前在两处各写死一遍
+            #（「这里是日均、那里是当月合计」与「一处日均、一处当月合计」），
+            # 两份写死的话既证不了、又会各自漂。
             host['mix']['dup_back'] = {
                 'part_zh': c_part['zh'], 'ratio_zh': r['zh'], 'gz': g['zh'],
                 'max': float(dif.max()), 'max_at': str(dif.idxmax()),
-                'med': float(dif.median()), 'n': int(dif.size)}
+                'med': float(dif.median()), 'n': int(dif.size),
+                'note': r['dup_note']}
 
         # ── 同一列不许被画成两根柱 ────────────────────────────────────────────
         # mix 的 total 走 `ex_mix_total`；没被本组吃掉的列走常规 `ex_single` / `ex_stock`。
@@ -3051,19 +3095,48 @@ class Page:
                        for c, cc, v in zip(cols, bar_colors, vs)],
             'line': {'name': f'{rr["zh"]}（RHS）', 'color': c_line, 'values': LN(rv),
                      'yfmt': 'pct1',
-                     # 右轴住的是一条**水平量**（结构性地贴在 80–90% 一带），不是跨零的
+                     # 右轴住的是一条**水平量**（结构性地贴在某一带），不是跨零的
                      # 同比：强行把 0 纳入量程会把十个百分点的结构压成轴顶的一条直线
                      # （`assets/charts.js` 给 line/yoy 留的正是这个口子，TSM Ex12 的
-                     # 月均汇率是同一类）。柱全非负 ⇒ 左轴零点比例为 0，
-                     # 右轴下界为正 ⇒ 也为 0，所以两轴零点对齐这一步是空操作、
-                     # 不会印「零点不同高」那行红字。
+                     # 月均汇率是同一类）。
+                     # 「柱全非负 ⇒ 两轴零点对齐是空操作」这个前提**已被护栏强制**：
+                     # `Page.__init__` 里逐月硬失败 den > 0 且 num ≥ 0（bad_den /
+                     # bad_neg），本图两根柱画的正是这两列 ⇒ 左轴 y0 = min(0, mn×1.15)
+                     # = 0 ⇒ 零点比例为 0；比值 = num/den ≥ 0 ⇒ 右轴下界 ≥ 0 ⇒ 也为 0。
+                     # 于是引擎的 f = 0，走「两轴本就同零点」那一支：不重排量程、
+                     # 不重算刻度、不印「零点不同高」那行红字。
+                     # 从前这里只是一句注释里的假设，而红队用一列会转负的分子实测到
+                     # f=0.7778、waste=0.7111 > ALIGN_WASTE_MAX(0.38)：引擎真走了
+                     # misalign 分支、真印了红字，图注里那串右轴刻度还是对齐之前算的。
                      'zero_base': False},
         }
         self.saw_ratio_rhs = True     # 页尾「图型选择规则」按真画出来的图措辞
         hit = self.mark_breaks(ex, win, cols)
         # 右轴刻度按引擎同一条算式现算（`charts.js` 的 ticks(min, max, 9)）。
-        # 上面那段注释已经论证过零点对齐在本形状下是空操作，所以这就是最终刻度。
+        # 上面那段注释已经论证过零点对齐在本形状下是空操作（而且那个前提由
+        # `Page.__init__` 的 bad_den / bad_neg 强制），所以这就是最终刻度。
         rtk = axisfmt.ticks(float(np.nanmin(rv)), float(np.nanmax(rv)), 9)
+        # 「不从 0 起」是**这张图的刻度算出来的结果**，不是本图型的性质：
+        # `zero_base: False` 只是不把 0 硬塞进量程，而 ticks() 会把下界向下取整到
+        # 步长边界 —— 比值贴近 0 的那些页（红队实测 sgx 的 0.0%–11.0% 一组，
+        # 下界落在 0.0）照印「不从 0 起」就是当着读者的面说反话。所以按 rtk[0] 分支。
+        #
+        # 分支之前先把「右轴下界 ≥ 0」这个前提查一遍。num ≥ 0 / den > 0 ⇒ 比值恒 ≥ 0
+        # ⇒ ticks() 的 lo = floor(mn/step)×step ≥ 0 —— **但这一步要 mn < mx**。
+        # 窗口内比值恒定时 ticks() 走 `mn == mx → mn−1, mx+1` 那一支，下界会掉到负数
+        # （实测恒为 0.5% 时 rtk[0] = −0.5）：右轴零点比例不再是 0、两轴零点对齐从空操作
+        # 变成真重排，与 num 转负是同一种失效，只是走的退化那条路。
+        # 拒掉它与 `_norm_ratio_rhs` 里「num 与 den 是同一列」同源 —— 恒定的比值画出来
+        # 就是一条直线，这张图本来也没有画的必要。
+        # 拒掉之后剩下的只有「从 0 起」与「从正数起」两支。
+        if rtk[0] < 0:
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {n}「{gz}」：{mlab(win[0])}–{mlab(win[-1])} '
+                f'窗口内比值恒为 {share_txt(float(fin[0]))}%，右轴刻度因此退化到 '
+                f'{rtk[0]:g} —— 右轴下界为负会让两轴零点对齐不再是空操作，'
+                f'而图注里那串刻度是对齐之前算的；何况恒定的比值画出来就是一条直线。'
+                f'出路：去掉 ratio_rhs')
+        rhs_from_zero = rtk[0] <= 0
         last = '、'.join(f'{c["zh"]} {fmt_val(v[-1], c["fmt"]) or "—"}' for c, v in zip(cols, vs))
         dup = rr.get('dup')
         ex['note'] = (
@@ -3077,23 +3150,37 @@ class Page:
             f'<b>它必须有自己的一根轴</b>：两根柱走在 '
             f'{fmt_val(float(np.nanmin(np.concatenate(vs))), cols[0]["fmt"])}–'
             f'{fmt_val(float(np.nanmax(np.concatenate(vs))), cols[0]["fmt"])} '
-            f'{cols[0]["unit"]}，比值是 0–100 的无量纲数，放进同一根左轴，'
+            f'{cols[0]["unit"]}，比值是 {share_txt(float(rv[i_lo]))}–'
+            f'{share_txt(float(rv[i_hi]))} 的无量纲数（本图实测区间，不是 0–100 '
+            f'这个理论上限），放进同一根左轴，'
             f'两根柱会被压进绘图区高度的一成 —— 等于把这张图作废。'
-            f'右轴刻度 {share_txt(rtk[0])}–{share_txt(rtk[-1])}%、<b>不从 0 起</b>：'
-            f'这条线结构性地贴在窗口区间那一带，把 0 纳入量程会让十个百分点的结构'
-            f'压成轴顶的一条直线（引擎给「水平量」右轴留的口子，同比那类跨零序列不适用）。'
-            f'并排柱不标柱顶数值（{len(win)} 期 × {len(cols)} 根会糊成一片），'
-            f'逐格读数走右上角「表格」。'
+            + (f'右轴刻度 {share_txt(rtk[0])}–{share_txt(rtk[-1])}%、'
+               f'<b>恰好从 0 起</b>：<code>zero_base</code> 是关着的（引擎不把 0 硬塞进'
+               f'右轴量程 —— 这条线是水平量，不是同比那类跨零序列），但本图比值最低到 '
+               f'{share_txt(float(rv[i_lo]))}%，刻度算式向下取整到步长边界就落在 0。'
+               f'<b>这是算出来的，不是设定的</b>：比值贴得高的图上，同一段开关会给出一根'
+               f'不从 0 起的右轴。'
+               if rhs_from_zero else
+               f'右轴刻度 {share_txt(rtk[0])}–{share_txt(rtk[-1])}%、<b>不从 0 起</b>：'
+               f'这条线结构性地贴在窗口区间那一带，把 0 纳入量程会让十个百分点的结构'
+               f'压成轴顶的一条直线（引擎给「水平量」右轴留的口子，同比那类跨零序列不适用）。')
+            + f'并排柱不标柱顶数值（{len(win)} 期 × {len(cols)} 根会糊成一片），'
+              f'逐格读数走右上角「表格」。'
             + (rr['note'] or '')
+            # dup 段：底座只印**它能证明的**（实测最大差 / 中位 / 共同月数 / 容差）。
+            # 「两者为什么会有差」是事实断言，由 spec 的 `dup_note` 承载 ——
+            # 从前这里写死「这里是日均、那里是当月合计」，而两侧同口径、逐月差恒为
+            # 0.0000pp 的组合照样会印出它（红队实测）。
             + (f'<b>这条比值与本页「{dup["gz"]}」那张 100% 堆叠图里的'
                f'「{dup["zh"]}」是同一条序列</b>：本比值 ≡ 100% − 那一段占比。'
-               f'两者口径不同（这里是日均、那里是当月合计，各自按官方披露取整），'
-               f'逐月绝对差实测最大 {dup["max"]:.4f}pp（{dup["max_at"]}）、'
+               + (dup['note'] or '')
+               + f'逐月绝对差实测最大 {dup["max"]:.4f}pp（{dup["max_at"]}）、'
                f'中位 {dup["med"]:.4f}pp，{dup["n"]} 个共同月份全部在 '
                f'{RATIO_DUP_TOL}pp 以内（这个差由构建期逐月复算，超容差不发页）。'
                f'本仓判例第 1 条是「同一条序列换个切法再画一遍要删」，'
                f'这一处留着是因为它在这张图上回答的是另一个问题 —— '
-               f'那张堆叠图回答「四个分项各占多少」，这条线回答「两根柱之间的缺口有多大」，'
+               f'那张堆叠图回答「{dup["nparts"]} 个分项各占多少」，'
+               f'这条线回答「两根柱之间的缺口有多大」，'
                f'但读者有权知道这两处读到的是同一个数。' if dup else '')
             + self.slow_tail(cols)
             + (self.brk_zh(hit, win) + '。' if hit else ''))
@@ -3888,11 +3975,13 @@ class Page:
             + (f'<b>合计</b>的绝对量看 Exhibit {total_n}（合计柱）；' if total_n else '')
             + '<b>各分项</b>的绝对量在末尾核对表里（本图一个绝对量都没画）。'
             + rhs_line
+            # 反向那句与比值线那张图共用同一份现算的差值**和同一句 `dup_note`**：
+            # 两边各写死一句「口径不同」的时候，它既证不了、又会各自漂。
             + (f'<b>「{_db["part_zh"]}」这一段在本页出现两次。</b>'
                f'「{_db["gz"]}」那张图的右轴画的是<b>{_db["ratio_zh"]}</b>，'
                f'而它 ≡ 100% − 本段占比 —— 同一个数的两种读法。'
-               f'两处口径不同（一处日均、一处当月合计，各自按官方披露取整），'
-               f'逐月绝对差实测最大 {_db["max"]:.4f}pp（{_db["max_at"]}）、'
+               + (_db['note'] or '')
+               + f'逐月绝对差实测最大 {_db["max"]:.4f}pp（{_db["max_at"]}）、'
                f'中位 {_db["med"]:.4f}pp（{_db["n"]} 个共同月份，构建期逐月复算）。'
                f'分工：本图答「各分项各占多少」，那条线答「那一段有多厚」。'
                if (_db := m.get('dup_back')) else '')
