@@ -1266,6 +1266,13 @@ SPEC = {
         ],
          'section': _SEC_ETO},
 
+        # ── `spike_cap` 只声明在这两组上 ─────────────────────────────────────────
+        # 需求原话（2026-09，/asx/ 页面所有者）：「ex19/20 部分点数字太高在图形上显示
+        # 尖刺，处理下」—— 点的就是这两组融资图（图号随分组增删位移，所以按组声明，
+        # 不按图号）。底座的这个开关**默认关**：不写就一步都不走，别的页与本页其余组
+        # 逐字节不变（见 build/single.py 的 GROUP_KEYS 那一段：截轴改的是读者读到的量程，
+        # 不能靠一个数据相关的阈值当闸，那个阈值离别人的页只有一个月的漂移）。
+        # 截在多少、几个点越界、护栏抬没抬，全部由 `Page.spike_cap()` 现算，这里不写数。
         {'zh': '二次融资', 'cols': [
             {'col': 'capital_secondary_total_audmn', 'zh': '二次融资合计',
              'unit': 'A$mn', 'fmt': 'f0c'},
@@ -1274,6 +1281,7 @@ SPEC = {
             {'col': 'capital_other_scrip_audmn', 'zh': '其中：换股对价等',
              'unit': 'A$mn', 'fmt': 'f0c'},
         ],
+         'spike_cap': True,
          'section': _SEC_LIST},
 
         # 旧口径：最新月天生留空 ⇒ 已进 slow_cols。起止月现算。
@@ -1284,6 +1292,7 @@ SPEC = {
             {'col': 'capital_total_raised_incl_other_audmn', 'zh': '募资总额（含其他）',
              'unit': 'A$mn', 'fmt': 'f0c'},
         ],
+         'spike_cap': True,
          'section': _SEC_LIST},
 
         # 新口径：起点现算（= 上市融资那条断点的月份）。
