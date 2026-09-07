@@ -44,10 +44,40 @@ individual contract is available at the following link:"），所以不用猜文
   · 2020-06 起指向 DAM（`/content/dam/asx/documents/unlinked-docs/…`），2026-08 逐月实发
     72/72（2020-06…2026-05）全部 200 + application/pdf + `%PDF-`，且用**未改动的**
     `parse_sfe` 全部解析成功；
-  · 2016-09…2019-11 的 MAR 也印链接，同样是老站点路径 ⇒ 同样 soft-404；
-    2016-01…2016-08 的 MAR 正文里根本没有这条链接。
+  · **2016-07**…2019-11 的 MAR 也印链接，同样是老站点路径 ⇒ 同样 soft-404；
+    **2016-01…2016-06** 的 MAR 正文里根本没有这条链接（2026-09 逐期打开 53 份原件核过）。
+    ⚠️ 2026-09 之前这里写的是「2016-09 起印链接、2016-01…2016-08 没有」——**两头都错**：
+    2016-07 / 2016-08 印的是 `MonthlySfeMarketsReport{YYMMDD}.pdf`，
+    而 2016-09 那一期的词干是**单数** `MonthlyFuturesMarketReport`（见口径坑 22），
+    旧 `_SFE_LINK` 不认它 ⇒ `_sfe_urls()` 对那一期返回空，看起来就像「没印链接」。
 「只有最近 2 期 / 历史不可回补」是 2026-08 之前记在这里的结论，**已被上面这轮实发推翻**，
 成因见口径坑 22 —— 它是抓取器的文件名正则太窄，不是官方撤了历史。
+
+━ 2026-09 复核：官方源到不了 2016，两条替代路各有代价（**都没有采用**）━━━━━━━━
+2016-01…2020-05 那 47 条正文链接**逐条实发**（仓库 UA，跟随重定向）：**47/47** 全是
+200 + text/html + 136,130 字节的 soft-404（口径坑 2），落地 URL 一律 `content/asx/404.html`；
+`/data/market-reports/` 目录索引 403；`sitemap.xml` 零个 .pdf 条目；
+DAM 上换十几种旧文件名形状拼过 —— 全是真 404。**官方直链这条路到 2020-06 为止。**
+  · **替代路 A（纯官方，只能到 2019-06）**：每期 SFE 报告的第 2 / 第 6 个数字列就是
+    t−12 月的当月量 / 月末 OI（口径坑 22 已用它做过 495/496 格的跨期自证）。
+    拿 2020-06…2021-05 那 12 期的 pcp 列可以往前推到 2019-06。代价是**入库的不是当期原值**，
+    而本模块的规矩是「重述值不写」—— 而且 2019-06…2020-05 根本取不到当期原值可比。
+    到不了 2016 ⇒ 不满足所有者「如能有到 2016 年开始的数据」那个条件。
+  · **替代路 B（wayback，能到 2016-01）**：CDX 里有 38/47 期是 application/pdf。
+    实测取回 2016-09 / 2017-06 / 2019-01 三期，用**未改动的** `parse_sfe` 全部解析成功，
+    且页尾 `Total Exchange` 与同月 MAR 的 `contracts_futures_and_options_total` 三期全等。
+    本仓对 wayback 有明确分工：`build/basefill/` 的一次性脚本允许（`us_asx_mx2.py` 取的
+    正是这份报告家族），**`fetch/` 的常驻路径一律禁止**。所以它要走 basefill 而不是这里，
+    且缺的 9 期仍得靠 pcp 列补 ⇒ 会混两个 vintage。**要不要开这个口子由页面所有者定。**
+  · **另有一份官方「初值」孪生件，不能拼接**：`/data/futures/reports/MonthlyWebTotalVolume{YYMM}S.htm`
+    结构与 SFE PDF 同源（同抬头、同 AP/YT/XT/IR 代码、同 Mth Vol + Op Int 两列），
+    但**只回到 2020-04**（2020-03 起 404），且它自称 preliminary：与 series 里的终值
+    逐月系统性偏低，10 年期国债最大差 −350,969 张（−9.0%，2021-01）。拼上去就是把
+    初值接到终值序列上。
+  · **「天花板不是上线时间」现在有活的官方凭据**：同目录的
+    `MonthlyWebNonTradedVolume1601S.htm`（2016-01）今天仍然 200，逐品种列着
+    `AP - SPI 200` / `YT - 3 Year Bonds` —— 2016 年官方确实在按品种披露 ASX 24。
+    （那份是 Non Traded Volume，不是成交量，**不能拿来当数据源**，只作存在性凭据。）
 `update()` 只对 `mon >= SFE_START` 的月份发这一次请求；历史一次性回补走
 `python3 fetch/asx.py --sfe-backfill 2020-06 2026-05`（**同样只走媒体中心，不碰同意页**）。
 
@@ -78,8 +108,14 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
 
 2. **soft-404：HTTP 200 + text/html 的假成功。** 2024 年代 MAR 正文里印的旧版分品种直链
    `https://www.asx.com.au/data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf`
-   返回 **200 + text/html + 恒定 136,750 字节的错误页**，不是 404。实测 `200228` /
-   `190228` / `160630` / `170428` / `240731` 五个日期字节数完全相同。
+   返回 **200 + text/html 的错误页**，不是 404。同一轮里各日期的字节数完全相同
+   （2026-09 实测 2016-01…2020-05 的全部 47 条正文链接，一律 **136,130** 字节、
+   落地 `content/asx/404.html`）。
+   ⚠️ **那个字节数会变，不许当判据用**：2026-08 这里记的是「恒定 136,750」，
+   一个月后就成了 136,130（错误页本身改版了）。判据只能是 Content-Type 与
+   `%PDF-` 魔数这两条。（`build/basefill/us_asx_mx2.py` 的 `_ASX_SHELL_SIZES`
+   白名单里正是旧的那几个数，今天一个都对不上 —— 那是个一次性脚本、`%PDF-`
+   那道还在，所以是失效不是失灵。）
    任何 `if status == 200: save()` 都会把 HTML 错误页当 PDF 存下来，然后在解析阶段
    报一个跟真实原因毫无关系的错。⇒ `_http_pdf()` **同时**校验 Content-Type 为
    application/pdf 且首 5 字节为 `%PDF-`，两条缺一不可。
@@ -286,12 +322,24 @@ series/source_dates.csv。不用 HTTP Last-Modified：DAM 副本比公告晚约 
     句尾还挂着一个 pcp 数（"compared to 18.0 in December"），两个数字同在一句，
     位置不能当判据，只有月名能。
 
-22. **分品种报告的直链有 5 代命名、日期段 3 种写法，还会在正文里换行断开 ——
-    所以一个字符都不许自己拼，也不许解释里面的数字。** 2026-08 之前这里写的是
+22. **分品种报告的直链有 8 种命名、日期段 3 种写法，还会在正文里换行断开 ——
+    所以一个字符都不许自己拼，也不许解释里面的数字。**
+    ⚠️ 「第几代用哪个词干」**不是规则**：2018-05 那一期在 Futures 时段内部一次性退回
+    Sfe 词干，2016-09 那一期用的是**单数** Market。下面那张表是逐期实测的清单，
+    不是可以外推的世代划分。 2026-08 之前这里写的是
     `monthly-futures-markets-report-(\\d{8})\\.pdf`，8 位那个量词把 2020-06…2026-05
     共 72 期**全部**挡在门外，表现是「那 8 列只有最近 2 个月有值」，于是被写成
     「官方只保留最近 2 期」。当时的「实测 404」也是这么来的：拿数据月最后一天
-    **自己拼**出 `31052026`，而官方那一期的真名是 `290526`。逐期实测的五代命名：
+    **自己拼**出 `31052026`，而官方那一期的真名是 `290526`。逐期实测的命名
+    （2026-09 把 2016-07…2019-11 那 40 期一并核了进来）：
+        2016-07…2016-08  /data/market-reports/MonthlySfeMarketsReport{YYMMDD}.pdf
+        2016-09          /data/market-reports/MonthlyFuturesMarket-Report{YYMMDD}.pdf
+                         ← 词干是**单数 Market**，仅此一期。旧 `_SFE_LINK` 不认它，
+                           表现是「这一期没印链接」——而它印了
+        2016-10…2018-04  /data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf
+        2018-05          /data/market-reports/MonthlySfeMarketsReport{YYMMDD}.pdf
+                         ← Futures 时段里的**一次性回退**，仅此一期
+        2018-06…2019-11  /data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf
         2019-12…2020-01  /data/market-reports/MonthlySfeMarketsReport{YYMMDD}.pdf
         2020-02…2020-05  /data/market-reports/MonthlyFuturesMarketsReport{YYMMDD}.pdf
         2020-06          …/unlinked-docs/MonthlyFuturesMarketsReport{YYMMDD}.pdf
@@ -453,7 +501,12 @@ _PUB_DATE = re.compile(
 # 非贪婪到第一个 `.pdf`，所以注解里多出来的句号（`…210131.pdf.`）不会被吃进来。
 _SFE_LINK = re.compile(
     r'https?://\S*'
-    r'(?:monthly-futures-markets-report-|monthlyfuturesmarketsreport|monthlysfemarketsreport)'
+    r'(?:monthly-futures-markets-report-|monthlyfuturesmarketsreport'
+    # 单数 Market：2016-09 那一期，全部实测里仅此一份（口径坑 22）。它指向的老站点路径
+    # 今天已整体 soft-404，所以认了也取不到数 —— 加它是为了**别把「正则不认」显示成
+    # 「官方没印链接」**：这两件事的处置完全不同，而在日志里长得一模一样。
+    r'|monthlyfuturesmarketreport'
+    r'|monthlysfemarketsreport)'
     r'\S*?\.pdf', re.I)
 # 正文里的 URL 会在 `-` / `/` 处换行断开（口径坑 22）。只接「行尾是 - 或 /」这一种，
 # 且只用于抠链接的那份临时文本 —— 不碰任何参与数值解析的文本。
@@ -502,7 +555,8 @@ def _http_pdf(url, timeout=90):
     """下载并**证明它真的是 PDF**。
 
     只看 HTTP 200 是不够的：ASX 有一条路径（口径坑 2）在文件不存在时返回
-    200 + text/html + 恒定 136,750 字节的错误页。存下来之后 pymupdf 会报一个
+    200 + text/html 的错误页（长度随错误页改版而变，见口径坑 2，不许当判据）。
+    存下来之后 pymupdf 会报一个
     「文件损坏」之类跟真实原因毫无关系的错，排查成本极高。
     Content-Type 与 `%PDF-` 魔数两条都校验：前者防对方改错误页大小，后者防对方
     把错误页的 Content-Type 也标成 application/pdf。
