@@ -2135,6 +2135,45 @@ class Page:
     #: 但上界不低于这个数 —— 翻一倍是正常的高增长，不该被当成离群值截掉。
     NZ_CAP_FLOOR = 100.0
 
+    # ── 尖刺截轴（`spike_cap()`）的两个常量。放在这里是因为它与上面那两个是同一件事的
+    #    另一半：近零基数治的是**同比线**被基数效应顶出去，尖刺治的是**水平值折线**被
+    #    一两个一次性大额顶出去。两处共用引擎同一套 `ycap` + `cap_note` 约定。 ──
+    #
+    #: Tukey **极端**离群栅栏的倍数（Q3 + k×IQR）。取 6.0 与 `build/lpla.py` 的 `CAP_K`
+    #: 同一个数、同一条判据 —— 全仓治尖刺只有这一把尺子，两处取不同的 k 等于同一个页面
+    #: 集合里有两种「离群」的定义。
+    #:
+    #: 实测的 k 敏感性（2026-09 的 `data/asx.js`，两张命中图各扫 k=3…12，报越界点数）：
+    #:   · 上市融资旧口径那张：k 从 3 一路到 12 都只划出 **1** 个点（2022-02），
+    #:     结论对 k 完全不敏感；
+    #:   · 二次融资那张：k=5–6 划出 **4** 个点（2022-02 与 2025-02 各两条序列），
+    #:     k=4 变 6 个（把 2022-06 的 19,499 也划进去 —— 那是日常高点，不该截），
+    #:     k=7 变 3 个、k≥8 变 2 个（2025-02 的换股对价回到栅栏内，上界随之放宽一档）。
+    #:   所以 k 在这里**不是**一个「取多少都一样」的数：6 是「刚好只圈住两桩大额换股并购、
+    #:   一个日常高点都不误伤」的那一档。**改 k 之前先把上面这串数重跑一遍。**
+    #: 图注里那句「Q3 + k×IQR」引这个常量而不写字面 6：调了 k 而图注还写 6，
+    #: 就又是一句会过期的假话。
+    SPIKE_K = 6.0
+    #: 触发门：**日常上沿**（栅栏内最大值）在「不截轴时的那根轴」上所占的比例。
+    #: 低于这个门才截 —— 高于它说明尖刺并没有把其余点压扁，截了只是白截别人的图。
+    #:
+    #: 0.35 不是拍的，是从实测空档里挑的。把当时全站 `data/*.js` 里 **61 张**
+    #: `lines_endlabels` 的这个比例全量出来（判据与下面 `spike_cap()` 里那段量程复算
+    #: 逐字同源），过得了「栅栏外真有点」这一关的一共 6 张，比例从小到大：
+    #:     0.188 asx 二次融资（3 条序列）/ 0.223 asx 上市融资旧口径（2 条序列）
+    #:     ── 空档 ──
+    #:     0.526 jpx 迷你化（大型合约 vs mini）/ 0.567 db1 FESX / OESX
+    #:     0.659 exchanges12 的恒定基准名义额
+    #:     0.860 lpla 渠道 NNA（**已经**由 build/lpla.py 的 cap_pack 截过轴，比例是截后的）
+    #:     其余 55 张一个栅栏外的点都没有（比例 ≥ 0.847），本来也进不到这一步。
+    #: 0.223 与 0.526 之间是空的，阈值放在这段空档里对数据抖动最不敏感；取中点 0.35。
+    #: **这道门是必须的**：没有它，同一条规则会连带截掉 jpx / db1 那两张 ——
+    #: 它们的尖峰只把日常上沿压到轴的一半略高，那是形状本身，不是尖刺。
+    #: （exchanges12 / lpla 两张由各自的 build 脚本生成、根本走不到本底座，
+    #:   但比例照样量给出来 —— 判据要能在全站数据上重跑，不能只在自己这 9 页上成立。）
+    #: 写法照 `assets/charts.js` 的 `ALIGN_WASTE_MAX`（阈值放实测空档里，并把那批数留在注释里）。
+    SPIKE_HEAD = 0.35
+
     def near_zero_guard(self, n, c, win, obj, field='ymax', vals=None):
         """近零基数的处理：就地给截轴上界，返回那段图注警告（不命中返回 ''）。
 
@@ -2220,6 +2259,279 @@ class Page:
                '本图窗口内的读数没有超出正常量程，所以没有截轴。')
             + '<b>读法：这条线在低基数那几年只能看方向，不能看幅度</b>；'
               '幅度请读同一张图上的深蓝柱（水平值）。')
+
+    def spike_cap(self, n, ex, cols):
+        """尖刺截轴：一两个一次性大额把其余读数压成贴地一条线时，截轴 + 返回那段图注。
+
+        命中就地写 `ex['ycap']` 与 `ex['cap_note']`、记一笔 `self.cap_ns`，返回图注；
+        不命中返回 `''` —— **不截，也不写那行字**（理由见下面「cap_note 的坑」）。
+
+        ── 为什么不是对数轴 ────────────────────────────────────────────────────
+        `assets/charts.js` 全文没有对数刻度，而引擎**不许改**
+        （`docs/CHART_KINDS.md` 文件头：它同时服务几十张已上线的页，改一行要重新验收全站）。
+        线性量程逻辑还另有三份 Python 副本（`build/axisfmt.py` 的 `fix_all`、
+        `build/mrbase.py` 的 `align_sim`、`tools/align_replica.py`），换刻度族是四处一起动
+        的事。所以这条路封死，本仓治尖刺的唯一既有手段就是 `ycap` + `cap_note`：
+        **截轴不删点** —— 超界的点钳到轴顶、画成空心红圈、真值红色竖排标出。
+
+        ── 判据（四步，全部现算，一个常数都不手挑）──────────────────────────────
+        ① 把本图**全部序列**的有限值合在一起做 Tukey 极端离群栅栏 `Q3 + SPIKE_K×IQR`。
+           合在一起判是因为它们本来就画在**同一根轴**上：分序列各判各的，等于同一根轴上
+           有两套「离群」的定义。栅栏外一个点都没有 → 返回 ''。
+           **只判上界**：本图型的尖刺是被顶上去的，下界那一侧由 `yfloor` 管
+           （`ex_lines()` 里非负组已经把它钉在 0）。真出现向下的极端离群时该做的是给
+           `yfloor` 并单独写图注，那是另一件事，别在这里顺手做。
+        ② 复算「不截轴时的轴顶」，看**日常上沿**（栅栏内最大值）在那根轴上占多少 ——
+           ≥ `SPIKE_HEAD` 就返回 ''（那种图的尖峰并没有把其余点压扁，截了是白截）。
+        ③ 上界 = `nice_max(栅栏内最大值)`，取一个干净整刻度（与 `stacked_dual` 右轴同一个
+           取整器，那边的注释记着为什么不能写 `int()`）。
+        ④ 端点护栏（见下）。抬完若已经没有越界点 → 返回 ''，不截。
+
+        ── 端点护栏：为什么这里要护**两端** ──────────────────────────────────────
+        `near_zero_guard()` 里那段「截轴上界不许低于末点读数」同一条理由，但那边只护末点，
+        这里要护首末两端。区别在引擎：
+          · `kind:'lines'` 的末点标签有 `clampY(v) !== v → continue`、`bars_labeled` 有
+            `yl !== vals[i] → continue`，被截的端点标签**直接不画**，真值走 `capLabel` 竖排；
+          · `lines_endlabels` 两端都是无条件按 `Y(值)` 落笔的
+            （`LE.push({y: Y(sr.values[0])…})` / `RE.push(… values[n-1] …)`），既不钳也不跳过。
+            端点值超过 `ycap` 时它的 y 会算到画布上方，接着触发 `spreadY()` 的
+            「上下都顶满就从上边界顺排」兜底：整列端点读数被重排成一摞，与各自的线对不上号，
+            **而且不报错**。
+        代价与 `near_zero_guard()` 那边一样：护栏一抬，上界就变松、历史尖刺压得没那么平。
+        但两端读数是这张图上最该被看见的两个数字，不能为了压平历史把它们推到画布外。
+
+        ── ⚠️ `cap_note` 的坑 ────────────────────────────────────────────────────
+        引擎的截轴开关是 `capOn = ex.ycap != null || ex.yfloor != null || _rhsCap != null`，
+        **`yfloor` 也算**。而本底座几乎每张 `lines_endlabels` 都带 `yfloor: 0`（那是归零，
+        不是截轴：没有点落在 0 以下）。所以 `cap_note` 只能与 `ycap` **同时**写 ——
+        无条件写的话，全站每一张这种图的图顶都会印出「axis capped」这句假话。
+        `build/mrbase.py` 记过同一个坑（「yfloor 不等于截轴，要看有没有点真的被它挡住」），
+        `build/lpla.py` 的 `cap_pack()` 是同一条：没有越界点就不截、也不写那行字。
+        """
+        if ex.get('kind') != 'lines_endlabels':
+            # 不是静默跳过：`lines` 那一支走引擎**另一条**量程分支（zero_base / 5% 留白），
+            # 下面第 ② 步那套 0.20 / 0.18 的式子对它根本不成立，算出来的占比是假的。
+            # 调错图型不该悄悄不截，该当场停机。
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {n} 的 kind 是 {ex.get("kind")!r}，'
+                f'而 spike_cap() 里复算的是 lines_endlabels 的量程式'
+                f'（min − 极差×20% / max + 极差×18%）—— 别的图型请先把量程式补进来再调它。')
+
+        xl = ex.get('xlabels') or []
+        pts = [(i, s['name'], float(v))
+               for s in (ex.get('series') or [])
+               for i, v in enumerate(s.get('values') or [])
+               if v is not None and np.isfinite(float(v))]
+        if len(pts) < 8:            # 样本太少，四分位没有意义（同 lpla.cap_bounds）
+            return ''
+        a = np.array([v for _, _, v in pts], dtype=float)
+        q1, q3 = (float(x) for x in np.percentile(a, [25, 75]))
+        iqr = q3 - q1
+        fence = q3 + self.SPIKE_K * iqr
+        inb = a[a <= fence]
+        if inb.size == 0 or not (a > fence).any():
+            return ''
+        inb_max = float(inb.max())
+
+        # ── ② 不截轴时的轴顶 ──
+        # 这四行是 `assets/charts.js` 里 `kind === 'lines_endlabels'` 那一支
+        #（`y0 = mn − r2×0.20; y1 = mx + r2×0.18`，随后 `if (ex.yfloor != null) y0 = ex.yfloor`）
+        # 的逐行等价实现。同一条式子在本仓另有三份副本：`build/axisfmt.py` 的 `_left_range`、
+        # `build/mrbase.py` 的 `align_sim`、`tools/align_replica.py` 的 `left_range`。
+        # **改这条式子要四处一起改**，否则这里算出来的占比与页面上真画的不是同一根轴。
+        mn, mx = float(a.min()), float(a.max())
+        r2 = (mx - mn) or 1.0
+        y0, y1 = mn - r2 * 0.20, mx + r2 * 0.18
+        if ex.get('yfloor') is not None:
+            y0 = float(ex['yfloor'])
+        if not (y1 > y0):
+            return ''
+        head = (inb_max - y0) / (y1 - y0)
+        if head >= self.SPIKE_HEAD:
+            return ''
+
+        # ── ③ 上界 + ④ 端点护栏 ──
+        cap = float(nice_max(inb_max))
+        ends = []
+        for s in ex['series']:
+            fv = [float(v) for v in (s.get('values') or [])
+                  if v is not None and np.isfinite(float(v))]
+            if fv:
+                ends += [(s['name'], fv[0]), (s['name'], fv[-1])]
+        end_hi = max([v for _, v in ends], default=float('-inf'))
+        lifted = end_hi > cap
+        if lifted:
+            cap = float(nice_max(end_hi))
+        # 按**窗口下标**排，不按月份标签的字典序 —— 'Feb-22' < 'Jan-16' 是字母序，
+        # 印出来的清单会不按时间走，读者对着横轴逐个核对时要来回跳。
+        over = [(xl[i] if i < len(xl) else str(i), nm, v)
+                for i, nm, v in sorted((p for p in pts if p[2] > cap),
+                                       key=lambda p: (p[0], p[1]))]
+        if not over:
+            # 护栏把上界抬到所有点之上了 —— 那就没有尖刺可治，别留一个只写着
+            # 「axis capped」却一个红圈都没有的轴顶。
+            return ''
+
+        ex['ycap'] = cap
+        ex['cap_note'] = f'axis capped at {fmt_val(cap, cols[0]["fmt"])} — true values shown in red'
+
+        # ── 图注要报的几何：绘图区高 ph ──
+        # 引擎：H = (ex.height || 268) + XB、M.b = XB、M.t = 30（capOn）/ 14（不 capOn）
+        # ⇒ ph = H − M.t − M.b = 268 − M.t，**x 标签带 XB 一加一减正好抵消**，
+        #   所以这个像素数与 xrot / 标签长短无关。基线字号（FS = 1，半栏卡）下成立；
+        #   通栏卡 FS > 1 时引擎再补 round(26×(FS−1))，图注报的是基线值。
+        CANVAS_H, MT_CAP, MT_PLAIN = 268.0, 30.0, 14.0
+        # 截轴开关**含 yfloor**：本图早就有 yfloor 时，加 ycap 并不会改变上边距。
+        ph0 = CANVAS_H - (MT_CAP if ex.get('yfloor') is not None else MT_PLAIN)
+        ph1 = CANVAS_H - MT_CAP
+        med = float(np.median(a))
+        px0 = (med - y0) / (y1 - y0) * ph0
+        px1 = (med - y0) / (cap - y0) * ph1
+
+        fmt, unit = cols[0]['fmt'], cols[0]['unit']
+
+        def F(v):
+            return fmt_val(float(v), fmt)
+
+        # 栅栏那三个数（Q3 / IQR / 栅栏）单独一个格式器：它们是**现算的统计量**，不是官方
+        # 披露的读数，用列自己的 fmt 印会把「4,535 + 6×3,752 = 27,050」印成一道算错的算式
+        #（f0c 把 3,752.5 抹成 3,752，读者按显示值一乘就对不上）。位数按量级取，
+        # 保证印出来的加法自己成立。
+        _ref = max(abs(q3), abs(iqr), 1e-12)
+        _sd = max(1, min(6, 3 - int(np.floor(np.log10(_ref)))))
+
+        def S(v):
+            return f'{float(v):,.{_sd}f}'
+
+        # 各序列自己的中位数 —— 底下那句「截轴治不了贴地」要拿最小与最大的两条对比。
+        smed = sorted(((s['name'], float(np.median([float(v) for v in s['values']
+                                                    if v is not None and np.isfinite(float(v))])))
+                       for s in ex['series']
+                       if any(v is not None and np.isfinite(float(v)) for v in s['values'])),
+                      key=lambda t: t[1])
+        months = list(dict.fromkeys(m for m, _, _ in over))
+        self.cap_ns.append({'n': n, 'cap': cap, 'fence': fence, 'head': head,
+                            'over': over, 'months': months, 'unit': unit, 'fmt': fmt,
+                            'y1_uncapped': y1, 'inb_max': inb_max, 'lifted': lifted})
+        return (
+            f'<b>⚠️ 已截轴：纵轴上界截在 {F(cap)} {unit}，'
+            f'{len(over)} 个越界读数钳在轴顶。</b>'
+            f'不截的话轴顶要一路画到 <b>{F(y1)} {unit}</b>（本图型的轴顶是'
+            f'「最大值 + 极差×18%」，而极差被最大的那一点 '
+            f'{F(mx)} 撑开），其余 {len(a) - len(over)} 个点全被压进画布最底下的 '
+            f'<b>{head:.1%}</b>：本图全部读数的中位数 {F(med)} {unit} 在那根轴上离轴底只有 '
+            f'{px0:.1f}px，截轴后抬到 <b>{px1:.1f}px</b>'
+            f'（绘图区高 {ph1:.0f}px，基线字号下）。'
+            f'<b>截轴不删点</b> —— 越界的点按引擎既有约定钳到轴顶、画成空心红圈、'
+            f'真值红色竖排标在旁边（<code>assets/charts.js</code> 的截轴规矩），'
+            f'一个点没删、一个数没改。越界的是 '
+            + '、'.join(f'{m}「{nm}」{F(v)}' for m, nm, v in over) + '。'
+            + f'判据现算：本图 {len(ex["series"])} 条序列在窗口内的 {len(a)} 个有限值合在'
+              f'同一根轴上做 Tukey 极端离群栅栏 Q3 + {self.SPIKE_K:g}×IQR = '
+              f'{S(q3)} + {self.SPIKE_K:g}×{S(iqr)} = <b>{S(fence)} {unit}</b>，'
+              f'栅栏之外算尖刺；上界取栅栏内最大值 {F(inb_max)} 向上取整到整刻度，'
+              f'得 {F(cap)}'
+            + (f'；再经端点护栏抬高 —— 本图两端读数最高 {F(end_hi)}，'
+               f'上界低于它的话那个数会被画到画布外面去'
+               if lifted else
+               f'；端点护栏未触发（本图两端读数最高 {F(end_hi)}，本来就在上界之下）')
+            + '。'
+            + ('<b>代价照实写</b>：'
+               + (f'被截的那一个读数（{over[0][0]}）在图上钳在轴顶，它比轴顶高出多少'
+                  f'<b>在图上读不出来</b>，只能读旁边那个红字真值。'
+                  if len(over) == 1 else
+                  f'被截的 {len(over)} 个读数（落在 {len(months)} 个月：'
+                  f'{"、".join(months)}）在图上是压平在轴顶的一段，'
+                  f'它们彼此之间的高低<b>在图上读不出来</b>，'
+                  f'只能读旁边那几个红字真值。'))
+            + (f'而且截轴治不了「{smed[0][0]}」本身贴地这件事 —— 它的中位数 '
+               f'{F(smed[0][1])} {unit} 只有「{smed[-1][0]}」中位数 {F(smed[-1][1])} '
+               f'{unit} 的 {smed[0][1] / smed[-1][1]:.1%}，那是<b>真实的量级差</b>，'
+               f'不是尖刺，换什么轴都压不出来。'
+               if len(smed) > 1 and smed[-1][1] else ''))
+
+    def cap_zh(self, ex=None):
+        """页尾那一段：本页到底有没有图截了轴、截在多少、几个点越界。**两分支现算。**
+
+        由 spec 的 `notes` 用 `callable(page)` 挂上（`lambda page: page.cap_zh()`）
+        —— 底座不无条件印它，理由见 `notes()` 末尾那段分派的注释。
+        `ex` 不给就取 `notes()` 挂上来的那一份最终 payload。
+
+        ⚠️ 三件事必须分开数，否则这段话必然说谎：
+
+        ① **`yfloor: 0` 是归零，不是截轴。** 本底座几乎每张 `lines_endlabels` 都带它
+           （`ex_lines()` 里那句注释：默认下界是 min − 极差×20%，会在零轴以下留出一大块
+           不存在的量纲区间；没有点落在 0 以下，所以那不是截轴）。把它算进「截了轴」的
+           名单，页尾会声称几十张图截过轴，而那些图自己的图注写着相反的话。
+           判据照 `build/mrbase.py` 的 `_cut()`：**看有没有点真的被那条界挡住**。
+
+        ② **同比线绝大多数画在右轴，它的截轴字段是 `yoy.ymax` 不是 `ycap`**
+           （CONTRACT §6.2 那条 ⚠️）。只看 `ycap` 的话，`near_zero_guard()` 真截了右轴的页
+           会一边印「本页没有任何一张图截轴」、一边有一条同比线钳在 +400% ——
+           `build/ibkr.py` 的同一处注释记着这个坑。右轴那半边直接读 `self.nz_ns` 这本账
+           （`near_zero_guard()` 只在**真有点超界**时才往里记 `cap`），不去复刻引擎的
+           右轴刻度取整：那套算法（`ticks()` + 零点对齐）在 `build/axisfmt.py` 与
+           `tools/align_replica.py` 各有一份副本，在这里再抄第三份只会多一处会漂的假话。
+
+        ③ **「本页一张都没截」是常态，所以这句话不许写死成「没有」。** 9 张 spec 页里
+           今天只有一页命中；下一次谁给某张图加了 cap，页尾必须自己跟着变
+           （`build/axp.py` 的同一处注释：「不手写：本轮一张都没有，但这句话不能写死」）。
+        """
+        def _nums(seq):
+            return [float(v) for v in (seq or [])
+                    if isinstance(v, (int, float)) and np.isfinite(float(v))]
+
+        if ex is None:
+            ex = getattr(self, '_ex', None) or []
+        # 左轴真被挡住的点（`yfloor` 归零那一类在这里自然落选：没有点低于 0）
+        floor0 = []
+        for e in (ex or []):
+            if not isinstance(e, dict) or e.get('yfloor') is None or e.get('ycap') is not None:
+                continue
+            lv = _nums(e.get('values'))
+            for grp in ('series', 'stacks', 'groups'):
+                for s in (e.get(grp) or []):
+                    lv += _nums(s.get('values'))
+            for k in ('bar', 'base'):
+                lv += _nums((e.get(k) or {}).get('values'))
+            if lv and min(lv) >= float(e['yfloor']):
+                floor0.append(e['n'])
+
+        rhs = sorted({z['n'] for z in (self.nz_ns or []) if z.get('cap')})
+        lhs = sorted(self.cap_ns, key=lambda z: z['n'])
+        head = '<b>截轴（纵轴上界被人为压低）。</b>'
+        if not lhs and not rhs:
+            body = ('<b>本页没有任何一张图截轴</b> —— 没有一张图设 <code>ycap</code>，'
+                    '也没有哪条同比线的次轴设 <code>ymax</code>。'
+                    '这句话是现算的：底座逐张读最终 payload 与截轴账本，'
+                    '哪天真有一张被截，这里会自己改口。')
+        else:
+            seg = []
+            for z in lhs:
+                seg.append(
+                    f'<b>Exhibit {z["n"]}</b> 的<b>左轴</b>截在 '
+                    f'{fmt_val(z["cap"], z["fmt"])} {z["unit"]}，'
+                    f'{len(z["over"])} 个读数越界（'
+                    + '、'.join(f'{m}「{nm}」{fmt_val(v, z["fmt"])}' for m, nm, v in z['over'])
+                    + '）')
+            for j in rhs:
+                caps = [z['cap'] for z in self.nz_ns if z['n'] == j and z.get('cap')]
+                seg.append(f'<b>Exhibit {j}</b> 的<b>次轴</b>（同比那条线）截在 '
+                           f'+{max(caps):.0f}%（近零基数，见该图图注）')
+            body = (f'本页有 <b>{len(lhs) + len(rhs)}</b> 张图截了轴：' + '；'.join(seg)
+                    + '。<b>截轴一个点都不删</b> —— 超界的点钳到边界、画成空心红圈、'
+                      '真值红色竖排标在旁边，图顶左上角另有一行斜体小字说明。'
+                      '被截的那几个月在图上是压平的一段，它们彼此之间的高低读不出来，'
+                      '只能读红字真值；其余各月的形状是原样的。')
+        tail = ''
+        if floor0:
+            tail = (f'另有 {len(floor0)} 张图设了 <code>yfloor</code> 把纵轴<b>归零</b>'
+                    f'（Exhibit {"、".join(str(j) for j in floor0)}），'
+                    f'<b>那不是截轴</b>：一个点都没有落在那条界之下（判据现算，逐张比最小值）。'
+                    f'归零是为了让线的高度可以直接当绝对水平读 —— 引擎给这个图型的默认下界是'
+                    f'「最小值 − 极差×20%」，那是一次没有标注的隐性截轴，'
+                    f'会在零线以下留出一大块不存在的量纲区间。')
+        return head + body + tail
 
     def cost_ns_zh(self, mom_ns):
         """页尾那半句：逐图代价（§6.1 第 3 条）到底印在了哪几张图上。
@@ -2573,6 +2885,13 @@ class Page:
             # lines_endlabels 没有 zero_base 开关，默认下界是 min − 极差×20%，
             # 会在零轴以下留出一大块不存在的量纲区间。没有点落在 0 以下，所以这不是截轴。
             ex['yfloor'] = 0
+        # 尖刺截轴。**只对 lines_endlabels**：'lines' 那一支走引擎另一条量程分支
+        #（zero_base / 5% 留白），spike_cap() 里复算的 0.20 / 0.18 那套式子对它不成立，
+        # 算出来的「日常上沿占轴多少」是个假数，门就形同虚设。
+        # 落点在 yfloor 之后 —— 那道门要看的是**这张图最终那根轴**，下界还没定就算不出占比；
+        # 也在 mark_breaks 之前 —— 断点只往 ex 上挂 break_at/break_label，与量程无关，
+        # 但保持「先把轴定死、再往上挂标注」这个顺序，后来的人不用去想两者有没有耦合。
+        spike_zh = self.spike_cap(n, ex, cols) if kind == 'lines_endlabels' else ''
         hit = self.mark_breaks(ex, win, cols)
         last = '、'.join(f'{c["zh"]} {fmt_val(v[-1], c["fmt"]) or "—"}' for c, v in zip(cols, vs))
         ex['note'] = (
@@ -2580,6 +2899,7 @@ class Page:
             f'量纲不同的列由底座自动拆成各自成图。{xl[-1]}：{last}。'
             + ('' if dense else '窗口内有缺月，改用不平滑的 lines 图型：缺口处断笔，'
                                 '不用直线连（平滑图型会把 null 当 0 画出一条塌到零的假线）。')
+            + spike_zh
             + self.slow_tail(cols)
             + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
@@ -4295,6 +4615,10 @@ class Page:
         # 近零基数（§6.1 第 5 条）命中的图：每命中一条序列记一笔，
         # `build()` 逐条打印。从零记，理由同上。
         self.nz_ns = []
+        # 尖刺截轴（`spike_cap()`）真截了轴的图：每张记一笔。与 nz_ns 同生命周期 ——
+        # 页尾那句「本页哪几张截了轴 / 一张都没有」现读这本账，重复调用 payload() 时
+        # 把上一轮的图号带进来，就等于替一张这一轮根本没截轴的图背书。
+        self.cap_ns = []
         self.saw_group_lines = self.saw_group_heat = self.saw_ratio_rhs = False
         self.decomp_report = []  # decomp 自检行同理，从零记
 
@@ -4523,6 +4847,10 @@ class Page:
 
     # ────────────────────── 口径与方法说明 ──────────────────────
     def notes(self, latest, common, ex, scaled, newest, disp, _scales=()):
+        # spec 的页尾条目允许写成 `callable(page)`（见本方法末尾那段分派）。那种条目要读的
+        # 是**建好之后的 payload**（例如「本页哪几张图截了轴、截在多少」），而 `notes()`
+        # 是唯一同时拿得到 page 与建好的 exhibits 的地方 —— 挂到 page 上供它们取用。
+        self._ex = ex
         idx = list(self.df.index)
         head_zh = '、'.join(c['zh'] for c in self.head)
         out = [
@@ -4788,7 +5116,14 @@ class Page:
         dup = self.dup_yoy_zh()
         if dup:
             out.append(dup)
-        spec_notes = [str(x) for x in (self.spec.get('notes') or [])]
+        # spec 的页尾条目：**字面量或 `callable(page)`** —— 与 `glossary` / `brief` 同一套
+        # 分派（见 `payload()` 里那两处）。要现算的条目必须走 callable：写成字面量的那一刻
+        # 它就开始过期，而页尾没有任何东西在守它。
+        # ⚠️ 为什么这类话不由底座无条件印一段：`build/single.py` 服务 9 张 spec 页，
+        #    底座每多印一段，9 页的 payload 就一起变。**哪一页要哪一段由那一页的 spec 说了算，
+        #    话本身仍然由底座现算**（例如 `Page.cap_zh()`：spec 里一个数字、一个图号都没有）。
+        spec_notes = [x(self) if callable(x) else str(x)
+                      for x in (self.spec.get('notes') or [])]
         self.md_fixed = sum(1 for x in spec_notes if _MD_BOLD.search(x))
         out += [md_bold(x) for x in spec_notes]
         return out
@@ -4848,6 +5183,14 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
             print(f'[{t}] ⚠️ Exhibit {z["n"]} 近零基数：{z["col"]}（{z["zh"]}）'
                   f'窗口内 {z["k"]}/{z["n_base"]} 个月基期近零（{z["share"]:.1%}）'
                   + (f'，右轴已截到 +{z["cap"]:.0f}%' if z['cap'] else '，未截轴'))
+    # 尖刺截轴同理：这一行是给维护者的清单，好让「今天到底截了哪几张、截在多少」
+    # 随时能重跑出来，而不必去页面散文里翻一个会过期的数。
+    for z in (getattr(page, 'cap_ns', None) or []):
+        if not quiet:
+            print(f'[{t}] ⚠️ Exhibit {z["n"]} 尖刺截轴：上界 {z["cap"]:,.0f} {z["unit"]}'
+                  f'（Tukey 栅栏 {z["fence"]:,.0f}、日常上沿占未截轴的 {z["head"]:.1%}）'
+                  f'，{len(z["over"])} 个越界点：'
+                  + '、'.join(f'{m} {nm} {v:,.0f}' for m, nm, v in z['over']))
     for line in (getattr(page, 'decomp_report', None) or []):
         if not quiet:
             print(f'[{t}] {line}')
