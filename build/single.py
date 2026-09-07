@@ -341,9 +341,24 @@ DECOMP_KEYS = {'zh', 'kind', 'granularity', 'value', 'qty',
                'value_total_col', 'qty_total_col', 'weight_col',
                'price_zh', 'price_unit', 'price_fmt', 'price_scale',
                'bench_value', 'bench_qty', 'share_zh', 'mix_zh',
-               'year_start_month', 'year_label', 'years', 'note', 'section'}
+               'year_start_month', 'year_label', 'years', 'note', 'section',
+               # ── 以下两个 2026-09 新增，**纯加法**：不写就与从前逐字节相同 ──
+               # 'bucket'：横轴一格是什么。缺省 'year'（一格 = 一个完整年度，
+               #   最新年不满 12 个月时末格追加 YTD），另一个合法值 'monthly'
+               #   （一格 = 一个月，基期去年同月 = 单月同比）。
+               # 'after_group'：把这张图**就地**排在某个 group 的图之后（见 payload）。
+               'bucket', 'after_group'}
 DECOMP_REQUIRED = {'zh', 'kind', 'granularity', 'value', 'qty',
                    'price_zh', 'price_unit', 'price_fmt'}
+#: `bucket` 的白名单。做成白名单而不是 `!= 'monthly' 就当年度`：拼错一个字母
+#: （'month' / 'Monthly'）会静默掉回年度桶，画出来是一张**完全合法**的年度图，
+#: 没有任何自动判据看得出所有者要的是月度。
+DECOMP_BUCKETS = ('year', 'monthly')
+#: 月度桶下**必须不出现**的三个年度键。判据用 `k in d`（原始 dict），不是归一化结果 ——
+#: 归一化带缺省，读到的永远是 1 / 'start' / 5，分不出「没写」与「写了个缺省值」。
+#: 理由同 LEVEL_YOY 那次删键：留着一个再也不起作用的声明，比当场报错糟 ——
+#: 它会让下一个人以为月度图的横轴还受 year_start_month 管。
+DECOMP_YEAR_ONLY_KEYS = ('year_start_month', 'year_label', 'years')
 # ── level_yoy —— 「水平值柱 + 次轴单月同比」那几张（一律排在页尾）─────────────
 # 旧名 `ttm_yoy`：次轴曾是 12 个月滚动合计的同比。2026-09 按页面所有者的指令改成
 # **单月同比**（当月对去年同月，本列除本列），键名、函数名与标题一并跟着改 ——
@@ -395,6 +410,12 @@ DECOMP_KINDS = {
 DECOMP_EPS = 1e-9        # 分解残差硬上限。恒等式的残差只应该是 float64 舍入（~1e-16）
 DECOMP_YEARS = 5         # 默认画几根年度柱（要 years+1 个完整年才画得出 years 根）
 DECOMP_LN_MIN = 1e-6     # |ln(V₁/V₀)| 低于它就整根柱留空（见 ex_decomp 里的权重说明）
+#: 「交叉项占净增长百分之多少」这个比例的**分母下限**：|g_V| 低于它就不算占比。
+#: 年度桶只有 5 根柱、几乎撞不上；月度桶一格一个月，128 格里净增长近零的格子成片出现
+#: （ASX 实测 116 格里有 26 格），沿用年度版那个「交叉项 ÷ 净增长」会印出几百个
+#: 百分点的假占比 —— 大的不是交叉项，是分母小。所以占比只在 |g_V| ≥ 它的格上算，
+#: 交叉项本身一律另印 pp（绝对值中位与最大），两者并列给读者。
+DECOMP_NEAR0_G = 0.05
 TOTAL_TOL = 1e-6         # 「日均 × 权重」与「当月合计列」的一致性容差（见 monthly_total）
 TTM_WIN = 12             # 滚动合计窗口（个月）—— 现在只用来**对照**，页上不画
 
@@ -1200,10 +1221,36 @@ def _norm_decomp(d, where):
     造出来的「均价」带着一个方向与大小都不可知的偏差，而图上完全看不出来。
     底座没法判断两列覆盖的是不是同一批标的（那是源表口径，只有写 spec 的人知道），
     所以这里只做机械校验，口径对齐由 spec 作者自己核实并写进 `note`。
+
+    ── `bucket` 两支（2026-09 新增，缺省 'year' = 与从前逐字节相同）────────────
+    `'year'`：横轴一格 = 一个完整年度，`year_start_month` / `year_label` / `years`
+      三个键与它们那四条校验**逐字保留**。
+    `'monthly'`：横轴一格 = 一个月、基期去年同月，那三个键**只要出现就 SpecError**
+      （见 `DECOMP_YEAR_ONLY_KEYS`），归一化结果里一并置 None —— 月度分支哪天不小心
+      读到它们，会当场 TypeError 而不是读到一个假缺省算出一张看着正常的图。
+    与桶无关的那几条（price_fmt / price_scale / weight_col × granularity / kind /
+    bench 成对）两支都跑。
     """
     if not isinstance(d, dict):
         raise SpecError(f'{where} 必须是 dict，收到 {type(d).__name__}')
     _check_keys(d, DECOMP_KEYS, DECOMP_REQUIRED, where)
+    bucket = str(d.get('bucket', 'year'))
+    if bucket not in DECOMP_BUCKETS:
+        raise SpecError(
+            f"{where} 的 bucket={d.get('bucket')!r} 不是 {DECOMP_BUCKETS} 之一 —— "
+            f"'year' 是一格一个完整年度（末格可为当年 YTD），'monthly' 是一格一个月、"
+            f'基期去年同月；拼错一个字母会静默掉回年度桶，画出来是一张完全合法的年度图，'
+            f'没有任何自动判据看得出这不是要的那张')
+    if bucket == 'monthly':
+        # 判据是 `k in d`（**原始 dict**），不是归一化后的值：归一化带缺省，
+        # 「没写」与「写了 year_start_month=1」在结果里长得一模一样。
+        stray = [k for k in DECOMP_YEAR_ONLY_KEYS if k in d]
+        if stray:
+            raise SpecError(
+                f"{where} 声明 bucket='monthly'（一格 = 一个月，基期去年同月），"
+                f"却还写着 {'、'.join(stray)} —— 这几个键只管年度分桶，月度桶下"
+                f'一个也读不到。留着一个再也不起作用的声明，比当场报错糟：'
+                f'下一个人会以为月度图的横轴还受它们管，改了它却什么都不动')
     if d['kind'] not in DECOMP_KINDS:
         raise SpecError(
             f"{where} 的 kind={d['kind']!r} 不是三类之一 —— 派生量（金额 ÷ 数量）的含义"
@@ -1239,13 +1286,21 @@ def _norm_decomp(d, where):
                       if d.get('bench_qty') else None),
         'share_zh': str(d.get('share_zh') or ''),
         'mix_zh': str(d.get('mix_zh') or ''),
-        'year_start_month': int(d.get('year_start_month', 1)),
+        'bucket': bucket,
+        # 挂载点：某个 group 的 zh 字符串。留空 = 老行为（排在页尾、核对表之前）。
+        # 组名存不存在、唯不唯一由 `Page.__init__` 现查（那里才拿得到 groups）。
+        'after_group': (str(d['after_group']) if d.get('after_group') else None),
+        # ⚠️ 三个年度键在月度桶下一律 **None**（上面已保证 spec 里没写过它们）：
+        # 置 None 而不是留缺省，是为了让「月度分支不小心读到它们」当场炸掉 ——
+        # 读到 1 / 'start' / 5 的话会算出一张看着完全正常、口径却不是所有者要的图。
+        'year_start_month': (int(d.get('year_start_month', 1))
+                             if bucket == 'year' else None),
         # 财年叫哪一年，全球没有统一规矩：JPX 的 FY2025 = 2025-04…2026-03（按**起始**年
         # 命名，日本「年度」的惯例），SGX 的 FY2026 = 2025-07…2026-06（按**结束**年命名）。
         # 底座猜不出来，猜错会让整排柱的标签集体偏一年，而图形本身完全正常 ——
         # 这种错没有任何自动判据能发现，所以做成必须由 spec 明说的字段。
-        'year_label': str(d.get('year_label', 'start')),
-        'years': int(d.get('years', DECOMP_YEARS)),
+        'year_label': (str(d.get('year_label', 'start')) if bucket == 'year' else None),
+        'years': (int(d.get('years', DECOMP_YEARS)) if bucket == 'year' else None),
         'note': str(d.get('note') or ''),
         'section': str(d['section']) if d.get('section') else None,
     }
@@ -1256,18 +1311,22 @@ def _norm_decomp(d, where):
         raise SpecError(f"{where} 声明 granularity='monthly_total'（列本身已是当月合计）"
                         f"却又给了 weight_col={d['weight_col']!r} —— 再乘一次交易日数"
                         f'会把年度合计放大二十几倍，而图形照画、量级看着还挺像')
-    if out['year_label'] not in ('start', 'end'):
-        raise SpecError(f"{where} 的 year_label={out['year_label']!r} 只能是 'start'"
-                        f"（财年按起始年命名，如 JPX FY2025 = 2025-04…2026-03）或 'end'"
-                        f"（按结束年命名，如 SGX FY2026 = 2025-07…2026-06）")
-    if out['year_start_month'] == 1 and out['year_label'] != 'start':
-        raise SpecError(f'{where} 是日历年（year_start_month=1），起始年与结束年是同一年，'
-                        f"year_label 只能留空或写 'start'")
-    if not 1 <= out['year_start_month'] <= 12:
-        raise SpecError(f"{where} 的 year_start_month={out['year_start_month']} 越界 —— "
-                        f'1 = 日历年，4 = 4 月制财年，取值 1–12')
-    if out['years'] < 2:
-        raise SpecError(f"{where} 的 years={out['years']} < 2 —— 一根柱没有「逐年对比」可言")
+    # ── 下面四条**只管年度桶**：月度桶下这三个键根本不存在（上面已挡），
+    #    值也已置 None，拿 None 去比大小只会得到一个与口径无关的 TypeError。
+    if out['bucket'] == 'year':
+        if out['year_label'] not in ('start', 'end'):
+            raise SpecError(f"{where} 的 year_label={out['year_label']!r} 只能是 'start'"
+                            f"（财年按起始年命名，如 JPX FY2025 = 2025-04…2026-03）或 'end'"
+                            f"（按结束年命名，如 SGX FY2026 = 2025-07…2026-06）")
+        if out['year_start_month'] == 1 and out['year_label'] != 'start':
+            raise SpecError(f'{where} 是日历年（year_start_month=1），起始年与结束年是同一年，'
+                            f"year_label 只能留空或写 'start'")
+        if not 1 <= out['year_start_month'] <= 12:
+            raise SpecError(f"{where} 的 year_start_month={out['year_start_month']} 越界 —— "
+                            f'1 = 日历年，4 = 4 月制财年，取值 1–12')
+        if out['years'] < 2:
+            raise SpecError(f"{where} 的 years={out['years']} < 2 —— "
+                            f'一根柱没有「逐年对比」可言')
     if not (np.isfinite(out['price_scale']) and out['price_scale'] > 0):
         raise SpecError(f"{where} 的 price_scale={d.get('price_scale')!r} 必须是正的有限数")
     return out
@@ -1466,6 +1525,24 @@ class Page:
                             f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）")
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
+        # ── `after_group` 的锚点必须存在且唯一 ────────────────────────────────
+        # 这条改动最可能的失败模式就是**名字打错**：不校验的话，锚点匹配不上，
+        # 这张图会静默掉回页尾 —— 图还在、页面照常上线、闸门全过，
+        # 只有对着页面数图号的人才发现所有者要的位置没生效。
+        # 重名同理：两个同名 group 时「排在它之后」有两个答案，挑哪个都是猜。
+        _gz = [g['zh'] for g in self.groups]
+        for i, d in enumerate(self.decomp):
+            a = d['after_group']
+            if a is None:
+                continue
+            k = _gz.count(a)
+            if k != 1:
+                raise SpecError(
+                    f"decomp[{i}]（{d['zh']}）的 after_group={a!r} 在 groups 里"
+                    + (f'找不到 —— 可用的组名：{_gz}' if k == 0 else
+                       f'出现 {k} 次 —— 「排在它之后」有 {k} 个答案，挑哪个都是猜')
+                    + '。名字对不上就静默掉回页尾，图还在、闸门全过，'
+                      '只有对着页面数图号的人才看得出所有者要的位置没生效')
         self.level_yoy = [_norm_level_yoy(t, f'level_yoy[{i}]')
                           for i, t in enumerate(spec.get('level_yoy') or [])]
 
@@ -3312,9 +3389,26 @@ class Page:
             return None
         return y, ms, [m - 12 for m in ms]
 
-    def ex_decomp(self, n, d):
-        """金额增长 → 量的贡献 + 派生量的贡献。横轴一格 = 一个完整年度；
-        最新年不完整时**末格追加一根 YTD 柱**（同比基期对齐到去年同期月份，见 _ytd）。
+    def ex_decomp(self, n, d, built=None):
+        """金额增长 → 量的贡献 + 派生量的贡献。
+
+        **横轴一格是什么由 `d['bucket']` 决定**（2026-09 新增，缺省 `'year'`）：
+
+          `'year'`   一格 = 一个完整年度，最新年不完整时末格追加一根 YTD 柱
+                     （同比基期对齐到去年同期月份，见 `_ytd`）。以下整段讲的是它。
+          `'monthly'` 一格 = 一个月，基期 = 去年同月（= 单月同比，与全站同口径）。
+                     整条路径在 `_decomp_monthly()` 里，本方法只做**共用的取数**
+                     （`monthly_total` 两列 + bench 两列）就转过去。
+                     年度那一支的 `_years()` / `_ytd()` 它一个都不调 ——
+                     每格只有一个月，「完整年度」「YTD 覆盖几个月」都无从谈起。
+
+        `built` 是**本页已经建好的那些 exhibit**（`payload()` 里那个列表）。
+        月度分支拿它做构建期现验：菱形与输入那张图的次轴金线必须逐点相同。
+        年度分支用不到（年度桶与本页任何一张月度图都不同轴，无从逐格对读）。
+
+        ── 以下是年度桶（`bucket='year'`）的口径说明，逐字未动 ──
+        横轴一格 = 一个完整年度；最新年不完整时**末格追加一根 YTD 柱**
+        （同比基期对齐到去年同期月份，见 _ytd）。
 
         恒等式 **金额 ≡ 数量 × 派生量**（派生量 ≡ 金额 ÷ 数量）是定义式，零假设零误差。
         由它能写出两种分解，本方法**两种都算**：
@@ -3357,31 +3451,20 @@ class Page:
             bq_s, _ = self.monthly_total(d['bench_qty'], None, d['weight_col'],
                                          gran, f'decomp「{d["zh"]}」的行业数量列')
             need += [bv_s, bq_s]
-        start = d['year_start_month']
-        run = self._years(start, need)
-        sel = run[-(d['years'] + 1):]
-        # YTD 桶**只对日历年**追加（start == 1）。本仓的 YTD 口径按用户指令
-        # （2026-08-07）定义在日历年上：「按日历年 Jan–Dec……今年数据出到 7 月，
-        # 用 YTD 表示」。财年制的页不自动加 —— 比如 7 月制财年在 8 月的「FYTD」
-        # 只有 1 个月，那正是本图注明确反对的「拿单月当端点」；财年页要加 YTD，
-        # 得先对「FYTD 从几个月起才有意义」另定口径，不许在这里顺手继承。
-        ytd = self._ytd(start, need, run) if start == 1 else None
-        if len(sel) < 2 and ytd is None:
-            return None, (f'{d["zh"]}：完整年度只有 {len(run)} 个（起始月 {start}），'
-                          f'画不出任何一根「相对上一年」的柱，也凑不出两侧月份对齐的 YTD 桶')
 
         # 每格合计的单位**不是**展示列的单位（日均列的 12 个月合计是「兆円/年」，
         # 不是「兆円/日」），拿展示单位去标它就是印错单位。所以图注里报的是把该格合计
         # 除回展示口径的**窗口内均值**：有权重列就除以同窗口权重合计（= 窗口内日均，
         # 与日均列同单位），没有就除以窗口月数（完整年 = 12，YTD = 实际月数；
-        # = 窗口内月均，与月合计列同单位）。两种都回到展示单位。
+        # 月度桶 = 1，于是「除回展示口径」在那一支自动成立）。两种都回到展示单位。
         wcol = self.df[d['weight_col']].astype(float) if d['weight_col'] else None
 
         def agg_one(y, label, ms):
-            """一个桶（完整年或 YTD 窗口）→ 行 tuple 或 (None, 原因)。
+            """一个桶（完整年 / YTD 窗口 / 单个月）→ 行 tuple 或 (None, 原因)。
 
             行结构 (年份, V, Q, P, V均, Q均, BV, BQ, 月数)：完整年月数恒为 12，
-            YTD 桶是实际入选月数 —— 图注报「窗口内均值」时要用它当除数。
+            YTD 桶是实际入选月数，**月度桶恒为 1** —— 图注报「窗口内均值」时要用它
+            当除数（月度桶下 div = 1，合计与均值是同一个数，正是想要的）。
             """
             V = float(v_s.reindex(ms).values.astype(float).sum())
             Q = float(q_s.reindex(ms).values.astype(float).sum())
@@ -3402,6 +3485,28 @@ class Page:
                                   f'（金额 {BV:g}、数量 {BQ:g}），份额与相对价没有定义')
                 row[6], row[7] = BV, BQ
             return tuple(row), None
+
+        if d['bucket'] == 'monthly':
+            # 月度桶从这里分出去，**共用上面这个 `agg_one`**（桶是「一个月」而已）。
+            # **年度那一支以下一个字都没改**：不把它整段包进一个 `if` 里，是因为那要给
+            # 三百行重排缩进 —— 改动面变成整段、diff 里看不出「哪一行的语义动了」，
+            # 而另外 5 页 9 条 decomp 全靠这一段逐字节不变。上移的只有 `wcol` 与
+            # `agg_one` 两块（连注释一并搬，文本未改），它们不依赖年度桶的任何东西。
+            return self._decomp_monthly(n, d, v_s, q_s, v_how, q_how,
+                                        bench, need, agg_one, built)
+
+        start = d['year_start_month']
+        run = self._years(start, need)
+        sel = run[-(d['years'] + 1):]
+        # YTD 桶**只对日历年**追加（start == 1）。本仓的 YTD 口径按用户指令
+        # （2026-08-07）定义在日历年上：「按日历年 Jan–Dec……今年数据出到 7 月，
+        # 用 YTD 表示」。财年制的页不自动加 —— 比如 7 月制财年在 8 月的「FYTD」
+        # 只有 1 个月，那正是本图注明确反对的「拿单月当端点」；财年页要加 YTD，
+        # 得先对「FYTD 从几个月起才有意义」另定口径，不许在这里顺手继承。
+        ytd = self._ytd(start, need, run) if start == 1 else None
+        if len(sel) < 2 and ytd is None:
+            return None, (f'{d["zh"]}：完整年度只有 {len(run)} 个（起始月 {start}），'
+                          f'画不出任何一根「相对上一年」的柱，也凑不出两侧月份对齐的 YTD 桶')
 
         agg = []
         for y, ms in sel:
@@ -3718,6 +3823,465 @@ class Page:
                if ytd_info else '，无 YTD 桶（最新年已收官，或次年凑不出两侧对齐的月份）'))
         return ex, None
 
+    #: 净额菱形在引擎里写死的半径（`assets/charts.js` 的 `diamond(…, 3.2, …)`），
+    #: 与 bridge_bar 的柱宽系数（同文件那一支的 `BW(0.70)`）。
+    #: 两个数**只**用来算「有多少格的薄段会被菱形盖住」这一个计数，不进任何画出来的值。
+    DIA_R_PX, BRIDGE_BW = 3.2, 0.70
+    #: bridge_bar 的绘图区高（px）。`charts.js`：H = 268 + XB（bridge_bar 属
+    #: perPointLabels 那一档）、M.t = fscale(14)（本图型没有 ycap/yfloor，capOn 恒 false）、
+    #: M.b = XB ⇒ ph = 268 − 14 = 254。桌面 FS = 1；窄屏更挤，是同一结论的加强版。
+    BRIDGE_PLOT_PX = 254.0
+
+    def _decomp_yoy_refs(self, built, xl):
+        """本页横轴与 `xl` 逐格相同的那些**单列 + 有次轴同比**的图 → [exhibit, …]。
+
+        `_cols` 是各 ex_* 挂的临时键（这张图画了哪几列），`payload()` 末尾才 pop 掉 ——
+        所以在 groups 循环里就地出图的分解图拿得到它。按**列**认图而不是按标题认，
+        标题是文案、会改；列名是数据。
+        """
+        out = []
+        for e in (built or []):
+            if len(e.get('_cols') or []) != 1 or not e.get('yoy'):
+                continue
+            if (e.get('xlabels') or []) != xl:
+                continue
+            out.append(e)
+        return out
+
+    @staticmethod
+    def _pair_gap(a, b):
+        """两条等长的「%」序列（含 None）→ 逐格最大绝对差（pp）与可比格数。"""
+        dif = [abs(x - y) for x, y in zip(a, b) if x is not None and y is not None]
+        return (max(dif) if dif else float('nan')), len(dif)
+
+    def _decomp_monthly(self, n, d, v_s, q_s, v_how, q_how, bench, need, agg_one, built):
+        """`bucket='monthly'` 那一支：**一格 = 一个月，本期该月、基期去年同月**。
+
+        方法与三道护栏与年度桶完全一样（恒等式 → 对数分解 → 按总增长重标定），
+        换的只有桶。口径纪律逐条对着 `build/cme.py` 的月度量价分解抄（那是页面所有者
+        亲自下过两轮同样指令之后定下来的判例）：
+
+        （1）桶 = 一个月，本期该月、基期去年同月 = **单月同比**，与本页所有月度图和
+             汇总表 y/y 同口径（CONTRACT §6：全站只有这一种）。年度版那两条
+             「YTD 基期要逐月对齐」「YTD 柱不能与完整年柱比大小」随之作废 ——
+             每格覆盖的月数都是 1，格与格本来就可比。
+        （2）单月桶里**没有任何平均**：P = 当月金额 ÷ 当月数量。年度版那段
+             「Σ金额 ÷ Σ数量，不是逐月简单平均」在这里解释的是一个不存在的陷阱，不印。
+        （3）图上画对数分解按总增长重标定后的两块；算术版照算，只进图注。
+        （4）|ln(V₁/V₀)| < `DECOMP_LN_MIN` 整格留空。规则留着 —— 它防的是极端巧合，
+             「这轮没命中」不是删兜底的理由。
+        （5）算术闭合 / 对数闭合 / 重标定闭合三道残差超限一律 raise。
+
+        ⚠️ **payload 里一个字都不写 `xrot` / `full` / `height` / `xstep`。**
+        `build/mrwin.py` 的 `layout_all` 见 `xrot == 0` 就整张 `continue`，既不判通栏
+        也不抽标签 —— 128 格会以每格 3.9px 塞进半栏卡片，而引擎、`verify_pages`、
+        `visual_qa` **全都不报错**。年度桶那句「年度类别轴：标签不斜排」是对的，
+        照抄到月度轴上就是这个坑（`build/cme.py` 的 `EX_DECOMP` 为同一件事留了明文警告）。
+        排版一律交给 `self._layout_long(ex)` → `mrwin.layout_all()`。
+        """
+        vc, qc = d['value'], d['qty']
+        end = self.last_month(vc)
+        if end is None:
+            return None, f'{d["zh"]}：{vc["col"]} 整列为空，月度分解一格都画不出来'
+        win = self.win_long(end)
+        xl = [mlab(p) for p in win]
+        idx = set(self.df.index)
+
+        # ── 横轴现验①：本页必须有一张「金额列的水平值 + 次轴单月同比」图，
+        #    而且横轴与本图**逐格相同**。图注要声称「可以逐格上下对读同一个月」，
+        #    还要声称「菱形就是那条金线」—— 两句话都得有一张真图在场才成立。
+        refs = self._decomp_yoy_refs(built, xl)
+        val_ref = [e for e in refs if e['_cols'] == [vc['col']]]
+        if len(val_ref) != 1:
+            same_col = [e['n'] for e in (built or []) if (e.get('_cols') or []) == [vc['col']]]
+            raise SpecError(
+                f'decomp「{d["zh"]}」bucket=\'monthly\'：本页找不到唯一一张'
+                f'「{vc["col"]} 的水平值 + 次轴单月同比、且横轴与本图逐格相同」的图'
+                f'（找到 {len(val_ref)} 张；画了这一列的图号：{same_col}，'
+                f'本图横轴 {len(xl)} 格 {xl[0]}…{xl[-1]}）—— '
+                f'没有它，图注里「菱形与那张图的金线是同一条数」「可以逐格上下对读」'
+                f'两句话都无从现验，而这两句话正是把分解图前移到输入之后的全部理由')
+        v_ref = val_ref[0]
+        qty_ref = [e for e in refs if e['_cols'] == [qc['col']]]
+
+        pairs = [(mlab(p), [p], [p - 12]) for p in win]
+        xl2, c_q, c_p, net, rows, blanks, gaps = [], [], [], [], [], [], []
+        c_b, c_s, c_m = [], [], []
+        for lab, ms1, ms0 in pairs:
+            p1, p0 = ms1[0], ms0[0]
+            xl2.append(lab)
+            # 基期不在索引、或任一列两侧任一月缺值 ⇒ **c_q / c_p / net 三处同时留空**。
+            # 只留一处会撞底座那道「菱形留空但堆叠段有值」的护栏（下面护栏④）。
+            two = (p0 in idx and all(
+                np.isfinite(float(s.get(p1, np.nan)))
+                and np.isfinite(float(s.get(p0, np.nan))) for s in need))
+            r1 = r0 = None
+            if two:
+                r1, e1 = agg_one(p1.year, lab, ms1)
+                r0, e0 = agg_one(p0.year, f'{lab} 的同比基期（{p0}）', ms0)
+                # 单月桶里 agg_one 的报错（合计非正）只该废掉**这一格**，
+                # 不该废掉整张 128 格的图 —— 年度桶只有 5 根柱，那里返回 None 是对的。
+                two = not (e1 or e0)
+            if not two:
+                gaps.append(lab)
+                for arr in (c_q, c_p, c_b, c_s, c_m, net):
+                    arr.append(np.nan)
+                continue
+            _y1, V1, Q1, P1, Va1, Qa1, BV1, BQ1, nm1 = r1
+            _y0, V0, Q0, P0, _Va0, _Qa0, BV0, BQ0, _nm0 = r0
+            gV, gQ, gP = V1 / V0 - 1, Q1 / Q0 - 1, P1 / P0 - 1
+            cross = gQ * gP
+            lV, lQ, lP = math.log(V1 / V0), math.log(Q1 / Q0), math.log(P1 / P0)
+
+            # ── 硬护栏①：算术分解逐格闭合（三项，含交叉项）──────────────
+            r_1 = gV - (gQ + gP + cross)
+            if not abs(r_1) <= DECOMP_EPS:
+                raise SpecError(
+                    f'decomp「{d["zh"]}」{lab} 算术分解不闭合：量 {gQ:+.12f} + 价 {gP:+.12f}'
+                    f' + 交叉 {cross:+.12f} = {gQ + gP + cross:+.12f}，'
+                    f'总增长 {gV:+.12f}，残差 {r_1:+.3e} > {DECOMP_EPS:.0e}')
+            # ── 硬护栏②：纯对数分解逐格闭合（本来就该零残差，没有交叉项）──
+            r_2 = lV - (lQ + lP)
+            if not abs(r_2) <= DECOMP_EPS:
+                raise SpecError(
+                    f'decomp「{d["zh"]}」{lab} 对数分解不闭合：量 {lQ:+.12f} + 价 {lP:+.12f}'
+                    f' = {lQ + lP:+.12f}，总计 {lV:+.12f}，残差 {r_2:+.3e} > {DECOMP_EPS:.0e}')
+
+            row = {'lab': lab, 'per': p1, 'V1': V1, 'Q1': Q1, 'P1': P1,
+                   'V0': V0, 'Q0': Q0, 'P0': P0, 'Va1': Va1, 'Qa1': Qa1,
+                   'gV': gV, 'gQ': gQ, 'gP': gP, 'cross': cross, 'lV': lV,
+                   'w': np.nan, 'cq': np.nan, 'cp': np.nan}
+            if abs(lV) < DECOMP_LN_MIN:
+                # 整格留空：w = g_V/ln(V₁/V₀) 此时是 0/0，算出来的两块没有有效位。
+                blanks.append(lab)
+                for arr in (c_q, c_p, c_b, c_s, c_m, net):
+                    arr.append(np.nan)
+                rows.append(row)
+                continue
+            w = gV / lV
+            cq, cp = w * lQ * 100, w * lP * 100
+            # ── 硬护栏③：**画在图上的那两块**逐格相加 == 总增长 ────────────
+            r_3 = gV * 100 - (cq + cp)
+            if not abs(r_3) <= DECOMP_EPS:
+                raise SpecError(
+                    f'decomp「{d["zh"]}」{lab} 图上两块不闭合：量 {cq:+.12f}pp + 价 '
+                    f'{cp:+.12f}pp = {cq + cp:+.12f}pp，总增长 {gV * 100:+.12f}%，'
+                    f'残差 {r_3:+.3e} > {DECOMP_EPS:.0e}')
+            row['w'], row['cq'], row['cp'] = w, cq, cp
+            c_q.append(cq)
+            c_p.append(cp)
+            net.append(gV * 100)
+            if bench:
+                # V ≡ V_行业 × s × r（同年度桶那一支，定义式、零假设）。
+                lBV = math.log(BV1 / BV0)
+                ls = math.log((Q1 / BQ1) / (Q0 / BQ0))
+                lr = math.log(((V1 / Q1) / (BV1 / BQ1)) / ((V0 / Q0) / (BV0 / BQ0)))
+                r_5 = lV - (lBV + ls + lr)
+                if not abs(r_5) <= DECOMP_EPS:
+                    raise SpecError(
+                        f'decomp「{d["zh"]}」{lab} 三分法不闭合：行业 {lBV:+.12f} + 份额 '
+                        f'{ls:+.12f} + 结构 {lr:+.12f} = {lBV + ls + lr:+.12f}，'
+                        f'总计 {lV:+.12f}，残差 {r_5:+.3e} > {DECOMP_EPS:.0e}')
+                cb, cs_, cm = w * lBV * 100, w * ls * 100, w * lr * 100
+                r_6 = gV * 100 - (cb + cs_ + cm)
+                if not abs(r_6) <= DECOMP_EPS:
+                    raise SpecError(
+                        f'decomp「{d["zh"]}」{lab} 三块重标定后不闭合：'
+                        f'{cb:+.12f} + {cs_:+.12f} + {cm:+.12f} = {cb + cs_ + cm:+.12f}pp，'
+                        f'总增长 {gV * 100:+.12f}%，残差 {r_6:+.3e} > {DECOMP_EPS:.0e}')
+                c_b.append(cb)
+                c_s.append(cs_)
+                c_m.append(cm)
+            rows.append(row)
+
+        if not any(np.isfinite(x) for x in net):
+            return None, (f'{d["zh"]}：{len(xl2)} 格全部留空（两侧不齐，或落在 '
+                          f'|ln(V₁/V₀)| < {DECOMP_LN_MIN:.0e} 的区间），一格都画不出来')
+
+        kind_zh, kind_warn = DECOMP_KINDS[d['kind']]
+        share_zh = d['share_zh'] or (f'{d["qty"]["zh"]}份额' if bench else '')
+        mix_zh = d['mix_zh'] or (f'{d["price_zh"]}相对行业（品种结构）' if bench else '')
+        ex = {
+            'n': n, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
+            # ⚠️ 不写 'xrot'（年度桶写的是 0）：见本方法 docstring 末尾那段。
+            # full / height / xstep 同理一律不手写，交给 mrwin.layout_all()。
+            'xlabels': xl2,
+            'title': f'{d["zh"]}：增长的量价分解（一格 = 一个月，本期该月、基期去年同月）',
+            'ylab': '% y/y（单月）', 'net_color': 'INK',
+            'stacks': ([
+                {'name': f'{d["bench_value"]["zh"]}的贡献', 'color': 'NAVY', 'values': LN(c_b)},
+                {'name': f'{share_zh}的贡献', 'color': 'MBLUE', 'values': LN(c_s)},
+                {'name': f'{mix_zh}的贡献', 'color': 'GREEN', 'values': LN(c_m)},
+            ] if bench else [
+                {'name': f'{d["qty"]["zh"]}的贡献', 'color': 'NAVY', 'values': LN(c_q)},
+                {'name': f'{d["price_zh"]}的贡献', 'color': 'MBLUE', 'values': LN(c_p)},
+            ]),
+            'net': {'name': f'{d["value"]["zh"]}增长（单月）', 'values': LN(net)},
+            'src_extra': ('Log-weight decomposition of an accounting identity; no model. '
+                          'One bar = one month vs. the same month a year ago '
+                          '(single-month y/y)'),
+        }
+        # ── 硬护栏④：**写进 payload 的那组数**也要闭合；留空格两段必须同空 ────
+        for i, x in enumerate(ex['net']['values']):
+            parts = [st['values'][i] for st in ex['stacks']]
+            if x is None:
+                if any(p is not None for p in parts):
+                    raise SpecError(f'decomp「{d["zh"]}」{xl2[i]} 净额留空但堆叠段有值 —— '
+                                    f'菱形不见了、柱子还在，读者会当成「净额为 0」')
+                continue
+            got = sum(parts)
+            if not abs(got - x) <= 2e-6:
+                raise SpecError(f'decomp「{d["zh"]}」{xl2[i]} 写进 payload 的两块相加 '
+                                f'{got:.9f} ≠ 净额 {x:.9f}（差 {got - x:.3e}）')
+        # ── 横轴现验②：横轴逐格等于那张输入图（`_decomp_yoy_refs` 已按 xl 过滤，
+        #    这里再对 payload 里真正发出去的 `xl2` 核一遍 —— 上面过滤用的是 `xl`）。
+        if xl2 != (v_ref.get('xlabels') or []):
+            raise SpecError(
+                f'decomp「{d["zh"]}」的横轴与 Exhibit {v_ref["n"]} 对不上'
+                f'（{len(xl2)} vs {len(v_ref.get("xlabels") or [])} 格）—— '
+                f'图注那句「逐格上下对读同一个月」就是假话')
+        # ── 现验③：**菱形逐点等于那张图的次轴金线**。两边都是 LN() 之后的数，
+        #    差只可能是 0（同一个算术、同一个窗口）。这一条是「同一条数」那句话的许可证。
+        dia_gap, dia_n = self._pair_gap(ex['net']['values'], v_ref['yoy']['values'])
+        if not dia_n or dia_gap > 1e-9:
+            raise SpecError(
+                f'decomp「{d["zh"]}」的净额菱形与 Exhibit {v_ref["n"]} 的次轴金线'
+                f'对不上（可比 {dia_n} 格，最大差 {dia_gap:.3e}pp）—— '
+                f'图注声称两者「是同一条数、逐点相同」，对不上就不许出图')
+
+        # ── 统计**只在画得出来的格上算** ─────────────────────────────────────
+        # 留空格与两侧不齐的格上 |g_V| ≈ 0 或根本没有值，拿它们算「交叉项 ÷ 净增长」
+        # 能得到几百个百分点的假占比，而那些格图上根本没有柱。
+        fin = [r for r in rows if np.isfinite(r['cq'])]
+        last = rows[-1] if rows else None
+        if last is None or last['lab'] != xl2[-1] or not np.isfinite(last['cq']):
+            # 缺值格走 continue 不进 rows，留空格却会进且 cq 是 NaN ⇒ 只比标签挡不住。
+            raise SpecError(
+                f'decomp「{d["zh"]}」：图注与自检行都印「末格的读数」，'
+                f'但末格必须是**画得出来**的那一格 —— 横轴末格是 {xl2[-1]}、'
+                f'rows 末条是 {last["lab"] if last else "（空）"}、'
+                f'它的量腿是 {last["cq"] if last else "—"}')
+        x_pp = [abs(r['cross']) * 100 for r in fin]
+        cross_med, cross_max = float(np.median(x_pp)), float(max(x_pp))
+        cross_at = max(fin, key=lambda r: abs(r['cross']))['lab']
+        near0 = [r for r in fin if abs(r['gV']) < DECOMP_NEAR0_G]
+        far = [r for r in fin if abs(r['gV']) >= DECOMP_NEAR0_G]
+        cross_sh = (float(max(abs(r['cross'] / r['gV']) * 100 for r in far))
+                    if far else float('nan'))
+        opp_n = sum(1 for r in fin if r['cq'] * r['cp'] < 0)
+        w_lo, w_hi = min(r['w'] for r in fin), max(r['w'] for r in fin)
+        w_med = float(np.median([r['w'] for r in fin]))
+        lv_row = min(rows, key=lambda r: abs(r['lV']))
+        lv_min = abs(float(lv_row['lV']))
+        gapq = max(abs(r['gQ'] * 100 - r['cq']) for r in fin)
+        gapp = max(abs(r['gP'] * 100 - r['cp']) for r in fin)
+        # ── 两腿与页上各自那张输入图的金线差多少（点破「同一条同比乘过 w」）───────
+        # **只在两分法下做**：三分法画出来的三块是行业 / 份额 / 结构，页上没有哪一列
+        # 直接对应它们，硬拿 stacks[0]、stacks[1] 去比会把行业腿说成数量腿。
+        q_gap, q_gn, q_ref_n = float('nan'), 0, None
+        p_ref, p_gap_raw, p_gap_leg = None, float('nan'), float('nan')
+        if not bench:
+            if len(qty_ref) == 1:
+                q_ref_n = qty_ref[0]['n']
+                q_gap, q_gn = self._pair_gap(ex['stacks'][0]['values'],
+                                             qty_ref[0]['yoy']['values'])
+            # 价腿没有「自己那一列」（P 是本图现算的派生量），所以对照图靠**实测**挑：
+            # 取本页与「P 的单月同比」最接近的那条金线，且它必须比画出来的价腿更接近 P
+            # （否则它跟的根本不是同一个量）。不设阈值 —— 两个差都印出来，读者自己判。
+            p_yoy = LN(yoy_line(v_s / q_s * d['price_scale'], win))
+            cand = [e for e in refs
+                    if e is not v_ref and (q_ref_n is None or e['n'] != q_ref_n)]
+            scored = [(self._pair_gap(p_yoy, e['yoy']['values'])[0], e) for e in cand]
+            scored = [(g, e) for g, e in scored if np.isfinite(g)]
+            if scored:
+                g0, e0 = min(scored, key=lambda t: t[0])
+                leg_g = self._pair_gap(ex['stacks'][1]['values'], e0['yoy']['values'])[0]
+                if np.isfinite(leg_g) and g0 < leg_g:
+                    p_ref, p_gap_raw, p_gap_leg = e0, g0, leg_g
+
+        # ── 排版实测：菱形固定 6.4px 见方，长轴通栏后柱宽也只有 6px 出头 ⇒
+        #    比柱还宽的菱形会盖掉薄段。有多少格会被盖住，这里现算（见 BRIDGE_PLOT_PX）。
+        #    通栏与否照 `mrwin.layout()` 的规则先算一遍（bridge_bar 不在 VLABEL_KINDS，
+        #    所以下限就是 MIN_BAND）—— 真正的 full 由 `_layout_long()` 稍后写进 payload，
+        #    这里只是把同一条判据先跑一次，好让图注报的 px 与最终版式一致。
+        use_full = mrwin.band_px(ex, full=False) < mrwin.MIN_BAND
+        band = mrwin.band_px(ex, full=use_full)
+        bar_px = max(1.5, min(band * self.BRIDGE_BW, band - 1.5))
+        # 量程与「哪一段最薄」都从**写进 payload 的那几组数**上算，不从 rows 上算 ——
+        # 三分法画的是另外三块，拿 cq / cp 去量就是在量一段图上没有的柱。
+        drawn = [[v for v in st['values'] if v is not None] for st in ex['stacks']]
+        env = [x for x in ex['net']['values'] if x is not None]
+        for i, x in enumerate(ex['net']['values']):
+            if x is None:
+                continue
+            vs = [st['values'][i] for st in ex['stacks']]
+            env.append(sum(v for v in vs if v > 0))
+            env.append(sum(v for v in vs if v < 0))
+        pp_per_px = ((max(env) - min(env)) * 1.32) / self.BRIDGE_PLOT_PX
+        dia_pp = self.DIA_R_PX * 2 * pp_per_px
+        k_thin = min(range(len(drawn)), key=lambda k: np.median([abs(v) for v in drawn[k]]))
+        thin_name = ex['stacks'][k_thin]['name']
+        thin_med = float(np.median([abs(v) for v in drawn[k_thin]]))
+        under_dia = sum(1 for v in drawn[k_thin] if abs(v) < dia_pp)
+        # 三个「−0.0%」要走 nz_txt，先算好再进 f-string（本仓跑 3.9，f-string 里
+        # 不许再嵌同种引号）。
+        a_gq = nz_txt(f'{last["gQ"] * 100:+.1f}')
+        a_gp = nz_txt(f'{last["gP"] * 100:+.1f}')
+        a_gv = nz_txt(f'{last["gV"] * 100:+.1f}')
+
+        ex['note'] = (
+            f'<b>恒等式：{vc["zh"]} ≡ {qc["zh"]} × {d["price_zh"]}</b>，'
+            f'其中 {d["price_zh"]} ≡ {vc["zh"]} ÷ {qc["zh"]}。'
+            f'这是<b>定义式</b>，不含任何模型假设，两边逐格恒等。'
+
+            # ① 横轴怎么读
+            f'<b>横轴一格 = 一个月</b>：本期是该月，基期是<b>去年同月</b>'
+            f'（当月 ÷ 去年同月 − 1，就是单月同比），共 {len(xl2)} 格'
+            f'（{xl2[0]} – {xl2[-1]}），左端与本页其余月度图同为 {xl2[0]}，'
+            f'<b>可以逐格上下对读同一个月</b>（构建期核对横轴与 Exhibit {v_ref["n"]} '
+            f'逐格相同，对不上就不出图）。'
+            # ②
+            f'每一格覆盖的月数都是 1，所以<b>格与格之间可以直接比大小</b> —— '
+            f'这与 2026-09 之前那版<b>按日历年分桶、末格是当年 YTD</b> 的分解图不同：'
+            f'那版的末格与完整年柱覆盖月数不同，本来就不可比。'
+
+            # ⑤ 与输入那几张图的关系
+            f'<b>菱形（净额）与 Exhibit {v_ref["n"]} 次轴的金色折线是同一条数</b>，'
+            f'逐点相同（构建期逐点现验，{dia_n} 格可比、最大差 {dia_gap:.1e}pp，'
+            f'对不上就不出图）：那张画的是{vc["zh"]}的水平值与它的单月同比，'
+            f'本图把同一条同比拆成量与{d["price_zh"]}两块。'
+            f'换口径的代价（CONTRACT §6.1 第 3 条）就印在 Exhibit {v_ref["n"]} '
+            f'自己的图注里、用的正是这条序列自己的实测，本图不重复印一遍。'
+            + (f'<b>深蓝段与 Exhibit {q_ref_n} 的金线读的是同一条{qc["zh"]}单月同比</b>，'
+               f'但深蓝段乘过重标定权重 w、走的是对数口径，两者最大差 {q_gap:.2f}pp'
+               f'（{q_gn} 格可比）—— 逐格对读时以本图为准。'
+               if q_ref_n is not None else '')
+            + (f'<b>中蓝段同理对应 Exhibit {p_ref["n"]}</b>：那一列画的正是本图这个派生量'
+               f'（它的金线与本图现算的 {d["price_zh"]} 单月同比逐格最大差只有 '
+               f'{p_gap_raw:.3f}pp —— 差异量级就是该列自己的取整），'
+               f'与画出来的中蓝段最大差 {p_gap_leg:.2f}pp，多出来的那一截全是 w 与'
+               f'对数口径造成的。' if p_ref is not None else
+               (f'<b>本页没有另一张图画这个派生量</b>，所以中蓝段只能与本图现算的 '
+                f'{d["price_zh"]} 自己的算术单月同比对读（最大差 {ppbp_abs(gapp)}）。'
+                if not bench else ''))
+
+            # ③ 单月桶里没有平均
+            + f'<b>单月桶里没有任何平均</b>：{d["price_zh"]} = 该月的{vc["zh"]} ÷ '
+              f'同一个月的{qc["zh"]}，本期与基期各自只有一个月，'
+              f'两侧都不存在「逐月该怎么加权」的问题。'
+              f'金额：{v_how}；数量：{q_how}。'
+
+            # 算法
+            + f'<b>图上画的是对数分解（按总增长重标定）。</b>'
+              f'ln(V₁/V₀) = ln(Q₁/Q₀) + ln(P₁/P₀) 天然可加、<b>没有交叉项</b>；'
+              f'再乘上 w = g<sub>额</sub> ÷ ln(V₁/V₀) 把两块换算成百分点，'
+              f'于是<b>深蓝 + 中蓝逐格等于</b>菱形标的总增长（三道闭合检查残差 ≤ '
+              f'{DECOMP_EPS:.0e}，超了本页直接不出 —— 护栏在 '
+              f'<code>build/single.py</code> 的 <code>_decomp_monthly</code>）。'
+              f'w 对量与价一视同仁，不含任何分配假设；本窗口实测 '
+              f'{w_lo:.2f}–{w_hi:.2f}（中位 {w_med:.2f}）。'
+
+            # ④ 算术分解：印 pp，占比只在净增长不近零的格上算
+            + f'<b>为什么不画算术分解。</b>算术分解 g<sub>额</sub> = g<sub>量</sub> + '
+              f'g<sub>价</sub> + g<sub>量</sub>·g<sub>价</sub> 多一个交叉项，'
+              f'而它不是可忽略的余项：{len(fin)} 格里有 {opp_n} 格'
+              f'（{opp_n / len(fin) * 100:.0f}%，分母是<b>画得出来</b>的格数）'
+              f'量与{d["price_zh"]}<b>方向相反</b>。'
+              f'实测交叉项<b>绝对值</b>中位 {cross_med:.2f}pp、最大 {cross_max:.2f}pp'
+              f'（{cross_at}）；'
+            + (f'「占净增长百分之多少」只在净增长本身不近零时才有意义 —— '
+               f'净增长绝对值 ≥ {DECOMP_NEAR0_G * 100:.0f}% 的 {len(far)} 格里最大 '
+               f'{cross_sh:.0f}%（另有 {len(near0)} 格净增长不足 '
+               f'{DECOMP_NEAR0_G * 100:.0f}%，那里的占比读的是分母不是交叉项）。'
+               if far else
+               f'本窗口没有一格的净增长绝对值达到 {DECOMP_NEAR0_G * 100:.0f}%，'
+               f'「交叉项占净增长」在这里没有可靠的分母，所以只印 pp。')
+            + f'{last["lab"]} 的算术读数：量 {a_gq}%、'
+              f'{d["price_zh"]} {a_gp}%、交叉项 '
+              f'{ppbp(last["cross"] * 100)}。两种口径对「量」的贡献读数最大差 '
+              f'{ppbp_abs(gapq)}、对「{d["price_zh"]}」最大差 {ppbp_abs(gapp)}。'
+
+            + ((f'<b>本图是三分法。</b>在两分法（量 × 价）之外再拆一层：'
+                f'{vc["zh"]} ≡ {d["bench_value"]["zh"]} × {share_zh} × {mix_zh}'
+                f'（份额 ≡ {qc["zh"]} ÷ {d["bench_qty"]["zh"]}；'
+                f'结构 ≡ 自家{d["price_zh"]} ÷ 行业{d["price_zh"]}）。'
+                f'代入前一条恒等式两边逐项对消即得，同样是定义式。'
+                f'三块对数相加 = 总对数增长，重标定后逐格 = 总增长，'
+                f'残差 ≤ {DECOMP_EPS:.0e}（护栏⑤⑥）。'
+                f'<b>⚠️ 份额与结构两块的分界依赖 bench 与本家同口径：分子必须是分母的'
+                f'子集。换一家用之前先核这一条</b>。') if bench else '')
+
+            # ⑥ 留空：两种留空各说各的，没命中就把「离阈值多远」印出来
+            + (f'<b>因权重退化而留空的格</b>：{"、".join(blanks)} 的 |ln(V₁/V₀)| < '
+               f'{DECOMP_LN_MIN:.0e}（两期几乎持平），重标定权重 w 是 0/0、'
+               f'算出来没有有效位，所以整格留空而不是印一个假的分解。' if blanks else
+               f'<b>本轮没有任何一格因权重退化而留空</b>（判据 |ln(V₁/V₀)| < '
+               f'{DECOMP_LN_MIN:.0e}，两期几乎持平时 w = 0/0；这一档与下面那批'
+               f'基期缺失的格是两回事）：最接近的一格是 '
+               f'{lv_row["lab"]}，|ln(V₁/V₀)| = {lv_min:.6f}，是阈值的 '
+               f'{lv_min / DECOMP_LN_MIN:,.0f} 倍。规则留着 —— 它防的是极端巧合，'
+               f'「这轮没命中」不是删兜底的理由。')
+            + (f'<b>另有左端 {len(gaps)} 格（{gaps[0]} – {gaps[-1]}）留空</b>，'
+               f'原因与上面那一条无关：它们的<b>基期</b>（各自的去年同月）'
+               f'落在本表首月 {mlab(list(self.df.index)[0])} 之前，'
+               f'源表里根本没有那一行，单月同比无从算起。'
+               f'横轴仍取本页统一的 {len(xl2)} 格而不是缩到 {len(xl2) - len(gaps)} 格：'
+               f'缩了就与本页其余月度图对不齐，「可以逐格上下对读同一个月」那句话'
+               f'随之作废。逐格点名见构建日志的自检行。' if gaps else '')
+
+            + f'<b>⚠️「{d["price_zh"]}」是什么、不是什么。</b>它是 {vc["zh"]} ÷ '
+              f'{qc["zh"]} 得到的{kind_zh}。{kind_warn}'
+
+              f'<b>汇率进不来。</b>本图每一格都是同一列自身的单月增长率，'
+              f'本币（{self.spec["ccy"]}）在分子分母上同时出现、逐项抵消；'
+              f'换成任何一种货币、任何一种换汇口径（月均 / 月末 / 锁基期），'
+              f'两块的高度与菱形的位置一个都不会变。'
+
+              f'{last["lab"]} 读数：{vc["zh"]} {unit_txt(last["V1"], vc)}'
+              f'（去年同月 {unit_txt(last["V0"], vc)}）、'
+              f'{qc["zh"]} {unit_txt(last["Q1"], qc)}'
+              f'（{unit_txt(last["Q0"], qc)}）；{d["price_zh"]} '
+              f'{fmt_val(last["P1"], d["price_fmt"])}（'
+              f'{fmt_val(last["P0"], d["price_fmt"])}）{d["price_unit"]} ⇒ '
+              f'量 {ppbp(last["cq"])} + {d["price_zh"]} {ppbp(last["cp"])} = 净 '
+              f'{a_gv}%。'
+
+            # ⑧ 菱形会盖掉薄段
+            + f'<b>逐格读数请走卡片右上角的「表格」</b>：{len(xl2)} 格'
+              f'{"通栏之后" if use_full else ""}每格只有 '
+              f'{band:.1f}px、柱宽 {bar_px:.1f}px，而<b>净额菱形是固定 '
+              f'{self.DIA_R_PX * 2:.1f}px 见方</b>（<code>assets/charts.js</code> 里'
+              f'半径写死 {self.DIA_R_PX}px，<b>不随格宽缩</b>）—— 它比这里的柱还宽一点，'
+              f'画在净额那个高度上，于是矮于 {self.DIA_R_PX * 2:.1f}px 的柱段会被它'
+              f'<b>盖掉一截</b>。本窗口最薄的那一段是「{thin_name}」，绝对值中位 '
+              f'{thin_med:.1f}pp，其中 {under_dia} 格矮于菱形'
+              f'（按本图自己的量程折算 ≈ {dia_pp:.2f}pp）。'
+              f'被盖住的段<b>不是零</b>，要读某一格的各块分别是多少，一律走表格，'
+              f'不要拿眼睛去量柱段。'
+            + (' ' + md_bold(d['note']) if d['note'] else ''))
+
+        # ── 自检行：由 build() 打印。**一个数都不写死。** ──
+        self.decomp_report.append(
+            f'decomp「{d["zh"]}」（月度桶，当月 vs 去年同月）：{len(xl2)} 格 '
+            f'{xl2[0]} – {xl2[-1]}，画得出 {len(fin)} 格；'
+            f'末格 {last["lab"]} {vc["col"]} {last["V1"]:,.4g} vs {last["V0"]:,.4g}、'
+            f'{qc["col"]} {last["Q1"]:,.4g} vs {last["Q0"]:,.4g}、'
+            f'{d["price_zh"]} {last["P1"]:,.4g} vs {last["P0"]:,.4g} → '
+            f'量 {last["cq"]:+.2f}pp + 价 {last["cp"]:+.2f}pp = 净 '
+            f'{last["gV"] * 100:+.2f}%；净额区间 '
+            f'{min(r["gV"] for r in fin) * 100:+.1f}% – '
+            f'{max(r["gV"] for r in fin) * 100:+.1f}%；两腿反号 {opp_n} 格；'
+            f'交叉项 |中位| {cross_med:.2f}pp / |最大| {cross_max:.2f}pp（{cross_at}）；'
+            f'w {w_lo:.4f}–{w_hi:.4f}（中位 {w_med:.4f}）；'
+            f'最小 |ln(V1/V0)| = {lv_min:.6f}（{lv_row["lab"]}，阈值 '
+            f'{DECOMP_LN_MIN:.0e} 的 {lv_min / DECOMP_LN_MIN:,.0f} 倍）；'
+            f'菱形 vs Exhibit {v_ref["n"]} 金线最大差 {dia_gap:.1e}pp（{dia_n} 格）；'
+            f'三道闭合残差 ≤ {DECOMP_EPS:.0e} 全过'
+            + (f'；留空格 {"、".join(blanks)}' if blanks else '；无留空格')
+            + (f'；基期缺失留空 {len(gaps)} 格：{"、".join(gaps)}' if gaps else
+               '；无基期缺失格'))
+        return ex, None
+
     def ex_level_yoy(self, n, t):
         """一条量的**水平值**（柱）+ **单月同比**（次轴金线）。
 
@@ -3946,6 +4510,27 @@ class Page:
         return (f'（{"、".join(s)} 是慢腿：发布比头条晚，最新月留空是正常的，'
                 f'不参与本页数据月的判定。）')
 
+    def _decomp_here(self, ex, n, gz):
+        """在 groups 循环里就地出「锚点 = gz」的那些分解图 → 新的图号计数 n。
+
+        提成一个方法而不是把七行贴进循环体：`payload()` 的 groups 循环已经在管
+        mix / 单位分桶 / 存量剔除三件事，再塞一段就地出图会让「这个循环到底负责什么」
+        说不清。它与页尾那一轮共用同一个 `ex_decomp` 与同一套记账
+        （`skipped` / `decomp_report` / `_mark_section`），两处不许各写一遍。
+        """
+        for d in self.decomp:
+            if d['after_group'] != gz:
+                continue
+            _d0 = len(ex)
+            e, why = self.ex_decomp(n, d, ex)
+            if e is None:
+                self.skipped.append(why)
+                continue
+            ex.append(e)
+            n += 1
+            _mark_section(ex, _d0, d.get('section'))
+        return n
+
     # ────────────────────── 组装 ──────────────────────
     def payload(self):
         got, why = self.resolve_through()
@@ -4021,6 +4606,10 @@ class Page:
                     ex.append(e)
                     n += 1
             _mark_section(ex, _g0, g.get('section'))
+            # 声明了 `after_group` 的分解图**就地**出图（见下面 ⑥ 那段注释里的例外条款）。
+            # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
+            # 混进上面那一段的话它会被无条件涂成本组的 section。
+            n = self._decomp_here(ex, n, g['zh'])
 
         _s0 = len(ex)
         for c in self.head:                                   # ④ 季节性
@@ -4044,12 +4633,23 @@ class Page:
                     ex.append(e); n += 1
             _mark_section(ex, _g0, g.get('section'))
 
-        # ⑥ 量价分解 与 ⑦「水平值 + 单月同比」：**一律追加在最末**（核对表之前）。
-        # 不能插在 ③ 里：图号一移，正文与图注里所有「见 Exhibit k」的交叉引用全错，
-        # 而那种错不会报任何异常。新图型往后加，既有图号一个都不动。
+        # ⑥ 量价分解 与 ⑦「水平值 + 单月同比」：**缺省追加在最末**（核对表之前）。
+        # 缺省不插在 ③ 里，理由没变：图号一移，正文与图注里所有「见 Exhibit k」的
+        # 交叉引用全错，而那种错不会报任何异常。新图型往后加，既有图号一个都不动。
+        #
+        # ⚠️ **`after_group` 是明示例外**（2026-09 按页面所有者的指令加：
+        # 「把分解图前移到紧跟它的输入之后」）。它就地出图，因此它之后的每一张图
+        # 号都会平移 —— 所以**用它的页必须自己保证 spec 与页尾文案里没有硬编码的
+        # 图号**（底座自己生成的那些「见 Exhibit k」都是现算的，跟着走不会错；
+        # 靠不住的是人手写死在 spec 注释 / notes / glossary 里的那些）。
+        # 判据是 `grep -n 'Exhibit [0-9]' build/specs/<页>.py` 为空；
+        # 今天只有 asx 满足（其余 8 家各有 2–8 处），所以这个键**不是**通用开关。
+        # 下面这一轮只处理**没有** after_group 的那些（有的已在 ③ 里就地出过了）。
         for d in self.decomp:
+            if d['after_group']:
+                continue
             _d0 = len(ex)
-            e, why = self.ex_decomp(n, d)
+            e, why = self.ex_decomp(n, d, ex)
             if e is None:
                 self.skipped.append(why)
                 continue
