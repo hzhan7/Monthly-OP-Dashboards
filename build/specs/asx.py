@@ -514,6 +514,108 @@ def _count_before(col, month):
     return (len(ms), ms[0], ms[-1]) if ms else (0, None, None)
 
 
+#: 以自家股份作对价的两桩大额并购 —— **本文件里少数几条手写常数**：它们是关于世界的
+#: 事实断言（新发了多少股、哪天生效），series/asx.csv 里查不到，只能带出处写死。
+#: 每条 = 月份 → (事件名, 新发股数（百万股）, 出处与关键日期)。
+#: 用法见 `_scrip_spikes()`：**只有当那个月确实还是本列的极值时才点名**，
+#: 月份对不上就退回「某宗大额换股并购」——
+#: 事件名一旦与数据脱钩，就是一句没有任何东西在守的假话。
+_SCRIP_EVENTS = {
+    '2022-02': (
+        'BHP 结束双重上市架构（unification）',
+        2112.071796,
+        'BHP 2022-01-31 公告《Unification — Scheme of arrangement becomes effective》：'
+        '为 unification 新发并配发 2,112,071,796 股 BHP Group Limited 普通股'
+        '（约占其后总股本 5,062,323,190 股的 42%），2022-01-31 方案生效、'
+        'ASX 上 2022-02-02 起正常交易'),
+    '2025-02': (
+        'Sigma Healthcare 以换股方式并购 Chemist Warehouse',
+        9900.0,
+        'Sigma 2025-02-12 完成 scheme implementation，新股 2025-02-13 起在 ASX 交易；'
+        '作为对价合计新发约 99 亿股（ASX 自家的上市博客称其为 ASX 史上第二大二次发行，'
+        '仅次于 BHP 2022 那一笔）'),
+}
+
+
+def _scrip_spikes(col='capital_other_scrip_audmn', k=2):
+    """「换股对价等」那一列的前 k 个极值月 —— 事件归因那句话的算术底，全部现算。
+
+    返回 (本列全历史中位数, [(月份, 值, 中位数的多少倍, 事件名 or None,
+    隐含每股 A$ or None, 出处 or None)])，列表按值从大到小；算不出返回 (None, [])。
+
+    **隐含每股价是拿「整列那个月的值 ÷ 该笔交易新发的股数」算的**，所以它是个上界：
+    同一个月官方这一列还可能装着别的换股交易。留着这个数是因为它能**证伪**归因 ——
+    算出来与该股当时的股价同一量级，才说明那个月这一列基本就是这一笔；
+    差一个数量级就说明归错了。
+    """
+    v = [(r['month'], _num(r, col)) for r in _rows()]
+    v = [(m, x) for m, x in v if x is not None]
+    if not v:
+        return None, []
+    # ⚠️ 这里**不能**用本文件的 `_median()`。它取的是上中位（`v[len(v)//2]`），
+    # 偶数个月时比真中位高半档（本列 128 个月：500.0 vs 498.5）。而底座在这张图的图注里
+    # 报的是 `np.median` 的真中位 —— 同一张页面上同一条序列的中位数印出两个数，
+    # 读者只会当成其中一个是错的。这句话与那句图注必须同源。
+    s = sorted(x for _, x in v)
+    med = (s[len(s) // 2] if len(s) % 2
+           else (s[len(s) // 2 - 1] + s[len(s) // 2]) / 2.0)
+    out = []
+    for m, x in sorted(v, key=lambda t: -t[1])[:k]:
+        ev = _SCRIP_EVENTS.get(m)
+        out.append((m, x, (x / med if med else None),
+                    ev[0] if ev else None,
+                    (x / ev[1] if ev and ev[1] else None),
+                    ev[2] if ev else None))
+    return med, out
+
+
+_SCRIP_MED, _SCRIP = _scrip_spikes()
+#: 释义板「换股对价等」那一条的后半段：这一列为什么会有两根几十倍于日常的尖刺。
+#: 整段现算 —— 极值月、倍数、隐含每股价都从 CSV 来；只有股数与出处是手写常数
+#: （见 `_SCRIP_EVENTS`），而且**月份对不上就不点名**。
+_SCRIP_ZH = ''
+if _SCRIP:
+    _seg = []
+    for _m, _v, _x, _ev, _ps, _src in _SCRIP:
+        _seg.append(
+            f'<b>{_m}</b> 的 A${_v:,.0f}mn'
+            + (f'（本列全历史中位数 A${_SCRIP_MED:,.1f}mn 的 <b>{_x:,.0f} 倍</b>）'
+               if _x else '')
+            + '＝'
+            + (f'{_ev}' if _ev else '某宗大额换股并购（本页不点名：'
+                                    '这个月不在已核实的事件名单里）')
+            + (f'：{_src}。按该月这一列的全额除以那笔新发股数，隐含每股 '
+               f'<b>A${_ps:,.2f}</b>，与该股当时的股价同一量级 —— '
+               f'这个除法是拿来<b>证伪归因</b>的：差一个数量级就说明这个月的这一列'
+               f'装的不是这一笔。' if _ev and _ps else '。'))
+    _SCRIP_ZH = (
+        f'⚠️ <b>这一列是本页量级最跳的一列，最高的 {len(_SCRIP)} 个月'
+        + ('各对应一桩具体的换股并购：</b>'
+           if all(r[3] for r in _SCRIP) else '是这样来的：</b>')
+        + '　'.join(_seg)
+        + f'<b>它平时贴着零线不是画错了</b>：中位数只有 A${_SCRIP_MED:,.1f}mn，'
+        + '这几个月分别是它的 '
+        + '、'.join(f'{r[2]:,.0f} 倍' for r in _SCRIP if r[2])
+        + '，那是<b>真实的量级差</b>，不是尖刺画错。'
+          '折线图上因此按 Tukey 极端离群栅栏<b>截了轴</b>（上界由底座现算，见该图图注）；'
+          '<b>截轴不删点</b>，这几个月的真值都用红字标在图上。')
+
+#: 页尾「二次融资合计 = 窄口径 + 换股对价等」那一条的补语：这个恒等式里的第二项
+#: 是本页量级最跳的一列，所以那张图截了轴。数字全部现算，**上界故意不写在这里** ——
+#: 它由底座按 Tukey 极端离群栅栏从窗口数据算，写进 spec 就等于手挑一个会过期的常数。
+_NOTE_SCRIP_CAP = ''
+if _SCRIP and _SCRIP_MED:
+    _NOTE_SCRIP_CAP = (
+        f'⚠️ 这个恒等式的第二项（换股对价等）量级极不均匀：全历史中位数只有 '
+        f'A${_SCRIP_MED:,.1f}mn，而最大的一个月 {_SCRIP[0][0]} 是 '
+        f'A${_SCRIP[0][1]:,.0f}mn（{_SCRIP[0][2]:,.0f} 倍）。'
+        f'所以这两列所在的那张折线图<b>截了轴</b>（上界由底座按 Tukey 极端离群栅栏'
+        f'从窗口数据现算，见本页尾「截轴」那一条与该图图注）——'
+        f'<b>截轴不删点</b>：越界的月份钳在轴顶、画成空心红圈、真值红字竖排标出，'
+        f'一个点没删、一个数没改（具体是哪几个点、上界多少，由那一条与图注现算点名 ——'
+        f'spec 不复述，复述就等于在这里手抄一份会过期的名单）。'
+        f'这几根尖刺各对应什么事件，见释义板「换股对价等」。')
+
 _PTN, _PTMED, _PTMAX, _PTONM = _per_trade_check()
 _FY0, _FY1, _FYL, _FYA, _FYB = _fy_probe()
 _DMIN, _DMAX, _DSPR = _tradingday_spread()
@@ -774,7 +876,8 @@ _GLOSSARY = [
      '官方行名 <code>Other capital raised including scrip-for-scrip</code>：以'
      '<b>自家股份作对价</b>而新增的挂牌资本（典型是换股并购），<b>不是</b>向市场'
      '募到的现金。官方同表印出、逐月核过的恒等式：窄口径 ＋ 换股对价等 ＝ 二次融资合计；'
-     '官方新闻稿里说的 follow-on 指的是<b>窄口径</b>那一列。'),
+     '官方新闻稿里说的 follow-on 指的是<b>窄口径</b>那一列。'
+     + _SCRIP_ZH),
 
     ('CHESS / Austraclear',
      'ASX 的<b>两套不同</b>的结算 / 托管系统，本页各出一条月末托管证券市值（存量）：'
@@ -1380,7 +1483,16 @@ SPEC = {
 
         '「二次融资合计」= 窄口径 + 换股对价等。官方新闻稿说的 follow-on 是**窄口径**：'
         'FY26 窄口径 A$37.849bn 对上新闻稿的 A$37.8bn，含换股对价的口径是 A$58.428bn。'
-        '两列都上页面，只放一列必然对不上任何一份官方文本。',
+        '两列都上页面，只放一列必然对不上任何一份官方文本。'
+        + _NOTE_SCRIP_CAP,
+
+        # 页尾那段「本页哪几张图截了轴」。**写成 callable(page) 而不是字面量**：
+        # 图号、上界、越界点数每个月都可能变，写死的那一刻它就开始过期，
+        # 而页尾没有任何东西在守它。两个分支（有截轴 / 一张都没有）都在底座的
+        # `Page.cap_zh()` 里现算 —— 哪天最后一张图不再被截，这段话自己会改口。
+        # 为什么不由底座无条件印：`build/single.py` 服务 9 张 spec 页，底座多印一段，
+        # 9 页的 payload 一起变；哪一页要这段话由那一页的 spec 说了算。
+        lambda page: page.cap_zh(),
 
         'ASX 现货 ≠ 澳洲现货全市场。Cboe Australia（原 Chi-X）的成交不在 MAR 里，'
         '所以本页的现货口径是「ASX 自身经营量」，不是「澳洲市场量」，'
