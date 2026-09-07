@@ -941,11 +941,20 @@ def pp_yfmt(values):
     与左轴「数字 + 轴标题给单位」的读法一致，不是把单位丢了。
     判据不是拍脑袋的阈值，是把引擎的刻度算法（`axisfmt.ticks`，逐行等价于
     `charts.js` 的 `ticks()`）先跑一遍，看 1 位小数够不够把刻度标签区分开。
+
+    量程要**跟引擎一样只把 0 折进下界**：右轴是
+    `ticks(min(rv.concat([0])), max(rv), 9)`（`charts.js:1005`，`zero_base` 默认开、
+    `yoy_rhs()` 从不关它），并排柱是 `y0 = min(0, mn*1.15); y1 = mx*1.22`
+    （`charts.js:926`）—— 两处上界都不含 0。从前这里上下界都塞了 0，整列同号的
+    序列就被模型化成一条跨零的轴：miax Ex12（Pearl 份额同比全负，真值
+    −0.5…−0.1pp）被算成 [−0.5, 0] step 0.1「1 位够用」，引擎实际画的是
+    [−0.5, −0.1] step 0.05，于是右轴印出「−0.2pp −0.2pp」「−0.5pp −0.5pp」，
+    相邻刻度同一个数、像素-数值比也不再等距。判错的是量程，不是位数。
     """
     fin = [float(x) for x in values if x is not None and np.isfinite(x)]
     if not fin:
         return 'pp0'
-    tk = axisfmt.ticks(min(fin + [0.0]), max(fin + [0.0]), 9)
+    tk = axisfmt.ticks(min(fin + [0.0]), max(fin), 9)
     labs = [f'{t:.1f}' for t in tk]
     return 'pp0' if len(set(labs)) == len(labs) else 'f0'
 
