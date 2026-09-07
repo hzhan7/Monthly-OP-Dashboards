@@ -289,8 +289,10 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
    **不构成例外的三类，别拿去当反例**：① 柱本身就是同比的图（`cost` Ex2/5/7/8/9/10
    是「Core comp vs Reported comp」两条增速并排，图上根本没有水平值柱，本条不管）；
    ② 横轴是季不是月的图（`msci` Ex9 费率图 L=4，按季错位 4 格逐格全对）；
-   ③ 图上只有同比线、没有水平值柱的图（如 `asx` Ex4/5 那种 `grouped_bars` 同比图、
-   `tsm` / `alchip` / `ase` 三家的双币种同比对照）—— 那不是「柱除柱对不上」，
+   ③ 图上只有同比线、没有水平值柱的图（`build/single.py` 的 `ex_yoy` 出的那种
+   `grouped_bars` 单月同比图 —— `headline_style='band_yoy'` 的页每条头条列一张，
+   2026-09-07 快照上 `sgx` Ex4/5、`jpx` Ex4/5、`ndaq` Ex4/5 是这一类；
+   另有 `tsm` / `alchip` / `ase` 三家的双币种同比对照）—— 那不是「柱除柱对不上」，
    是这张图压根没有柱可除，本条的可核对性对它们不适用。
    **这一类有多少张是活数，不在这里存**（加一张同比图它就涨）。数法：遍历
    `data/*.js` 每一张有同比序列的图（登记器用 `tools/check_yoy_caliber.py` 的
@@ -392,7 +394,7 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
    回源确定命中流量列的 **106 张**里，付了 **94 张**、**欠 12 张**：
    `heat_matrix` 9 张（`alchip` Ex9、`cme` Ex18、`exchanges-products` Ex4、`hood` Ex28、
    `ice` Ex6 / Ex8 / Ex13、`miax` Ex6、`mtk` Ex7）+ `gs_bar` 3 张
-   （`spgi` Ex2、`asx` Ex30、`enx` Ex34）。
+   （`spgi` Ex2、`asx` 的 `otc_open_notional_audbn` 那张、`enx` Ex34）。
    **这 12 是下界不是上限** —— 另有约 80 张图的同比回源判不出列（派生量：ADV × 交易日、
    多列相加、FX 换算过的），它们是不是流量用这套数法根本判不了，没进分母。
 
@@ -402,7 +404,10 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
      `heat_matrix` 那 9 张要多说一句：一张矩阵有好几条序列，付账的写法是
      **在图注里报总体、并点名最毛刺的那一条**，不是逐行报一遍 ——
      那是写法问题，不是豁免理由。
-   - **`asx` Ex30 与 `enx` Ex34 不是欠账，是 `classify()` 认错了列。**
+   - **`asx` 的 `otc_open_notional_audbn` 那张与 `enx` Ex34 不是欠账，是 `classify()`
+     认错了列。**（asx 这张按**列名**点名而不是按图号：本文写下时它是 Ex30，
+     2026-09 那一轮重排后是 Ex32 —— 而这一条的论点本来就是「哪一列被判错了」，
+     根本不需要图号。）
      两张图的标题都写着「（存量，期末口径）」，画的确实是存量
      （`otc_open_notional_audbn` = OTC 未平仓名义额、`listed_funds` = 月末挂牌基金只数），
      而 `yoy.classify()` 被 `_FLOW_PAT` 命中判成了流量（`_STOCK_PAT` 两个都没命中）。
