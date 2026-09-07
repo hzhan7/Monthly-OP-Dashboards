@@ -264,8 +264,27 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap'}
 GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].spike_cap —— 尖刺截轴的**开关**（2026-09 补，默认关）────────────────
+# `True` = 本组的多列对比图允许 `Page.spike_cap()` 截轴（判据仍然全部现算，见那个方法）。
+# 不给 / `False` = 一步都不走，逐字节回到没有这条通路之前。
+#
+# ⚠️ **为什么必须是 opt-in，而不是靠数据判据当闸。** 这条通路 2026-09 上线时是
+# **全站无条件**生效的，唯一的闸是数据相关的 `SPIKE_HEAD = 0.35`。而实测「日常上沿
+# 占轴比例」在别人的页上是 jpx Ex16 = 0.526、db1 Ex7 = 0.567 —— 离门的距离**随月份
+# 漂**，哪天漂过去，那两页会在页面所有者没下过任何指令的情况下被截轴。实测反例：
+# 只把 `series/jpx.csv` 的 `adv_n225_mini_kcontracts` 在窗口中段注入一个月的大额
+# （1,094.6 → 5,200），jpx Ex16 的比例就掉到 0.304，spec 一个字没改、页面上多出
+# 一条截轴与一行「axis capped」。
+# 本轮另两条新底座通路（`groups[].ratio_rhs`、`decomp` 的 `bucket` / `after_group`）
+# 走的都是同一条纪律：**加性、可选、缺省逐字节不变**。截轴改的是读者读到的量程，
+# 比那两条更该守这条纪律，不该反而是唯一的例外。
+#
+# 落在 group 上而不是 SPEC 顶层，理由与 `ratio_rhs` 一样：需求是逐组提的
+#（asx 页面所有者 2026-09 的原话点的是「ex19/20」那两组融资图），页级开关会把
+# 同一页其余组的图一起交出去，而那些图没人要求过。
 
 # ── groups[].ratio_rhs —— 「两根并排柱 + 右轴比值线」一张图 ────────────────────
 # 与 `mix` 一样，这是 `groups[].cols` 里各列**彼此独立**那条默认假设的例外：
@@ -1257,6 +1276,59 @@ def nice_max(v):
     return int(10 * step)
 
 
+# ══════════════ 引擎几何的 Python 复刻（只给 `spike_cap()` 用）══════════════
+# `spike_cap()` 的端点护栏与图注都要报像素数，而像素数只有 `assets/charts.js` 说了算。
+# 这里把要用的那几行逐行搬过来、并在每一项后面写上对照行号 —— **不是**在这里另立一套
+# 常数：引擎改一行，这里必须跟着改一行，行号就是给下一个人对账用的。
+#
+# ⚠️ 这里没有「FS = 1」这一档。引擎的字号是按卡片宽度在 [FS_MIN, FS_MAX] 之间插值的
+#（`charts.js:126`），**下界就是 1.45**；`FS = 1` 只是 `fscale()` 的退化写法，
+# 全站没有任何一张图画在那一档上。图注里报 FS=1 的像素数，报的是一根不存在的轴。
+FS_MIN, FS_MAX = 1.45, 1.70          # charts.js:126
+
+
+def _js_round(x):
+    """JS 的 `Math.round`（半数一律向上）。Python 的 `round()` 是半数向偶，两者在
+    `26×(FS−1) = 17.5` 这一档上正好差 1px —— 而那一档恰是 ph 的极小值所在。"""
+    return math.floor(x + 0.5)
+
+
+def _fscale(v, fs):
+    return _js_round(v * fs * 100) / 100                      # charts.js:133
+
+
+def _plot_h(kind, fs, capped=True, height=None):
+    """这张图的绘图区高 `ph`。charts.js:783（H）+ :814（M.t）+ :823（ph）。
+
+    `M.b == XB`，而 `H` 里也加了同一个 `XB`，一加一减正好抵消 —— 所以 ph 与
+    `xrot` / x 标签长短无关，只跟字号档位 `FS`、`ex.height` 与截轴开关有关。
+    `perPointLabels`（charts.js:772）**不含 `lines`**：只有 `lines_endlabels`
+    那一支才按 FS 补 `round(26×(FS−1))` 的高。
+    """
+    per = kind == 'lines_endlabels'
+    h0 = height if height is not None else (268 if per else 248)
+    return h0 + (_js_round(26 * (fs - 1)) if per else 0) - _fscale(30 if capped else 14, fs)
+
+
+def _plot_h_min(kind, height=None):
+    """`ph` 在 FS ∈ [FS_MIN, FS_MAX] 上的**最小值** —— 端点护栏取最保守的那一档。
+
+    ph(FS) 在 `round(26×(FS−1))` 的每一级台阶内随 FS 单调下降（−30×ΔFS），
+    所以极小值只可能出现在某级台阶的**右端**或 FS_MAX 上，逐个试完取小即可。
+    实测：`lines_endlabels` 半栏 236.5 / 通栏 235.0，全区间极小 234.81（FS→1.6731⁻）。
+    """
+    cands = [_plot_h(kind, FS_MAX, True, height)]
+    k = int(math.floor(26 * (FS_MIN - 1)))
+    while True:
+        fs = 1 + (k + 0.5) / 26
+        if fs > FS_MAX:
+            break
+        if fs > FS_MIN:
+            cands.append(_plot_h(kind, fs - 1e-9, True, height))
+        k += 1
+    return min(cands)
+
+
 # ══════════════════════════════ SPEC 校验 ══════════════════════════════
 def _check_keys(d, allowed, required, where):
     bad = sorted(set(d) - allowed)
@@ -1523,6 +1595,19 @@ def _norm_mix(m, where):
     }
 
 
+def _norm_flag(v, where):
+    """spec 里的一个布尔开关。`None`（没写）算 False，其余只认 `True` / `False`。
+
+    不写成 `bool(v)`：`'false'` / `'0'` / `[]` 在 Python 里各有各的真假，而写 spec 的人
+    看到的是一个开关。真假判错的后果是「以为关着其实开着」——那正是本轮要治的病。
+    """
+    if v is None or v is False:
+        return False
+    if v is True:
+        return True
+    raise SpecError(f'{where}={v!r} 只能写 True 或 False（不写 = False）')
+
+
 def _norm_ratio_rhs(r, where):
     """一条 `groups[].ratio_rhs` → 归一化 dict。这里只做**机械**校验。
 
@@ -1628,7 +1713,11 @@ class Page:
                 if g.get('mix') else None,
                 'ratio_rhs': _norm_ratio_rhs(
                     g['ratio_rhs'], f'groups[{gi}]（{g["zh"]}）.ratio_rhs')
-                if g.get('ratio_rhs') else None})
+                if g.get('ratio_rhs') else None,
+                # 只认真正的布尔量：`'yes'` / `1` 这种写法在别处是「真」，在这里
+                # 会让下一个人以为可以写一个阈值或图号进去。硬失败比默默当真好。
+                'spike_cap': _norm_flag(g.get('spike_cap'),
+                                        f'groups[{gi}]（{g["zh"]}）.spike_cap')})
 
         self.headline_style = str(spec.get('headline_style') or 'band_yoy')
         if self.headline_style not in HEADLINE_STYLES:
@@ -2442,9 +2531,53 @@ class Page:
             + '<b>读法：这条线在低基数那几年只能看方向，不能看幅度</b>；'
               '幅度请读同一张图上的深蓝柱（水平值）。')
 
+    def _spike_axis(self, ex, a):
+        """不截轴时引擎给这张图的 `(y0, y1, 轴顶那句话)`。**逐行对着 charts.js 写。**
+
+        两种 kind 走引擎**两条不同**的量程分支，占比判据（下面第 ② 步）拿哪一条都不能
+        将就 —— 拿错了算出来的「日常上沿占轴多少」是个假数，那道门就形同虚设。
+          · `lines_endlabels`（charts.js:939）：`y0 = mn − 极差×0.20; y1 = mx + 极差×0.18`
+          · `lines`（charts.js:945-969）：`zero_base` 时 `y0 = 0`（非负段）、`y1 = mx×1.16`；
+            否则 `y0 = dmn − 极差×0.05; y1 = dmx + 极差×0.05`（`incZero` 只由 `zero_line`
+            触发 —— 本底座的 `lines` 不带柱、也不设 `zero_line`，但照抄不省）。
+        随后两条都过 `charts.js:972`：`yfloor` 覆盖 y0（`ycap` 覆盖 y1，那是截完的事）。
+
+        同一条式子在本仓另有三份副本：`build/axisfmt.py` 的 `_left_range`、
+        `build/mrbase.py` 的 `align_sim`、`tools/align_replica.py` 的 `left_range`。
+        **改这条式子要四处一起改**，否则这里算出来的占比与页面上真画的不是同一根轴。
+        """
+        kind = ex.get('kind')
+        mn, mx = float(a.min()), float(a.max())
+        if kind == 'lines_endlabels':
+            r2 = (mx - mn) or 1.0
+            y0, y1 = mn - r2 * 0.20, mx + r2 * 0.18
+            top = '「最大值 + 极差×18%」'
+        elif ex.get('zero_base'):
+            rz = (mx - mn) or abs(mx) or 1.0
+            y0 = mn - rz * 0.08 if mn < 0 else 0.0
+            y1 = mx * 1.16 if mx > 0 else rz * 0.08
+            top = '「最大值×1.16」（本图型开了 <code>zero_base</code>，下界钉在 0）'
+        else:
+            dmn = min(mn, 0.0) if ex.get('zero_line') else mn
+            dmx = max(mx, 0.0) if ex.get('zero_line') else mx
+            rg = (dmx - dmn) or 1.0
+            y0, y1 = dmn - rg * 0.05, dmx + rg * 0.05
+            top = '「最大值 + 极差×5%」'
+        if ex.get('yfloor') is not None:
+            y0 = float(ex['yfloor'])
+        return y0, y1, top
+
+    #: 端点标签与绘图区顶边之间必须留够的像素（按 kind 分）。**判据全在引擎里**：
+    #: `spreadY()` 的顶边兜底门是 `lo = M.t + 7`（charts.js:1293），越过它整列标签就被
+    #: 重排成一摞，所以每种 kind 的要求 = 7 − 该 kind 端点标签相对 `Y(值)` 的落笔偏移。
+    #:   · `lines_endlabels`：两端标签落在 `Y(值) + 3.2`（charts.js:1517/1518）⇒ 7 − 3.2；
+    #:   · `lines`：末点标签落在 `Y(值) − 7`（charts.js:1354）⇒ 7 + 7。
+    SPIKE_HEAD_PX = {'lines_endlabels': 7 - 3.2, 'lines': 7 + 7}
+
     def spike_cap(self, n, ex, cols):
         """尖刺截轴：一两个一次性大额把其余读数压成贴地一条线时，截轴 + 返回那段图注。
 
+        **只由声明了 `groups[].spike_cap: True` 的组调用**（见模块头 GROUP_KEYS 那一段）。
         命中就地写 `ex['ycap']` 与 `ex['cap_note']`、记一笔 `self.cap_ns`，返回图注；
         不命中返回 `''` —— **不截，也不写那行字**（理由见下面「cap_note 的坑」）。
 
@@ -2463,22 +2596,40 @@ class Page:
            **只判上界**：本图型的尖刺是被顶上去的，下界那一侧由 `yfloor` 管
            （`ex_lines()` 里非负组已经把它钉在 0）。真出现向下的极端离群时该做的是给
            `yfloor` 并单独写图注，那是另一件事，别在这里顺手做。
-        ② 复算「不截轴时的轴顶」，看**日常上沿**（栅栏内最大值）在那根轴上占多少 ——
-           ≥ `SPIKE_HEAD` 就返回 ''（那种图的尖峰并没有把其余点压扁，截了是白截）。
+        ② 复算「不截轴时的轴顶」（`_spike_axis()`，按 kind 取引擎对应的那条量程分支），
+           看**日常上沿**（栅栏内最大值）在那根轴上占多少 —— ≥ `SPIKE_HEAD` 就返回 ''
+           （那种图的尖峰并没有把其余点压扁，截了是白截）。
         ③ 上界 = `nice_max(栅栏内最大值)`，取一个干净整刻度（与 `stacked_dual` 右轴同一个
            取整器，那边的注释记着为什么不能写 `int()`）。
         ④ 端点护栏（见下）。抬完若已经没有越界点 → 返回 ''，不截。
 
-        ── 端点护栏：为什么这里要护**两端** ──────────────────────────────────────
-        `near_zero_guard()` 里那段「截轴上界不许低于末点读数」同一条理由，但那边只护末点，
-        这里要护首末两端。区别在引擎：
-          · `kind:'lines'` 的末点标签有 `clampY(v) !== v → continue`、`bars_labeled` 有
-            `yl !== vals[i] → continue`，被截的端点标签**直接不画**，真值走 `capLabel` 竖排；
-          · `lines_endlabels` 两端都是无条件按 `Y(值)` 落笔的
-            （`LE.push({y: Y(sr.values[0])…})` / `RE.push(… values[n-1] …)`），既不钳也不跳过。
-            端点值超过 `ycap` 时它的 y 会算到画布上方，接着触发 `spreadY()` 的
-            「上下都顶满就从上边界顺排」兜底：整列端点读数被重排成一摞，与各自的线对不上号，
-            **而且不报错**。
+        ── 端点护栏：判据是**像素**，不是「有没有越界」 ────────────────────────────
+        `near_zero_guard()` 里那段「截轴上界不许低于末点读数」同一条理由，但那边只护末点、
+        判的也只是越不越界。这里两处都不够：
+
+        ① **护首末两端**。`lines_endlabels` 两端都是无条件按 `Y(值)` 落笔的
+           （`LE.push({y: Y(sr.values[0]) + 3.2 …})` / `RE.push(… values[n-1] …)`，
+           charts.js:1517/1518），既不钳也不跳过 —— 与 `kind:'lines'` 的
+           `clampY(v) !== v → continue`、`bars_labeled` 的 `yl !== vals[i] → continue`
+           正相反。（`lines` 那一支的末点标签虽然会跳过被截的点，但**没被截的**那个最高
+           末点照样能顶进兜底区，所以两种 kind 都要护，只是像素余量不同。）
+
+        ② **判据是「离顶边还有几个像素」，不是「越没越界」。**
+           `lifted = end_hi > cap` 这种写法留了一条盲带：引擎真正的失败门槛是
+           `spreadY()` 的 `lo = M.t + 7`（charts.js:1293），而标签落笔在 `Y(值) + 3.2`，
+           所以要求的是 `Y(值) ≥ M.t + (7 − 3.2)`。末点只要落在轴顶下方不到 3.8px，
+           标签就跌进 `lo` 之下，触发「上下都顶满就从上边界顺排」的兜底：**整列端点读数
+           被重排成一摞**，与各自的线对不上号，而且没有任何东西报错。
+           换算成读数：半栏（FS=1.45，ph=236.5）cap 至少要比末点高 1.633%，
+           通栏（FS=1.70，ph=235.0）1.644%。实算四例全部落进盲带：
+           末点 149/cap 150、396→400、300→300、250→250，四例的最大错位 148–195px。
+           对数均匀抽 4×10⁵ 次，`nice_max` 抬完仍落进盲带的占 **6.37%**；
+           末点本身正好是整刻度时（150 / 250 / 300 / 400 …）**必然**触发。
+           所以护栏改成解一次像素方程：
+               `need = y0 + (end_hi − y0) / (1 − HEAD_PX / ph)`，`need > cap` 才算触发。
+           `ph` 取 FS 全区间的**最小值**（`_plot_h_min()`，`lines_endlabels` 是 234.81）
+           —— ph 越小，同样的像素余量占轴的比例越大，取小就是取最保守的那一档。
+
         代价与 `near_zero_guard()` 那边一样：护栏一抬，上界就变松、历史尖刺压得没那么平。
         但两端读数是这张图上最该被看见的两个数字，不能为了压平历史把它们推到画布外。
 
@@ -2490,14 +2641,16 @@ class Page:
         `build/mrbase.py` 记过同一个坑（「yfloor 不等于截轴，要看有没有点真的被它挡住」），
         `build/lpla.py` 的 `cap_pack()` 是同一条：没有越界点就不截、也不写那行字。
         """
-        if ex.get('kind') != 'lines_endlabels':
-            # 不是静默跳过：`lines` 那一支走引擎**另一条**量程分支（zero_base / 5% 留白），
-            # 下面第 ② 步那套 0.20 / 0.18 的式子对它根本不成立，算出来的占比是假的。
-            # 调错图型不该悄悄不截，该当场停机。
+        kind = ex.get('kind')
+        if kind not in self.SPIKE_HEAD_PX:
+            # 这一支是**真判据**，不是装饰：`ex_lines()` 只会产出 lines_endlabels / lines
+            # 两种，第三种 kind 出现在这里就意味着有人从别的路径调了它，而那条路径的
+            # 量程式（`_spike_axis()`）与端点落笔偏移（`SPIKE_HEAD_PX`）这里都没有。
+            # 缺了这两样算出来的占比与护栏都是假数，静默不截等于让开关白声明。
             raise SpecError(
-                f'[{self.ticker}] Exhibit {n} 的 kind 是 {ex.get("kind")!r}，'
-                f'而 spike_cap() 里复算的是 lines_endlabels 的量程式'
-                f'（min − 极差×20% / max + 极差×18%）—— 别的图型请先把量程式补进来再调它。')
+                f'[{self.ticker}] Exhibit {n} 的 kind 是 {kind!r}，'
+                f'而 spike_cap() 只复刻了 {sorted(self.SPIKE_HEAD_PX)} 两种图型的量程式与'
+                f'端点落笔偏移 —— 别的图型请先把这两样从 assets/charts.js 补进来再调它。')
 
         xl = ex.get('xlabels') or []
         pts = [(i, s['name'], float(v))
@@ -2515,17 +2668,9 @@ class Page:
             return ''
         inb_max = float(inb.max())
 
-        # ── ② 不截轴时的轴顶 ──
-        # 这四行是 `assets/charts.js` 里 `kind === 'lines_endlabels'` 那一支
-        #（`y0 = mn − r2×0.20; y1 = mx + r2×0.18`，随后 `if (ex.yfloor != null) y0 = ex.yfloor`）
-        # 的逐行等价实现。同一条式子在本仓另有三份副本：`build/axisfmt.py` 的 `_left_range`、
-        # `build/mrbase.py` 的 `align_sim`、`tools/align_replica.py` 的 `left_range`。
-        # **改这条式子要四处一起改**，否则这里算出来的占比与页面上真画的不是同一根轴。
-        mn, mx = float(a.min()), float(a.max())
-        r2 = (mx - mn) or 1.0
-        y0, y1 = mn - r2 * 0.20, mx + r2 * 0.18
-        if ex.get('yfloor') is not None:
-            y0 = float(ex['yfloor'])
+        # ── ② 不截轴时的轴顶（按 kind 取引擎对应的量程分支，见 `_spike_axis()`）──
+        mx = float(a.max())
+        y0, y1, top_zh = self._spike_axis(ex, a)
         if not (y1 > y0):
             return ''
         head = (inb_max - y0) / (y1 - y0)
@@ -2533,17 +2678,30 @@ class Page:
             return ''
 
         # ── ③ 上界 + ④ 端点护栏 ──
-        cap = float(nice_max(inb_max))
+        # `cap0` 留着给图注：那句「上界取栅栏内最大值向上取整，得 X」报的是**护栏抬之前**
+        # 那个数。护栏触发时直接印抬完的 cap，读者会看到「取整得 400；再经护栏抬到 400」，
+        # 一句自相矛盾的话（护栏没抬触发不了，抬了两个数就不该相同）。
+        cap = cap0 = float(nice_max(inb_max))
         ends = []
         for s in ex['series']:
             fv = [float(v) for v in (s.get('values') or [])
                   if v is not None and np.isfinite(float(v))]
-            if fv:
-                ends += [(s['name'], fv[0]), (s['name'], fv[-1])]
+            if not fv:
+                continue
+            # `lines_endlabels` 首末两端都标（charts.js:1517/1518）；
+            # `lines` 的 `end_label` 只标**末点**（charts.js:1350 `lastFinite`），
+            # 首点在那一支上根本不落笔，把它算进护栏只会白白抬高上界。
+            ends += ([(s['name'], fv[0])] if kind == 'lines_endlabels' else []) \
+                + [(s['name'], fv[-1])]
         end_hi = max([v for _, v in ends], default=float('-inf'))
-        lifted = end_hi > cap
+        # 护栏解的是像素方程，不是「越没越界」——盲带那 6.37% 的理由见 docstring ②。
+        # ph 取 FS 全区间最小值（最保守的那一档）；`lines` 的画布高由 `ex['height']` 定。
+        head_px = self.SPIKE_HEAD_PX[kind]
+        ph_min = _plot_h_min(kind, height=ex.get('height'))
+        need = y0 + (end_hi - y0) / (1 - head_px / ph_min)
+        lifted = bool(np.isfinite(need) and need > cap)
         if lifted:
-            cap = float(nice_max(end_hi))
+            cap = float(nice_max(need))
         # 按**窗口下标**排，不按月份标签的字典序 —— 'Feb-22' < 'Jan-16' 是字母序，
         # 印出来的清单会不按时间走，读者对着横轴逐个核对时要来回跳。
         over = [(xl[i] if i < len(xl) else str(i), nm, v)
@@ -2558,14 +2716,19 @@ class Page:
         ex['cap_note'] = f'axis capped at {fmt_val(cap, cols[0]["fmt"])} — true values shown in red'
 
         # ── 图注要报的几何：绘图区高 ph ──
-        # 引擎：H = (ex.height || 268) + XB、M.b = XB、M.t = 30（capOn）/ 14（不 capOn）
-        # ⇒ ph = H − M.t − M.b = 268 − M.t，**x 标签带 XB 一加一减正好抵消**，
-        #   所以这个像素数与 xrot / 标签长短无关。基线字号（FS = 1，半栏卡）下成立；
-        #   通栏卡 FS > 1 时引擎再补 round(26×(FS−1))，图注报的是基线值。
-        CANVAS_H, MT_CAP, MT_PLAIN = 268.0, 30.0, 14.0
+        # 全部走 `_plot_h()`（`assets/charts.js` 的逐行复刻，行号写在那里），不再手写常数。
+        #
+        # ⚠️ 这里报的是**半栏卡（FS = 1.45）**的真值，不是「基线字号 FS = 1」。
+        #    引擎的字号是按卡片宽度在 [1.45, 1.70] 之间插值的（charts.js:126），
+        #    **FS = 1 这一档全站根本不存在**：半栏真值是 `M.t = 43.5 / ph = 236.5`，
+        #    而 `268 − 30 = 238` 那种算法系统性偏约 0.6%，报的是一根不存在的轴。
+        #    通栏（FS = 1.70）另有一档，一并报出来，免得读者拿半栏的数去量通栏的图。
         # 截轴开关**含 yfloor**：本图早就有 yfloor 时，加 ycap 并不会改变上边距。
-        ph0 = CANVAS_H - (MT_CAP if ex.get('yfloor') is not None else MT_PLAIN)
-        ph1 = CANVAS_H - MT_CAP
+        h_ex = ex.get('height')
+        capped_before = ex.get('yfloor') is not None
+        ph0 = _plot_h(kind, FS_MIN, capped_before, h_ex)     # 不截轴时的绘图区高
+        ph1 = _plot_h(kind, FS_MIN, True, h_ex)              # 截轴后（半栏）
+        ph1w = _plot_h(kind, FS_MAX, True, h_ex)             # 截轴后（通栏）
         med = float(np.median(a))
         px0 = (med - y0) / (y1 - y0) * ph0
         px1 = (med - y0) / (cap - y0) * ph1
@@ -2592,6 +2755,16 @@ class Page:
                        if any(v is not None and np.isfinite(float(v)) for v in s['values'])),
                       key=lambda t: t[1])
         months = list(dict.fromkeys(m for m, _, _ in over))
+        end_zh = '两端' if kind == 'lines_endlabels' else '末点'
+        lab_zh = ('两端标签是<b>无条件</b>按读数落笔的（既不钳到轴顶、也不跳过）'
+                  if kind == 'lines_endlabels' else
+                  '末点标签按读数落笔（被截的那个会跳过、真值改走红字竖排，'
+                  '但没被截的最高那个照样顶得进顶边）')
+        # ⚠️ 这本账记的是**官方原始量级**（本方法跑在 `chartscale.fix_all()` 之前）。
+        # 它有两个下游，两个下游要的量级不一样：
+        #   · `build()` 里那行维护者日志 —— 要原始量级，那是拿去跟官方披露对账的；
+        #   · 页尾 `cap_zh()` —— 要**页面上真画出来的**那个量级，所以它按图号回读最终
+        #     payload 的 `ycap`/`ylab`/`fmt`，不读这里的 `cap`/`unit`/`fmt`（见那边的注释）。
         self.cap_ns.append({'n': n, 'cap': cap, 'fence': fence, 'head': head,
                             'over': over, 'months': months, 'unit': unit, 'fmt': fmt,
                             'y1_uncapped': y1, 'inb_max': inb_max, 'lifted': lifted})
@@ -2599,11 +2772,12 @@ class Page:
             f'<b>⚠️ 已截轴：纵轴上界截在 {F(cap)} {unit}，'
             f'{len(over)} 个越界读数钳在轴顶。</b>'
             f'不截的话轴顶要一路画到 <b>{F(y1)} {unit}</b>（本图型的轴顶是'
-            f'「最大值 + 极差×18%」，而极差被最大的那一点 '
+            f'{top_zh}，而极差被最大的那一点 '
             f'{F(mx)} 撑开），其余 {len(a) - len(over)} 个点全被压进画布最底下的 '
             f'<b>{head:.1%}</b>：本图全部读数的中位数 {F(med)} {unit} 在那根轴上离轴底只有 '
             f'{px0:.1f}px，截轴后抬到 <b>{px1:.1f}px</b>'
-            f'（绘图区高 {ph1:.0f}px，基线字号下）。'
+            f'（绘图区高 {ph1:g}px —— 半栏卡的字号档 FS=1.45；'
+            f'通栏卡 FS=1.70 时是 {ph1w:g}px）。'
             f'<b>截轴不删点</b> —— 越界的点按引擎既有约定钳到轴顶、画成空心红圈、'
             f'真值红色竖排标在旁边（<code>assets/charts.js</code> 的截轴规矩），'
             f'一个点没删、一个数没改。越界的是 '
@@ -2612,11 +2786,14 @@ class Page:
               f'同一根轴上做 Tukey 极端离群栅栏 Q3 + {self.SPIKE_K:g}×IQR = '
               f'{S(q3)} + {self.SPIKE_K:g}×{S(iqr)} = <b>{S(fence)} {unit}</b>，'
               f'栅栏之外算尖刺；上界取栅栏内最大值 {F(inb_max)} 向上取整到整刻度，'
-              f'得 {F(cap)}'
-            + (f'；再经端点护栏抬高 —— 本图两端读数最高 {F(end_hi)}，'
-               f'上界低于它的话那个数会被画到画布外面去'
+              f'得 {F(cap0)}'
+            + (f'；再经端点护栏抬到 {F(cap)} —— 本图{end_zh}读数最高 {F(end_hi)}，'
+               f'而{lab_zh}，上界与它之间至少要留出全轴的 '
+               f'{head_px / ph_min:.2%}（= {head_px:g}px ÷ 绘图区高 {ph_min:g}px），'
+               f'不然那一列标签会被挤进画布顶边、整列重排成一摞'
                if lifted else
-               f'；端点护栏未触发（本图两端读数最高 {F(end_hi)}，本来就在上界之下）')
+               f'；端点护栏未触发（本图{end_zh}读数最高 {F(end_hi)}，'
+               f'它离上界的余量本来就在全轴的 {head_px / ph_min:.2%} 以上）')
             + '。'
             + ('<b>代价照实写</b>：'
                + (f'被截的那一个读数（{over[0][0]}）在图上钳在轴顶，它比轴顶高出多少'
@@ -2631,6 +2808,62 @@ class Page:
                f'{unit} 的 {smed[0][1] / smed[-1][1]:.1%}，那是<b>真实的量级差</b>，'
                f'不是尖刺，换什么轴都压不出来。'
                if len(smed) > 1 and smed[-1][1] else ''))
+
+    def _cap_final(self, ex, z):
+        """一笔截轴账 → **最终 payload 上**那张图的 (上界, 单位, 格式器, 越界清单)。
+
+        为什么不直接读 `self.cap_ns`：`spike_cap()` 跑在 `chartscale.fix_all()` **之前**，
+        而 `chartscale` 会把 `ycap` 连同全部数值一起除掉（它的 `_SCALARS`）。9 位数的图
+        缩完之后，账本里那个 25,000 与轴上真画出来的 0.025 差着一个缩放倍数 —— 拿账本的
+        数去写页尾，读者对着图上的轴顶怎么读都对不上。所以这里一律回读最终 payload。
+
+        `ylab` 而不是列的 `unit`：`chartscale` 缩完会把量级词写进 `ylab`
+        （`A$mn` → `A$mn（百万）`），那正是读者在轴上看到的那行字。
+        """
+        e = ex.get(z['n']) if isinstance(ex, dict) else None
+        if not isinstance(e, dict) or e.get('ycap') is None:
+            # 图没了 / 上界被别人抹了 —— 页尾照旧口径讲一遍好过讲一句没人核得动的话。
+            return z['cap'], z['unit'], z['fmt'], z['over']
+        cap = float(e['ycap'])
+        xl = e.get('xlabels') or []
+        over = [(xl[i] if i < len(xl) else str(i), s['name'], float(v))
+                for i, s, v in sorted(
+                    ((i, s, v) for s in (e.get('series') or [])
+                     for i, v in enumerate(s.get('values') or [])
+                     if v is not None and np.isfinite(float(v)) and float(v) > cap),
+                    key=lambda t: (t[0], t[1]['name']))]
+        if len(over) != len(z['over']):
+            # 缩放是同一个倍数除下来的，`v > ycap` 这个不等式必须原样成立。数不上
+            # 就说明中间有一步单独动了 ycap 或数值 —— 页尾那句「N 个读数越界」会变成
+            # 一个跟图上红圈数对不上的数，宁可当场停机。
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {z["n"]} 的越界点数在最终 payload 上是 '
+                f'{len(over)}，而 spike_cap() 截轴时数出来的是 {len(z["over"])} —— '
+                f'`ycap` 与序列数值之间被人分开动过，页尾与图上的红圈会对不上。')
+        return cap, (e.get('ylab') or z['unit']), (e.get('fmt') or z['fmt']), over
+
+    def recap_notes(self, ex):
+        """`chartscale` 缩完之后，按**缩放后的** `ycap` + 新 `fmt` 重写 `cap_note`。
+
+        ⚠️ `cap_note` 不是图注，是**画在绘图区里的图元**（`charts.js` 的 `capLabel` 之外
+        那行图顶斜体小字）。`chartscale` 往 `note` 末尾追加的那句免责
+        「本图注文字、汇总表与末尾核对表仍是官方原始量级」**覆盖不到它** ——
+        它就画在被缩放过的那根轴旁边。不重写的后果是同一张画布上并存三个量级：
+        轴顶读 25、图顶斜体小字写 25,000,000、红字真值写 985.35，
+        而三者之间差的正好是那个缩放倍数，页面上没有任何一个字解释这件事。
+
+        只重写本底座 `spike_cap()` 自己写下的那几张（`self.cap_ns` 点名）——
+        别的生成器（`build/wealth.py` / `build/ibkr.py` / `build/schw.py`）各有各的
+        `cap_note` 措辞，那些页不走这条路，不该被这里改一个字。
+        """
+        by_n = {e['n']: e for e in (ex or []) if isinstance(e, dict) and 'n' in e}
+        for z in (self.cap_ns or []):
+            e = by_n.get(z['n'])
+            if not isinstance(e, dict) or e.get('ycap') is None or not e.get('cap_note'):
+                continue
+            e['cap_note'] = (f'axis capped at '
+                             f'{fmt_val(float(e["ycap"]), e.get("fmt") or z["fmt"])}'
+                             f' — true values shown in red')
 
     def cap_zh(self, ex=None):
         """页尾那一段：本页到底有没有图截了轴、截在多少、几个点越界。**两分支现算。**
@@ -2658,6 +2891,11 @@ class Page:
         ③ **「本页一张都没截」是常态，所以这句话不许写死成「没有」。** 9 张 spec 页里
            今天只有一页命中；下一次谁给某张图加了 cap，页尾必须自己跟着变
            （`build/axp.py` 的同一处注释：「不手写：本轮一张都没有，但这句话不能写死」）。
+
+        ④ **左轴那半边的数字一律回读最终 payload，不读 `self.cap_ns`。** 账本记的是
+           `chartscale` 缩放**之前**的原始量级，而页尾这段话是让读者对着图上的轴顶与红圈
+           逐个核对的 —— 两边不是同一个量级就核不动。见 `_cap_final()`。
+           （右轴那半边没有这个问题：`chartscale` 不碰 `yoy`，它画的是百分数。）
         """
         def _nums(seq):
             return [float(v) for v in (seq or [])
@@ -2688,13 +2926,17 @@ class Page:
                     '这句话是现算的：底座逐张读最终 payload 与截轴账本，'
                     '哪天真有一张被截，这里会自己改口。')
         else:
+            by_n = {e['n']: e for e in (ex or []) if isinstance(e, dict) and 'n' in e}
             seg = []
             for z in lhs:
+                # 上界 / 单位 / 格式器 / 越界清单四样全部回读最终 payload（见 ④ 与
+                # `_cap_final()`）—— 读者拿这段话对的是图上的轴顶与红字，不是构建日志。
+                cap, unit, cfmt, over = self._cap_final(by_n, z)
                 seg.append(
                     f'<b>Exhibit {z["n"]}</b> 的<b>左轴</b>截在 '
-                    f'{fmt_val(z["cap"], z["fmt"])} {z["unit"]}，'
-                    f'{len(z["over"])} 个读数越界（'
-                    + '、'.join(f'{m}「{nm}」{fmt_val(v, z["fmt"])}' for m, nm, v in z['over'])
+                    f'{fmt_val(cap, cfmt)} {unit}，'
+                    f'{len(over)} 个读数越界（'
+                    + '、'.join(f'{m}「{nm}」{fmt_val(v, cfmt)}' for m, nm, v in over)
                     + '）')
             for j in rhs:
                 caps = [z['cap'] for z in self.nz_ns if z['n'] == j and z.get('cap')]
@@ -2974,7 +3216,7 @@ class Page:
         return ex
 
     # ────────────────────── exhibit：分组多列对比 ──────────────────────
-    def ex_group(self, n0, gz, cols, rr=None):
+    def ex_group(self, n0, gz, cols, rr=None, spike=False):
         """一组同单位的流量列 → 一张图。返回 exhibit 列表（可能 0 或 1 张）。
 
         · 1 列   → gs_bar（水平柱 + 次轴同比），单条线没有「对比」可言
@@ -2984,12 +3226,15 @@ class Page:
         `rr` = 本组的 `ratio_rhs`（可选，见模块头 GROUP_KEYS 那一段）。给了、且本桶
         恰好是它的 num 与 den 两列时，`ex_lines` 改出 `grouped_bars` + 右轴比值线。
         不给就走原路径 —— 没声明 ratio_rhs 的 8 个 spec 页逐字节不变。
+
+        `spike` = 本组的 `spike_cap`（同上，默认 False）。False 时 `spike_cap()`
+        一步都不走，输出逐字节回到那条通路上线之前。
         """
         if len(cols) == 1:
             return [self.ex_single(n0, gz, cols[0])]
         end = max(self.last_month(c) for c in cols)
         if len(cols) <= MAX_LINES:
-            return [self.ex_lines(n0, gz, cols, end, rr=rr)]
+            return [self.ex_lines(n0, gz, cols, end, rr=rr, spike=spike)]
         return [self.ex_heat(n0, gz, cols, end)]
 
     def ex_single(self, n, gz, c):
@@ -3027,7 +3272,7 @@ class Page:
             + (self.brk_zh(hit, win) + '。' if hit else ''))
         return ex
 
-    def ex_lines(self, n, gz, cols, end, rr=None):
+    def ex_lines(self, n, gz, cols, end, rr=None, spike=False):
         win = self.win_long(end)
         xl = [mlab(p) for p in win]
         vs = [self.vals(c, win) for c in cols]
@@ -3067,13 +3312,20 @@ class Page:
             # lines_endlabels 没有 zero_base 开关，默认下界是 min − 极差×20%，
             # 会在零轴以下留出一大块不存在的量纲区间。没有点落在 0 以下，所以这不是截轴。
             ex['yfloor'] = 0
-        # 尖刺截轴。**只对 lines_endlabels**：'lines' 那一支走引擎另一条量程分支
-        #（zero_base / 5% 留白），spike_cap() 里复算的 0.20 / 0.18 那套式子对它不成立，
-        # 算出来的「日常上沿占轴多少」是个假数，门就形同虚设。
-        # 落点在 yfloor 之后 —— 那道门要看的是**这张图最终那根轴**，下界还没定就算不出占比；
-        # 也在 mark_breaks 之前 —— 断点只往 ex 上挂 break_at/break_label，与量程无关，
-        # 但保持「先把轴定死、再往上挂标注」这个顺序，后来的人不用去想两者有没有耦合。
-        spike_zh = self.spike_cap(n, ex, cols) if kind == 'lines_endlabels' else ''
+        # 尖刺截轴。**只在本组声明了 `spike_cap: True` 时才走**（见模块头 GROUP_KEYS
+        # 那一段：数据相关的门当不了闸，别人的页不该在没有指令的情况下被截轴）。
+        #
+        # ⚠️ 这里**不再**按 kind 分流。上面那个 `dense` 是**数据决定**的：窗口里缺一个月，
+        # 同一组就从 lines_endlabels 掉成 lines。按 kind 挡在门外的写法有两个后果：
+        #   ① 声明了开关的组会因为下个月少一行数据就静默不截 —— 所有者的指令被数据吃掉；
+        #   ② `spike_cap()` 里那句 `kind != 'lines_endlabels'` 的 `raise` 永远走不到，
+        #      是一段假装在守门的死代码。
+        # 所以两种 kind 都送进去，由 `spike_cap()` 自己按 kind 取引擎对应的那套量程式与
+        # 端点护栏（两套都在那里逐行对着 charts.js 写着），第三种 kind 才真的 raise。
+        # 落点在 yfloor / zero_base 之后 —— 那道门要看的是**这张图最终那根轴**，下界还没
+        # 定就算不出占比；也在 mark_breaks 之前 —— 断点只往 ex 上挂 break_at/break_label，
+        # 与量程无关，但保持「先把轴定死、再往上挂标注」这个顺序，后来的人不用去想耦合。
+        spike_zh = self.spike_cap(n, ex, cols) if spike else ''
         hit = self.mark_breaks(ex, win, cols)
         last = '、'.join(f'{c["zh"]} {fmt_val(v[-1], c["fmt"]) or "—"}' for c, v in zip(cols, vs))
         ex['note'] = (
@@ -5492,7 +5744,8 @@ class Page:
                 else:
                     buckets.append((c['unit'], [c]))
             for _, cs in buckets:
-                for e in self.ex_group(n, g['zh'], cs, rr=g.get('ratio_rhs')):
+                for e in self.ex_group(n, g['zh'], cs, rr=g.get('ratio_rhs'),
+                                       spike=g.get('spike_cap', False)):
                     if e is None:
                         continue
                     ex.append(e)
@@ -5582,6 +5835,10 @@ class Page:
         # summary() 与 table() 走的是 self.ser()，一个字节都不碰，仍是官方原始量级。
         # 顺带把各 exhibit 上的临时键 `_cols` pop 掉。
         disp = chartscale.fix_all(ex)
+        # 缩放会把 `ycap` 一起除掉（`chartscale._SCALARS`），但**画在绘图区里的那行
+        # 「axis capped at …」不在它的名单里**，会留在原始量级上，与它旁边的轴顶差一个
+        # 缩放倍数。所以缩完立刻按新的 `ycap` + 新 `fmt` 把它重写一遍。见 `recap_notes()`。
+        self.recap_notes(ex)
 
         # ⑦ 轴刻度小数位统一收口：放在全部 exhibit 建完之后做一遍，
         # 而不是散在每个 ex_* 里 —— 判据只跟最终 payload 有关（量程 + ycap/yfloor），
