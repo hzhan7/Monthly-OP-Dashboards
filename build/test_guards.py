@@ -536,5 +536,44 @@ class TestMsciCacheKeyPool(unittest.TestCase):
 
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# G. docs/CRON_WIRING.md 的闸门表 vs 代码真值
+# ═══════════════════════════════════════════════════════════════════════════
+# 这张表是「下一个人查闸门时会去看的地方」，而它漂过：2026-08-30 给 umc / ase 加
+# EARLY_BY 那次没回写，表里那两行的闸门（9 / 10）比真值（4 / 8）晚了 5 与 2 天，
+# 直到 2026-09-07 才被撞见。文档漂移的坏处不是「不准」，是**它看起来很准** ——
+# 有人照着它算余量，得出的结论全是错的，而表本身不会报错。
+#
+# 判据就是 monthly_run 自己那条算术：闸门 = max(0, LAG − EARLY)。表里两张（§2.2 的
+# 13 家交易所、§2.3 的其余 15 家）列数不同，所以按「最后一列 = 闸门」取，而不是按
+# 固定下标 —— 后者正是本测试第一版写错的地方。
+class TestCronWiringTableMatchesCode(unittest.TestCase):
+    def test_every_gate_cell_matches(self):
+        import re
+        mr, rost = _load_once()
+        doc_path = os.path.join(ROOT, 'docs', 'CRON_WIRING.md')
+        with open(doc_path, encoding='utf-8') as f:
+            doc = f.read()
+        bad = []
+        for t, lag in sorted(rost.LAG.items()):
+            early = mr.EARLY_BY.get(t, (mr.EARLY, mr.EARLY))
+            a, b = max(0, lag[0] - early[0]), max(0, lag[1] - early[1])
+            m = re.search(r'^\| `' + t + r'`\s*\|(.*)$', doc, re.M)
+            if m is None:
+                bad.append(f'{t}: 闸门表里没有这一行')
+                continue
+            cells = [c.strip() for c in m.group(1).split('|')]
+            got = cells[-2] if cells[-1] == '' else cells[-1]
+            if t in mr.FACT_GATE:
+                ok = '事实闸门' in got      # 不吃日历闸门的家，表里必须这么写
+            else:
+                nums = re.findall(r'\d+', got)
+                ok = nums[:1] == [str(a)] if a == b else nums[:2] == [str(a), str(b)]
+            if not ok:
+                bad.append(f'{t}: 文档写 {got!r}，代码算出 {a}/{b}')
+        self.assertEqual(bad, [], '闸门表与代码不一致：\n  ' + '\n  '.join(bad))
+
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
