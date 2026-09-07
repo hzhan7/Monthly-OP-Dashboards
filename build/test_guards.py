@@ -4,7 +4,7 @@
 跑法: python3 build/test_guards.py        （只用标准库 + numpy，不需要 pytest）
 
 这套测试是为「把 MOPS 官方增减原因原文写进 brief」那次改造建的，守两件事（A、B 组）；
-2026-09 加了第三件（D 组，`spike_cap()` 的端点护栏），理由写在那一组的组头上 ——
+2026-09 加了第三件（H 组，`spike_cap()` 的端点护栏），理由写在那一组的组头上 ——
 一句话：**那条缺陷现网一处都没命中，只能靠注入守**，真产出当不了判据。
 
  (a) **payload_guard 的 nan/inf 正则放宽之后，一个该拦的都没少拦。**
@@ -396,7 +396,189 @@ class TestRealRemarks(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# D. spike_cap 的端点护栏 —— 盲带哨兵
+# E. audit_overdue_headline —— 判据必须与首页红点逐字等价
+# ═══════════════════════════════════════════════════════════════════════════
+# 这一道守的不是「护栏会不会响」，而是**它和红点会不会各说各话**。两边一旦分家，
+# cron 日志与首页就会在同一天给出相反的结论，而那种矛盾没人能一眼判出谁对。
+#
+# 测法照本文件 (b) 的规矩：不造夹具，拿**真判据**去撞 —— 把 index.html:70-85 的
+# stale() 逐行移植成 Python，与 monthly_run.audit_overdue_headline 用的那条算术
+# 在 28 家 × 6 个 data_through × 730 天上逐组对拍。
+#
+# ⚠ 移植时两处最容易写错，都在下面 _js_stale 里标了：
+#   · end.getMonth() 是 **0-indexed**，JS 里 `mo = getMonth()===0 ? 12 : getMonth()`
+#     算的是「end 的前一个月」= 候选月；
+#   · JS 的门槛是 `now >= end + (lag+grace) 天`，而 _due_month(off) 的门槛是
+#     `today >= end + (off-1) 天` —— 故 **off = lag + GRACE + 1**。写成 lag+GRACE
+#     会让护栏比红点早一天开口。这个 ±1 有实测代价：见 docs/DELIVERY.md 里
+#     同一处偏移漏写、让五家闸门整体晚开一天的那条。
+import datetime  # noqa: E402
+
+_MR = None
+_ROSTER = None
+
+
+def _load_once():
+    global _MR, _ROSTER
+    if _MR is None:
+        import importlib.util
+        for name, path in (('_mr_t', os.path.join(ROOT, 'monthly_run.py')),
+                           ('_rost_t', os.path.join(ROOT, 'build', 'roster.py'))):
+            spec = importlib.util.spec_from_file_location(name, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if name == '_mr_t':
+                _MR = mod
+            else:
+                _ROSTER = mod
+    return _MR, _ROSTER
+
+
+def _js_stale(lag, through, now, grace):
+    """index.html:70-85 stale() 的逐行移植。now 为 datetime.date。"""
+    for k in range(6):
+        n = now.year * 12 + now.month - 1 - k
+        ey, em0 = n // 12, n % 12                      # em0 = end.getMonth()，0-indexed
+        end = datetime.date(ey, em0 + 1, 1)            # 候选月的下月 1 号 = 月末 + 1
+        mo = 12 if em0 == 0 else em0                   # 候选月 1-12
+        due = end + datetime.timedelta(
+            days=(lag[1] if mo % 3 == 0 else lag[0]) + grace)
+        if now >= due:
+            y = ey - 1 if em0 == 0 else ey
+            return through < f'{y}-{mo:02d}'
+    return False
+
+
+class TestOverdueMatchesRedDot(unittest.TestCase):
+    THROUGHS = ('2025-11', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09')
+    DAYS = 730
+
+    def _disagreements(self, bump):
+        mr, rost = _load_once()
+        grace, d0, bad = rost.GRACE, datetime.date(2026, 1, 1), []
+        for t, lag in sorted(rost.LAG.items()):
+            for through in self.THROUGHS:
+                for i in range(self.DAYS):
+                    today = d0 + datetime.timedelta(days=i)
+                    due = mr._due_month(
+                        (lag[0] + grace + bump, lag[1] + grace + bump), today)
+                    if _js_stale(lag, through, today, grace) != bool(due and through < due):
+                        bad.append((t, through, today))
+        return bad
+
+    def test_identical_to_red_dot(self):
+        bad = self._disagreements(1)                   # 1 = 生产用的那个偏移
+        self.assertEqual(bad, [], f'与首页红点分歧 {len(bad)} 组，前三：{bad[:3]}')
+
+    def test_offset_actually_matters(self):
+        """反向验：这个对拍不是空过的 —— 偏移写错一天，它必须抓到。"""
+        for bump in (0, 2):
+            with self.subTest(bump=bump):
+                self.assertNotEqual(
+                    self._disagreements(bump), [],
+                    f'偏移 lag+GRACE+{bump} 竟无分歧 —— 对拍失去意义，先查 _js_stale')
+
+    def test_no_false_alarm_today(self):
+        """今天真跑一遍：仓库当前状态下不该有任何一家逾期（有就是真出事了）。"""
+        mr, _ = _load_once()
+        self.assertEqual(mr.audit_overdue_headline(), [])
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# F. fetch/msci.py 的缓存键池 —— 写小了护栏 A 会反过来咬人
+# ═══════════════════════════════════════════════════════════════════════════
+# 这里只测**纯函数**。护栏 A 的其余部分（render_age 阈值、重定向分支、缺头 WARN）
+# 要发真请求才验得了，不进 preflight —— 那三条的实测结果记在提交信息里。
+#
+# 池长是本模块唯一一个「写错了会让护栏反过来咬人」的常数：边缘 s-maxage 是 30 天，
+# 池长若 ≤ 30，键回环时会撞上自己 30 天前钉住的旧副本，于是每天误 FAIL。
+class TestMsciCacheKeyPool(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_msci_t', os.path.join(ROOT, 'fetch', 'msci.py'))
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    S_MAXAGE_DAYS = 30          # 响应头 s-maxage=2592000，见 fetch/msci.py 文件头
+
+    def test_pool_outlasts_edge_ttl(self):
+        self.assertGreater(
+            len(self.m._KEY_POOL), self.S_MAXAGE_DAYS * 2,
+            '缓存键池必须远大于边缘 TTL 的天数，否则回环会撞上自己钉住的旧副本')
+
+    def test_no_repeat_within_a_full_cycle(self):
+        d0 = datetime.date(2026, 1, 1)
+        n = len(self.m._KEY_POOL)
+        urls = [self.m._cache_key_url(d0 + datetime.timedelta(days=i)) for i in range(n)]
+        self.assertEqual(len(set(urls)), n, '一个周期内出现了重复的缓存键')
+
+    def test_retry_key_differs_and_is_long_unused(self):
+        d0 = datetime.date(2026, 1, 1)
+        shift = len(self.m._KEY_POOL) // 2
+        self.assertNotEqual(self.m._cache_key_url(d0),
+                            self.m._cache_key_url(d0, shift=shift))
+        self.assertGreater(shift, self.S_MAXAGE_DAYS,
+                           '重试用的键距上次使用不足一个 TTL，可能仍是热副本')
+
+    def test_variant_differs_from_canonical_only_in_case(self):
+        """变体只能改大小写 —— 改出别的字符就不是同一个页面了。"""
+        d0 = datetime.date(2026, 1, 1)
+        for i in range(0, len(self.m._KEY_POOL), 37):
+            u = self.m._cache_key_url(d0 + datetime.timedelta(days=i))
+            with self.subTest(i=i):
+                self.assertEqual(u.lower(), self.m.URL.lower())
+                self.assertNotEqual(u, self.m.URL)      # 必须真的换了键
+
+    def test_max_render_age_is_over_a_day(self):
+        """阈值必须大于一天：同一天人工重跑会复用当日键，最坏 24 小时。"""
+        self.assertGreater(self.m.MAX_RENDER_AGE, 24 * 3600)
+        self.assertLess(self.m.MAX_RENDER_AGE, self.S_MAXAGE_DAYS * 86400)
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# G. docs/CRON_WIRING.md 的闸门表 vs 代码真值
+# ═══════════════════════════════════════════════════════════════════════════
+# 这张表是「下一个人查闸门时会去看的地方」，而它漂过：2026-08-30 给 umc / ase 加
+# EARLY_BY 那次没回写，表里那两行的闸门（9 / 10）比真值（4 / 8）晚了 5 与 2 天，
+# 直到 2026-09-07 才被撞见。文档漂移的坏处不是「不准」，是**它看起来很准** ——
+# 有人照着它算余量，得出的结论全是错的，而表本身不会报错。
+#
+# 判据就是 monthly_run 自己那条算术：闸门 = max(0, LAG − EARLY)。表里两张（§2.2 的
+# 13 家交易所、§2.3 的其余 15 家）列数不同，所以按「最后一列 = 闸门」取，而不是按
+# 固定下标 —— 后者正是本测试第一版写错的地方。
+class TestCronWiringTableMatchesCode(unittest.TestCase):
+    def test_every_gate_cell_matches(self):
+        import re
+        mr, rost = _load_once()
+        doc_path = os.path.join(ROOT, 'docs', 'CRON_WIRING.md')
+        with open(doc_path, encoding='utf-8') as f:
+            doc = f.read()
+        bad = []
+        for t, lag in sorted(rost.LAG.items()):
+            early = mr.EARLY_BY.get(t, (mr.EARLY, mr.EARLY))
+            a, b = max(0, lag[0] - early[0]), max(0, lag[1] - early[1])
+            m = re.search(r'^\| `' + t + r'`\s*\|(.*)$', doc, re.M)
+            if m is None:
+                bad.append(f'{t}: 闸门表里没有这一行')
+                continue
+            cells = [c.strip() for c in m.group(1).split('|')]
+            got = cells[-2] if cells[-1] == '' else cells[-1]
+            if t in mr.FACT_GATE:
+                ok = '事实闸门' in got      # 不吃日历闸门的家，表里必须这么写
+            else:
+                nums = re.findall(r'\d+', got)
+                ok = nums[:1] == [str(a)] if a == b else nums[:2] == [str(a), str(b)]
+            if not ok:
+                bad.append(f'{t}: 文档写 {got!r}，代码算出 {a}/{b}')
+        self.assertEqual(bad, [], '闸门表与代码不一致：\n  ' + '\n  '.join(bad))
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# H. spike_cap 的端点护栏 —— 盲带哨兵
 # ═══════════════════════════════════════════════════════════════════════════
 # 这一组守的是一个**潜伏**缺陷：`spike_cap()` 的护栏一度写成 `end_hi > cap`（越界才抬），
 # 而引擎真正的失败门槛在**像素**上 —— `assets/charts.js` 的 `spreadY()` 里
@@ -521,6 +703,7 @@ class TestSpikeCapEndGuard(unittest.TestCase):
         with self.assertRaises(S.SpecError):
             page.spike_cap(9, {'kind': 'gs_bar', 'series': [], 'xlabels': []},
                            [{'fmt': 'f0c', 'unit': 'u'}])
+
 
 
 if __name__ == '__main__':

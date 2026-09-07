@@ -10,8 +10,14 @@
     build/roster.py   LAG       = {t: (常规月, 季末月)}   月末后第几天发布
     monthly_run.py    EARLY     = 5                        默认提前量
                       EARLY_BY  = {t: (常规月, 季末月)}   逐家例外
+                      FACT_GATE = {t: 理由}                不吃日历闸门的家
 
     闸门（月末后第几天）= max(0, LAG − EARLY)，EARLY 取 EARLY_BY.get(t, (EARLY, EARLY))
+
+`FACT_GATE` 里的家**没有**日历闸门（每轮真去问一次源），表里闸门那一格写「事实闸门」
+而不是数字 —— 本脚本对这两种写法双向对账：在 `FACT_GATE` 里却写了数字、不在里面却
+写「事实闸门」，都算分歧。`LAG` / `EARLY_BY` 两列它们照常参与并照常核（`LAG` 删不得，
+它另外喂着首页红点与 `audit_stale_cols()`，见 CRON_WIRING.md §2.3 msci 那一段）。
 
 这三行与 `monthly_run.not_due()` 里 `_due_month((lag[0]-early[0], lag[1]-early[1]))`
 的算法同源；`not_due` 的 `- 1` 偏移是「`end` 已经是月末 + 1 天」的实现细节，不改变
@@ -53,6 +59,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, 'docs', 'CRON_WIRING.md')
 
 DASHES = '—–-'          # 表里「无 EARLY_BY」那一格用的破折号，几种都认
+FACT_CELL = '事实闸门'   # 走 FACT_GATE 的家，闸门那一格认这三个字（前后可带强调号）
 
 
 def rel(path):
@@ -81,26 +88,31 @@ def literals(path, names):
 
 
 def truth():
-    """{ticker: (lag, early, gate, override)}。
+    """{ticker: (lag, early, gate, override, fact)}。
 
     前三项都是 (常规月, 季末月) 二元组；`override` = 这家在 `EARLY_BY` 里有没有
     自己的一条。**必须单独带出来**，不能靠「early == 默认值」倒推 —— 那样一条
     显式写成 `(5, 5)` 的例外会被当成「吃默认」，表里写「—」就查不出来了。
+    `fact` = 这家在 `FACT_GATE` 里。为真时 `gate` 那个数照旧算得出来，但**不是对外
+    口径**（没人用它），表里那一格该写「事实闸门」—— 同理不能靠 gate 倒推。
     """
     r = literals(os.path.join(ROOT, 'build', 'roster.py'), {'LAG'})
-    m = literals(os.path.join(ROOT, 'monthly_run.py'), {'EARLY', 'EARLY_BY'})
-    missing = [n for n, d in (('LAG', r), ('EARLY', m), ('EARLY_BY', m)) if n not in d]
+    m = literals(os.path.join(ROOT, 'monthly_run.py'),
+                 {'EARLY', 'EARLY_BY', 'FACT_GATE'})
+    missing = [n for n, d in (('LAG', r), ('EARLY', m), ('EARLY_BY', m),
+                              ('FACT_GATE', m)) if n not in d]
     if missing:
         raise SystemExit('FAIL 读不到代码里的 %s —— 它们不再是模块级字面量赋值了，'
                          '本脚本的真值来源已断，请改 literals() 或改回字面量'
                          % ' / '.join(missing))
     lag_t, early, early_by = r['LAG'], m['EARLY'], m['EARLY_BY']
+    fact_gate = m['FACT_GATE']
     out = {}
     for t, lag in lag_t.items():
         e = early_by.get(t, (early, early))
         out[t] = (tuple(lag), tuple(e),
                   (max(0, lag[0] - e[0]), max(0, lag[1] - e[1])),
-                  t in early_by)
+                  t in early_by, t in fact_gate)
     return out
 
 
@@ -123,11 +135,15 @@ def parse_pair(cell, what, where, errs):
 
 
 def parse_gate(cell, where, errs):
-    """`0（次月 1 号）` → (0, 0)；`8 / 25` → (8, 25)；只认**行首**那一两个数。
+    """`0（次月 1 号）` → (0, 0)；`8 / 25` → (8, 25)；`**事实闸门**（见下）` → 'FACT'。
 
     「只认行首」是刻意的：`0（次月 1 号）` 里那个 1 是说明文字，正则若贪心去抓
-    整格里的所有数字，就会把它当成季末月的值。
+    整格里的所有数字，就会把它当成季末月的值。同理「事实闸门」必须判在数字正则
+    **之前**：那一格现在的「（见下）」不带数字，但将来写成「（见 §2.4）」就会被
+    行首正则抓空、写成「事实闸门 12」更会被读成闸门 12。
     """
+    if FACT_CELL in cell:
+        return 'FACT'
     m = re.match(r'\s*`?(\d+)`?(?:\s*/\s*`?(\d+)`?)?', cell)
     if not m:
         errs.append('%s 第 %d 行 闸门 这一格读不动：%r' % (where[0], where[1], cell))
@@ -190,7 +206,11 @@ def compare(rows, tru, tables, expect_tables=2):
     errs = []
 
     def fmt(v):
-        return '—' if v is None else '(%d, %d)' % v
+        if v is None:
+            return '—'
+        if v == 'FACT':
+            return '「%s」' % FACT_CELL
+        return '(%d, %d)' % v
 
     for r in rows:
         t, where = r['ticker'], r['where']
@@ -198,7 +218,7 @@ def compare(rows, tru, tables, expect_tables=2):
             errs.append('%s 第 %d 行 `%s` 不在 build/roster.py 的 LAG 表里 —— '
                         '要么这家已被删、表没跟着删，要么 ticker 拼错了' % (where + (t,)))
             continue
-        lag, early, gate, override = tru[t]
+        lag, early, gate, override, fact = tru[t]
         if r['lag'] is not False and r['lag'] != lag:
             errs.append('%s 第 %d 行 `%s` LAG：表写 %s，roster.py 是 %s'
                         % (where + (t, fmt(r['lag']), fmt(lag))))
@@ -216,9 +236,19 @@ def compare(rows, tru, tables, expect_tables=2):
             elif doc_e is not None and doc_e != early:
                 errs.append('%s 第 %d 行 `%s` EARLY_BY：表写 %s，monthly_run.py 是 %s'
                             % (where + (t, fmt(doc_e), fmt(early))))
-        if r['gate'] is not False and r['gate'] != gate:
-            errs.append('%s 第 %d 行 `%s` 闸门：表写 %s，按 max(0, LAG − EARLY) 应为 %s'
-                        % (where + (t, fmt(r['gate']), fmt(gate))))
+        # 闸门这一格有两种合法写法，按 FACT_GATE 双向对账（写反了哪个方向都要报）
+        if r['gate'] is not False:
+            if fact and r['gate'] != 'FACT':
+                errs.append('%s 第 %d 行 `%s` 闸门：表写 %s，但它在 monthly_run.py 的 '
+                            'FACT_GATE 里 —— 不吃日历闸门，这一格该写「%s」'
+                            % (where + (t, fmt(r['gate']), FACT_CELL)))
+            elif not fact and r['gate'] == 'FACT':
+                errs.append('%s 第 %d 行 `%s` 闸门：表写「%s」，但 monthly_run.py 的 '
+                            'FACT_GATE 里没有这一家 —— 按 max(0, LAG − EARLY) 应为 %s'
+                            % (where + (t, FACT_CELL, fmt(gate))))
+            elif not fact and r['gate'] != gate:
+                errs.append('%s 第 %d 行 `%s` 闸门：表写 %s，按 max(0, LAG − EARLY) 应为 %s'
+                            % (where + (t, fmt(r['gate']), fmt(gate))))
 
     # 覆盖率兜底：漏扫比算错更隐蔽 —— 表格改了格式、正则一行都没匹配上，
     # 逐行对账会「全过」。所以名单必须双向对齐。
@@ -272,8 +302,9 @@ def main(argv):
         print('FAIL %d 条：' % len(errs))
         for e in errs:
             print('  · %s' % e)
-        print('\n真值在 build/roster.py 的 LAG 与 monthly_run.py 的 EARLY / EARLY_BY；'
-              '闸门 = max(0, LAG − EARLY)。改表别忘了 docs/DELIVERY.md §4.1 那份删除清单。')
+        print('\n真值在 build/roster.py 的 LAG 与 monthly_run.py 的 EARLY / EARLY_BY '
+              '/ FACT_GATE；闸门 = max(0, LAG − EARLY)，FACT_GATE 里的家写「%s」。'
+              '改表别忘了 docs/DELIVERY.md §4.1 那份删除清单。' % FACT_CELL)
         return 1
     print('OK %d 家逐行核过（§2.2 / §2.3 两张表），LAG / EARLY_BY / 闸门与代码一致'
           % len(rows))
@@ -285,10 +316,10 @@ def main(argv):
 # 光靠「跑真表全过」证明不了什么 —— 正则一行都没匹配上时它同样全过。
 
 def selftest():
-    #                lag        early     gate       override
-    tru = {'aaa': ((7, 7),   (5, 5), (2, 2),   False),
-           'bbb': ((15, 15), (7, 7), (8, 8),   True),
-           'ccc': ((13, 30), (5, 5), (8, 25),  False)}
+    #                lag        early     gate       override  fact
+    tru = {'aaa': ((7, 7),   (5, 5), (2, 2),   False,    False),
+           'bbb': ((15, 15), (7, 7), (8, 8),   True,     False),
+           'ccc': ((13, 30), (5, 5), (8, 25),  False,    False)}
 
     def rows_from(md):
         rows, errs, tables = doc_rows_text(md)
@@ -322,9 +353,25 @@ def selftest():
     case('季末月那一档漏抄', good.replace('| 8 / 25 |', '| 8 |'), True)
     case('少一家（漏扫兜底）', head + '| `aaa` | (7, 7) | — | 2 |\n', True)
     case('多一家不在 LAG 表里', good + '| `zzz` | (1, 1) | — | 0 |\n', True)
+    # 不在 FACT_GATE 里却写「事实闸门」—— 反方向也必须报
+    case('闸门写「事实闸门」但代码里不是',
+         good.replace('| `aaa` | (7, 7) | — | 2 |',
+                      '| `aaa` | (7, 7) | — | **事实闸门**（见下） |'), True)
+
+    # FACT_GATE 里的家：写「事实闸门」放行、写数字要报（LAG / EARLY_BY 两列照常核）
+    fact = {'eee': ((17, 17), (5, 5), (12, 12), False, True)}
+    for name, cell, want in (('事实闸门那一格放行', '**事实闸门**（见下）', False),
+                             ('FACT_GATE 里的家却写了数字', '12', True)):
+        rows, _, tb = rows_from(head + '| `eee` | (17, 17) | — | %s |\n' % cell)
+        got = len(compare(rows, fact, tb, expect_tables=1))
+        if (got > 0) != want:
+            print('  ✗ %s：期望%s，实际 %d 条' % (name, '报错' if want else '全过', got))
+            ok = False
+        else:
+            print('  ✓ %s' % name)
 
     # 「0（次月 1 号）」那一格：说明文字里的 1 不许被当成季末月的值
-    one = {'ddd': ((2, 2), (5, 5), (0, 0), False)}
+    one = {'ddd': ((2, 2), (5, 5), (0, 0), False, False)}
     rows, _, tables = rows_from(head + '| `ddd` | (2, 2) | — | 0（次月 1 号） |\n')
     got = len(compare(rows, one, tables, expect_tables=1))
     if got:
