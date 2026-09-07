@@ -20,18 +20,38 @@ Akamai / PerimeterX 拦截。所以本模块**不依赖浏览器**，可无人�
     → 调度建议：次月 10 日起每天跑一次 latest_month()，出现新月份再 update()。
       不要在月初 1–5 号就判定「源挂了」，那只是还没发。
 
-═══ CDN 缓存陷阱（无人值守的头号坑，别删 cache-buster）═══
+═══ CDN 缓存陷阱（无人值守的头号坑）═══
     响应头是 `cache-control: public, max-age=0, s-maxage=2592000` —— 边缘节点
-    可以缓存这个页面 **30 天**。2026-08-05 实测裸 URL 拿到的是 x-age=546028
-    （6.3 天前）、x-cache-hits=299 的缓存副本。也就是说：新月份上线后，轮询
-    可能连续好几天都还看到旧表，然后误判「MSCI 这个月没发」。
-    → 所以 _download() 一律加 `?_=<unix ts>` + no-cache 头。加了之后 x-age=0，
-      是源站现渲染的页面。这一行不是洁癖，删了会静默漏数据。
-    另：`last-modified` 头**不能**当数据新鲜度用 —— 走缓存时它是 6 天前，绕过
-    缓存时它直接变成「当前时刻」，它反映的是渲染时间不是数据时间。判断有没有
-    新数据只能看解析出来的 max(month)。
+    （Akamai EdgeConnect）可以缓存这个页面 **30 天**。新月份上线后，轮询可能连续
+    好几天都还看到旧表，然后误判「MSCI 这个月没发」。
 
-═══ 口径坑 ═══
+    ⚠ **2026-09-07 实测：query-string 形式的 cache-buster 已经完全失效**，本文件
+    原来那句「加 `?_=<ts>` 之后 x-age=0，是源站现渲染的页面」不再成立 ——
+
+        裸 URL                      x-age=227439  hits=93  ETag "1788535440"（63.3 小时前渲染）
+        URL + "?_=<ts>"             x-age=227273  hits=92  ETag "1788535440"（同一份，逐字节相同）
+        URL + "/?_=<ts>"（尾斜杠）    x-age=9627    hits=2   ETag "1788753086"（2.8 小时前）
+        路径大小写变体（从未请求过）      x-age=0       hits=—   ETag = 请求时刻（冷 miss）
+
+    边缘现在**按 path 做缓存键、完全忽略 query string**。所以：
+
+      · **唯一有效的杠杆是「一个从未被请求过的 path」**，见 _cache_key_url()。
+        请求头一律无效 —— Pragma / no-store / must-revalidate / If-Modified-Since /
+        Accept-Encoding / HEAD 全试过，拿到的都是同一份钉住的副本。
+      · **尾斜杠不是修法，是一次性的**：它只是换了个还没被填的键，第一次请求把它
+        填上之后，它自己也被钉住 30 天。任何**固定** URL 的写法都会在第一次成功
+        之后自动退化成读缓存。这一条最容易被下一个人重新踩：别再往 URL 上加常量。
+      · `x-age` **不能当新鲜度判据**：实测同一份副本（ETag 相同）在不同边缘节点
+        报出 0 与 9452 两个值。它是非标准头，语义由节点自己定。
+      · 可信的只有 `Last-Modified`（本站 `ETag` 就是它的 unix 戳，两者逐秒吻合），
+        它是**这份 HTML 的渲染时刻**。冷 miss 的响应里带 `X-Drupal-Dynamic-Cache:
+        UNCACHEABLE`，即源站每次回源都真渲染、不再叠第二层年龄 —— 所以
+        `now − Last-Modified` 就是这份 HTML 的真实陈旧度。判据见 MAX_RENDER_AGE。
+
+    另：判断有没有新数据仍然只能看解析出来的 max(month)；上面这些只保证「你看的
+    这份 HTML 是刚渲染的」，不保证里面有新月份。
+
+    ═══ 口径坑 ═══
 1. 这是**第三方 ETF 的资产规模**，不是 MSCI 自己的钱、也不是 MSCI 营收。它的
    意义在于 asset-based fee ≈ 季度平均 AUM × 有效基点费率，所以 avg 列比 eop
    列更重要（build_msci.py 的 Exhibit 5 就是用季度平均）。
@@ -82,7 +102,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timezone
+from email.utils import parsedate_to_datetime
 
 URL = "https://ir.msci.com/aum-etfs-linked-msci-indexes"
 
@@ -92,8 +113,56 @@ URL = "https://ir.msci.com/aum-etfs-linked-msci-indexes"
 # 所以：UA 换成 Chrome + 下面的重试，两条一起才能撑住无人值守。
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+# 这份 HTML 最多允许有多旧。26 小时 = 一天（缓存键按日历日轮换）+ 2 小时余量：
+# 生产上 cron 一天跑一次，每次都是当日键的首次请求 ⇒ render_age ≈ 0；同一天人工
+# 重跑会复用同一个键，最坏 24 小时，仍在阈值内，**不会误报**。
+# 上界够狠：s-maxage 是 720 小时，26 小时与它差 27 倍，任何被钉住的副本都拦得下。
+# 代价上界是「新数据晚一天入库」—— 而红点要到月末后第 23 天才亮（LAG 17 + GRACE 5
+# + 1），余量十天，一天承受得起。
+MAX_RENDER_AGE = 26 * 3600
+
 RETRIES = 3          # 间歇性挂起是本源唯一的失败模式，重试是主要防线
 TIMEOUT = 45
+
+# ── 缓存键 ────────────────────────────────────────────────────────────────
+# 边缘按 path 做键（见文件头「CDN 缓存陷阱」），所以每天换一个**没被请求过的
+# path**，才能拿到源站现渲染的页面。手法是把 slug 里的字母位大写：源站的路径匹配
+# 大小写不敏感（2026-09-07 实测 6 个单/双位变体全部 HTTP 200、x-age=0、解析出
+# 213 个月），而边缘的缓存键大小写敏感。
+#
+# ⚠ **池长必须远大于 s-maxage 的 30 天**，否则键回环时会撞上自己 30 天前钉住的
+#   旧副本，护栏 A 就会天天误 FAIL —— 这是本模块唯一一个「写小了会让护栏反过来
+#   咬人」的常数。24 个字母位取一或二 = 300 种，是 30 天的 10 倍。
+# ⚠ 若哪天源站改成大小写敏感，这里会拿到 **HTTP 404**，而 _download() 把 4xx 当
+#   确定性错误直接抛（见其重试段）—— 那是一次响亮的失败，不是静默退化，可接受。
+_SLUG = "aum-etfs-linked-msci-indexes"
+_URL_ROOT = URL[:-len(_SLUG)]
+_LETTER_POS = [i for i, c in enumerate(_SLUG) if c.isalpha()]
+_KEY_POOL = ([(i,) for i in _LETTER_POS]
+             + [(i, j) for a, i in enumerate(_LETTER_POS)
+                for j in _LETTER_POS[a + 1:]])          # 24 + 276 = 300
+
+
+def _cache_key_url(day, shift=0):
+    """按日历日派生一个当天专用的 URL。shift 用于换一个「久未使用」的键重试。"""
+    idxs = _KEY_POOL[(day.toordinal() + shift) % len(_KEY_POOL)]
+    b = list(_SLUG)
+    for i in idxs:
+        b[i] = b[i].upper()
+    return _URL_ROOT + "".join(b)
+
+
+def _render_age(hdrs, now):
+    """这份 HTML 距今多少秒前渲染的；两个头都没有时返回 None（调用方 WARN 放行）。"""
+    lm = hdrs.get("Last-Modified")
+    if lm:
+        try:
+            return now - parsedate_to_datetime(lm).timestamp()
+        except (TypeError, ValueError):
+            pass
+    et = (hdrs.get("ETag") or "").strip('"')             # 本站 ETag = 渲染时刻 unix 戳
+    return now - int(et) if et.isdigit() else None
+
 
 SERIES_FILE = "msci.csv"
 MONTH_COL = "month"
@@ -140,32 +209,66 @@ def _download(cache_dir):
     留快照才能事后判断某次数值变化是重述还是解析 bug。
     """
     os.makedirs(cache_dir, exist_ok=True)
-    # ↓ cache-buster 不是洁癖，是必须的：见文件头「CDN 缓存陷阱」
-    url = f"{URL}?_={int(time.time())}"
-    req = urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    })
-    raw, last_err = None, None
-    for attempt in range(RETRIES):
-        try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                raw = r.read()
-            break
-        except urllib.error.HTTPError as e:
-            # 4xx/5xx 是确定性错误，重试没意义，直接抛
-            raise RuntimeError(f"MSCI IR 返回 HTTP {e.code}（URL={url}）") from e
-        except Exception as e:            # URLError / socket.timeout / 连接重置
-            last_err = e
-            if attempt < RETRIES - 1:
-                time.sleep(5 * (attempt + 1))
-    if raw is None:
+
+    def _once(url):
+        """返回 (raw, headers, final_url)。网络类错误重试，4xx/5xx 直接抛。"""
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        })
+        last_err = None
+        for attempt in range(RETRIES):
+            try:
+                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                    # 头与最终 URL 必须在这里取：出了 with 就没了。
+                    # final_url 是护栏的一部分 —— urllib 默认跟随重定向，若源站哪天
+                    # 给变体路径加了 301 到规范路径，缓存键会**静默**变回那个被钉住
+                    # 的键，而只 read() 的写法完全看不见这件事。
+                    return r.read(), r.headers, r.url
+            except urllib.error.HTTPError as e:
+                # 4xx/5xx 是确定性错误，重试没意义，直接抛
+                raise RuntimeError(f"MSCI IR 返回 HTTP {e.code}（URL={url}）") from e
+            except Exception as e:        # URLError / socket.timeout / 连接重置
+                last_err = e
+                if attempt < RETRIES - 1:
+                    time.sleep(5 * (attempt + 1))
         raise RuntimeError(
             f"MSCI IR 连续 {RETRIES} 次抓取失败：{type(last_err).__name__}: "
             f"{last_err}（URL={url}）")
+
+    today = _date.today()
+    url = _cache_key_url(today)
+    raw, hdrs, final = _once(url)
+    age = _render_age(hdrs, time.time())
+
+    # ── 护栏 A：这份 HTML 有多旧 ───────────────────────────────────────────
+    # 放在下面 nirtable 结构检查**之前**：结构坏了是另一类故障，两个诊断不该
+    # 互相盖住（先知道「这份是三天前的」，再去看它长什么样）。
+    if age is not None and age > MAX_RENDER_AGE:
+        # 换一个久未使用的键再试一次。shift 取池长一半 ⇒ 该键上次被用是 150 天前，
+        # 早已过 s-maxage 的 30 天，必定是冷 miss。
+        url = _cache_key_url(today, shift=len(_KEY_POOL) // 2)
+        raw, hdrs, final = _once(url)
+        age = _render_age(hdrs, time.time())
+    if age is not None and age > MAX_RENDER_AGE:
+        raise RuntimeError(
+            f"MSCI IR 拿到的是 {age / 3600:.1f} 小时前渲染的缓存副本"
+            f"（上限 {MAX_RENDER_AGE / 3600:.0f} 小时，Last-Modified="
+            f"{hdrs.get('Last-Modified')!r}，ETag={hdrs.get('ETag')!r}，"
+            f"URL={url}）—— 换缓存键已经不起作用了，见文件头「CDN 缓存陷阱」。"
+            "**别把阈值调大绕过它**：那等于同意在旧表上判断『这个月没发』。")
+    if final != url:
+        raise RuntimeError(
+            f"MSCI IR 把请求重定向到了 {final!r}（请求的是 {url!r}）—— 缓存键已经"
+            "变回规范路径，此后拿到的都可能是被钉住 30 天的旧副本。"
+            "需要重新找一种能生成新缓存键的写法，见文件头「CDN 缓存陷阱」。")
+    if age is None:
+        print("[msci] ⚠ 响应里没有 Last-Modified 也没有可解析的 ETag —— 无法判断这份"
+              " HTML 有多旧，护栏 A 本轮失效（放行）。源站或 CDN 换了，请人工看一眼；"
+              "兜底靠 monthly_run.audit_overdue_headline()。", file=sys.stderr)
 
     text = raw.decode("utf-8", errors="replace")
     if "nirtable" not in text:

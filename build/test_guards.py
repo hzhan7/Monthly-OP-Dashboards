@@ -483,5 +483,58 @@ class TestOverdueMatchesRedDot(unittest.TestCase):
 
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# F. fetch/msci.py 的缓存键池 —— 写小了护栏 A 会反过来咬人
+# ═══════════════════════════════════════════════════════════════════════════
+# 这里只测**纯函数**。护栏 A 的其余部分（render_age 阈值、重定向分支、缺头 WARN）
+# 要发真请求才验得了，不进 preflight —— 那三条的实测结果记在提交信息里。
+#
+# 池长是本模块唯一一个「写错了会让护栏反过来咬人」的常数：边缘 s-maxage 是 30 天，
+# 池长若 ≤ 30，键回环时会撞上自己 30 天前钉住的旧副本，于是每天误 FAIL。
+class TestMsciCacheKeyPool(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_msci_t', os.path.join(ROOT, 'fetch', 'msci.py'))
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    S_MAXAGE_DAYS = 30          # 响应头 s-maxage=2592000，见 fetch/msci.py 文件头
+
+    def test_pool_outlasts_edge_ttl(self):
+        self.assertGreater(
+            len(self.m._KEY_POOL), self.S_MAXAGE_DAYS * 2,
+            '缓存键池必须远大于边缘 TTL 的天数，否则回环会撞上自己钉住的旧副本')
+
+    def test_no_repeat_within_a_full_cycle(self):
+        d0 = datetime.date(2026, 1, 1)
+        n = len(self.m._KEY_POOL)
+        urls = [self.m._cache_key_url(d0 + datetime.timedelta(days=i)) for i in range(n)]
+        self.assertEqual(len(set(urls)), n, '一个周期内出现了重复的缓存键')
+
+    def test_retry_key_differs_and_is_long_unused(self):
+        d0 = datetime.date(2026, 1, 1)
+        shift = len(self.m._KEY_POOL) // 2
+        self.assertNotEqual(self.m._cache_key_url(d0),
+                            self.m._cache_key_url(d0, shift=shift))
+        self.assertGreater(shift, self.S_MAXAGE_DAYS,
+                           '重试用的键距上次使用不足一个 TTL，可能仍是热副本')
+
+    def test_variant_differs_from_canonical_only_in_case(self):
+        """变体只能改大小写 —— 改出别的字符就不是同一个页面了。"""
+        d0 = datetime.date(2026, 1, 1)
+        for i in range(0, len(self.m._KEY_POOL), 37):
+            u = self.m._cache_key_url(d0 + datetime.timedelta(days=i))
+            with self.subTest(i=i):
+                self.assertEqual(u.lower(), self.m.URL.lower())
+                self.assertNotEqual(u, self.m.URL)      # 必须真的换了键
+
+    def test_max_render_age_is_over_a_day(self):
+        """阈值必须大于一天：同一天人工重跑会复用当日键，最坏 24 小时。"""
+        self.assertGreater(self.m.MAX_RENDER_AGE, 24 * 3600)
+        self.assertLess(self.m.MAX_RENDER_AGE, self.S_MAXAGE_DAYS * 86400)
+
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
