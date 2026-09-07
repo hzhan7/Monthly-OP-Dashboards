@@ -328,8 +328,9 @@ rm -rf sgx/                # 页面壳目录
 
 # ② 删 5 行注册（手工编辑，每处就是一整行）
 #   monthly_run.py    EXCHANGES 里的   'sgx',      这一行
-#   monthly_run.py    EARLY_BY 里的    'sgx':      那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq 五家；
-#                                                  原文写「四家」漏了 lseg，2026-08-14 订正，与 CRON_WIRING §4 一致）
+#   monthly_run.py    EARLY_BY 里的    'sgx':      那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq / umc / ase
+#                                                  七家；原文写「四家」漏了 lseg，2026-08-14 订正；umc / ase 是
+#                                                  2026-08-30 新增，与 CRON_WIRING §4 一致）
 #   build/roster.py   EXCH 里的        'sgx',      这一行
 #   build/roster.py   LAG 里的         'sgx':      这一行
 #   build/roster.py   META 里的        'sgx':      这一行
