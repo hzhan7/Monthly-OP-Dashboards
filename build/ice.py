@@ -108,8 +108,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 ROOT = os.path.dirname(HERE)
 
-sys.path.insert(0, HERE)
-
 CSV = os.path.join(ROOT, 'series', 'ice.csv')
 
 OUT = os.path.join(ROOT, 'data', 'ice.js')
@@ -628,10 +626,6 @@ def qcol(name, qwin, how='sum'):
 **把这件事变成会响的**：它现场把 unit 换掉、验判定确实翻，翻不掉说明「靠 unit 挡住」
 这句话已经不成立（比如 classify 的正则改了），停机。
 """
-
-HERE__colmeta = os.path.join(ROOT, 'build')
-
-sys.path.insert(0, HERE__colmeta)
 
 MONTHS__colmeta = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -1980,8 +1974,6 @@ build/specs/ice.py:44-50 立的第二条：
 `_ceil_to()` / `_floor_to()`：它们是**取整方向**的护栏，不是格式化。
 """
 
-sys.path.insert(0, HERE)
-
 #: 迁移期的别名。specs/ice.py 里这个常量叫 `_CSV`，正文的 helper 全用它；
 #: 冻结契约里模块级的名字是 `CSV`。留一个别名，helper 体就能**逐字**搬过来。
 _CSV = CSV
@@ -2819,8 +2811,6 @@ _HANDLED = _handled_sum_check()
 ⚠️ NYSE 现货那条腿的换算因子是 **÷100，不是 ÷1000**。全量纲推导见 `_LEG_CASH`
     的注释；用错成 ÷1000 会把现货收入低估 10 倍，而且不会有任何报错。
 """
-
-sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 # ══════════════════════════════════════════════════════════════════════
 # 公共头的一小撮工具：正式合并进 build/ice.py 时**删掉本段**，直接用文件头那份。
@@ -3808,8 +3798,6 @@ def build_bridge(VQ, QQ, RPCQ, QTRS, ex_bridge=EX_BRIDGE):
    的机读说明）。论证性的图注是 exhibit 那几段的事，走 `note=` 传进来。
 """
 
-sys.path.insert(0, os.path.join(ROOT, 'build'))
-
 BREAK_MONTH = '2013-11'     # 唯一口径断点：NYSE Euronext 收购完成
 
 def qlab__exlib(q):
@@ -4682,8 +4670,6 @@ headline 2 行 + 8 个组共 52 行 = 54 个数据行，加 9 条组带 = 63 行
 被砍掉的 28 行逐条理由见 `SUM_ROWS` 上方的清单；新增的 5 行理由见 `COL__summary` 里
 `adv_rates_kcontracts` 与 `SUM_ROWS` 末尾那条组带上方的注释。
 """
-
-sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 def num__summary(v, dec=0):
     """cme.py:206 的 num__summary：缺失印「—」（表格里的空位要看得出是没有数，不是零）。"""
@@ -7356,10 +7342,6 @@ ICE 的 spec 注册了 52 列，于是核对表就是 52 列 × 13 行，横向�
 手写页把「上图」与「进表」解耦了。这一段用上这个自由，**两个方向都用**：
 砍掉页面从不印、也不进任何推导值的 9 列，同时把 3 列从没上过图的交易日**请进来**。
 """
-
-HERE__table = os.path.join(ROOT, 'build')
-
-sys.path.insert(0, HERE__table)
 
 # ══════════════════════ 1. 列元数据（COL__table 的表相关子集）════════════════════
 #
