@@ -1030,6 +1030,20 @@ class TestExchanges12HoleGate(unittest.TestCase):
                               known={('asx', '2019-03'): self.WHY})
         self.assertIn('已经不是洞', str(cm.exception))
 
+    def test_noncanonical_month_says_format_not_stale(self):
+        """月份写成 '2019-3' / Period 时要报格式错，不能报「数据补上了」。
+
+        stale 判据是纯字符串比对，非规范写法会静静落进那个分支，把人指去翻 series/，
+        而问题在登记这一行自己的写法上 —— Period 打印出来还和字符串一模一样。
+        """
+        for bad in ('2019-3', self.pd.Period('2019-03', freq='M')):
+            with self.assertRaises(SystemExit) as cm:
+                self.E.gate_holes({'asx': ['2019-03']}, self.BLK, 'Jan-19', 'Jun-19',
+                                  known={('asx', bad): self.WHY})
+            msg = str(cm.exception)
+            self.assertIn('YYYY-MM', msg)
+            self.assertNotIn('数据补上了', msg)
+
     def test_reason_pointing_at_a_healthy_block_raises(self):
         """病因指到一条其实有值的腿 ⇒ 炸。图注会照着这个块名点名，指错就是印错话。"""
         BLK = {'asx': {'ASX_ETO': self.BLK['asx']['ASX_ETO'],

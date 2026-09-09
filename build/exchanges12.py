@@ -165,6 +165,7 @@ grouped_bars 三样都对：图例读 groups[].name、纵轴 `y0 = min(0, mn×1.
 """
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -578,6 +579,18 @@ def gate_holes(holes, BLK, lo, hi, known=None):
     build_payload() 中段，唯一的测法是造一份 12 家的完整真数据，等于不可测。
     """
     known = KNOWN_HOLES if known is None else known
+
+    # 月份先验格式：holes 里的元素恒是零填充的 'YYYY-MM'（str(Period)），而 stale 判据是
+    # 纯字符串比对。手写成 '2020-1'、或顺手写成 pd.Period('2020-01')，都会静静落进
+    # stale 分支，报出「数据补上了是好事」——把人指去翻 series/，而真正的问题在这一行
+    # 自己的写法上（Period 打印出来还和字符串一模一样，肉眼看不出差别）。先拦格式。
+    badfmt = [f'{k} {m!r}' for (k, m) in known
+              if not (isinstance(m, str) and re.fullmatch(r'\d{4}-\d{2}', m))]
+    if badfmt:
+        raise SystemExit(
+            'KNOWN_HOLES 的月份必须写成零填充的 \'YYYY-MM\' 字符串，这些不是：%s。'
+            '（写成 \'2020-1\' 或 pd.Period 都对不上内部的 str(Period) 比较，'
+            '会被误判成「登记已过期」。）' % '、'.join(badfmt))
 
     # 登记表必须与实际的洞双向对齐：写了病因却没有洞 = 官方补发或数据已修，
     # 这条登记连同它在页面上印的那句话都必须撤掉，否则页面会一直解释一个不存在的空格。
@@ -1546,11 +1559,25 @@ def build_payload(raw, specs, fx, kconst):
     XL_LONG = [mlab(p) for p in IDX]
     XL13 = [mlab(p) for p in IDX[-TBL_MONTHS:]]
 
-    # 基期为 0 / 无效 ⇒ 指数化整条作废。这不是"缺一个点"，是整条线的分母没了。
-    bad_base = [DISP[k] for k in MEM_KEYS if not np.isfinite(IDXHI[k][CUR])]
+    # IDXHI[k][CUR] 不是有限值有两个成因，诊断必须分开说 —— 合成一句会指着错的月份
+    # 骂错的东西。① 基期为 0 / 无效 ⇒ 指数化整条作废（分母没了，不是"缺一个点"）；
+    # ② 共同最新月那一格本身是个已登记的缺月 ⇒ 这家这个月没有可发布的当期值。
+    # ② 在 KNOWN_HOLES 出现之前不可达（窗口内任何洞都先被硬失败拦住），现在可达了：
+    # 已经发到更晚月份的那几家，若在共同最新月上被回溯置空，就正好落在这一格。
+    cur_gap = [k for k in MEM_KEYS if (k, str(CUR)) in KNOWN_HOLES]
+    bad_base = [k for k in MEM_KEYS
+                if k not in cur_gap and not np.isfinite(IDXHI[k][CUR])]
     if bad_base:
         skip(f'这些成员在基期 {mlab(BASE)} 的量为 0 或无效，无法指数化：'
-             + '、'.join(bad_base))
+             + '、'.join(DISP[k] for k in bad_base))
+    if cur_gap:
+        # 走 skip 而不是 raise：这是「本月发不了」，不是源数据坏了 —— 四家短板一发出
+        # 更晚的月份，LATEST 前移，同一个登记洞就不再落在共同最新月上，页面自愈。
+        skip('这些成员在共同最新月 %s 那一格是已登记的缺月，本月没有可发布的当期值：%s。'
+             '（登记与病因见 build/exchanges12.py 的 KNOWN_HOLES；'
+             '这不是基期的问题，基期 %s 一切正常。）'
+             % (mlab(CUR), '、'.join(f'{DISP[k]}（{KNOWN_HOLES[(k, str(CUR))][0]}）'
+                                     for k in cur_gap), mlab(BASE)))
 
     # ── 张数口径 vs 定基名义额口径：只有「合约块全部已定价且 ≥2 个」才是实测量 ──
     con_prod = {k: contract_products(k, specs) for k in MEM_KEYS}
@@ -1858,6 +1885,17 @@ def build_payload(raw, specs, fx, kconst):
     gap5 = [(k, int(m[:4])) for k, m in GAPS if k in row5 and int(m[:4]) in yrs]
     blank5_who = [f'{DISP[row5[i]]} {yrs[j]}' for i, row in enumerate(heat5)
                   for j, v in enumerate(row) if v is None]
+    # 「少一个月」要说出到底是几个月：缺月落在未满年里时并不是 11 —— 今天 2026 只到
+    # Jul-26，那一格是 6 对 6。数字现算，别写死。
+    gap5_cnt = [(k, y, len({p.month for p in PARTS[k][0][1].index
+                            if p.year == y and np.isfinite(PARTS[k][0][1][p])}))
+                for k, y in gap5]
+    # 「下一年那格因此空着」不能由「有洞」直接推出来，要以矩阵里那格**实际是不是 None**
+    # 为准：annual_yoy 是同月对同月，缺的月份若落在下一年比不到的月份里（未满年的后半段），
+    # 下一年那格照常算得出来。而且 y+1 可能根本不在 yrs 里（洞在末年时），
+    # 那样会印出一个图上不存在的年份。两个条件逐 gap 各查一次。
+    gap5_next = [(k, y + 1) for k, y in gap5
+                 if y + 1 in yrs and heat5[row5.index(k)][yrs.index(y + 1)] is None]
     ex.append({
         'n': 5, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
         'title': f'Constant-basis notional, annual y/y (%) — the {len(row5)} exchanges whose '
@@ -1889,15 +1927,15 @@ def build_payload(raw, specs, fx, kconst):
                  + (f'{"、".join(str(y) for y in part_yrs)} 年只到 {mlab(LATEST)}，'
                     f'该列拿<b>同月对同月</b>比上年（不是比上年全年，否则会砸出一个假坑）。'
                     if part_yrs else '')
-                 + ((f'<b>{"、".join(f"{DISP[k]} {y}" for k, y in gap5)} 那一格是'
-                     f'<b>11 个月</b>对 11 个月，不是完整 12 个月</b>：该家有一个月的官方数'
-                     f'被主动留空（缘由见 Exhibit 2 的图注），而本图是同月对同月，'
-                     f'缺的那个月被分子分母同时剔掉了 —— 数值仍然可比，但它比同一列'
-                     f'其余各格少一个月的样本。'
-                     + (f'紧接着的 {"、".join(str(y + 1) for _k, y in gap5)} 年那一格因此'
-                        f'<b>空着</b>：它要拿只剩 11 个月的上一年做分母，同月对同月凑不齐。'
-                        if any(y + 1 in yrs for _k, y in gap5) else ''))
-                    if gap5 else '')
+                 + ((f'<b>{"、".join(f"{DISP[k]} {y}（{n} 个月对 {n} 个月）" for k, y, n in gap5_cnt)}'
+                     f' 不是完整 12 个月对 12 个月</b>：该家有一个月的官方数被主动留空'
+                     f'（缘由见 Exhibit 2 的图注），而本图是同月对同月，缺的那个月被'
+                     f'分子分母同时剔掉了 —— 数值仍然可比，但它比同一列其余各格少一个月的样本。'
+                     + (f'受它拖累的 {"、".join(f"{DISP[k]} {y}" for k, y in gap5_next)} '
+                        f'那一格因此<b>空着</b>：它要拿少一个月的上一年做分母，'
+                        f'同月对同月凑不齐。'
+                        if gap5_next else ''))
+                    if gap5_cnt else '')
                  + (f'<b>空格 = 那一格的年度同比算不出来，不是那一年没有成交</b>'
                     f'（本图 {len(blank5_who)} 格：{"、".join(blank5_who)}）。'
                     if blank5_who else '')
@@ -2430,9 +2468,12 @@ def build_payload(raw, specs, fx, kconst):
 
         '<b>本页没有画任何断点线。</b>共同窗口内 12 家的头条口径均无并购并表或重分类需要'
         '标注，故 payload 里没有任何 <code>break_at</code>。'
+        # ⚠ 这里不要写「上一条」：notes 是按顺序渲染成 <ol> 的（assets/page.js），
+        # 而缺月登记那条与本条之间还隔着核对表那条，「上一条」会指到核对表上去。
+        # 本页别处的跨条引用都是点名的（Ex5 写「见 Exhibit 2 的图注」），这里照办。
         + ('相邻期可直读。' if not GAPS else
-           '上一条登记的缺月是另一回事 —— 那是同一口径下某个月没有可用的官方数，'
-           '不是口径变了；除了跨过缺口的那一对，相邻期仍可直读。')
+           '前面「缺月一律留空」那一条登记的缺月是另一回事 —— 那是同一口径下某个月'
+           '没有可用的官方数，不是口径变了；除了跨过缺口的那一对，相邻期仍可直读。')
         + '日后若任一家出现口径变更，必须在这里登记并在对应图上画出 break。',
     ]
 
