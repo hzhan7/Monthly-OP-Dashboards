@@ -985,5 +985,100 @@ class TestMixAbsStack(unittest.TestCase):
                               'abs_stack': True, 'rhs_share': 'b'}, 'test')
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# J. exchanges12 的缺月闸门 —— gate_holes()
+# ═══════════════════════════════════════════════════════════════════════════
+# 2026-09 加。这道闸门原来是「窗口内有洞就整页 raise」，把 /exchanges12/ 从 31c335c
+# 起冻了整整四天：ASX 2020-01 的官方印错值被 series/ 那边主动置空，页面却因此再也
+# 构建不出来，于是线上那一版**恰好还印着要删掉的那个错值**。改成「登记才放行」之后，
+# 放行的口子必须自己有网兜着 —— 它现在是全页唯一能抓到源列损坏的地方。
+#
+# 四条各守一个方向：未登记的必须炸（口子不能变成默认放行）、登记过的必须放行
+#（否则等于没改）、登记但洞已经补上必须炸（页面不能继续解释一个不存在的空格）、
+# 病因指错腿必须炸（图注会把空格归给一条其实有值的腿）。
+class TestExchanges12HoleGate(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        import pandas as pd
+        cls.pd = pd
+        import exchanges12 as E
+        cls.E = E
+        idx = pd.period_range('2019-01', '2019-06', freq='M')
+        s = pd.Series(1.0, index=idx)
+        holed = s.copy()
+        holed[pd.Period('2019-03')] = float('nan')
+        # 两个成员各一块；'asx' 的 ASX_ETO 在 2019-03 缺值，'cme' 齐备。
+        cls.BLK = {'asx': {'ASX_ETO': holed}, 'cme': {'CME_ALL': s}}
+        cls.WHY = ('ASX_ETO', '测试用病因')
+
+    def test_registered_hole_passes(self):
+        got = self.E.gate_holes({'asx': ['2019-03']}, self.BLK, 'Jan-19', 'Jun-19',
+                                known={('asx', '2019-03'): self.WHY})
+        self.assertEqual(got, [('asx', '2019-03')])
+
+    def test_unregistered_hole_raises(self):
+        """没登记的洞必须炸 —— 否则这道闸门等于被拆了。"""
+        with self.assertRaises(SystemExit) as cm:
+            self.E.gate_holes({'asx': ['2019-03']}, self.BLK, 'Jan-19', 'Jun-19', known={})
+        self.assertIn('未登记', str(cm.exception))
+
+    def test_stale_registration_raises(self):
+        """洞补上了而登记还在 ⇒ 炸，逼人把图注里那句解释一起删掉。"""
+        with self.assertRaises(SystemExit) as cm:
+            self.E.gate_holes({}, self.BLK, 'Jan-19', 'Jun-19',
+                              known={('asx', '2019-03'): self.WHY})
+        self.assertIn('已经不是洞', str(cm.exception))
+
+    def test_reason_pointing_at_a_healthy_block_raises(self):
+        """病因指到一条其实有值的腿 ⇒ 炸。图注会照着这个块名点名，指错就是印错话。"""
+        BLK = {'asx': {'ASX_ETO': self.BLK['asx']['ASX_ETO'],
+                       'ASX_DERIV': self.pd.Series(1.0, index=self.BLK['cme']['CME_ALL'].index)}}
+        with self.assertRaises(SystemExit) as cm:
+            self.E.gate_holes({'asx': ['2019-03']}, BLK, 'Jan-19', 'Jun-19',
+                              known={('asx', '2019-03'): ('ASX_DERIV', '指错腿')})
+        self.assertIn('指错了腿', str(cm.exception))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# K. exchanges12 的三个同比函数 —— pct_change 不许前向填充
+# ═══════════════════════════════════════════════════════════════════════════
+# 同一次改动挖出来的真缺陷：pandas ≤ 2.x 的 pct_change 默认 fill_method='pad'，
+# 序列中间缺一个月**不会**留空，而是拿上一个月冒充它算出一个假读数 —— 不报错、
+# 不留 null。这正是「洞看不出来」的那种坏法，而且它是本页那道 hull 自检
+#（加权平均必落在分量 min/max 之间）唯一一次真的被撞响的原因。
+# 三个函数各测一次：留空的必须是 null，不能是数。
+class TestExchanges12NoPadOnPctChange(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        import pandas as pd
+        import exchanges12 as E
+        cls.E, cls.pd = E, pd
+        idx = pd.period_range('2019-01', '2021-12', freq='M')
+        s = pd.Series(range(1, len(idx) + 1), index=idx, dtype=float)
+        s[pd.Period('2020-01')] = float('nan')
+        cls.s = s
+
+    def test_yoy_leaves_the_hole_empty(self):
+        v = self.E.yoy(self.s)
+        for m in ('2020-01', '2021-01'):
+            self.assertTrue(self.pd.isna(v[self.pd.Period(m)]),
+                            f'{m} 被前向填充算出了 {v[self.pd.Period(m)]}')
+
+    def test_mom_leaves_the_hole_empty(self):
+        v = self.E.f_mom(self.s)
+        for m in ('2020-01', '2020-02'):
+            self.assertTrue(self.pd.isna(v[self.pd.Period(m)]),
+                            f'{m} 被前向填充算出了 {v[self.pd.Period(m)]}')
+
+    def test_ttm_yoy_leaves_the_hole_empty(self):
+        """滚动合计口径上，一格缺值影响其后 12 个月，同比再影响 12 个月。"""
+        v = self.E.ttm_yoy(self.s)
+        for m in ('2020-12', '2021-01'):
+            self.assertTrue(self.pd.isna(v[self.pd.Period(m)]),
+                            f'{m} 被前向填充算出了 {v[self.pd.Period(m)]}')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
