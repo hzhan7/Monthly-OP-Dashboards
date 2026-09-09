@@ -1985,8 +1985,12 @@ class Page:
                                f'「{m["total"]["zh"]}」→ 走 ex_mix_total')
                 for c in m['parts']:
                     if c['no_yoy']:
+                        # 措辞不能写「根本不出水平值柱」：`abs_stack` 那张图的每一段
+                        # 画的**就是**分项的水平值（jpx Exhibit 9 两段 = 两个分项的
+                        # ¥tn/day 原值）。结论（这个开关没人读）不变，理由要说对。
                         _ny.append(f'groups「{g["zh"]}」.mix 的分项'
-                                   f'「{c["zh"]}」→ 根本不出水平值柱')
+                                   f'「{c["zh"]}」→ 走 ex_mix_share / ex_mix_abs，'
+                                   f'两者都不画次轴同比、也不读这个开关')
             for c in g['cols']:
                 if c['no_yoy'] and c['stock']:
                     _ny.append(f'groups「{g["zh"]}」的「{c["zh"]}」'

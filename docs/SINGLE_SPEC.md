@@ -522,7 +522,7 @@ Exhibit 1 是汇总表，图从 2 起编号，末尾是核对表。顺序固定�
 | `fmt` 不是引擎实有的名字 | 列出全部 18 个可用名 |
 | 0–1 的小数比率配了 `pct*` 却没给 `scale` | `最大绝对值只有 0.19，看着是 0–1 的小数比率…请加 'scale': 100` |
 | `slow_cols` 里的列名拼错 / 没出现在 headline、groups 里 | 慢腿声明会静默失效，所以硬失败 |
-| `no_yoy` 写在 headline / 存量列 / `mix.total` / `mix.parts` / `level_yoy.level` / `decomp` 的 `value`·`qty`·`bench_value`·`bench_qty` 上，或写在 2 列以上的同单位桶里 | 那几条产图路径（`ex_head_bar` / `ex_yoy` / `ex_stock` / `ex_mix_total` / `ex_lines` / `ex_heat` / `ex_level_yoy`）都不读这个开关，声明会被静默忽略。**其中 `ex_heat` 尤其要拦**：>5 列的同单位桶画的就是同比热力矩阵，声明被忽略而同比照画 |
+| `no_yoy` 写在 headline / 存量列 / `mix.total` / `mix.parts` / `level_yoy.level` / `decomp` 的 `value`·`qty`·`bench_value`·`bench_qty` 上，或写在 2 列以上的同单位桶里 | 那几条产图路径（`ex_head_bar` / `ex_yoy` / `ex_history` / `ex_season` / `ex_stock` / `ex_mix_total` / `ex_mix_share` / `ex_mix_abs` / `ex_lines` / `ex_heat` / `ex_level_yoy` / `ex_decomp`）都不读这个开关，声明会被静默忽略。**其中 `ex_heat` 尤其要拦**：>5 列的同单位桶画的就是同比热力矩阵，声明被忽略而同比照画。⚠️ 这一格与左格必须一起改 —— 左格新增一个落点、右格没跟上那条路径名，同一行就会自相矛盾（2026-09 加 `decomp` 四个位置时正是只改了左格） |
 | `mix` 同时写了 `abs_stack` 与 `rhs_share` / `share_note` | 后两个只有 100% 占比那张图读得到，而 `abs_stack` 根本不出那张图 —— 留着是死配置 |
 | 某列既是头条又是慢腿 | 头条定义门槛，慢腿被排除在门槛外，两者不能同时成立 |
 | `ticker` 与文件名不一致 | 目录名 = data 文件名 = `payload.ticker` 必须逐字相同 |

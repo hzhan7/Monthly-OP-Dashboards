@@ -706,5 +706,284 @@ class TestSpikeCapEndGuard(unittest.TestCase):
 
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# I. 2026-09 给 build/single.py 加的三样东西 —— 它们失败时都**不出声**
+# ═══════════════════════════════════════════════════════════════════════════
+# 判据照 README「第四类：不出声的失败」那一节：
+#     「它连续失败十天，和成功十天，在日志里长得一样吗？一样，就缺一道护栏。」
+#
+# · `no_yoy` 落点守卫：守卫本身若失效，声明被吞、payload 一字不改、rc=0、
+#   五道闸门全绿 —— 正是它写出来要消灭的那个形状。而且它在两轮里**被漏了两次**
+#   （先漏 decomp 四个列位，再漏「mix 落空时分项回到桶里」这条路由），
+#   两次都是人复核抓到的，没有任何自动判据会响。
+# · `prior12()`：verify_pages 只查 gs_bar 有没有 `avg12`，**不查值**。
+#   切片从 [-13:-1] 改成 [-12:] 照样返回一个数、照样过闸门，虚线悄悄挪一格。
+# · `monthly_total(bucket=)`：分岔的是一句印在图注里的口径断言，没有闸门读它；
+#   而它的年度支现在**零活体覆盖**（全仓再没有 spec 传 weight_col / *_total_col）。
+class TestNoYoyGuard(unittest.TestCase):
+    """`no_yoy` 只有 `ex_single` 读得到 —— 写在别处必须硬失败，写对了必须生效。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls.spec = single.load_spec('jpx')
+
+    def _spec(self):
+        import copy
+        return copy.deepcopy(self.spec)
+
+    def test_norm_col_call_sites_still_seven(self):
+        """`_norm_col` 的调用点数量 —— 守卫注释自称「共 7 个」，这是那句话的看门人。
+
+        加了第 8 个调用点却忘了扩守卫，是这道守卫最可能的失效方式（已发生过一次：
+        decomp 的四个列位就是这么漏的）。用 AST 数，不用 grep —— 注释里出现
+        `_norm_col(` 不算调用。
+        """
+        import ast
+        src = open(os.path.join(ROOT, 'build', 'single.py'), encoding='utf-8').read()
+        n = sum(1 for node in ast.walk(ast.parse(src))
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == '_norm_col')
+        self.assertEqual(n, 7,
+                         f'_norm_col 的调用点从 7 个变成了 {n} 个 —— '
+                         f'新增/删除一个落点时必须同步改 Page.__init__ 里的 no_yoy 守卫'
+                         f'与 docs/SINGLE_SPEC.md §4 那一行的**左右两格**')
+
+    def test_blocks_headline(self):
+        sp = self._spec()
+        sp['headline'][0]['no_yoy'] = True
+        with self.assertRaises(self.S.SpecError) as cm:
+            self.S.Page(sp)
+        self.assertIn('headline', str(cm.exception))
+
+    def test_blocks_stock_col(self):
+        sp = self._spec()
+        for g in sp['groups']:
+            for c in g['cols']:
+                if c['col'] == 'mktcap_eom_jpytn':
+                    c['no_yoy'] = True
+        with self.assertRaises(self.S.SpecError) as cm:
+            self.S.Page(sp)
+        self.assertIn('stock=True', str(cm.exception))
+
+    def test_blocks_multi_col_bucket(self):
+        """2 列以上的同单位桶走 ex_lines / ex_heat，都不读这个开关。"""
+        sp = self._spec()
+        for g in sp['groups']:
+            for c in g['cols']:
+                if c['col'] == 'adv_deriv_index_lgeq_kcontracts':
+                    c['no_yoy'] = True
+        with self.assertRaises(self.S.SpecError):
+            self.S.Page(sp)
+
+    def test_blocks_mix_total_and_parts(self):
+        sp = self._spec()
+        for g in sp['groups']:
+            if g.get('mix'):
+                for c in g['cols']:
+                    if c['col'] == g['mix']['total']:
+                        c['no_yoy'] = True
+        with self.assertRaises(self.S.SpecError) as cm:
+            self.S.Page(sp)
+        self.assertIn('mix', str(cm.exception))
+
+    def test_blocks_decomp_columns(self):
+        """decomp 的四个列位也走 _norm_col —— 语法上写得进去，而 ex_decomp 不读它。
+
+        漏了这一条时的实测症状：rc=0、payload 逐字节不变、五道闸门全绿。
+        """
+        for key in ('value', 'qty'):
+            with self.subTest(key=key):
+                sp = self._spec()
+                sp['decomp'][0][key]['no_yoy'] = True
+                with self.assertRaises(self.S.SpecError) as cm:
+                    self.S.Page(sp)
+                self.assertIn('decomp', str(cm.exception))
+
+    def test_blocks_when_mix_may_fall_through(self):
+        """mix 那张图没出成时，被「声明扣掉」的分项会回到桶里 —— 桶一超 MAX_LINES
+        就走 ex_heat（画同比）。守卫必须按**最坏情形**分桶，不能照抄 payload()
+        那份「按真画出来的图扣列」的算法（两处天生不同源）。
+        """
+        sp = self._spec()
+        unit = 'k contracts/day'
+        cols = [{'col': c, 'zh': z, 'unit': unit, 'fmt': 'f1'} for c, z in [
+            ('adv_deriv_total_raw_kcontracts', 'T'),
+            ('adv_deriv_index_raw_kcontracts', 'P1'),
+            ('adv_deriv_rates_raw_kcontracts', 'P2'),
+            ('adv_deriv_cmdty_raw_kcontracts', 'P3'),
+            ('adv_n225_futures_kcontracts', 'P4'),
+            ('adv_n225_mini_kcontracts', 'P5'),
+            ('adv_topix_futures_kcontracts', 'F'),
+        ]]
+        cols[-1]['no_yoy'] = True          # ← 只有它带开关，且它不是 mix 的成员
+        drop = {'衍生品分类 ADV（原始张数，仅供口径对照）',
+                '迷你化：大型合约 vs mini（原始张数）',
+                '衍生品总量：大合约当量 vs 原始张数'}
+        sp['groups'] = [g for g in sp['groups'] if g['zh'] not in drop]
+        sp['groups'].append({'zh': 'G_fallthrough', 'cols': cols, 'mix': {
+            'total': 'adv_deriv_total_raw_kcontracts',
+            'parts': [c['col'] for c in cols[1:6]],
+            'residual_zh': '其他', 'abs_stack': True}})
+        with self.assertRaises(self.S.SpecError) as cm:
+            self.S.Page(sp)
+        self.assertIn('mix 落空', str(cm.exception))
+
+    def test_allows_and_takes_effect_on_single_bucket(self):
+        """写对了必须**生效**：撤掉 yoy 与右轴、改画 avg12。只拦不生效等于白拦。"""
+        page = self.S.Page(self._spec())
+        pay, why = page.payload()
+        self.assertIsNotNone(pay, f'jpx payload 没产出来：{why}')
+        # `_cols` 是内部字段，落盘前会被剔掉 —— 按标题认这张图。
+        ex = [e for e in pay['exhibits']
+              if e.get('title', '').endswith('当月公开募集件数')]
+        self.assertEqual(len(ex), 1)
+        self.assertIsNone(ex[0].get('yoy'))
+        self.assertIsNone(ex[0].get('ylab2'))
+        self.assertIsNotNone(ex[0].get('avg12'))
+
+    def test_all_live_specs_still_construct(self):
+        """过杀的唯一整页护栏：现网每一页都必须还能构造出来。"""
+        import glob as _glob
+        for f in sorted(_glob.glob(os.path.join(ROOT, 'build', 'specs', '*.py'))):
+            t = os.path.splitext(os.path.basename(f))[0]
+            if t.startswith('_'):
+                continue
+            with self.subTest(ticker=t):
+                self.S.Page(self.S.load_spec(t))
+
+    def test_bench_absent_does_not_trip_guard(self):
+        """不给 bench 时两键归一化成 None —— 守卫的 isinstance 那半句不是冗余。"""
+        d = self.S._norm_decomp(
+            {k: v for k, v in self.spec['decomp'][0].items()}, 'decomp[0]')
+        self.assertIsNone(d['bench_value'])
+        self.assertIsNone(d['bench_qty'])
+        self.S.Page(self._spec())          # 不抛 TypeError
+
+
+class TestPrior12(unittest.TestCase):
+    """`avg12` 那条虚线的值。verify_pages 只查它在不在，**不查它是多少**。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+
+    def test_slice_is_prior_twelve_not_trailing_twelve(self):
+        """口径是「最新月**之前**的 12 个月」= [-13:-1]，不是 [-12:]。
+
+        两种切法都返回一个数、都过闸门，差别只有虚线挪一格 —— 所以这条要同时
+        断言「等于前者」与「不等于后者」，把「口径写错也算过」堵死。
+        """
+        v = [float(i) for i in range(1, 27)]        # 1..26
+        got = self.S.prior12(v)
+        self.assertAlmostEqual(got, sum(v[-13:-1]) / 12.0, places=9)
+        self.assertNotAlmostEqual(got, sum(v[-12:]) / 12.0, places=9)
+
+    def test_excludes_latest_month(self):
+        """最新月是 NaN 而之前 12 个月有值 → 仍算得出（定义就是不含最新月）。"""
+        import numpy as np
+        v = [float(i) for i in range(1, 26)] + [float('nan')]
+        self.assertIsNotNone(self.S.prior12(v))
+        self.assertTrue(np.isfinite(self.S.prior12(v)))
+
+    def test_all_nan_returns_none(self):
+        self.assertIsNone(self.S.prior12([float('nan')] * 20))
+
+    def test_matches_lpla_implementation(self):
+        """四处同源：与 build/lpla.py 的 avg_prior12 同口径（同样 round 到 6 位）。"""
+        import importlib.util
+        sp = importlib.util.spec_from_file_location(
+            'lpla_mod', os.path.join(ROOT, 'build', 'lpla.py'))
+        try:
+            mod = importlib.util.module_from_spec(sp)
+            sp.loader.exec_module(mod)
+        except Exception:                       # noqa: BLE001
+            self.skipTest('build/lpla.py 需要 pandas 之外的依赖，跳过跨实现比对')
+        if not hasattr(mod, 'avg_prior12'):
+            self.skipTest('build/lpla.py 没有 avg_prior12')
+        import pandas as pd
+        v = [float(i) * 1.7 for i in range(1, 27)]
+        self.assertAlmostEqual(self.S.prior12(v),
+                               mod.avg_prior12(pd.Series(v)), places=6)
+
+
+class TestMonthlyTotalBucket(unittest.TestCase):
+    """`monthly_total()` 的口径断言按 bucket 分岔 —— 没有任何闸门读那句话。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls.page = single.Page(single.load_spec('jpx'))
+
+    def _how(self, bucket):
+        c = {'col': 'adt_cash_dom_stocks_jpytn', 'zh': '内国株成交额',
+             'unit': '¥tn/day', 'fmt': 'f1', 'stock': False,
+             'scale': 1.0, 'ratio': None, 'no_yoy': False}
+        _s, how = self.page.monthly_total(c, None, None, 'daily_avg',
+                                          'test', bucket=bucket)
+        return how
+
+    def test_monthly_bucket_has_no_equal_weight_warning(self):
+        """月度桶一格就是一个月，全程不跨月相加 —— 那句代价在这张图上是假的。"""
+        how = self._how('monthly')
+        self.assertNotIn('等权', how)          # 年度支那句代价不许出现在月度图上
+        self.assertIn('不做任何跨月相加', how)   # 月度支必须把「为什么不需要」说出来
+        # 「权重偏差」这四个字在月度支里是被**否定**掉的（「也没有…权重偏差」），
+        # 所以不能断言它不出现 —— 只能断言它不是以「带着一个…偏差」的肯定形式出现。
+        self.assertNotIn('带一个', how)
+
+    def test_year_bucket_keeps_equal_weight_warning(self):
+        """年度桶必须仍然把话说满。两支互斥，否则分岔等于没分。"""
+        how = self._how('year')
+        self.assertIn('等权', how)
+
+    def test_series_returned_unchanged_in_monthly_bucket(self):
+        """月度桶不做任何还原：返回的就是原序列，没乘任何东西。"""
+        import numpy as np
+        c = {'col': 'adt_cash_dom_stocks_jpytn', 'zh': 'x', 'unit': 'u',
+             'fmt': 'f1', 'stock': False, 'scale': 1.0, 'ratio': None,
+             'no_yoy': False}
+        s, _ = self.page.monthly_total(c, None, None, 'daily_avg',
+                                       'test', bucket='monthly')
+        base = self.page.ser(c)
+        self.assertTrue(np.allclose(s.dropna().values, base.dropna().values))
+
+
+class TestMixAbsStack(unittest.TestCase):
+    """`abs_stack` 的绝对值堆叠：柱高声称等于合计，所以负分项必须硬失败。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+
+    def test_negative_segment_is_rejected(self):
+        """引擎把正段自 0 上堆、负段削成零高度不画 ⇒ 柱顶落在正段之和上，
+        而「各段之和 = 合计」那道收尾自检**照样通过**（一负一正互相抵消）。
+        verify_pages 的负段 ERROR 只覆盖 gs_bar，接不住 stacked_dual。
+        """
+        page = self.S.Page(self.S.load_spec('jpx'))
+        g = [x for x in page.groups if x['zh'] == '东证现货成交'][0]
+        i = page.df.index[-1]
+        page.df.loc[i, 'adt_cash_etfreit_jpytn'] = \
+            -page.df.loc[i, 'adt_cash_etfreit_jpytn']
+        page.df.loc[i, 'adt_cash_stocks_jpytn'] = (
+            page.df.loc[i, 'adt_cash_total_jpytn']
+            - page.df.loc[i, 'adt_cash_etfreit_jpytn'])
+        with self.assertRaises(self.S.SpecError) as cm:
+            page.mix_pair(9, g)
+        self.assertIn('负值', str(cm.exception))
+
+    def test_abs_stack_excludes_rhs_share(self):
+        """abs_stack 不出 100% 占比那张 ⇒ rhs_share / share_note 是死配置。"""
+        with self.assertRaises(self.S.SpecError):
+            self.S._norm_mix({'total': 'a', 'parts': ['b'],
+                              'abs_stack': True, 'rhs_share': 'b'}, 'test')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
