@@ -339,9 +339,12 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 
 **半导体那 7 家为什么不走第 3 条**：它们有自己的底座 `build/mrbase.py`（月度营收图列，
 与 `single.py` 的图列完全不同），走薄壳是为了不给 `builder()` 加第四条分支。
-代价是 `build/single.py` 必须挡住它们 —— 已加单向守卫：**`build/<t>.py` 里出现 `mrbase`
-字样的一律跳过**。没有这道守卫时，人手跑一次 `python3 build/single.py --all` 会把这 7 页
-**静默打回 `single.py` 的旧图列**（不报错、页面照出，只是图全换了）。
+代价是 `build/single.py` 必须挡住它们 —— 已加单向守卫：**`build/<t>.py` 在不在**，
+在就跳过（`build/single.py:6690`，与 `builder()` 同源，两边都只看文件、不认名字）。
+判据 2026-09 从「`build/<t>.py` 里有没有 `mrbase` 字样」放宽成现在这条，起因正是 `ice`：
+手写页里没有 `mrbase` 这个词，旧判据认不出来。没有这道守卫时，人手跑一次
+`python3 build/single.py --all` 会把这些页**静默打回 `single.py` 的旧图列**
+（不报错、页面照出，只是图全换了）。
 
 这是「删得干净」的关键：`builder()` 不认得任何一家的名字，删掉 `build/specs/sgx.py`
 之后 `monthly_run` 立刻不再知道有 sgx 这回事。如果写成

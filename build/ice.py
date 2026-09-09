@@ -88,8 +88,10 @@ import os, sys, json, re
 # -*- coding: utf-8 -*-
 """build/ice.py 的【载入层 + 格式化层】—— 合并时整段搬进 build/ice.py 的开头。
 
-本文件是分段草稿：底部的 `if __name__ == '__main__':` 自测块**合并时删掉**，
-其余（导入、常量、COL、load()、格式化函数、窗口、col()）逐行进正式文件。
+本段原是分段草稿，2026-09 已并入 build/ice.py（导入、常量、COL、load()、格式化函数、
+窗口、col() 逐行进来）。⚠️ 草稿期那句「底部的 `if __name__ == '__main__':` 自测块合并时
+删掉」指的是**各段各自的**自测块，它们都已经没了；**文件底部现在那个 `__main__` 不要删**
+—— 它是本页唯一的生产入口，`monthly_run.builder()` 就是靠 `python3 build/ice.py` 跑它。
 
 它负责的三件事，别的段一件都不许重做：
   1. **唯一的读盘口**：`load()` 是 series/ice.csv 进入本页的唯一入口，
@@ -596,8 +598,8 @@ def qcol(name, qwin, how='sum'):
 # -*- coding: utf-8 -*-
 """build/ice.py 的【COL 列元数据表 + 口径层】—— 本文件是这一段的独立可跑版本。
 
-合并进 build/ice.py 时：删掉文件底部的 `if __name__ == '__main__':` 自测块，
-以及下面 import 段里那三行标着「⚠️ 自测垫片」的路径改写；其余逐行原样搬。
+合并已于 2026-09 完成：下面 import 段里那三行「⚠️ 自测垫片」的路径改写已删。
+⚠️ 文件底部的 `if __name__ == '__main__':` **不要删** —— 它是本页的生产入口，不是自测块。
 
 ━━ 这一段为什么是全文件最承重的一段 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 手写页没有 `build/single.py` 那套「读 spec → 推 unit → 推口径」的自动流水线，
@@ -3443,8 +3445,10 @@ def bridge_rows(qtrs, V, Q, tag=''):
         rows.append(row)
     return rows
 
-# ══ 自测桩：季度腿表 ═══════════════════════════════════════════════════════
-# 正式合并时**整块删掉**，由「隐含收入」那一段提供 REV_Q / VOL_Q（见文末 INTERFACES）。
+# ══ 季度腿表 ═══════════════════════════════════════════════════════════════
+# ⚠️ 旧标题写的是「自测桩，正式合并时整块删掉，由『隐含收入』那一段提供 REV_Q / VOL_Q」，
+# **不要照做**：下面的 LEG_DEFS 是生产代码（正文引用 6 处），而 REV_Q / VOL_Q 这两个名字
+# 全文根本不存在 —— 那一段最终没有按草稿的接口拼进来。删掉这一块当场 NameError。
 # 口径（冻结）：季度收入($mn) = Σ_{季内3个月}(ADV × 该腿对应的交易日列) × **季末月**的 RPC ÷ 换算因子。
 # 三套交易日各归一各的（trading_days_commod / _rates / _us_equities）：
 # 「金融四条腿全部用 trading_days_rates」已用 10-K FY2025 合约数双向证伪，
@@ -3785,8 +3789,11 @@ def build_bridge(VQ, QQ, RPCQ, QTRS, ex_bridge=EX_BRIDGE):
 # -*- coding: utf-8 -*-
 """build/ice.py 的**图型构造库** —— 每种 chart kind 一个封装函数。
 
-本文件是 build/ice.py 的一个片段（合并时整段贴进去，`if __name__` 自测块删掉，
-下面 §0 的 bootstrap 块也删掉 —— 那一块里的名字由别的段提供）。
+本段原是 build/ice.py 的一个片段，2026-09 已整段并入。
+⚠️ 草稿期那句「§0 的 bootstrap 块也删掉、那一块里的名字由别的段提供」**已不成立**：
+`COL__exlib` 与 `_U_KD`/`_U_K`/`_U_UC`/`_U_MS`/`_U_P100`/`_U_BN`/`_U_PCT` 全文
+只此一份定义、正文在用（这一块里真正没人调的只有 `_load()`）。
+文件底部的 `if __name__ == '__main__':` 同样**不要删** —— 它是本页的生产入口。
 
 为什么要有这一层，而不是像 build/cboe.py 那样每张图手写一个 dict：
   · ICE 这一版有近十张 gs_bar（Ex2 / Ex15 …）与五张 stacked_dual（Ex3/7/10/12/13/16/18）。
@@ -5686,9 +5693,12 @@ brief 说「**这个月**这组读数怎么读」（每月重写）；图注说�
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
-# §0 合并进 build/ice.py 时**整块删除** —— 这些名字由前面的段提供
-#    （冻结契约：mlab / qlab__notes / num / comma / pctf / pp / L / nz / caliber_stats /
-#     yoy_cal_zh / COST_LOG / COL / WIN_FROM / WIN_TABLE）
+# §0 ⚠️ 旧标题写的是「合并时整块删除 —— 这些名字由前面的段提供」，**不要照做**：
+#    本块自己定义了 qlab__notes / _TD_COLS__notes / _TD_ZH / BREAK_ZH / _coverage，
+#    全文各只此一份（AST 核过：ice.py 没有任何重名的顶层定义），正文在用，删掉当场 NameError。
+#    真正由前面的段提供、本段只是引用的是这 13 个：mlab / num / comma / pctf / pp / L / nz /
+#    caliber_stats / yoy_cal_zh / COST_LOG / COL / WIN_FROM / WIN_TABLE
+#    （旧清单把 qlab__notes 也算进这一档，是错的 —— 它就定义在下面）。
 # ══════════════════════════════════════════════════════════════════════════════
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -6613,7 +6623,8 @@ def _assert_no_exhibit(notes):
             f'按<b>标题</b>点名（build/specs/enx.py:455、build/specs/sgx.py:841-848）。')
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. 自测（合并进 build/ice.py 时整块删除）
+# 3. 页面装配的桩 —— 原为本段自测，合并后**已经是生产代码**（`main()` 调 `_stub_page()`），
+#    所以旧标题里那句「合并时整块删除」作废，删掉它 /ice/ 会当场构建失败。
 #    下面的桩全部按冻结契约搭：真实 CSV、真实 SG / YOY 判据、真实图序。
 # ══════════════════════════════════════════════════════════════════════════════
 def _stub_page(df):
@@ -6777,10 +6788,10 @@ def _stub_page(df):
 # -*- coding: utf-8 -*-
 """build/ice.py 的一段：页顶 ~300 字数据总结（payload 的 `brief`）。
 
-⚠️ 这是**待合并的片段**。正式并进 build/ice.py 时：
-    · 删掉本文件底部的 `if __name__ == '__main__':` 自测块；
-    · 删掉本文件顶部那段「片段自足化」的 import 与 COL 子集，改吃 ice.py 自己的
-      冻结导入与完整的 COL 表（本片段用到的 COL 键名一个字都没改，见 COL_BRIEF）。
+⚠️ 这原是待合并的片段，合并已于 2026-09 完成：顶部那段「片段自足化」的 import 已删，
+    COL 子集 `COL_BRIEF` 保留下来仍在用（键名与 ice.py 的完整 COL 表逐字一致）。
+    文件底部的 `if __name__ == '__main__':` **不要删** —— 它是本页的生产入口，
+    不是自测块。
 
 ═══ 为什么 ICE 到今天还没有 brief ═══
 不是谁忘了写，是**通用引擎根本不产这个键** —— build/single.py 组装 payload 的那一段
@@ -7352,10 +7363,12 @@ sys.path.insert(0, HERE__table)
 
 # ══════════════════════ 1. 列元数据（COL__table 的表相关子集）════════════════════
 #
-# 合并进 build/ice.py 之后这一块**整块删掉**，直接用公共段那个 COL__table。
-# 留在这里只为让本文件能独立跑；`__main__` 里有一道闸门，把下面每一格
-# 与 build/specs/ice.py 的 SPEC 逐字比对（zh / unit / fmt / scale / stock），
-# 差一个字就停机 —— unit 串是承重的（specs/ice.py:560、:589 记着理由：
+# ⚠️ 旧注释写的是「合并之后这一块整块删掉，直接用公共段那个 COL__table」，**不要照做**：
+# 下面这份就是全文唯一的 COL__table（正文引用 2 处），没有第二份「公共段的」可用。
+# 同样作废的是下一句「`__main__` 里有一道闸门，把每一格与 build/specs/ice.py 的 SPEC
+# 逐字比对（zh / unit / fmt / scale / stock）」—— 那份 spec 已随 cf89490 的改写一并删除，
+# 这道比对闸门不复存在，unit 串今天只由本表自己把关。它仍然是承重的
+# （原 specs/ice.py:560、:589 记着理由：
 # 把 'USD/contract' 改写成别的量纲白名单外的写法，`SG.col_is_ratio()` 第 ③ 级
 # 会静默翻掉，同比从「美元差」变成「百分比变化」，页面不报错）。
 def _c__table(col, zh, unit, fmt, scale=1.0, stock=False):

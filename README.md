@@ -407,7 +407,8 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   那句话在 cme / schw 改月度桶时就已经不成立，cboe 只是又多了一张；现按 `data/*.js`
   的实际清点重写。缺同口径（金额，数量）配对的页面明说「不具备数据条件」，
   不硬拆（db1 / enx / ice / ndaq 页各有一条说明）。
-- **brief**：11 家老单公司页 + 台湾半导体 7 家 + `/wealth/` 的页顶 ~300 字数据总结。
+- **brief**：21 页的页顶 ~300 字数据总结 —— 11 家老单公司页 + `/ice/` + 台湾半导体 7 家
+  + `/wealth/` + `/asx/`。
   规则库在 `build/brief.py`（只算事实），句子由各家生成器自己拼（`build/mrbase.py`
   也 `import brief`，7 家共用底座拼出来的那几句 + spec 的 `brief_extra` 钩子）；
   刻意不复述图表里已有的数字，只写图表讲不出来的三件事 —— 基数效应、口径背离、所处区间。

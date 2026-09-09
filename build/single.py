@@ -6690,7 +6690,7 @@ def main(argv=None):
     owned = [t for t in ts if os.path.exists(os.path.join(HERE, f'{t}.py'))]
     if owned:
         for t in owned:
-            print(f'[{t}] 跳过：本页已归 build/mrbase.py（build/{t}.py 是薄壳），'
+            print(f'[{t}] 跳过：本页由 build/{t}.py 接管（mrbase 薄壳或手写生成器），'
                   f'用 `python3 build/{t}.py` 重建，不要走 single.py')
         ts = [t for t in ts if t not in owned]
         if not ts:
