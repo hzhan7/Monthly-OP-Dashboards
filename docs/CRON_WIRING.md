@@ -333,9 +333,9 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 
 | 顺序 | 找什么 | 谁在用 |
 |---|---|---|
-| 1 | `build/<t>.py` | 11 家老单公司页，一家一份手写生成器；名字里没有连字符的两张横截面（`wealth` / `exchanges12`）也命中这条。**台湾半导体 7 家也命中这条**，但它们的 `build/<t>.py` 只是薄壳，正文在 `build/mrbase.py` + `build/mrspecs/<t>.py` |
+| 1 | `build/<t>.py` | 12 家手写单公司页（11 家老页 + `ice`，后者 2026-09 从 `build/specs/ice.py` 改成手写），一家一份手写生成器；名字里没有连字符的两张横截面（`wealth` / `exchanges12`）也命中这条。**台湾半导体 7 家也命中这条**，但它们的 `build/<t>.py` 只是薄壳，正文在 `build/mrbase.py` + `build/mrspecs/<t>.py` |
 | 2 | `build/<t 下划线版>.py` | 带连字符的 4 张横截面：目录 `exchanges-na` ↔ 生成器 `build/exchanges_na.py`（连字符不能做模块名），`-eu` / `-apac` / `-products` 同理 |
-| 3 | `build/single.py <t>`（需 `build/specs/<t>.py`） | 10 家新交易所，通用底座 + 一家一份配置 |
+| 3 | `build/single.py <t>`（需 `build/specs/<t>.py`） | 10 家新交易所里的 9 家（`ice` 除外，见第 1 条），通用底座 + 一家一份配置 |
 
 **半导体那 7 家为什么不走第 3 条**：它们有自己的底座 `build/mrbase.py`（月度营收图列，
 与 `single.py` 的图列完全不同），走薄壳是为了不给 `builder()` 加第四条分支。

@@ -40,8 +40,8 @@
 
 ## 用法
 
-    python3 build/single.py ice              # 建一家
-    python3 build/single.py ice ndaq db1     # 建几家
+    python3 build/single.py ndaq             # 建一家
+    python3 build/single.py ndaq db1 sgx     # 建几家
     python3 build/single.py --all            # build/specs/ 下全部
 
 退出码：0 = 成功或「门槛没到、本次不出页」（原文件原地不动）；1 = spec 写错 / 数据结构
@@ -6695,7 +6695,7 @@ def main(argv=None):
         ts = [t for t in ts if t not in owned]
         if not ts:
             # 显式点名给的 ticker 全被挡下 ⇒ 是用错命令了，非零退出把它喊出来。
-            # `--all` 展开后全被挡下不可能发生（specs/ 里还有 10 家交易所）。
+            # `--all` 展开后全被挡下不可能发生（specs/ 里还有 9 家交易所）。
             return 1
 
     for t in ts:

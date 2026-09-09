@@ -12,9 +12,13 @@
     exchanges-apac 亚太横截面（HKEX / JPX / SGX / ASX）—— **不画跨市场份额**，
                    四家法域隔离、几乎零替代性，分母只能是自己圈的；争夺只在产品级可测
 
-外加 9 家新交易所的单公司页（ice / ndaq / miax / tmx / enx / db1 / jpx / sgx / asx）。
+外加 9 家新交易所的单公司页（ndaq / miax / tmx / enx / db1 / lseg / jpx / sgx / asx）。
 它们的名单**不写死在本文件里**，而是扫 `build/specs/` + `build/mrspecs/` 得到 ——
 理由见 singles()。
+
+⚠️ **`ice` 不在这 9 家里**：它 2026-09 从 `build/specs/ice.py` 改成了手写的 `build/ice.py`，
+spec 已删，本脚本的枚举源再也扫不到它。/ice/ 的壳改由 `build/make_shells.py` 的硬编码
+TICKERS 兜着（那份名单里有对应的告警注释）—— 两处都要在，34 张壳才算齐。
 
 `exchanges-eu` 与 `exchanges-apac` 曾是一张合页 `exchanges-intl`（欧洲与亚太）里的两半，
 2026-08-06 拆分完成后合页已删除，本脚本不再为它铺壳。拆的理由是口径而不是版面：
@@ -62,7 +66,7 @@ def singles():
     （壳目录本身要人去 `rm -rf`：本脚本只写不删，不会替人判断一个目录该不该消失。）
     """
     # 枚举源是**两个**目录的并集，不是只有 specs/：
-    #   build/specs/<t>.py    → build/single.py 那条路（10 家交易所）
+    #   build/specs/<t>.py    → build/single.py 那条路（9 家交易所）
     #   build/mrspecs/<t>.py  → build/mrbase.py 那条路（7 家台湾半导体，TSM 图列）
     # 2026-08 接入 mrbase 之后只扫 specs/ 会漏掉后者。漏掉的后果不是报错而是
     # **静默少铺 6 张壳** —— 已提交的 index.html 不会消失，所以平时看不出来，

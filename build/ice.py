@@ -104,15 +104,9 @@ import os, sys, json, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ── 分段草稿期的 ROOT 修正 ───────────────────────────────────────────────
-# 正式文件里 HERE 是 <repo>/build，ROOT 就是仓库根，`ROOT = os.path.dirname(HERE)`
-# 一行到位。草稿在 scratchpad 下跑，两行只在这里存在，**合并时连同这段注释一起删**，
-# 换回冻结契约里那两行（`ROOT = os.path.dirname(HERE)` + `sys.path.insert(0, HERE)`）。
-_REPO = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
+ROOT = os.path.dirname(HERE)
 
-ROOT = _REPO
-
-sys.path.insert(0, os.path.join(ROOT, 'build'))
+sys.path.insert(0, HERE)
 
 CSV = os.path.join(ROOT, 'series', 'ice.csv')
 
@@ -1381,16 +1375,6 @@ def cost_gates(ex, stock_ex=(), why=None):
     而硬失败的代价是整站不发布（同 :711-717 那笔账）。
 """
 
-# ══════════════════════════════════════════════════════════════════════════
-# ⚠️ 下面这一块是 **scratchpad 自测专用**。合并进 build/ice.py 时整块删掉 ——
-#    那时 HERE__guards/ROOT/CSV/OUT 与 import 由契约冻结的顶部导入块提供。
-_WT = ('/Users/hzhan/Documents/monthly-op-dashboards/'
-       '.claude/worktrees/cboe-page-redesign-dc42f8')
-
-HERE__guards = os.path.join(_WT, 'build')
-
-sys.path.insert(0, HERE__guards)
-
 # ══════════════════════════ 1. 列元数据的判据断言表 ══════════════════════════
 #
 # ── 为什么要有「期望值」这一栏，而不是直接信 SG ────────────────────────────
@@ -1995,10 +1979,6 @@ build/specs/ice.py:44-50 立的第二条：
 """
 
 sys.path.insert(0, HERE)
-
-if not os.path.exists(os.path.join(ROOT, 'series', 'ice.csv')):
-    ROOT = _REPO
-    sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 #: 迁移期的别名。specs/ice.py 里这个常量叫 `_CSV`，正文的 helper 全用它；
 #: 冻结契约里模块级的名字是 `CSV`。留一个别名，helper 体就能**逐字**搬过来。
@@ -3354,9 +3334,6 @@ NYSE 期权腿**单独**的桥也放弃：`rpc_nyse_equity_options_usd` 只有 2
 而这三个桶正是与 ICE Key-Metrics-Q2-2026 对上的那三个（6 项、最差 ±1.02%，
 docs/verify/ice.md:519-526）。**利率 / 其他金融各自**没有官方数可对，桥只用它们的合计。
 """
-
-# 分段草稿跑在 scratchpad 里，仓库根写死；合并后由页面统一的 ROOT__bridge / CSV 代替。
-ROOT__bridge = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
 
 EX_BRIDGE = 8            # 合并后走页面的 EX_* 常量，图注里一律按标题指代、不印字面编号
 
@@ -5328,17 +5305,6 @@ brief 与图注说「**这个月**这组读数怎么读」、每月重写；这�
      本文件里唯一的全称断言（「计数列没有小数格」）自带 `_nonint_guard()` 停机。
 """
 
-# 自测时要 import build/ 下的 glossary.py；并进 build/ice.py 之后这一段随文件头的
-# `sys.path.insert(0, HERE)` 一起走，不再需要。
-_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))), 'build')
-
-if not os.path.isdir(_BUILD):                       # 自测在 scratchpad 里跑，路径要写死
-    _BUILD = ('/Users/hzhan/Documents/monthly-op-dashboards/'
-              '.claude/worktrees/cboe-page-redesign-dc42f8/build')
-
-sys.path.insert(0, _BUILD)
-
 # ══════════════════════════════════════════════════════════════════════════════
 # §1 现算 helper —— 释义里出现的每一个数都从这里来，一个快照都不抄
 #
@@ -6865,11 +6831,6 @@ brief 最常复发的 bug（brief.py::quant 的 docstring 记着 CME 的历史�
   · **没有反向指标**（ADV / 份额 / RPC 都是越高越好）⇒ `peak_scan` 一律不传 inverse；
     也没有公司 Notes 的一次性重述 ⇒ 无「（还原口径）」标注。
 """
-
-# ── 片段自足化（合并进 build/ice.py 时整块删掉，换成 ice.py 顶部那段冻结导入）──
-ROOT__brief = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
-
-sys.path.insert(0, os.path.join(ROOT__brief, 'build'))
 
 # ── COL 的子集：本段用到的三列。合并时删掉，直接吃 ice.py 的完整 COL 表。
 #   `unit` 字符串是**承重**的 —— SG.col_is_ratio / col_is_money_ratio 靠它把

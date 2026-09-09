@@ -1180,16 +1180,18 @@ def builder(t):
     仓库里同时存在三种生成器，按下面的顺序试，**判据一律是「文件在不在」，
     不是「这个 ticker 叫什么名字」**：
 
-      1. `build/<t>.py`            18 张单公司页。这一路里其实有两种实现，但对本函数
+      1. `build/<t>.py`            19 张单公司页。这一路里其实有两种实现，但对本函数
                                    完全一样（都是「build/<t>.py 在不在」）：
-                                     · 11 家非半导体 —— 一家一份手写生成器；
+                                     · 12 家非半导体 —— 一家一份手写生成器（11 家老页，
+                                       外加 2026-09 从 spec 改成手写的 ice）；
                                      · 7 家台湾半导体 —— 只是一层薄壳，图列在共用底座
                                        `build/mrbase.py` + `build/mrspecs/<t>.py`
                                        （壳必须留着：删了它，第 3 条会把 data/<t>.js
                                         覆盖回 build/specs/<t>.py 的老图列）
       2. `build/<t 下划线版>.py`    横截面页：目录名 `exchanges-na` ↔ 生成器
                                    `build/exchanges_na.py`（连字符不能做模块名）
-      3. `build/single.py <t>`     10 家新交易所：通用底座 + `build/specs/<t>.py`
+      3. `build/single.py <t>`     10 家新交易所里的 9 家（ice 除外，见第 1 条）：
+                                   通用底座 + `build/specs/<t>.py`
 
     这个函数是「删掉一家不留残渣」的关键：它不认得任何一家的名字，所以删掉
     `build/specs/sgx.py` 之后本文件立刻不再知道有 sgx 这回事，不需要同步改分支。
