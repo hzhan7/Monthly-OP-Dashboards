@@ -262,7 +262,7 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              #   由 spec 自己命名章节 —— 它们不属于任何一个 group，没有别的挂载点。
              'brief', 'headline_section', 'season_section'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
-COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio'}
+COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio', 'no_yoy'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
 GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap'}
 GROUP_REQUIRED = {'zh', 'cols'}
@@ -349,7 +349,13 @@ _COLOR_ZH = {'GREEN': '绿', 'MBLUE': '中蓝', 'BLUE': '浅蓝', 'NAVY': '深�
 # **单月同比**（当月对去年同月，本列除本列），一步还原都不需要。2026-09 从 MIX_KEYS
 # 里删掉的时候三处一起删了；同年 `level_yoy` 也改成单月口径，那三个字段就此在本文件
 # 里绝迹 —— 留着就是死配置，而死配置会让下一个人以为这张图做过什么它其实没做的事。
-MIX_KEYS = {'total', 'parts', 'residual_zh', 'rhs_share', 'note', 'share_note'}
+# `abs_stack`（2026-09 补）把这一组从「两张」改成**一张**：不出合计柱、也不出 100%
+# 占比堆叠，只出一张**绝对值**堆叠柱（一个月一根柱，柱高 = 合计，段 = 各分项）。
+# 它与 `rhs_share` / `share_note` 互斥 —— 那两个键只有 100% 占比那张读得到，
+# 开了 abs_stack 还写它们就是死配置（本文件删掉 granularity / total_col / weight_col
+# 时记过同一条账：死配置会让下一个人以为这张图做过什么它其实没做的事）。
+MIX_KEYS = {'total', 'parts', 'residual_zh', 'rhs_share', 'note', 'share_note',
+            'abs_stack'}
 MIX_REQUIRED = {'total', 'parts'}
 
 #: 100% 堆叠的分段配色，**自下而上**按 `parts` 的声明顺序取；残差段永远在最上面、
@@ -978,6 +984,37 @@ def pp_yfmt(values):
     return 'pp0' if len(set(labs)) == len(labs) else 'f0'
 
 
+def prior12(v):
+    """`gs_bar` 那条「Prior 12mo Avg.」虚线的值：**最新月之前**的 12 个月均值。
+
+    切片口径 `[-13:-1]` 抄的是仓里已有的三处同一实现（`build/cboe.py` 的 `prior12`、
+    `build/axp.py` 的 `gs_bar_ex(no_yoy=True)`、`build/lpla.py` 的 `avg_prior12`）——
+    行为上最接近的是 lpla 那个（同样 round 到 6 位、全 NaN 时不返回数）。
+    四处取不同的切片等于同一条虚线有四种含义，那是这个仓库反复治的病。
+    """
+    a = np.asarray(v, float)[-13:-1]
+    if not np.isfinite(a).any():
+        return None
+    return round(float(np.nanmean(a)), 6)
+
+
+def no_yoy_off_zh(c, avg12):
+    """spec 用 `no_yoy` 关掉次轴同比时，图注里替代 `NO_YOY_NOTE` 的那半句。
+
+    ⚠️ **不能复用 `NO_YOY_NOTE`**：那一段断言的是「窗口内没有任何一对可比的同月
+    （序列历史短于 12 个月）」，而走到这里的列历史长得很 —— 那句话在这张图上是假的。
+    这里只说底座自己证得出的两件事：同比是 spec 关掉的、虚线画的是哪个数。
+    """
+    return ('本图<b>不画次轴同比</b>：spec 对这一列声明了 <code>no_yoy</code>，'
+            '次轴那条金线连同它的右轴一并撤掉。'
+            + ('深蓝虚线 = <b>最新月之前 12 个月的均值</b>，回答「当前 vs 过去一年常态」；'
+               '柱与虚线同一根轴，可以直接比高低。'
+               if avg12 is not None else
+               '窗口末尾 12 个月一个有效值都没有，均线也画不出来，'
+               '所以这张退回 <code>bars_labeled</code>（深蓝柱 + 每柱数值）。')
+            + '<b>最新一个月的同比仍在紧接着的那句话里</b>（逐月现算），只是不再画成一条线。')
+
+
 NO_YOY_NOTE = ('窗口内没有任何一对可比的同月（序列历史短于 12 个月），故不画次轴同比；'
                '也没有 12 个月均线可画，所以这张用的是 <code>bars_labeled</code>（深蓝柱 + 每柱数值），'
                '与本页其余 <code>gs_bar</code>（浅蓝柱 + 金色同比）不同色是刻意的。')
@@ -1095,7 +1132,7 @@ def caliber_audit(exhibits):
     return out
 
 
-def bar_ex(n, title, c, xl, v, rhs, *, ylab2):
+def bar_ex(n, title, c, xl, v, rhs, *, ylab2, avg12=None):
     """一条月度序列 → 柱图。**有没有同比决定用哪个 kind**。
 
     `gs_bar` 在 `ex.yoy` 缺席时会回落到「柱 + 12 个月均线」，而均线的值取自
@@ -1112,6 +1149,16 @@ def bar_ex(n, title, c, xl, v, rhs, *, ylab2):
             'n': n, 'kind': 'gs_bar', 'fmt': c['fmt'], 'xlabels': xl,
             'title': title, 'ylab': c['unit'], 'ylab2': ylab2,
             'legend': c['zh'], 'values': LN(v), 'yoy': rhs, '_cols': [c['col']],
+        }
+    # `no_yoy` 关掉同比、而 12 个月均线算得出来时走这一支：仍是 gs_bar（浅蓝柱），
+    # 只是把金色同比线换成深蓝虚线的均值。**不写 ylab2** —— gs_bar 的双轴由
+    # `!!rhsOf(ex)` 决定（assets/charts.js），右轴整根不画，留个 ylab2 就是给一根
+    # 不存在的轴写标题。
+    if avg12 is not None:
+        return {
+            'n': n, 'kind': 'gs_bar', 'fmt': c['fmt'], 'xlabels': xl,
+            'title': title, 'ylab': c['unit'],
+            'legend': c['zh'], 'values': LN(v), 'avg12': avg12, '_cols': [c['col']],
         }
     return {
         'n': n, 'kind': 'bars_labeled', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
@@ -1370,7 +1417,8 @@ def _norm_col(c, where):
                         f'（不写 = 交给底座按 fmt + yoy.classify() + unit 推，'
                         f'见 build/single.py 里 col_is_ratio 上方那段）')
     return {'col': c['col'], 'zh': c['zh'], 'unit': c['unit'], 'fmt': c['fmt'],
-            'stock': bool(c.get('stock', False)), 'scale': scale, 'ratio': ratio}
+            'stock': bool(c.get('stock', False)), 'scale': scale, 'ratio': ratio,
+            'no_yoy': _norm_flag(c.get('no_yoy'), f'{where}.no_yoy')}
 
 
 def _norm_decomp(d, where):
@@ -1594,6 +1642,13 @@ def _norm_mix(m, where):
     if rs == 'residual' and not m.get('residual_zh'):
         raise SpecError(f"{where} 的 rhs_share='residual' 但没有 residual_zh —— "
                         f'没有残差段就没有那条线可画')
+    abs_stack = _norm_flag(m.get('abs_stack'), f'{where}.abs_stack')
+    dead = [k for k in ('rhs_share', 'share_note') if abs_stack and m.get(k)]
+    if dead:
+        raise SpecError(
+            f'{where} 同时写了 abs_stack 与 {dead} —— 后者只有 100% 占比那张图'
+            f'读得到，而 abs_stack 根本不出那张图（只出一张绝对值堆叠柱）。'
+            f'留着就是死配置：下一个人会以为这张图上有一条右轴线 / 一段占比说明')
     return {
         'total': str(m['total']),
         'parts': [str(x) for x in parts],
@@ -1601,6 +1656,7 @@ def _norm_mix(m, where):
         'rhs_share': str(m.get('rhs_share') or ''),
         'note': str(m.get('note') or ''),
         'share_note': str(m.get('share_note') or ''),
+        'abs_stack': abs_stack,
     }
 
 
@@ -1893,6 +1949,69 @@ class Page:
             # 本组自己声明了哪几列 —— `mix_pair` 拿它把「被吃掉的列」限定在本组内。
             # 跨组引用的语义是「借它的数画结构」，不是「替它把水平值也讲了」。
             g['declared'] = {c['col'] for c in g['cols']}
+
+        # ── cols[].no_yoy 的落点校验：只有 `ex_single` 那一条产图路径读得到它 ────────
+        #
+        # 声明在别的路径上会被**静默忽略**：图照画、同比照旧、五道闸门全绿，
+        # 只有对着页面数线的人才发现「去掉同比」这条指令根本没生效。
+        # 本仓对「拼错/放错位置就静默失效」的字段一律硬失败（判例：decomp 的
+        # `after_group` 锚点校验、`slow_cols` 的列名校验）。
+        #
+        # ⚠️ **名单里必须有 `ex_heat`**。超过 MAX_LINES 的同单位桶画的是**同比**热力
+        #    矩阵（`ex_heat` 自己调 `log_yoy`），那是唯一一条「声明被忽略、而同比
+        #    照样画在页面上」的路 —— 漏了它，这段守卫自己的报错文案就是假的。
+        #    2–5 列的桶走 `ex_lines`（本来就不画同比），危害小，但同样点名。
+        #
+        # 分桶逻辑与 `payload()` 里那一段逐字同源（先剔 stock、再剔被 mix 吃掉的、
+        # 然后按 unit 顺序分桶）。两处必须一起改 —— 分叉了这道守卫就会放错人。
+        _ny = []
+        for i, c in enumerate(self.head):
+            if c['no_yoy']:
+                _ny.append(f'headline[{i}]「{c["zh"]}」→ 走 ex_head_bar / ex_yoy')
+        for g in self.groups:
+            m = g.get('mix')
+            eaten = set()
+            if m:
+                eaten = {m['total']['col']} | {c['col'] for c in m['parts']}
+                if m['total']['no_yoy']:
+                    _ny.append(f'groups「{g["zh"]}」.mix 的 total'
+                               f'「{m["total"]["zh"]}」→ 走 ex_mix_total')
+                for c in m['parts']:
+                    if c['no_yoy']:
+                        _ny.append(f'groups「{g["zh"]}」.mix 的分项'
+                                   f'「{c["zh"]}」→ 根本不出水平值柱')
+            for c in g['cols']:
+                if c['no_yoy'] and c['stock']:
+                    _ny.append(f'groups「{g["zh"]}」的「{c["zh"]}」'
+                               f'（stock=True）→ 走 ex_stock')
+            flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
+            buckets = []
+            for c in flow:
+                for b in buckets:
+                    if b[0] == c['unit']:
+                        b[1].append(c)
+                        break
+                else:
+                    buckets.append((c['unit'], [c]))
+            for _u, cs in buckets:
+                if len(cs) == 1:
+                    continue                      # ← 唯一读得到 no_yoy 的桶
+                path = ('ex_heat（>{} 列，画的是同比热力矩阵，同比照画）'.format(MAX_LINES)
+                        if len(cs) > MAX_LINES else 'ex_lines（多列折线，本来就不画同比）')
+                for c in cs:
+                    if c['no_yoy']:
+                        _ny.append(f'groups「{g["zh"]}」的「{c["zh"]}」与同单位的另外 '
+                                   f'{len(cs) - 1} 列同桶 → 走 {path}')
+        for i, t in enumerate(self.level_yoy):
+            if t['level']['no_yoy']:
+                _ny.append(f'level_yoy[{i}]「{t.get("zh", "?")}」的 level'
+                           f'「{t["level"]["zh"]}」→ 走 ex_level_yoy')
+        if _ny:
+            raise SpecError(
+                'no_yoy 只有 `ex_single`（groups 里**单独占一个单位桶**的流量列）'
+                '读得到，下面这些地方声明了它但根本没人看，声明会被静默忽略、'
+                f'同比照画：{_ny} —— 要关那几条路径上的同比，'
+                '得先在对应的产图函数里实现，不是在这里多写一行')
 
         # ── groups[].ratio_rhs：列名 → 列配置，并复算「num ⊆ den」这个包含关系 ──────
         #
@@ -3255,9 +3374,16 @@ class Page:
             return None
         ratio = self.is_ratio(c)
         money = col_is_money_ratio(c)
-        rhs = yoy_rhs(self.ser(c), win, pct_series=ratio,
-                      diff_unit=c['unit'] if money else None)
-        ex = bar_ex(n, f'{gz}：{c["zh"]}', c, xl, v, rhs, ylab2=rhs_ylab2(c))
+        # 掐在 `rhs` 上而不是事后删字段：下面 `if rhs:` 那一整块（口径账本 log_yoy、
+        # 查重账 log_yoy_bar、逐图代价 mom_cost_zh、近零 + 右轴截轴 near_zero_guard）
+        # 全部跟着自动退场，页尾那几段点名文案现算 —— 不会出现「账本记着某张图有同比、
+        # 而页面上没有那条线」的背书。
+        rhs = None if c['no_yoy'] else yoy_rhs(
+            self.ser(c), win, pct_series=ratio,
+            diff_unit=c['unit'] if money else None)
+        avg12 = prior12(v) if (c['no_yoy'] and not rhs) else None
+        ex = bar_ex(n, f'{gz}：{c["zh"]}', c, xl, v, rhs,
+                    ylab2=rhs_ylab2(c), avg12=avg12)
         if rhs:      # 次轴金线是单月口径的同比；rhs 没画出来就没有同比可点名
             cal = ('mom_money' if money else 'mom_pp') if ratio else 'mom'
             self.log_yoy(n, cal)
@@ -3269,7 +3395,8 @@ class Page:
             f'{self.win_zh(win)}。'
             + (f'金色折线 = 次轴<b>单月</b>同比'
                f'（{yoy_diff_word(c)}，同 GS deck 的 lvl_bar —— 那个位置画的是同比，'
-               f'不是滚动均线：均线只是把柱子再平滑一遍、不带新信息）。' if rhs else NO_YOY_NOTE)
+               f'不是滚动均线：均线只是把柱子再平滑一遍、不带新信息）。' if rhs else
+               (no_yoy_off_zh(c, avg12) if c['no_yoy'] else NO_YOY_NOTE))
             + f'{xl[-1]} {unit_txt(v[-1], c)}，'
             f'同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
             # §6.1 第 3 条的「逐图」：本页绝大多数带同比的柱图都出自这条路径，
@@ -3742,6 +3869,20 @@ class Page:
         （见 `log_yoy` 的 docstring 记的同一条教训）。
         """
         m, gz = g['mix'], g['zh']
+        # ── abs_stack：整组只出**一张**绝对值堆叠柱 ──────────────────────────────
+        # 合计柱不再单出：柱高本身就是合计，再画一张同列同窗口的水平值柱是同一个数
+        # 说两遍；而它带的次轴单月同比会与开篇头条图（同一列、`headline_style`
+        # 那两张）撞进 `dup_yoy` 查重账。占比堆叠也不出：所有者要的是**绝对值**。
+        if m['abs_stack']:
+            one, why = self.ex_mix_abs(n, gz, m)
+            if why:
+                self.skipped.append(why)
+            if one is None:
+                return [], set()
+            # 吃掉合计与全部分项：三条序列的水平值都在这一张图上（柱高 + 各段），
+            # 再让它们进本组的常规对比图就是同一批数在同一页上画两遍。
+            return [one], ({m['total']['col']}
+                           | {c['col'] for c in m['parts']}) & g['declared']
         total, why_t = self.ex_mix_total(n, gz, m)
         # 合计柱没出（整列为空 / 窗口内恒为 0）时占比图顶上来占 n，图号不留洞。
         share, why_s = self.ex_mix_share(n + (1 if total else 0), gz, m,
@@ -4083,6 +4224,115 @@ class Page:
             + (' ' + md_bold(m['note']) if m['note'] else ''))
         return ex, None
 
+    def ex_mix_abs(self, n, gz, m):
+        """`mix` 的 `abs_stack` 支：**绝对值**堆叠柱（一个月一根柱，段 = 各分项）。
+
+        与 `ex_mix_share` 的分工是一句话：那张答「结构」（段高恒和为 100%），
+        这张答「规模 + 结构」（柱高 = 合计的水平值，段高 = 分项的水平值）。
+        所以本页开了 abs_stack 就不再出合计柱 —— 柱高已经把合计讲完了。
+
+        加总关系逐月复算，三条硬失败与 `ex_mix_share` 逐字同源（残差为负、
+        残差超容差却没命名、命名了却恒为 0）。差别只有一处：**这里不做「各段之和
+        = 100」那道收尾自检**，改成量「各段之和 = 合计」——单位不同，判据也不同。
+
+        ⚠️ 不给 `yoy`、也不给 `avg12`：kind 是 `stacked_dual` 不是 `gs_bar`，
+        `build/verify_pages.py` 那条「gs_bar 必须有 avg12 或 yoy」不适用；
+        而真给一条次轴同比，它与开篇头条图那条金线是同一列同口径的同一个数组。
+        """
+        tot_c, parts = m['total'], m['parts']
+        cols = [tot_c] + parts
+        win = self.mix_window(cols)
+        got = 0 if win is None else len(win)
+        if got < MIX_MIN_MONTHS:
+            return None, (f'{gz}：合计与全部分项都有值的连续窗口只有 {got} 个月'
+                          f'（不足 {MIX_MIN_MONTHS} 个月），绝对值堆叠柱不出 —— '
+                          f'stacked_dual 是 DENSE 图型，窗口只能截不能补')
+        xl = [mlab(p) for p in win]
+        tv = self.vals(tot_c, win)
+        pvs = [self.vals(c, win) for c in parts]
+        if self.flat0_skip(gz, [tot_c], win, [tv]):
+            return None, f'{gz}：{tot_c["zh"]} 窗口内恒为 0，绝对值堆叠柱不出'
+        resid = tv - np.sum(pvs, axis=0)
+        # 残差的判据用**相对值**（÷ 合计），与 MIX_RESID_TOL 同量纲；
+        # 绝对值堆叠里合计可以是 0 以外的任何正数，所以先挡掉 ≤0 的月份。
+        if float(np.min(tv)) <= 0:
+            k = int(np.argmin(tv))
+            return None, (f'{gz}：{tot_c["zh"]} 在 {mlab(win[k])} 为 '
+                          f'{fmt_val(tv[k], tot_c["fmt"])}（≤0），残差判据无定义，本图不出')
+        rel = resid / tv
+        k_lo, k_hi = int(np.argmin(rel)), int(np.argmax(rel))
+        if float(rel[k_lo]) < -MIX_RESID_TOL:
+            raise SpecError(
+                f'groups「{gz}」.mix（abs_stack）：分项之和在 {mlab(win[k_lo])} '
+                f'**超过**合计 {abs(float(rel[k_lo])) * 100:.4g}%'
+                f'（{tot_c["zh"]} {fmt_val(tv[k_lo], tot_c["fmt"])} vs 分项之和 '
+                f'{fmt_val(float(tv[k_lo] - resid[k_lo]), tot_c["fmt"])}）—— '
+                f'子集关系不成立时柱高不再是合计，而图上只会画成一根更高的柱')
+        big = float(rel[k_hi])
+        if big > MIX_RESID_TOL and not m['residual_zh']:
+            raise SpecError(
+                f'groups「{gz}」.mix（abs_stack）：'
+                f'{"、".join(c["zh"] for c in parts)} 之和并不等于 {tot_c["zh"]} —— '
+                f'残差最大出现在 {mlab(win[k_hi])}，占合计 {big * 100:.4g}%'
+                f'（{fmt_val(float(resid[k_hi]), tot_c["fmt"])} {tot_c["unit"]}）。'
+                f'柱高声称是合计，所以那一块必须画出来：'
+                f"请给 mix 加一个 'residual_zh' 说清楚它是什么")
+        if big <= MIX_RESID_TOL and m['residual_zh']:
+            raise SpecError(
+                f'groups「{gz}」.mix（abs_stack）声明了 residual_zh='
+                f'{m["residual_zh"]!r}，但窗口内 {mlab(win[0])}–{mlab(win[-1])} '
+                f'分项之和逐月恰等于合计（最大残差 {big * 100:.2g}%，在容差 '
+                f'{MIX_RESID_TOL:.0e} 之内）—— 一条恒为 0 的「其他」段会让读者'
+                f'以为存在一块查不到的业务。请删掉它')
+
+        palette = MIX_SEG_COLORS[len(parts)]
+        segs = [(c['zh'], pvs[i], palette[i]) for i, c in enumerate(parts)]
+        if m['residual_zh']:
+            segs.append((m['residual_zh'], np.maximum(resid, 0.0), MIX_RESID_COLOR))
+        # 收尾自检：各段之和逐格等于合计。量的是**绝对值**，所以容差按合计折算回来。
+        ssum = np.sum([sv for _z, sv, _c in segs], axis=0)
+        off = float(np.max(np.abs(ssum - tv) / tv))
+        if not off <= MIX_RESID_TOL + 1e-12:
+            raise SpecError(f'groups「{gz}」.mix（abs_stack）：各段之和偏离合计达 '
+                            f'{off:.3e}（相对，上限 {MIX_RESID_TOL:.0e}）—— 底座算错了')
+
+        ex = {
+            'n': n, 'kind': 'stacked_dual', 'height': 340,
+            'fmt': tot_c['fmt'], 'xrot': 90,
+            'title': f'{gz}：各分项绝对值堆叠（柱高 = {tot_c["zh"]}）',
+            'xlabels': xl,
+            'ylab': tot_c['unit'],
+            'stacks': [{'name': zh, 'color': cc, 'values': LN(sv), 'label': False}
+                       for zh, sv, cc in segs],
+            'src_extra': ('Segments are the disclosed components in original units; '
+                          'they sum to the disclosed total on the same row'),
+            '_cols': [tot_c['col']] + [c['col'] for c in parts],
+        }
+        hit = self.mark_breaks(ex, win, cols)
+        tiny = [zh for zh, sv, _c in segs
+                if float(np.max(sv / tv)) * 100 < MIX_TINY_SEG_PCT]
+        ex['note'] = (
+            f'一个月一根柱，柱高 = {tot_c["zh"]}的<b>水平值</b>'
+            f'（{tot_c["unit"]}，原始单位，未做任何指数化、未做占比归一）；'
+            f'自下而上按声明顺序分段：'
+            + '、'.join(f'<b>{zh}</b>' for zh, _sv, _c in segs) + '。'
+            + f'{self.win_zh(win)}。'
+            + f'{xl[-1]} 合计 {unit_txt(tv[-1], tot_c)}，其中 '
+            + '、'.join(f'{zh} {fmt_val(float(sv[-1]), tot_c["fmt"])}'
+                        for zh, sv, _c in segs) + '。'
+            + ('本图<b>不画次轴同比</b>：这几条序列的单月同比在页内别处已经画过，'
+               '同一个数组在一页上画两遍不带新信息；本图回答的是'
+               '「规模有多大、由哪几块构成」。'
+               )
+            + (f'<b>{"、".join(tiny)}</b> 占合计的峰值也不到 '
+               f'{MIX_TINY_SEG_PCT}%，扣掉段间白缝之后在图上几乎没有高度 —— '
+               f'它照样占一格图例、在上面的读数里也有，但别指望在柱上找到它。'
+               if tiny else '')
+            + self.slow_tail(cols)
+            + (self.brk_zh(hit, win) + '。' if hit else '')
+            + (' ' + md_bold(m['note']) if m['note'] else ''))
+        return ex, None
+
     def ex_mix_share(self, n, gz, m, total_n=None):
         """`mix` 的第二张：分项占合计的比重，**100% 堆叠柱**（`stacked_dual`）。
 
@@ -4334,7 +4584,7 @@ class Page:
     # 上一版这行写的是「量价分解 与 12 个月滚动同比（共用的取数口径）」—— 那个「共用」
     # 在 2026-09 断了：`level_yoy` 的次轴改成单月同比（本列除本列）之后不再需要把日均
     # 还原成当月合计，`monthly_total()` 现在只有 `ex_decomp` 一个调用方。
-    def monthly_total(self, c, total_col, weight_col, gran, where):
+    def monthly_total(self, c, total_col, weight_col, gran, where, bucket='year'):
         """一列 → **当月合计**口径的序列，外加一份口径对账记录。
 
         为什么非做这一步不可：本仓的量与额多半存成「日均」（ADT / ADV），而各月立会日数
@@ -4379,10 +4629,22 @@ class Page:
                            f'还原成当月合计（源表没有现成的合计列）')
         if gran == 'monthly_total':
             return s, f'<code>{c["col"]}</code> 本身即<b>当月合计</b>口径，未做还原'
-        # 日均、又没有任何权重列可用。这一支**必须把话说满**：等权相加是一个近似，
-        # 偏差随各月交易日数的离散程度走，本页量不出来（没有交易日列就是没有）。
-        # 早先这里无条件印「本身即当月合计口径」——对日均列那是一句假话，
-        # 而 verify_pages 只看 payload 结构、看不出图注对不对。
+        # 日均、又没有任何权重列可用。
+        #
+        # ⚠️ **这一支的措辞按 bucket 分岔**，因为「等权相加」这件事只在年度桶里发生。
+        # 月度桶（`bucket='monthly'`）横轴一格就是一个月、基期是去年同月，全程**没有
+        # 任何一次跨月相加**：既不需要还原成当月合计，也不存在权重偏差。把年度桶那句
+        # 警告原样印在月度图上，是在这张图上凭空承认一个它根本没犯的错 —— 与本函数
+        # 上一次被抓到的病（无条件印「本身即当月合计口径」）同型，只是方向相反。
+        if bucket == 'monthly':
+            return s, (f'<code>{c["col"]}</code> 是<b>当月日均</b>，而月度桶的一格'
+                       f'就是一个月、基期是去年同月，<b>全程不做任何跨月相加</b> —— '
+                       f'所以既不需要还原成当月合计，也没有各月交易日数不同带来的'
+                       f'权重偏差。日均除日均，立会日数在分子分母上自己约掉了')
+        # 年度桶：**必须把话说满**。等权相加是一个近似，偏差随各月交易日数的离散程度
+        # 走，本页量不出来（没有交易日列就是没有）。早先这里无条件印「本身即当月合计
+        # 口径」——对日均列那是一句假话，而 verify_pages 只看 payload 结构、
+        # 看不出图注对不对。
         return s, (f'⚠️ <code>{c["col"]}</code> 是<b>当月日均</b>，而本页没有可用的'
                    f'交易日权重列，年度只能按月<b>等权</b>相加。各月交易日数不同，'
                    f'这一步带一个<b>本页量不出来</b>的权重偏差（要消掉它，'
@@ -4498,9 +4760,11 @@ class Page:
         """
         gran = d['granularity']
         v_s, v_how = self.monthly_total(d['value'], d['value_total_col'], d['weight_col'],
-                                        gran, f'decomp「{d["zh"]}」的金额列')
+                                        gran, f'decomp「{d["zh"]}」的金额列',
+                                        bucket=d['bucket'])
         q_s, q_how = self.monthly_total(d['qty'], d['qty_total_col'], d['weight_col'],
-                                        gran, f'decomp「{d["zh"]}」的数量列')
+                                        gran, f'decomp「{d["zh"]}」的数量列',
+                                        bucket=d['bucket'])
         bench = bool(d['bench_value'] and d['bench_qty'])
         need = [v_s, q_s]
         bv_s = bq_s = None
@@ -4508,9 +4772,11 @@ class Page:
             # 行业对照走**同一条** monthly_total（同一套 total_col / weight_col / 粒度）——
             # 自家按合计、行业按日均的话，份额 s 会带一个逐月漂移的假趋势。
             bv_s, _ = self.monthly_total(d['bench_value'], None, d['weight_col'],
-                                         gran, f'decomp「{d["zh"]}」的行业金额列')
+                                         gran, f'decomp「{d["zh"]}」的行业金额列',
+                                         bucket=d['bucket'])
             bq_s, _ = self.monthly_total(d['bench_qty'], None, d['weight_col'],
-                                         gran, f'decomp「{d["zh"]}」的行业数量列')
+                                         gran, f'decomp「{d["zh"]}」的行业数量列',
+                                         bucket=d['bucket'])
             need += [bv_s, bq_s]
 
         # 每格合计的单位**不是**展示列的单位（日均列的 12 个月合计是「兆円/年」，
