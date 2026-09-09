@@ -352,6 +352,12 @@ _COLOR_ZH = {'GREEN': '绿', 'MBLUE': '中蓝', 'BLUE': '浅蓝', 'NAVY': '深�
 MIX_KEYS = {'total', 'parts', 'residual_zh', 'rhs_share', 'note', 'share_note'}
 MIX_REQUIRED = {'total', 'parts'}
 
+#: 页尾断点那段里，「这一图型本身不挂断点线」那一档要报的**图型中文名**。
+#: 判据不在这里 —— 是不是这一档由构建期的事实账 `Page._brk_asked` 说了算
+#: （`mark_breaks()` 记）；这张表只负责把 kind 翻成读者认得的词，查不到就原样印 kind，
+#: 于是新增一个不调 `mark_breaks` 的图型时页面顶多措辞硬一点，不会印出一句假理由。
+BRK_NODRAW_ZH = {'bridge_bar': '量价分解', 'heat_matrix': '热力矩阵'}
+
 #: 100% 堆叠的分段配色，**自下而上**按 `parts` 的声明顺序取；残差段永远在最上面、
 #: 固定 `MIX_RESID_COLOR`。这 6 个就是本仓全部的数据色（RED 是断点与截轴离群值专用，
 #: 不做数据色），所以 5 个分项 + 1 段残差是这个图型的**硬上限**。
@@ -483,6 +489,12 @@ DECOMP_LN_MIN = 1e-6     # |ln(V₁/V₀)| 低于它就整根柱留空（见 ex_
 #: 百分点的假占比 —— 大的不是交叉项，是分母小。所以占比只在 |g_V| ≥ 它的格上算，
 #: 交叉项本身一律另印 pp（绝对值中位与最大），两者并列给读者。
 DECOMP_NEAR0_G = 0.05
+#: 月度分解图注里「中蓝段」那句交叉引用的**占位符**。`_decomp_monthly` 先埋、
+#: 全页图建完之后由 `Page._pleg_fill()` 换成真话（那句话是页面级超级式，
+#: 图建到一半时算不出来 —— 理由见 `_pleg_fill` 的 docstring）。
+#: ⚠️ 用控制字符是故意的：万一哪天有一条回填路径漏掉，它**不能悄悄上页**。
+#: `payload()` 里那道硬护栏见到它还在就当场 raise，页面宁可不出。
+PLEG_MARK = '\x01PLEG\x01'
 TOTAL_TOL = 1e-6         # 「日均 × 权重」与「当月合计列」的一致性容差（见 monthly_total）
 TTM_WIN = 12             # 滚动合计窗口（个月）—— 现在只用来**对照**，页上不画
 
@@ -1014,8 +1026,10 @@ _CALIBER_CONFLICTS = (
 # 组名里那半句「（2002-01 起）」是本仓的通行写法，说的是**这一列数据从哪个月起有**
 # （tmx 的 `_since()`、ndaq / miax 的组名都这么写，而且都从 CSV 现算）。
 # 但图窗左端由底座定（`WIN_FROM` = 2016-01），两者一撞，标题上就出现一个
-# 图上根本找不到的月份：tmx Exhibit 3 组名写着「2002-01 起」、它自己的图注写着
-# 「Jan-16 至 Aug-26」。读者没有线索判断这是漏画了十几年还是标题在说别的事。
+# 图上根本找不到的月份：tmx「MX 衍生品 ADV（2002-01 起）」那组的图，组名写着
+# 「2002-01 起」、图注里的横轴却从 2016-01 开始（**按内容点名、不写图号** ——
+# 图号会随增删图整体位移，写死一次就要错一次）。
+# 读者没有线索判断这是漏画了十几年还是标题在说别的事。
 #
 # 根因在两侧各一半：月份由 spec 给、窗口由底座定。底座这一侧能做的是**把关系说破**，
 # 而且只在真撞上时说 —— 判据是「标题里出现的年月早于本图横轴左端」，
@@ -1781,6 +1795,13 @@ class Page:
             raise SpecError(f'series/{spec["csv"]} 缺列 {missing} —— 写 spec 之前先 '
                             f'`head -1 series/{spec["csv"]}` 核对列名')
 
+        # 「这张图问过断点」的账（图号）。真正的每轮清零在 `payload()` 里，这里只给一个
+        # 空集兜底：`mark_breaks()` 万一在 payload 之外被调到，不该炸在一本账上。
+        self._brk_asked = set()
+        # 与上面配套的另一本账：**没问过断点**的那几张图各自用了哪几条列
+        # （图号 → 列名）。同样只在这里兜底，每轮清零在 `payload()` 里。
+        # 用处见 `note_nodraw_cols()`。
+        self._nodraw_cols = {}
         self.slow = set(spec.get('slow_cols') or [])
         unknown_slow = sorted(self.slow - have)
         if unknown_slow:
@@ -1837,9 +1858,14 @@ class Page:
         #   ② total 与 parts 必须同一个 `unit`、同一个 `stock` 档 —— 单位不同的两列相除
         #      得到的「占比」没有指称，而流量与存量混堆等于把「一个月发生了多少」和
         #      「月末剩下多少」加起来；
-        #   ③ 记下**本组自己**被吃掉的列名（`g['consumed']`）：它们的水平值由这一组的
-        #      「合计柱 + 占比堆叠」两张图交代，不再进本组的常规对比图，
+        #   ③ 记下**本组自己**被吃掉的列名（`g['consumed']`）：它们的水平值与结构由
+        #      这一组的「合计柱 + 占比堆叠」交代，不再进本组的常规对比图，
         #      否则同一批数在同一页上画两遍。
+        #      ⚠️ **合计那一列的水平值不一定由「这一组的合计柱」交代。** 它已经被本页
+        #      别处那张同族、同口径、横轴更宽的图画过时，本组的合计柱有意不出
+        #      （`Page.total_drawn_wider`），水平值改由那张更宽的交代 —— 但这一列
+        #      **照样算被吃掉**（不然它掉回常规分桶再画一遍，见 `mix_pair` 里 eaten
+        #      那段的 ⚠️）。所以这里说的是「由这一组的 mix 交代」，不是「由两张图交代」。
         #      ⚠️ **按组算，不按全页算。** 曾经写成全页一个集合，后果是：某一组的 mix
         #      跨组引用了另外几组的列当分项，那几组自己的水平值柱**整批消失**
         #      （实测 tmx 的「MX 月末未平仓」mix 一加，SXF / 个股期权 / ETF 期权
@@ -2068,6 +2094,13 @@ class Page:
 
         # 窗口内恒为 0 的图由各 ex_* 自己判（flat0_skip），这里只开账本。
         self.flat0 = []
+        # 「合计柱**有意**不出」这本账：mix 的合计列已经被本页别处那张横轴更宽的
+        # bar_yoy 图原样画过时记一笔（形状见 `total_drawn_wider` 的返回值，外加
+        # `gz` 与 `share_drawn`；记账在 `mix_pair` 里、占比图出结果之后）。
+        # 它不进 `skipped` —— 那本账是给「想画而画不成」用的，两件事在页面上要分开说。
+        # 两个出口：页尾「图型选择规则」那一段由 `mix_folded_zh()` 现算（哪几组、
+        # 两张的窗口、绝对量去哪看、占比那张有没有画成），`build()` 另打一行给维护者。
+        self.mix_folded = []
         # decomp 的自检行（柱构成 + YTD 覆盖月份）：ex_decomp 记账、build() 打印。
         self.decomp_report = []
         # 同比口径账本：各 ex_* 每画一条同比就记一笔 (图号, 口径类别)，
@@ -2254,11 +2287,19 @@ class Page:
           · **同族 + 同窗口 → 硬失败。** 两张图连横轴都逐格相同，读者看到的是一字不差
             的两张，留着只会让人以为自己看漏了差别。spec 删一条就好。
           · **同族但窗口不同、或不同族 → 只告警，不停机。** 这一档的两张图确实共用
-            一条数组，但各自还带着对方没有的东西：`tmx` Ex2 比 Ex3 多给 2002-01 起
-            那十几年历史（同族、窗口 296 vs 128）；头条那张纯同比图把同比放大到整张
+            一条数组，但各自还带着对方没有的东西：头条那张纯同比图把同比放大到整张
             画布的高度，柱图那张把它压在水平值柱旁边（不同族、窗口相同）。
-            一律硬失败会把十家页里的六七页当场打挂，而那不是「重复」该付的代价。
+            一律硬失败会把好几家页当场打挂，而那不是「重复」该付的代价。
             所以记进 `self.dup_yoy`：构建期打印一行、页尾写明哪两张是同一条线。
+            ⚠️ **「同族但窗口不同」那一支从前的例子是 `tmx` 的开篇柱与同列的 mix
+            合计柱**（同族、同口径，窗口一宽一窄）。2026-09 按页面所有者的指令把那一对
+            并成了一张：`mix_pair` 现在先查这本账，合计柱的窗口被别处那张**真包含**
+            时就不出图（见 `Page.total_drawn_wider`），所以那种「窄的完全是宽的真子集」
+            已经进不到这里来。**这一支的判据与文案照旧留着**：窗口只**部分**重叠、
+            或两张各自都有对方没有的月份，仍然是两张都该留的正当情形。
+            ⚠️ **上面那一档（同族 + 窗口逐格相同 → 硬失败）一格都没让出去**：
+            `total_drawn_wider` 对等宽显式放行、不折叠，就是为了让那种 spec 原样撞到
+            这里来。底座替 spec 静默删一张图，与「spec 自己删一条」不是同一件事。
 
         `where` 只进报错文案（「level_yoy「XX」」这种），让人知道去 spec 的哪一段删。
         """
@@ -3054,13 +3095,52 @@ class Page:
                 f'所以线上不挂字、改在这里点名）')
 
     def mark_breaks(self, ex, window, cols=()):
-        """给一张**横轴是月份**的图挂上断点。heat_matrix 不支持 break_at，别调它。"""
+        """给一张**横轴是月份**的图挂上断点。heat_matrix 不支持 break_at，别调它。
+
+        ⚠️ 顺带记一笔账（`self._brk_asked`）：**这张图问过断点**。页尾那段要把
+        「窗口跨过断点月却没画线」的图分成两档来解释，而两档的理由完全不同 ——
+        问过而没命中的，理由是「断点按列登记，这张没用到那一列」；**根本没问过**的
+        （`bridge_bar` 那一支就不调本方法），理由是「这一图型不挂断点线」，与它用了
+        哪几条列无关。把后者算进前者，就是替它编一个对它不成立的理由（2026-09
+        实测：/tmx/ 的两张月度量价分解正是这一档，而它们的量腿恰恰是登记了换源断点
+        的那条列，同一条列在别的图上画着红线）。
+        账记在这里而不是按图型写死一张名单：判据是「构建时到底有没有问过」这件事实，
+        以后新增图型不必回来改名单。
+        """
+        if ex.get('n') is not None:
+            self._brk_asked.add(ex['n'])
         at, lab, hit = self.breaks_for(window, cols)
         if at:
             ex['break_at'] = at
             if len(window) <= self.BREAK_LABEL_MAX:
                 ex['break_label'] = lab
         return hit
+
+    def note_nodraw_cols(self, ex, cols):
+        """记一笔账：这张图**不调 `mark_breaks`**（画不出断点线），它的输入列是这几条。
+
+        `self._brk_asked` 的配套账，缺了它页尾那段就只能对这一档说一句无条件的话。
+        由来：页尾把「窗口跨过断点月却没画线」的图分成两档之后，`by_kind` 那一档末尾
+        还挂着一句**关于别人图注内容**的断言 ——「跨断点的那几格改由它们各自的图注点名
+        交代」。它当时是**无条件**印的：在 /tmx/ 上为真（那两张月度分解的图注确实把
+        2021-08 换源那 12 格逐句交代了），在 /asx/ 上是假的 —— asx 唯一那张
+        `bridge_bar` 的两条输入列**一条都没登记断点**，它压根没有可交代的东西，
+        图注里「断点」「换代」「红色竖虚线」也确实出现 0 次。
+
+        判据要现算就得知道「这张图用了哪几条列」。`_cols`（chartscale 那个临时键）指望
+        不上：`bridge_bar` / `heat_matrix` 两支根本不写它，而且它在
+        `chartscale.fix_all()` 里被 pop 掉，`notes()` 跑到的时候早就没了。所以另记一本。
+
+        ⚠️ 两条硬要求：
+          · 键是**最终图号**（`ex['n']`），且只在这张图**真的出得来**的时候记 ——
+            `ex_decomp` 中途 `return None` 的那几支会把同一个号让给后面的图，
+            先记就会记到别人头上；
+          · 没记过的图型在页尾那段里落进「**什么都不说**」的一档（见 `notes()`）：
+            宁可少说半句，也不要替一张不知道用了什么列的图编一个理由。
+        """
+        if ex.get('n') is not None:
+            self._nodraw_cols[ex['n']] = [str(c['col'] if isinstance(c, dict) else c)
+                                          for c in cols]
 
     # ────────────────────── exhibit：头条长历史 + 3Y 分位带 ──────────────────────
     def ex_history(self, n, c):
@@ -3577,6 +3657,10 @@ class Page:
             + self.near_zero_rows_zh(n, kept, win)
             + '热力矩阵不支持断点竖线（矩阵没有连续横轴），本页的口径断点见「口径与方法说明」。'
             + self.slow_tail(cols))
+        # 上面那句「不支持断点竖线」正是页尾 by_kind 那一档说的图型。记下真正画进矩阵的
+        # 那几条列（`kept`，整行没有同比的已经被剔出去了），好让页尾现算得出「它们的列上
+        # 到底登记没登记断点」—— 见 `note_nodraw_cols()`。
+        self.note_nodraw_cols(ex, kept)
         return ex
 
     def near_zero_rows_zh(self, n, cols, win):
@@ -3734,18 +3818,152 @@ class Page:
                         f'而 100% 堆叠是平滑图型、缺一格就把柱画塌，只能截不能补')
         return '<b>窗口口径</b>：' + '；'.join(bits) + '。'
 
+    def total_drawn_wider(self, m):
+        """这一组 `mix` 的合计柱，是不是**已经被本页别处那张更宽的图原样画过**了？
+        是就返回一笔账，没有就 `None`。
+
+        返回的是 dict 而不是图号：页尾那句话要把**两张的窗口**与「本组这张落在那张的
+        哪一段」现算着说出来（见 `mix_folded_zh()`），构建日志那行也要同一批数。
+            {'n': 那张图的图号, 'col': 合计列名, 'where': 那张图在账本里的出处,
+             'wide': 那张的 (左, 右, 期数), 'own': 本组这张本来要画的 (左, 右, 期数),
+             'side': '右边一段' / '左边一段' / '中间一段'}
+
+        ── 为什么是现算而不是一个 spec 开关 ──────────────────────────────────
+        「这一列已经被画成过一张水平值柱 + 次轴同比」是 `log_yoy_bar` 那本账
+        （`self._yoy_bar_cols`）上**现读得出来的事实**。做成可声明的开关会有两种烂法：
+        漏声明 → 页面上照旧两张一模一样的图；声明了而头条哪天换了列 → 那句声明
+        原地变成假的，而且没有任何东西会响。账本跟着**真画出来的图**走，两种都不会发生。
+        时序也是靠得住的：`payload()` 里 ① 头条（`headline_style='bar_yoy'` 那一支）
+        在 ③ groups 之前就跑完了，轮到这里时那张一定已经登记在案。
+        （①②/③/⑤ 这套阶段编号在 `payload()` 里，不在 `build()` 里 —— 这条时序是本函数
+        正确性的全部依据，指错函数名下一个人就核不动它。）
+
+        ── 判据：四条同时成立才算「同一张」──────────────────────────────────
+        同一列、同一口径（`cal`）、同一图族（`bar_yoy`），且那张图的窗口**真包含**
+        本组合计柱要画的窗口（完整覆盖，且至少有一端更靠外）。四条齐了，合计柱按构造
+        就是那张图里的一段连续子集 —— 同一条序列自己除自己、同一种同比、更窄的横轴，
+        逐点相等（2026-09 并图当天人工实测 `tmx` 的 `mx_adv_contracts`：重叠那一段
+        values 与 yoy 的最大绝对差都是 0.0；本函数只比元数据，不复算数据点）。
+        两个窗口都是同一条月度索引的**连续切片**，所以「只比两个端点」等价于完整覆盖，
+        不会被中间有洞的窗口骗过。
+
+        差一条都不算，三档各有各的去处：
+          · 口径不同 / 图族不同 → 画出来是两条不同的线，两张都该留（`dup_yoy` 告警档）；
+          · 窗口只盖住一半 → 合计柱那一段左边还有对方没有的月份，同样是 `dup_yoy`；
+          · ⚠️ **窗口逐格相同 → 这里必须放过去，不许折叠。** 那一档是 `log_yoy_bar`
+            的**硬失败**（同族 + 同窗口 → 退出码 1，docs/SINGLE_SPEC.md 的硬失败表里
+            也躺着这一行）：两张一字不差，正确的收场是「spec 删一条」，而不是底座
+            替 spec 静默删一张图。收进来的后果是双重的 —— 那条硬失败从此不可能触发，
+            而页尾那句「窗口更宽 / 是它的一段」当场变假（等宽既不更宽、也没有「一段」）。
+            所以下面那个 `continue` 不是优化，是把闸门留在原位。
+
+        ── 为什么要把图号记回来 ────────────────────────────────────────────
+        占比图的图注要写「<b>合计</b>的绝对量看 Exhibit k」。这张不出**不等于**
+        那句话该消失：它仍然指得出来（指的就是那张更宽的），所以还得指
+        —— 连带那句话括号里的**名字**也得换（见 `ex_mix_share` 的 `total_zh`）。
+        """
+        c = m['total']
+        end = self.last_month(c)
+        if end is None:
+            return None          # 整列为空 —— 让 ex_mix_total 去记「画不出来」的理由
+        win = self.win_long(end)
+        # 合计柱走哪种口径由列的性质定，与 `ex_mix_total` 里两条分支逐字对应。
+        cal = 'stock' if c['stock'] else 'mom'
+        for prev in self._yoy_bar_cols.get(c['col'], []):
+            if (prev['family'] != 'bar_yoy' or prev['cal'] != cal
+                    or prev['p0'] > win[0] or prev['p1'] < win[-1]):
+                continue
+            if prev['p0'] == win[0] and prev['p1'] == win[-1]:
+                continue         # 等宽：留给 ex_mix_total 去撞 log_yoy_bar 的硬失败
+            return {
+                'n': prev['n'], 'col': c['col'], 'where': prev['where'],
+                'wide': prev['win'],
+                'own': (mlab(win[0]), mlab(win[-1]), len(win)),
+                # 本组这张落在那张的哪一段：右端相同 → 右边一段，左端相同 → 左边一段，
+                # 两端都更靠外 → 中间一段。**三种都可能**（那张图的右端是它自己那一列的
+                # 末月，与 `win_long` 的右端不必然相同），写死「右边一段」会在另外两档
+                # 变成假话，而页尾那句话直接引它。
+                'side': ('右边一段' if prev['p1'] == win[-1] else
+                         '左边一段' if prev['p0'] == win[0] else '中间一段'),
+            }
+        return None
+
+    def mix_folded_zh(self):
+        """`mix_folded` 这本账 → 页尾「图型选择规则」⑤ 后面那句例外。空账返回 ''。
+
+        ⚠️ 每一个断言都现算，一句都不许写死：
+          · **「更宽」不是字面量。** 判据是真包含（见 `total_drawn_wider` 的等宽那一支），
+            所以这句成立；但两张的窗口照样印出来，让读者自己数得出来它宽在哪。
+          · **「是它右边一段」按 `side` 分叉**：右端相同才叫右边一段。
+          · **「所以只出占比那一张」按占比图是否真画出来分叉。** 占比图自己也有几条
+            画不出来的路（窗口不足 24 个月、某月合计 ≤ 0），两张都没出的时候这一组是
+            **0 张图**，再说「只出占比那一张」就是一句读者一数就能拆穿的假话，而且会与
+            页尾「本轮未出的派生图」那一段当场打架。
+        """
+        if not self.mix_folded:
+            return ''
+        bits = []
+        for d in self.mix_folded:
+            b = (f'「{d["gz"]}」：这一组合计那一列已经由 Exhibit {d["n"]} 那张'
+                 f'<b>横轴更宽</b>的柱图画过（那张画 {d["wide"][0]} → {d["wide"][1]}，'
+                 f'{d["wide"][2]} 个月；本组的合计柱只会画 {d["own"][0]} → {d["own"][1]}，'
+                 f'{d["own"][2]} 个月，是它{d["side"]}的逐点复制）')
+            b += (f'，所以只出占比那一张，<b>合计的绝对量看 Exhibit {d["n"]}</b>。'
+                  if d['share_drawn'] else
+                  f'；而占比堆叠这一张本轮也没画成（原因见「本轮未出的派生图」那一段），'
+                  f'所以<b>这一组这一次一张图都没有</b>，'
+                  f'合计的绝对量仍看 Exhibit {d["n"]}。')
+            bits.append(b)
+        return '⚠️ <b>例外</b>：' + ''.join(bits)
+
     def mix_pair(self, n, g):
-        """一条 `mix` → ([合计柱图, 占比堆叠图], 本组被这两张图吃掉的列名集合)。
+        """一条 `mix` → ([合计柱图, 占比堆叠图], 本组被这一组的 mix 吃掉的列名集合)。
 
         两张一起产出而不是各自成图，是为了让占比图能在图注里指名道姓地说
         「绝对量看 Exhibit k」—— 图号是算出来的，写死会在增删图之后指到错的图上
         （见 `log_yoy` 的 docstring 记的同一条教训）。
+
+        ⚠️ **返回的不一定是两张。** 合计柱有三种不出的情形，前两种是「想画画不成」、
+        第三种是「有意不画」，语义不同，处理也不同 —— 见下面 `total_drawn_wider` 那一支。
         """
         m, gz = g['mix'], g['zh']
-        total, why_t = self.ex_mix_total(n, gz, m)
-        # 合计柱没出（整列为空 / 窗口内恒为 0）时占比图顶上来占 n，图号不留洞。
+        # 合计柱出图之前先问一句：这一列是不是已经被本页别处那张更宽的图原样画过了
+        # （今天会命中的是 `headline_style='bar_yoy'` 的开篇图）。是就不出这一张 ——
+        # 它按构造是那张的一段子集，逐点相等，出了就是同一条序列换个窗口再画一遍。
+        fold = self.total_drawn_wider(m)
+        # ⚠️ 折叠掉的那一组，`note` 是**死配置**：它唯一的去处是合计柱那张图的图注末尾
+        # （`ex_mix_total`），合计柱不出就一个字都印不出来。静默吞掉等于让 spec 作者
+        # 以为自己交代过的事已经在页面上了 —— 本仓对死配置一律硬失败（`residual_zh`
+        # 声明了而残差恒为 0、`mix` / `level_yoy` 带滚动合计那三个死键，都是这么办的）。
+        if fold is not None and m['note']:
+            raise SpecError(
+                f'groups「{gz}」.mix 写了 note，但这一组的**合计柱不出**：'
+                f'{m["total"]["col"]} 已经由 Exhibit {fold["n"]}（{fold["where"]}）画过，'
+                f'横轴更宽（那张 {fold["wide"][0]}–{fold["wide"][1]} {fold["wide"][2]} 个月，'
+                f'本组这张只有 {fold["own"][0]}–{fold["own"][1]} {fold["own"][2]} 个月）。'
+                f'note 只追加在合计柱的图注末尾，这一档下它一个字都上不了页 —— '
+                f'请把这段话挪进 share_note（占比图的图注）或 spec 顶层的 notes。')
+        drawn = fold['n'] if fold else None
+        total, why_t = (None, None) if fold else self.ex_mix_total(n, gz, m)
+        # 合计柱没出时占比图顶上来占 n，图号不留洞。三种情形：
+        #   · 合计列整列为空 / 窗口内恒为 0 —— **想画而画不成**，理由记进 `skipped`，
+        #     页尾照实说「本页少了这张、为什么」；
+        #   · 已经被别处画过（`fold`）—— **有意不画**，一个字都不进 `skipped`：
+        #     那本账是给「画不成」用的，把这一档混进去等于告诉读者页面上缺了点东西。
+        # 前两种没有合计柱可指（`total_n=None`，那句交叉引用整句不印），
+        # 第三种指得出来 —— `total_n` 传的就是那张已有的图号。
+        # ⚠️ 括号里那个**名字**也得跟着 `total_n` 的语义走：折叠档下它指的是别人家的图，
+        # 页面上没有任何地方管那张叫「合计柱」（它的标题、它自己的图注、页尾三处都不叫），
+        # 一个解析不出去的指路牌与写错图号是同一类错。
         share, why_s = self.ex_mix_share(n + (1 if total else 0), gz, m,
-                                         total_n=n if total else None)
+                                         total_n=(n if total else drawn),
+                                         total_zh=('合计柱' if total else
+                                                   '同一列、横轴更宽的那张柱图'))
+        if fold is not None:
+            # ⚠️ 记账必须在 `ex_mix_share` **出结果之后**：页尾那句话要按占比图是否
+            # 真画出来分叉（见 `mix_folded_zh`）。在这之前记，占比图也没画成时这一组
+            # 是 0 张图，而页尾会同时印「所以只出占比那一张」与「占比堆叠不出」。
+            self.mix_folded.append({**fold, 'gz': gz, 'share_drawn': share is not None})
         for w in (why_t, why_s):
             if w:
                 self.skipped.append(w)
@@ -3759,7 +3977,12 @@ class Page:
         # 按声明扣列的后果是那几列的图**整批消失**而页面上没有任何痕迹 ——
         # 声明了一张画不出来的图，不该连带把本来画得出来的图也删掉。
         eaten = set()
-        if total is not None:
+        # ⚠️ `drawn` 那一档**必须照样收走这一列**：不收的话它掉回本组的常规分桶、
+        # 走 `ex_single` 把同数同窗口的图原样再画一遍，而 `log_yoy_bar` 因为窗口
+        # 与那张更宽的不同，只降级成 `dup_yoy` 告警 —— 四道闸门一道都不会拦下来
+        # （`check_yoy_caliber` 会因为 `ex_single` 的标题里没有「单月」二字报一条
+        # 🟡 R4，但退出码仍是 0）。这是这一支最容易漏的一处。
+        if total is not None or drawn is not None:
             eaten.add(m['total']['col'])
         if share is not None:
             eaten |= {c['col'] for c in m['parts']}
@@ -3825,7 +4048,9 @@ class Page:
         `ndaq` Ex14 的图窗是 Jan-16 → Jul-26（127 个月），图注却写「228 个月份…
         相邻月最大跳变 139.17pp（2008-08 → 2008-09）」；`db1` Ex41「差得最远的是
         2010-05」同样在图窗左侧之外；`enx` Ex38 在一张 127 期的图上写「152 个…月份」；
-        `tmx` Ex2（296 期）与 Ex3（128 期）印的是同一组 273 个月的实测数。
+        `tmx` 的 `mx_adv_contracts` 当时被开篇柱与 mix 合计柱各画一张（296 期 vs
+        128 期），两张图注却印着同一组 273 个月的实测数（那一对已在 2026-09 并成一张，
+        见 `Page.total_drawn_wider` —— 这里按列名留证，不写会随增删图位移的图号）。
         所以窗口由调用方把**这张图真画出来的那一段**传进来，一处都不许省。
 
         ── 走 `build/yoy.py`，不自己写口径 ──────────────────────────────────
@@ -4004,6 +4229,12 @@ class Page:
     def ex_mix_total(self, n, gz, m):
         """`mix` 的第一张：合计列的水平值柱 + 次轴**单月**同比。
 
+        ⚠️ **这张不是无条件出的**：合计列已经被本页别处那张更宽的 `bar_yoy` 图原样
+        画过时，`mix_pair` 根本不会调到这里（判据见 `Page.total_drawn_wider`）——
+        那种情形下这张按构造是那张的一段子集、逐点相等，出了就是同一条序列换个窗口
+        再画一遍。所以本函数里两条 `return None`（整列为空 / 窗口内恒为 0）说的都是
+        「想画而画不成」，与那一档的「有意不画」不是一回事，别把两者混进同一本账。
+
         ⚠️ **这里曾经是 12 个月滚动同比，2026-09 按页面所有者的指令改成单月。**
         现行 CONTRACT §6.1 第 1 条就是「流量序列用单月同比」，没有第二种可选口径 ——
         上一版契约那套「滚动是默认、要用单月得逐张辩护」的框整个作废了，
@@ -4083,8 +4314,13 @@ class Page:
             + (' ' + md_bold(m['note']) if m['note'] else ''))
         return ex, None
 
-    def ex_mix_share(self, n, gz, m, total_n=None):
+    def ex_mix_share(self, n, gz, m, total_n=None, total_zh='合计柱'):
         """`mix` 的第二张：分项占合计的比重，**100% 堆叠柱**（`stacked_dual`）。
+
+        `total_n` / `total_zh` 是「合计的绝对量看第几张、那张在页面上叫什么」——
+        **两个都由调用方现算**（`mix_pair`）。图号会随增删图整体位移，名字则会随
+        「指的是本组自己那张合计柱、还是别处那张更宽的图」换人：折叠那一档下页面上
+        没有任何地方管被指的那张叫「合计柱」，写死这三个字就是一块解析不出去的指路牌。
 
         **缺省不给右轴那条线**：占比型堆叠里各段之和恒为 100，段高本身就把每一块读出来了，
         再拿其中一段换个刻度画一遍是同一个数说两遍（`build/CONTRACT.md` §3 的
@@ -4184,8 +4420,15 @@ class Page:
             k_r = (len(segs) - 1 if m['rhs_share'] == 'residual'
                    else [c['col'] for c in parts].index(m['rhs_share']))
             zh_r, sv_r = segs[k_r][0], segs[k_r][1]
-            # 线色不能与**任何一段**撞：polyline 无描边、画在柱之后，同色时它穿过那一段
-            # 整段看不见（`build/mrbase.py` 的 `_SEG_COLORS` 上方记着同一条实测教训）。
+            # 线色不能与**任何一段**撞。⚠️ **理由 2026-09 换过一次**：从前是
+            # 「polyline 无描边、同色时它穿过那一段整段看不见」，而引擎现在给
+            # `stacked_dual` 的这条右轴线打了一层白 casing（`assets/charts.js` 的
+            # `polyline(…, halo)`），线**恒有一个形状**，「整段看不见」不再成立。
+            # 但禁令照旧，换了个理由：casing 保证的只是「线色 vs 白」那条内边，
+            # 同色时白边两侧仍是同一个颜色 —— 读者看到的是一条被白线镶了两道边的
+            # 段色带，认不出哪一半是线、哪一半是它压着的段；而且图例里同一个色块
+            # 要同时指一段和一条线，那张图的色→量对应当场断掉
+            # （`build/mrbase.py` 的 `_SEG_COLORS` 上方记着同源的实测教训）。
             # 从前写死 GREEN，而 GREEN 现在进了 5 段那档的配色表 —— 那就是一颗定时炸弹。
             used = {cc for _z, _v, cc in segs}
             c_line = next((x for x in ('GREEN', 'GOLD', 'MBLUE', 'BLUE') if x not in used),
@@ -4194,8 +4437,9 @@ class Page:
                 raise SpecError(
                     f'groups「{gz}」.mix 要画右轴线，但 6 个数据色已经被 {len(segs)} 段'
                     f'占满（{"、".join(sorted(used))}），没有一个色留给这条线 —— '
-                    f'同色的线穿过那一段整段看不见。要么去掉 rhs_share，'
-                    f'要么先把小分项并进残差')
+                    f'同色的线与它压着的那一段在图上、在图例里都分不开'
+                    f'（引擎给这条线打的白 casing 只镶边，不解决同色）。'
+                    f'要么去掉 rhs_share，要么先把小分项并进残差')
             ex['line'] = {'name': f'{zh_r}（RHS）', 'color': c_line, 'values': LN(sv_r),
                           # 右轴下界被引擎写死成 0，只能调上界；留 15% 顶空免得线贴轴顶。
                           'ymax': nice_max(float(np.max(sv_r)) * 1.15)}
@@ -4270,8 +4514,9 @@ class Page:
             + '<b>占比动了不等于哪一块变差了</b>：分母是合计，'
               '一块绝对量原地不动、另一块猛涨，前者的占比照样往下走。'
             # ⚠️ 合计的绝对量与**分项**的绝对量在两个地方，别混着指：
-            # 合计柱那张图只画合计那一条列，分项的水平值只在末尾核对表里。
-            + (f'<b>合计</b>的绝对量看 Exhibit {total_n}（合计柱）；' if total_n else '')
+            # 被指的那张图只画合计那一条列，分项的水平值只在末尾核对表里。
+            # 括号里的名字由调用方现算（见本函数 docstring 的 `total_zh`）。
+            + (f'<b>合计</b>的绝对量看 Exhibit {total_n}（{total_zh}）；' if total_n else '')
             + '<b>各分项</b>的绝对量在末尾核对表里（本图一个绝对量都没画）。'
             + rhs_line
             # 反向那句与比值线那张图共用同一份现算的差值**和同一句 `dup_note`**：
@@ -4466,6 +4711,8 @@ class Page:
         `built` 是**本页已经建好的那些 exhibit**（`payload()` 里那个列表）。
         月度分支拿它做构建期现验：菱形与输入那张图的次轴金线必须逐点相同。
         年度分支用不到（年度桶与本页任何一张月度图都不同轴，无从逐格对读）。
+        ⚠️ 图注里那句**页面级**的「中蓝段对应哪一张」不在这里定 —— 它扫的是全页，
+        由 `Page._pleg_fill()` 在全部 exhibit 建完之后回填，这里只埋占位符。
 
         ── 以下是年度桶（`bucket='year'`）的口径说明，逐字未动 ──
         横轴一格 = 一个完整年度；最新年不完整时**末格追加一根 YTD 柱**
@@ -4512,6 +4759,11 @@ class Page:
             bq_s, _ = self.monthly_total(d['bench_qty'], None, d['weight_col'],
                                          gran, f'decomp「{d["zh"]}」的行业数量列')
             need += [bv_s, bq_s]
+        # 本图的**输入列**（两支共用，拼装顺序与 `need` 同源）。页尾那段断点说明要拿它
+        # 现算「这张图的列上到底登记没登记断点」—— 见 `note_nodraw_cols()`。
+        # 只在图真出得来的那一刻才记账（两支各自在 `return ex, None` 之前调）。
+        cols_in = ([d['value'], d['qty']]
+                   + ([d['bench_value'], d['bench_qty']] if bench else []))
 
         # 每格合计的单位**不是**展示列的单位（日均列的 12 个月合计是「兆円/年」，
         # 不是「兆円/日」），拿展示单位去标它就是印错单位。所以图注里报的是把该格合计
@@ -4559,8 +4811,11 @@ class Page:
             # 三百行重排缩进 —— 改动面变成整段、diff 里看不出「哪一行的语义动了」，
             # 而另外 5 页 9 条 decomp 全靠这一段逐字节不变。上移的只有 `wcol` 与
             # `agg_one` 两块（连注释一并搬，文本未改），它们不依赖年度桶的任何东西。
-            return self._decomp_monthly(n, d, v_s, q_s, v_how, q_how,
-                                        bench, need, agg_one, built)
+            e_, why_ = self._decomp_monthly(n, d, v_s, q_s, v_how, q_how,
+                                            bench, need, agg_one, built)
+            if e_ is not None:
+                self.note_nodraw_cols(e_, cols_in)
+            return e_, why_
 
         start = d['year_start_month']
         run = self._years(start, need)
@@ -4890,6 +5145,7 @@ class Page:
             + (f' + 1 根 YTD 柱（{ytd_info[3]}：{ytd_info[1][0]}…{ytd_info[1][-1]} '
                f'共 {len(ytd_info[1])} 个月，同比基期 {ytd_info[2][0]}…{ytd_info[2][-1]}）'
                if ytd_info else '，无 YTD 桶（最新年已收官，或次年凑不出两侧对齐的月份）'))
+        self.note_nodraw_cols(ex, cols_in)      # 年度桶同样不挂断点线，见那个方法
         return ex, None
 
     #: 净额菱形在引擎里写死的半径（`assets/charts.js` 的 `diamond(…, 3.2, …)`），
@@ -4907,6 +5163,13 @@ class Page:
         `_cols` 是各 ex_* 挂的临时键（这张图画了哪几列），`payload()` 末尾才 pop 掉 ——
         所以在 groups 循环里就地出图的分解图拿得到它。按**列**认图而不是按标题认，
         标题是文案、会改；列名是数据。
+
+        两处调用给的 `built` **范围不同，而且必须不同**：
+          · `_decomp_monthly` 找输入那两张图（菱形认领的金额列、深蓝段认领的数量列）
+            传的是**当前累积到一半**的 ex 列表 —— 「分解图紧跟它的输入」正是
+            `after_group` 的全部理由，输入必须已经在场；
+          · `_pleg_fill` 找中蓝段那句话的候选传的是**全页** —— 那句话说的是「本页」，
+            判据的范围必须与断言的范围一致（见那个方法的 docstring）。
         """
         out = []
         for e in (built or []):
@@ -4922,6 +5185,75 @@ class Page:
         """两条等长的「%」序列（含 None）→ 逐格最大绝对差（pp）与可比格数。"""
         dif = [abs(x - y) for x, y in zip(a, b) if x is not None and y is not None]
         return (max(dif) if dif else float('nan')), len(dif)
+
+    @staticmethod
+    def _round_quantum(vals):
+        """一条列**自己的取整粒度** δ —— 从它的实测值现算，不写死。
+
+        源表里的每一格都是十进制文本，写到哪一位就是那一列的取整粒度：整数张数
+        δ=1，两位小数 δ=0.01。这里取「让全部值都成为 δ 的整数倍」的最大那个
+        10 的整数次幂，也就是这一列上**观测得到**的最细一档。
+
+        ⚠️ 它算出来的**两个方向都可能偏**，不是无条件的上界：
+          · 源表报到两位小数、而观测到的每一格恰好都以 0 结尾 ⇒ 这里把粒度看成 0.1，
+            **比真 δ 粗**；
+          · 源表按千 / 百万报数（全部观测值都是 10 的更高次幂的倍数）⇒ 这里照旧返回
+            10⁰ = 1，**比真 δ 细**。
+        要说清楚的是前一档，因为它让门槛更**宽松**：δ 看粗一档 ⇒ 下面那个 pp 上界更大
+        ⇒ 「差异量级就是取整」这句话更容易被放行。所以它不是一道保守闸门，而是一道
+        **够用**的闸门：真正要挡的那一档（页上一条毫不相干的列，差着几十个百分点）
+        δ 相对自身量级小好几个数量级，宽松几倍也照样挡得住；而它要放行的那一档
+        （真是同一个派生量、只差在取整）本来就贴着上界。后一档只会让本函数更严
+        （门槛更小、更不敢署名），落进去的后果是不署名而不是错署名。
+        算不出（没有有限值）返回 None。
+        """
+        fin = [float(v) for v in vals if np.isfinite(v)]
+        if not fin:
+            return None
+        k = 0
+        for v in fin:
+            while k < 9 and abs(round(v, k) - v) > 1e-9 * max(1.0, abs(v)):
+                k += 1
+        return 10.0 ** (-k)
+
+    def _round_yoy_bound(self, col, win, other, ref_yoy):
+        """一条列的取整粒度最多能让它的**单月同比**偏多少百分点（pp）。
+
+        用处只有一个：`_decomp_monthly` 那句「那一列画的正是本图这个派生量
+        （…最大差只有 X pp —— 差异量级就是该列自己的取整）」是**可证伪的断言**，
+        这里把它自己声称的东西算出来当门槛。实测差 ≤ 本上界才敢署那一列的名。
+
+        算法是区间端点，不做线性近似：每格的真值落在 [x−δ/2, x+δ/2] 里，于是同比
+        x₁/x₀−1 能取到的最大值是 (x₁+δ/2)/(x₀−δ/2)−1、最小值是 (x₁−δ/2)/(x₀+δ/2)−1，
+        本格的上界就是这两端离 x₁/x₀−1 较远的那一侧，×100 换成 pp；
+        全窗口取各格的最大值。
+        只统计**两条线都画得出来**的那些格（与 `_pair_gap` 的可比集合一致：
+        断言比的是那一批格，门槛就得量同一批格）。基期非正的格跳过 ——
+        `yoy_line` 本来就把它们掩成 null，不进可比集合。
+
+        一格都算不出来返回 nan ⇒ 调用方不署名，改印那句点名「最接近的是哪一张、
+        差多少、为什么仍不署名」的话（见 `_decomp_monthly` 里 `p_near` 那一支）。
+        """
+        if col not in self.df.columns:
+            return float('nan')
+        s = self.df[col].astype(float)
+        dq = self._round_quantum(s.values)
+        if dq is None:
+            return float('nan')
+        h, worst, n = dq / 2.0, 0.0, 0
+        for i, p in enumerate(win):
+            if i >= len(other) or i >= len(ref_yoy):
+                break
+            if other[i] is None or ref_yoy[i] is None:
+                continue
+            x1, x0 = float(s.get(p, np.nan)), float(s.get(p - 12, np.nan))
+            if not (np.isfinite(x1) and np.isfinite(x0)) or x0 <= h or x1 < 0:
+                continue
+            r = x1 / x0
+            worst = max(worst, 100.0 * max((x1 + h) / (x0 - h) - r,
+                                           r - (x1 - h) / (x0 + h)))
+            n += 1
+        return worst if n else float('nan')
 
     def _decomp_monthly(self, n, d, v_s, q_s, v_how, q_how, bench, need, agg_one, built):
         """`bucket='monthly'` 那一支：**一格 = 一个月，本期该月、基期去年同月**。
@@ -5200,25 +5532,30 @@ class Page:
         # **只在两分法下做**：三分法画出来的三块是行业 / 份额 / 结构，页上没有哪一列
         # 直接对应它们，硬拿 stacks[0]、stacks[1] 去比会把行业腿说成数量腿。
         q_gap, q_gn, q_ref_n = float('nan'), 0, None
-        p_ref, p_gap_raw, p_gap_leg = None, float('nan'), float('nan')
         if not bench:
             if len(qty_ref) == 1:
                 q_ref_n = qty_ref[0]['n']
                 q_gap, q_gn = self._pair_gap(ex['stacks'][0]['values'],
                                              qty_ref[0]['yoy']['values'])
-            # 价腿没有「自己那一列」（P 是本图现算的派生量），所以对照图靠**实测**挑：
-            # 取本页与「P 的单月同比」最接近的那条金线，且它必须比画出来的价腿更接近 P
-            # （否则它跟的根本不是同一个量）。不设阈值 —— 两个差都印出来，读者自己判。
-            p_yoy = LN(yoy_line(v_s / q_s * d['price_scale'], win))
-            cand = [e for e in refs
-                    if e is not v_ref and (q_ref_n is None or e['n'] != q_ref_n)]
-            scored = [(self._pair_gap(p_yoy, e['yoy']['values'])[0], e) for e in cand]
-            scored = [(g, e) for g, e in scored if np.isfinite(g)]
-            if scored:
-                g0, e0 = min(scored, key=lambda t: t[0])
-                leg_g = self._pair_gap(ex['stacks'][1]['values'], e0['yoy']['values'])[0]
-                if np.isfinite(leg_g) and g0 < leg_g:
-                    p_ref, p_gap_raw, p_gap_leg = e0, g0, leg_g
+            # ── 中蓝段那句交叉引用**这里不写** ──────────────────────────────
+            # 只把料记下来、在图注里埋一个占位符，等**全页**图都建完之后由
+            # `_pleg_fill()` 回填。理由与做法见那个方法的 docstring：那句话是
+            # 页面级超级式（「本页最接近…」「本页没有另一张图画这个派生量」），
+            # 而这里手上只有 `built` —— 当前累积到一半的 ex 列表。
+            self._pleg.append({
+                'ex': ex, 'zh': d['zh'], 'price_zh': d['price_zh'],
+                'xl': xl, 'win': win,
+                'p_yoy': LN(yoy_line(v_s / q_s * d['price_scale'], win)),
+                'gapp': gapp,
+                # 恒等式两端的两条**输入**列。P ≡ V ÷ Q，V 与 Q 按构造都不是 P，
+                # 所以它们自己的图不进候选（金额列那张已由上面「菱形是同一条数」
+                # 认领，数量列那张由上面「深蓝段」认领）。
+                # ⚠️ 按**列名**排除、不按图号：候选集改成全页之后，排在本图**后面**
+                # 的那张数量列图不会进 `qty_ref`（它只扫 `built`）、`q_ref_n` 是 None，
+                # 按图号排除会漏掉它，于是数量列可能被推上来当「最接近这个派生量」的
+                # 那一张。列名是数据、图号是位置，这里认的是数据。
+                'skip_cols': [vc['col'], qc['col']],
+            })
 
         # ── 排版实测：菱形固定 6.4px 见方，长轴通栏后柱宽也只有 6px 出头 ⇒
         #    比柱还宽的菱形会盖掉薄段。有多少格会被盖住，这里现算（见 BRIDGE_PLOT_PX）。
@@ -5282,14 +5619,9 @@ class Page:
                f'但深蓝段乘过重标定权重 w、走的是对数口径，两者最大差 {q_gap:.2f}pp'
                f'（{q_gn} 格可比）—— 逐格对读时以本图为准。'
                if q_ref_n is not None else '')
-            + (f'<b>中蓝段同理对应 Exhibit {p_ref["n"]}</b>：那一列画的正是本图这个派生量'
-               f'（它的金线与本图现算的 {d["price_zh"]} 单月同比逐格最大差只有 '
-               f'{p_gap_raw:.3f}pp —— 差异量级就是该列自己的取整），'
-               f'与画出来的中蓝段最大差 {p_gap_leg:.2f}pp，多出来的那一截全是 w 与'
-               f'对数口径造成的。' if p_ref is not None else
-               (f'<b>本页没有另一张图画这个派生量</b>，所以中蓝段只能与本图现算的 '
-                f'{d["price_zh"]} 自己的算术单月同比对读（最大差 {ppbp_abs(gapp)}）。'
-                if not bench else ''))
+            # 中蓝段那句话在这里只留一个占位符，回填见 `_pleg_fill()`。三分法
+            # （bench）那一档本来就不印这句，连占位符都不埋。
+            + ('' if bench else PLEG_MARK)
 
             # ③ 单月桶里没有平均
             + f'<b>单月桶里没有任何平均</b>：{d["price_zh"]} = 该月的{vc["zh"]} ÷ '
@@ -5430,6 +5762,127 @@ class Page:
                + '、'.join(f'{lab}（{why}）' for lab, why in gaps_hole)
                if gaps_hole else '；无输入缺口格'))
         return ex, None
+
+    def _pleg_fill(self, ex_all):
+        """回填月度分解图注里「中蓝段」那一句 —— **全页图都建完之后**才算得出来。
+
+        **为什么必须两趟。**这句话有三个分支，三句都是**页面级**断言：
+          · 「<b>中蓝段同理对应 Exhibit k</b>：那一列画的正是本图这个派生量…」
+          · 「<b>本页最接近这个派生量的是 Exhibit k</b>，但…<b>本图不替它署名</b>」
+          · 「<b>本页没有另一张图画这个派生量</b>」
+        「本页」就是本页 —— **判据的范围必须与断言的范围一致**。而 `_decomp_monthly`
+        手上只有 `built`（**当前累积到一半**的 ex 列表）：分解图排在页尾时它恰好等于
+        全页，那三句话为真；2026-09 给 /tmx/ 的两张分解加了 `after_group`、把它们
+        前移到各自输入之后，候选集立刻缩成「本图之前那些图」，三句话同时变成假话。
+        实测（2026-09 这一版窗口）：Ex20 印的是 Exhibit 6（差 64.352pp），而全页最近的
+        是 Exhibit 37（S&P/TSX Composite 点对点同比，35.480pp）；Ex23 印 Exhibit 6
+        （67.835pp），全页最近同样是 Exhibit 37（29.616pp）。**不止图号与数错**：
+        Ex20 连落哪一档都会换 —— 35.480pp 已经大于画出来的中蓝段自己的 32.331pp，
+        落的是「还不如中蓝段近」那一档，而不是「超过那一列取整能解释的量」那一档。
+        ⚠️ 这一类错**四道闸门一道都查不出来**：它们看 payload 的结构与数值闭合，
+        看不见散文的真伪。
+
+        **为什么不改成「把话说小」**（例如「本图之前那些图里最接近的是…」）。那样也能
+        说成真话，但会把一个**判断错误**永久固化：真正对应这个派生量的那一列一旦排在
+        本图后面（`after_group` 干的正是这件事），署名那一支永远轮不到它，页面会一边
+        印「本页没有另一张图画这个派生量」，一边让读者在同一页上看见它。范围缩小之后
+        这句话字面为真、实质仍在误导，所以走两趟。底座里已有同类先例：`mix_pair` 的
+        「各分项的构成见 Exhibit k」也是等两张图都产出之后才回填 —— 图号是算出来的，
+        写死或早算都会指错。
+
+        `ex_all` 是**全页**已建好的 exhibit 列表（`payload()` 里那个 `ex`）。
+        ⚠️ 必须排在 `chartscale.fix_all()` **之前**调用：那一步会把 `_cols` pop 掉
+        （`_decomp_yoy_refs` 按列认图，没有它一张都认不出来），还会按显示量级缩放数值。
+        """
+        for rec in (self._pleg or []):
+            ex, xl, win = rec['ex'], rec['xl'], rec['win']
+            p_yoy, price_zh, gapp = rec['p_yoy'], rec['price_zh'], rec['gapp']
+            # 价腿没有「自己那一列」（P 是本图现算的派生量），所以对照图靠**实测**挑：
+            # 取本页与「P 的单月同比」最接近的那条金线，且它必须比画出来的价腿更接近 P
+            # （否则它跟的根本不是同一个量）。两个差照旧都印出来、读者自己判。
+            #
+            # ⚠️ **「敢不敢替那一列署名」另有一道门槛。**认领这张对照图的那句图注写的是
+            # 「那一列画的正是本图这个派生量…差异量级就是该列自己的取整」，
+            # 这是一句**可证伪的断言**，而挑选只保证「本页最近的一条」——
+            # 页上一条真正对应的列都没有时，最近的那条照样会被推上来：
+            # /tmx/ 的两张月度分解实测挑中的是 S&P/TSX Composite 月末点位的点对点同比，
+            # 逐格最大差 35.480pp / 29.616pp（对照 /asx/ 那张真对应的官方均价列是
+            # 0.027pp），而图注若照旧宣布「差异量级就是取整」，上线就是一句假话。
+            #
+            # 所以这里加的不是一个拍脑袋的阈值常量（本仓教条：凡能现算的一律现算，
+            # 写死一个 0.5pp 既推翻上面那条「不设阈值」的决定，又是在「不写死数字」的
+            # 仓里写死一个没有推导的数），而是**把那句话自己声称的东西现算出来**：
+            # 那一列在 CSV 里存到哪一位（`_round_quantum`），这个取整粒度最多能让它的
+            # 单月同比偏多少百分点（`_round_yoy_bound`，按区间端点精确算、不做线性近似）。
+            # 实测差挤得进这个上界 ⇒ 「差异量级就是该列自己的取整」成立，署名。
+            #
+            # ⚠️ **挤不进时不许落回「本页没有另一张图画这个派生量」那句。**那是一句
+            # 无条件的**存在性**断言，而这道门槛拒绝候选的理由根本不是「页上没有这一列」，
+            # 是「实测差挤不进那一列的取整上界」—— 两者一分家，那句话就是假的。
+            # 所以下面把三件事分开记：页上一张候选都没有 ⇒ 才印那句存在性断言；
+            # 有候选没过门槛 ⇒ 改印「最接近的是 Exhibit k、差多少、卡在哪一条判据上、
+            # 所以不替它署名」。两句都是**实测结论**，各自成立。
+            # 实测：/asx/ 的 avg_value_per_trade_aud 在 series/asx.csv 里存成整数
+            # A$/笔（δ=1），本窗口上界 0.0347pp，而实测差 0.027pp ⇒ 照常署名，
+            # 那张图的图注逐字节不变（2026-09 改这一处、以及本轮改成两趟时都重跑对比过）。
+            # ⚠️ 那一页的余量只有约两成（0.027 / 0.0347），而 `gap` 与 `bound` 都是在
+            # **左界钉死、右端每月往前走**的窗口上取最大值 ⇒ 两者只增不减，gap 哪个月
+            # 越过 bound 就**永久**越过、回不去。那一天到来时四道闸门一道都不会响，
+            # 页面只是从「署名」换成上面那句点名的说法 —— 换过去的那句仍然为真，
+            # 这正是把兜底句分叉的理由。（数字是 2026-09 这一版窗口的实测，会变。）
+            cand = [e for e in self._decomp_yoy_refs(ex_all, xl)
+                    if (e['_cols'][0] not in rec['skip_cols'])]
+            scored = [(self._pair_gap(p_yoy, e['yoy']['values'])[0], e) for e in cand]
+            scored = [(g, e) for g, e in scored if np.isfinite(g)]
+            txt = (f'<b>本页没有另一张图画这个派生量</b>，所以中蓝段只能与本图现算的 '
+                   f'{price_zh} 自己的算术单月同比对读（最大差 {ppbp_abs(gapp)}）。')
+            if scored:
+                g0, e0 = min(scored, key=lambda t: t[0])
+                leg_g = self._pair_gap(ex['stacks'][1]['values'],
+                                       e0['yoy']['values'])[0]
+                r_bd = self._round_yoy_bound(e0['_cols'][0], win,
+                                             p_yoy, e0['yoy']['values'])
+                if np.isfinite(leg_g) and g0 < leg_g and np.isfinite(r_bd) and g0 <= r_bd:
+                    txt = (f'<b>中蓝段同理对应 Exhibit {e0["n"]}</b>：'
+                           f'那一列画的正是本图这个派生量'
+                           f'（它的金线与本图现算的 {price_zh} 单月同比逐格最大差只有 '
+                           f'{g0:.3f}pp —— 差异量级就是该列自己的取整），'
+                           f'与画出来的中蓝段最大差 {leg_g:.2f}pp，多出来的那一截'
+                           f'全是 w 与对数口径造成的。')
+                else:
+                    # 卡在哪一条判据上，逐档写实话 —— 三档的理由互不相同，
+                    # 合并成一句「差太大」会在另外两档变成假话。
+                    if not (np.isfinite(leg_g) and g0 < leg_g):
+                        why = ('它离本图这个派生量还不如画出来的中蓝段近'
+                               + (f'（中蓝段 {leg_g:.2f}pp）' if np.isfinite(leg_g)
+                                  else '（中蓝段一格都比不出来）')
+                               + '，跟的不是同一个量')
+                    elif not np.isfinite(r_bd):
+                        why = '而那一列在本窗口上一格都算不出取整上界'
+                    else:
+                        # ⚠️ 上界常常比 0.0001pp 还小（整数张数那种大数列），一律 .4f
+                        # 会印成「0.0000pp」—— 读者会当成真零，而真零与「小到印不出来」
+                        # 在这句话里是两回事。小的那一档改印科学计数（与本图注里
+                        # 「菱形 vs 金线最大差 {:.1e}pp」同一种写法）。
+                        bd = (f'{r_bd:.4f}pp' if r_bd >= 5e-4 else f'{r_bd:.1e}pp')
+                        why = f'超过那一列自己的取整最多能解释的 {bd}'
+                    # ⚠️ 这句与上面那句存在性断言**不是**同一句话的两种说法：
+                    # 上面那句断言「页上没有」，这一句断言「页上有一张最近的、
+                    # 但它不是这个派生量」。哪一句为真由挑选与门槛现算决定，不许合并。
+                    txt = (f'<b>本页最接近这个派生量的是 Exhibit {e0["n"]}</b>，'
+                           f'但它的金线与本图现算的 {price_zh} 单月同比逐格最大差 '
+                           f'{g0:.3f}pp，{why} —— <b>本图不替它署名</b>：'
+                           f'中蓝段只与本图现算的 {price_zh} 自己的算术单月同比对读'
+                           f'（最大差 {ppbp_abs(gapp)}）。')
+            # 占位符必须**恰好一个**。零个 = 这条记账早就与图注脱了钩（回填悄悄失效、
+            # 页面少一整句话）；两个 = 图注被复制粘贴过，两处会被填成同一句。
+            k = ex.get('note', '').count(PLEG_MARK)
+            if k != 1:
+                raise SpecError(
+                    f'decomp「{rec["zh"]}」（Exhibit {ex.get("n")}）的图注里有 {k} 个'
+                    f'中蓝段占位符，应当恰好 1 个 —— `_decomp_monthly` 埋占位符那一处'
+                    f'与 `_pleg_fill` 回填那一处已经对不上了')
+            ex['note'] = ex['note'].replace(PLEG_MARK, txt)
 
     def ex_level_yoy(self, n, t):
         """一条量的**水平值**（柱）+ **单月同比**（次轴金线）。
@@ -5696,8 +6149,22 @@ class Page:
         self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
         # 「同一列画了几条同比」的账 + 撞上之后的告警，见 log_yoy_bar()。
         # 同样每次组装从零记：重复调用 payload() 时不能把上一轮的图号带进来。
-        self._yoy_bar_cols = {}    # col → [{'n', 'family', 'cal', 'win', 'where'}, …]
+        # `win` 是给人读的三元组（左标签, 右标签, 期数），`p0` / `p1` 是那两端的
+        # **Period 本身**。p0/p1 从前只在 log_yoy_bar 内部私用，2026-09 起
+        # `total_drawn_wider()` 也读它们来判「窗口是不是真包含」—— 已经是跨函数契约，
+        # 所以列在这里：动它们要连那一支一起看。
+        self._yoy_bar_cols = {}    # col → [{'n','family','cal','win','where','p0','p1'}, …]
         self.dup_yoy = []          # 只告警不停机的那一档，页尾由 dup_yoy_zh() 现算
+        # 「合计柱有意不出」的账，同样每次组装从零记：重复调用 payload() 时把上一轮的
+        # 图号带进来，页尾那句「绝对量看 Exhibit k」就会指到上一轮的号上。
+        self.mix_folded = []
+        # 「这张图问过断点」的账（图号），由 mark_breaks() 记、页尾那段断点说明读。
+        # 同样每次组装从零记，理由与上面几本账逐字同源。
+        self._brk_asked = set()
+        # 「没问过断点的那张图用了哪几条列」的账（图号 → 列名），由
+        # note_nodraw_cols() 记、页尾那段断点说明读。键是图号，重复调用 payload()
+        # 不清零就会把上一轮的图号带进来 —— 理由与上面几本账逐字同源。
+        self._nodraw_cols = {}
         self.cost_ns = set()       # 真印出了「逐图代价」那一段的图号，见 mom_cost_zh()
         # 可比月太少、图注里照实写了「量不出来」的图号。单独记而不是拿
         # 「mom 全集 − cost_ns」倒推：倒推只在「每条 mom 路径都调过 mom_cost_zh」
@@ -5713,6 +6180,11 @@ class Page:
         self.cap_ns = []
         self.saw_group_lines = self.saw_group_heat = self.saw_ratio_rhs = False
         self.decomp_report = []  # decomp 自检行同理，从零记
+        # 月度分解图注里「中蓝段」那句话的**待回填**清单（见 `_pleg_fill`）。
+        # 同样每次组装从零记：留着上一轮的记录，回填就会去改一张早已不在这一轮
+        # 页面上的图，而这一轮真正埋了占位符的那张反倒没人填 —— 下面那道
+        # 「占位符还在就 raise」的护栏会当场把它拦下来，但账本本身先得是干净的。
+        self._pleg = []
 
         if self.headline_style == 'bar_yoy':
             # ①② 并成一张：全历史的水平值柱 + 次轴单月同比（见 HEADLINE_STYLES）。
@@ -5730,7 +6202,9 @@ class Page:
 
         for g in self.groups:                                 # ③ 每组多列对比
             _g0 = len(ex)
-            # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」两张。
+            # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」。
+            # （**不写死「两张」**：合计那一列已被本页别处那张更宽的图画过时只出后一张，
+            #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成。）
             # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
             # 也不该在阅读顺序上互相插队）。
             eaten = set()
@@ -5738,8 +6212,10 @@ class Page:
                 pair, eaten = self.mix_pair(n, g)
                 for e in pair:
                     ex.append(e); n += 1
-            # 被 mix 吃掉的列不再进常规对比图：它们的水平值由合计柱交代、
-            # 结构由占比堆叠交代，再画一遍是同一批数在同一页上出现两次。
+            # 被 mix 吃掉的列不再进常规对比图：结构由占比堆叠交代，水平值由那张
+            # **画了合计这一列的柱图**交代 —— 通常是本组自己的合计柱，合计柱有意不出
+            # 的那一档（`total_drawn_wider`）则是本页别处那张横轴更宽的图。
+            # 两种情形下这一列都算被吃掉，再画一遍都是同一批数在同一页上出现两次。
             flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
             # 单位不同的列不能共用一根轴（cboe 原 deck 的 Exhibit 9 把 2 : 15 : 64 三个
             # 量级画在同一根轴上，最小的那条振幅只占画布 0.9% —— 那条线是白画的）。
@@ -5793,11 +6269,18 @@ class Page:
         #
         # ⚠️ **`after_group` 是明示例外**（2026-09 按页面所有者的指令加：
         # 「把分解图前移到紧跟它的输入之后」）。它就地出图，因此它之后的每一张图
-        # 号都会平移 —— 所以**用它的页必须自己保证 spec 与页尾文案里没有硬编码的
-        # 图号**（底座自己生成的那些「见 Exhibit k」都是现算的，跟着走不会错；
-        # 靠不住的是人手写死在 spec 注释 / notes / glossary 里的那些）。
-        # 判据是 `grep -n 'Exhibit [0-9]' build/specs/<页>.py` 为空；
-        # 今天只有 asx 满足（其余 8 家各有 2–8 处），所以这个键**不是**通用开关。
+        # 号都会平移 —— 所以**用它的页必须自己保证 spec 与页尾文案里没有指着
+        # 「本轮这一版」的硬编码图号**（底座自己生成的那些「见 Exhibit k」都是现算的，
+        # 跟着走不会错；靠不住的是人手写死在 spec 注释 / notes / glossary 里的那些）。
+        # 判据是 `grep -n 'Exhibit [0-9]' build/specs/<页>.py` 的每一处都能归进
+        # **三类白名单**：① 汇总表 Exhibit 1（底座把它钉在 1 号，永不移动）；
+        # ② 历史账里的「原 Exhibit N」（明文冻结的改版前编号，正是页面所有者
+        # 「删图要向读者交代」那条指令要求写的东西，跟着新编号改反而会让它指错）；
+        # ③ 注释里标着「别改」的改版前实测证据。归不进去的才是会过期的引用。
+        # ⚠️ **这句话原来写的是「今天只有 asx 满足（其余 8 家各有 2–8 处）」——
+        # 已经过期，别再照它判。**asx 自己那轮的历史账就往 asx.py 里写进了 5 处
+        # 「原 Exhibit N」；2026-09 的 tmx 同样一边用 after_group、一边按同一条指令
+        # 写历史账。判据因此从「grep 为空」改成上面那三类白名单，两条指令不再打架。
         # 下面这一轮只处理**没有** after_group 的那些（有的已在 ③ 里就地出过了）。
         for d in self.decomp:
             if d['after_group']:
@@ -5817,6 +6300,24 @@ class Page:
                 continue
             ex.append(e); n += 1
             _mark_section(ex, _d0, t_.get('section'))
+
+        # ── 第二趟：把月度分解图注里那句**页面级**交叉引用填上（见 `_pleg_fill`）──
+        # 位置是硬要求，不是随手放的：
+        #   · 必须排在**全部** exhibit 都进了 `ex` 之后 —— 那句话说的是「本页…」，
+        #     判据的范围必须与断言的范围一致（`after_group` 会把分解图挪到页中间，
+        #     一趟走完时它后面的图还一张都没建）；
+        #   · 必须排在 `chartscale.fix_all()` 之前 —— 那一步 pop 掉 `_cols`（按列认图
+        #     的唯一依据）并按显示量级缩放数值。
+        self._pleg_fill(ex)
+        # 占位符一个都不许上页。回填哪天被绕过去（新加一条分解路径、或者哪张图被
+        # 后面的步骤替换成了新 dict），这里当场停机 —— 页面宁可不出，也不发一串
+        # 控制字符或者半句话。判据现读 payload，不依赖 `self._pleg` 那本账。
+        _left = [e_.get('n') for e_ in ex if PLEG_MARK in (e_.get('note') or '')]
+        if _left:
+            raise SpecError(
+                f'[{self.ticker}] Exhibit {_left} 的图注里还留着中蓝段占位符 —— '
+                f'`_pleg_fill()` 没有回填到它们（`_decomp_monthly` 埋占位符那一处'
+                f'与本页的记账 `self._pleg` 已经对不上了）')
 
         # 分节标题收口：`_mark_section` 只是把「这一段想要什么标题」记在 `_section` 上，
         # 真正决定「哪一张图起标题」在这里 —— 想要的标题与上一张相同就不重复起，
@@ -6003,14 +6504,136 @@ class Page:
                 bm = {mlab(pd.Period(m, 'M')) for m, _ in uniq}
                 silent = [e for e in ex
                           if not e.get('break_at') and bm & set(e.get('xlabels') or ())]
+                # ⚠️ **「没画线」有两种，理由完全不同，合成一句就会替其中一种编假理由。**
+                #   · 问过断点、没命中（`mark_breaks` 调过，但这张用的列上没登记）
+                #     ⇒ 理由是「断点按列登记，只画到用了那一列的图上」；
+                #   · **根本没问过**（`bridge_bar` 那一支不调 `mark_breaks`）
+                #     ⇒ 理由是「这一图型不挂断点线」，与它用了哪几条列无关。
+                # 2026-09 之前这里只有前一句：/tmx/ 那两张月度量价分解的量腿正是登记了
+                # 换源断点的那条列（同一条列在别的图上画着红线），拿前一句去解释它就是假话。
+                # 判据取自构建期的事实账（`self._brk_asked`），不是按图型写死的名单。
+                asked = getattr(self, '_brk_asked', set())
+                s_col = [e for e in silent if e['n'] in asked]
+                s_kind = [e for e in silent if e['n'] not in asked]
+                # ⚠️ 只有**两档同时存在**时才把名单拆开重列一遍。只剩一档时整份名单就是
+                # 那一档，再抄一遍是排版噪声（而且那句话本来就成立）—— 这也让没有第二档
+                # 的页面逐字节不变。
+                by_col = ('断点是<b>按列</b>登记的，只画到用了那一列的图上，'
+                          '而窗口跨不跨断点月是另一回事。')
+                # ⚠️ **这一档的措辞必须限定在「它自己窗口里跨到的那几个断点月」上，
+                # 不许说成「它用的列上一条断点都没登记」。** 两者不等价：一张图可以
+                # 既用着登记了断点的列、又落在这一档 —— 只要那条断点**不在它的窗口里**。
+                # 2026-09 收口复核实测的例子在 /asx/：那张「参与者保证金·旧口径
+                # （…已停发）」画的正是登记了 2024-08 断点的列，但它的窗口停在 2024-07，
+                # 断点在窗外；它之所以进 `silent`，是因为窗口里含着**另一个**断点月
+                # （2023-10，登记在几条 capital 列上，那几条它确实没用）。
+                # 说成「用的都不是登记了断点的那几条列」对它就是假话。
+                # 判据本身是现成的、而且恰好就是 `mark_breaks` 刚算过的那一件事：
+                # 这几张图之所以在 `silent` 里而不在 `drawn` 里，就是因为
+                # 「窗口 ∩ 本图各列登记的断点月」为空 —— 所以限定版按构造为真。
+                kz = '、'.join(sorted({BRK_NODRAW_ZH.get(e['kind'], e['kind'])
+                                       for e in s_kind}))
+                # ⚠️ **「跨断点的那几格改由它们各自的图注点名交代」这半句不许无条件印。**
+                # 它 2026-09 上一轮是挂在 by_kind 末尾的一句无条件断言，而它只在
+                # /tmx/ 上碰巧为真（那两张月度分解的图注确实逐句交代了 2021-08 换源那
+                # 12 格）；在 /asx/ 上是假的 —— asx 唯一那张 `bridge_bar` 的两条输入列
+                # **一条都没登记断点**，它压根没有可交代的东西，图注里「断点」「换代」
+                # 「红色竖虚线」也确实出现 0 次。同一句话被两页共用，于是一页真、一页假。
+                #
+                # 改成现算，判据全是构建期已知的事实，一个都不写死：
+                #   ① 这张图用了哪几条列 —— `self._nodraw_cols`（`note_nodraw_cols()` 记；
+                #      `_cols` 指望不上，它在 `chartscale.fix_all()` 里早被 pop 掉了）；
+                #   ② 哪几条列登记了断点、断在哪个月 —— `self.breaks`；
+                #   ③ 那半句说的是**别人图注里的内容**，所以还要那张图的图注真的把那个月
+                #      印出来了才敢说。三条都过才印，否则各说各的：
+                #        · `k_told` 输入列上登记了断点，且它自己的图注点了那个月；
+                #        · `k_mute` 输入列上登记了断点，但它的图注没点名 ⇒ 不许替它认领，
+                #          改成告诉读者自己扣；
+                #        · `k_free` 输入列上一条断点都没登记 ⇒ 那半句一个字都不印，
+                #          只照实说「它的列上没登记断点、红线本来也画不到它身上」。
+                #          ⚠️ 这一档说的是**断点表**，不是「这张图没有任何口径问题」——
+                #          2026-09 的 /tmx/ Exhibit 23 就在这一档，而它自己的图注照样
+                #          交代着 2021-08 换源（那次换源只登记在成交股数那条列上，
+                #          它用的成交额 / 成交笔数两条列都没登记）。措辞因此只敢说
+                #          「没登记」与「画不出线」，一个字都不许扩到「没什么可交代」。
+                #        · 三档都不进（没记过输入列的图型）⇒ **什么都不说**。
+                brk_hit, k_told, k_mute, k_free = {}, [], [], []
+                for e in s_kind:
+                    got = self._nodraw_cols.get(e['n'])
+                    if got is None:
+                        continue
+                    xls = set(e.get('xlabels') or ())
+                    hit = sorted({str(b['month']) for b in self.breaks
+                                  if b['col'] in set(got) and mlab(b['month']) in xls})
+                    if not hit:
+                        k_free.append(e)
+                        continue
+                    brk_hit[e['n']] = hit
+                    en = e.get('note') or ''
+                    (k_told if all(m in en or mlab(pd.Period(m, 'M')) in en for m in hit)
+                     else k_mute).append(e)
+
+                def _kseg(lst, alone):
+                    """一档 → 它在 by_kind 里的那半句（`alone` = 这一档就是全部）。
+
+                    `alone` 时不再把图号抄一遍（前半句刚点过名），改用代词；否则按
+                    「Exhibit N、M 」点名 —— 末尾那个空格是全站写法（中文与 ASCII 之间空一格）。
+                    """
+                    one = len(lst) == 1
+                    who = ('而' + ('它' if one else '它们')) if alone else \
+                          ('Exhibit ' + '、'.join(str(e['n']) for e in lst) + ' ')
+                    mn = sorted({m for e in lst for m in brk_hit.get(e['n'], ())})
+                    ms = '、'.join(mn)
+                    if lst is k_told:
+                        return (f'{who}用到了登记了断点的列（断在 {ms}），跨断点的那几格改由'
+                                + ('它自己' if one else '它们各自') + '的图注点名交代')
+                    if lst is k_mute:
+                        return (f'{who}用到了登记了断点的列（断在 {ms}），而'
+                                + ('它自己' if one else '它们各自')
+                                + '的图注里没有点到' + ('这个月' if len(mn) == 1 else '这些月')
+                                + '，读' + ('它' if one else '它们')
+                                + '的跨断点格要照本条开头那几个月自己扣')
+                    return (f'{who}用的输入列上一条断点都没登记，'
+                            + '红线本来也画不到' + ('它' if one else '它们') + '身上')
+
+                got_k = [g for g in (k_told, k_mute, k_free) if g]
+                alone = len(got_k) == 1 and len(got_k[0]) == len(s_kind)
+                # 「不过」是给读者的转折提示：上半句说红线画不画与列无关（图型的事），
+                # 下半句说的是另一件事 —— 这几张图各自的列上到底登记没登记断点。
+                # 只在「有一档确实登记了断点」且要点名图号时才需要，其余两种情形
+                # 那半句本来就以「而它/它们」起头，再加转折词就是叠字。
+                lead = ('；不过 ' if got_k and got_k[0] is not k_free and not alone
+                        else '；')
+                by_kind = (f'<b>这一图型本身不挂断点线</b>（构建时根本没登记过断点），'
+                           f'与{"它" if len(s_kind) == 1 else "它们"}用了哪几条列无关'
+                           + (lead + '；'.join(_kseg(g, alone) for g in got_k)
+                              if got_k else '') + '。')
+                if not s_kind:
+                    # 只剩这一档时不再逐图点名（前半句刚点过），但限定语照旧要有 ——
+                    # 上面那段注释里的 /asx/ 例子正落在这一档。
+                    why = ('—— 它们在自己的窗口里跨到的那几个断点月，'
+                           '都没有登记在它们用的列上：' + by_col)
+                elif not s_col:
+                    why = f'—— 这几张都是{kz}，' + by_kind
+                else:
+                    why = ('：其中 Exhibit ' + '、'.join(str(e['n']) for e in s_col)
+                           + f' 在它们自己的窗口里跨到的那几个断点月，都没有登记在'
+                             f'它们用的列上（{by_col[:-1]}）；'
+                           + '另有 Exhibit ' + '、'.join(str(e['n']) for e in s_kind)
+                           + f' 是{kz}，' + by_kind)
                 out.append(
                     '<b>⚠️ 口径断点。</b>' + txt + '。红色竖虚线画在 Exhibit '
                     + '、'.join(str(e['n']) for e in drawn)
                     + '（断点那一期的<b>左缘</b>，语义是「从这一期起与左侧不可比」）'
-                    + (f'。<b>另有 {len(silent)} 张图的横轴窗口同样跨过这些月份、但没有画线</b>'
+                    # 「其中至少一个」不是修辞上的谨慎：`silent` 的判据是
+                    # 「本图 xlabels 与断点月集合**有交集**」，一张图跨到几个断点月
+                    # 是它自己窗口的事（/asx/ 那张停发的旧口径图就只跨到两个里的一个）。
+                    # 写成「跨过这些月份」等于替每一张都认领了全部断点月。
+                    + (f'。<b>另有 {len(silent)} 张图的横轴窗口同样跨过其中至少一个月份、'
+                       f'但没有画线</b>'
                        f'（Exhibit ' + '、'.join(str(e['n']) for e in silent)
-                       + '）—— 断点是<b>按列</b>登记的，只画到用了那一列的图上，'
-                         '而窗口跨不跨断点月是另一回事。读这些图的跨断点比较同样要扣掉这一层。'
+                       + '）' + why
+                       + '读这些图的跨断点比较同样要扣掉这一层。'
                        if silent else '；其余各图的横轴窗口里没有落进断点。')
                     + ('热力矩阵没有连续横轴、画不出断点线，跨断点读它的同比要自己扣掉这一层。'
                        if has_heat else ''))
@@ -6066,9 +6689,16 @@ class Page:
                   if _has_lines else '')
                + ('④ 热力矩阵画同比不画水平值：色标是全表共用的 5/95 分位，'
                   '水平值量级差几十倍时会被最大的那列吃掉整条色标。' if _has_heat else '')
+               # ⑤ 的「两张」不能无条件印：合计那一列已经被本页别处那张更宽的柱图
+               #    画过时，这一组只出后一张（`mix_folded`，见 `total_drawn_wider`）。
+               #    哪几组、宽在哪、绝对量去哪看、后一张有没有画成，全部由
+               #    `mix_folded_zh()` 逐组现算 —— 写死一句「都出两张」，
+               #    在这一页上就是一句读者一数就能拆穿的假话。
                + ('⑤ 声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
                   '（次轴同比，流量走单月、存量走点对点）与分项的 100% 占比堆叠。'
-                  '各段之和逐月复算，对不上就不发页。' if _has_mix else '')
+                  '各段之和逐月复算，对不上就不发页。'
+                  + self.mix_folded_zh()
+                  if _has_mix else '')
                + ('⑥ 声明了 <code>ratio_rhs</code> 的组（num ⊆ den 这个包含关系）'
                   '不画折线，改画并排柱 + 右轴比值线：引擎里 <code>lines</code> / '
                   '<code>lines_endlabels</code> 没有次轴，而比值与水平值不同量纲，'
@@ -6243,8 +6873,29 @@ class Page:
         # ⚠️ 为什么这类话不由底座无条件印一段：`build/single.py` 服务 9 张 spec 页，
         #    底座每多印一段，9 页的 payload 就一起变。**哪一页要哪一段由那一页的 spec 说了算，
         #    话本身仍然由底座现算**（例如 `Page.cap_zh()`：spec 里一个数字、一个图号都没有）。
-        spec_notes = [x(self) if callable(x) else str(x)
-                      for x in (self.spec.get('notes') or [])]
+        # ⚠️ **callable 返回空串 ⇒ 整条丢掉**，这是 callable 那一支的「收放」出口：
+        #    一条只在某种情形下才成立的话（`page.cap_zh()` 已经有 `return ''` 这一支；
+        #    `tmx` 的并图历史账同理），不成立时应当**整条消失**，而不是在页尾留一个
+        #    空条目。不 strip 原串：只判空，不改内容，既有页面逐字节不变。
+        # ⚠️ **只作用在 callable 这一档**（2026-09 收口时缩回来的）。上一版对字面量
+        #    也丢，那是一条 9 页共用、没有任何信号的底座行为改动：spec 里声明的东西
+        #    可以无声消失，而同一轮自己刚立的两条规矩是「mix 的 note 成死配置就硬失败」
+        #    「合计柱有意不出必须另打一行日志」—— 不同调。字面量空串是 spec 写错，
+        #    不是「这一次不成立」，它该原样露在页面上被人看见，而不是被底座悄悄吞掉。
+        # ⚠️ **收起来的必须响一声**：记进 `self.notes_folded`，`build()` 另打一行给
+        #    维护者（与「合计柱有意不出」那行同源同理由）。callable 写错、恒返回 ''
+        #    时，整条页尾说明会从页面上消失，而构建输出里一个字都没有。
+        self.notes_folded = []
+        spec_notes = []
+        for i, v in enumerate(self.spec.get('notes') or []):
+            if not callable(v):
+                spec_notes.append(str(v))
+                continue
+            x = v(self)
+            if x.strip():
+                spec_notes.append(x)
+            else:
+                self.notes_folded.append({'i': i, 'name': getattr(v, '__name__', '?')})
         self.md_fixed = sum(1 for x in spec_notes if _MD_BOLD.search(x))
         out += [md_bold(x) for x in spec_notes]
         return out
@@ -6301,6 +6952,26 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
                   f'（{b["where"]}，{b["win"][0]}–{b["win"][1]} {b["win"][2]} 个月）'
                   f'同列 {d["col"]}、同口径 {d["cal"]}'
                   + ('，窗口也逐格相同' if a['win'] == b['win'] else '，窗口不同'))
+    # 「合计柱**有意**不出」那一档（`Page.total_drawn_wider`）。这一档不进 `skipped`
+    # ——那本账是给「想画而画不成」用的——但同样**必须响**，理由与上面那条逐字同源：
+    # 页尾那段是给读者的，这一行是给维护者的。少一张图而构建输出里一个字都没有，
+    # 与「这家本来就没这张图」在日志里长得一模一样；而这本账恰恰是唯一一本
+    # **会让一张图从页面上消失**的账。
+    for d in (getattr(page, 'mix_folded', None) or []):
+        if not quiet:
+            print(f'[{t}] ⚠️ 合计柱有意不出：groups「{d["gz"]}」.mix 的 {d["col"]} '
+                  f'折进 Exhibit {d["n"]}（{d["where"]}，{d["wide"][0]}–{d["wide"][1]} '
+                  f'{d["wide"][2]} 个月），本组这张本来要画 {d["own"][0]}–{d["own"][1]} '
+                  f'{d["own"][2]} 个月（是它{d["side"]}）'
+                  + ('' if d['share_drawn'] else
+                     '；⚠️ 占比堆叠也没画成，这一组本轮 0 张图'))
+    # 页尾条目按现算结果**整条收起**那一档（`callable(page)` 返回空串，见 `notes()`）。
+    # 同样不硬失败、同样必须响：那是 spec 里声明过的一整段说明从页面上消失，
+    # 与「合计柱有意不出」逐字同源 —— 页尾那边什么都不会留下，只有这一行看得见。
+    for d in (getattr(page, 'notes_folded', None) or []):
+        if not quiet:
+            print(f'[{t}] ⚠️ 页尾条目整条收起：spec notes 第 {d["i"]} 条'
+                  f'（{d["name"]}）本次现算为空串')
     # 近零基数（§6.1 第 5 条）：命中的图逐条打印。不硬失败 —— 线是页面所有者要留的，
     # 这一行是给维护者的清单，好让「今天到底是哪几张」随时能重跑出来，
     # 而不必去散文里翻一个会过期的数。

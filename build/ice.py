@@ -4072,8 +4072,21 @@ def _dense_guard(kind, n, series):
 def _color_guard(n, kind, colors, rhs_color=None):
     """配色三查：数量上限、互不重复、不与次轴线撞色。
 
-    第三条最容易漏：那条线无描边、画在柱之后，穿过同色段时**整段看不见**
-    （verify_pages 对 gs_bar 是硬 ERROR，对 stacked_dual 没这道查，所以本文件自己查）。
+    第三条最容易漏，而且它的**理由在 2026-09 换过一次**：从前是「那条线无描边、画在
+    柱之后，穿过同色段时整段看不见」；引擎给 stacked_dual 的右轴线加了白 casing
+    （charts.js 的 polyline 第 7 个参数 halo）之后，线在同色段上不再整条消失 ——
+    它有了一条白轮廓。**但同色仍然要避**，理由变成：casing 只在线的**两侧各镶 1.0px**
+    白边（stroke 3.8 vs 线自己的 1.8），线心与段同色时，读者看到的是**一条被白线镶了
+    两道边的段色带**，认不出哪一半是线、哪一半是它压着的段（这句与 build/single.py 里
+    stacked_dual 配色那段是同一个口径，两处别写成两个说法）；更要命的是图例靠**颜色**
+    认身份，同一个色名在图例里出现两次，那张图的色→量对应当场断掉。
+    ⚠️ 别把它写成「与段间那条白缝分不开」：段间缝是**单侧** 1.5px、只留在朝零线的
+    那一侧（charts.js 的 `sgp`），casing 是**两侧各** 1.0px 的对称白边，两者恰恰分得开
+    —— 那样写是拿一个对不上几何的理由去停机，而这段文案是打印给人看的。
+    （rhs_color 只有 stacked_dual 那个调用点会传，所以这一查目前只对它生效；
+     gs_bar 的 yoy 线**不传 halo**、至今仍是「无描边、画在柱之后」，它那道同色守卫
+     在 build/verify_pages.py 里，是硬 ERROR，理由一个字都没变 —— 别把两处混起来改。
+     两条线的分档记在 docs/CHART_KINDS.md §3.14 的 casing 边界那一条。）
     """
     if len(colors) > MAX_LINES:
         raise SystemExit(f'Exhibit {n}（{kind}）有 {len(colors)} 条靠颜色区分的序列，'
@@ -4084,7 +4097,12 @@ def _color_guard(n, kind, colors, rhs_color=None):
                          f'不认识的色名会静默退回 NAVY，同色两段连不出分界。')
     if rhs_color and rhs_color in colors:
         raise SystemExit(f'Exhibit {n}（{kind}）的次轴线用了 {rhs_color}，与某一段同色 —— '
-                         f'折线无描边且画在柱之后，穿过同色段时整段看不见。')
+                         f'引擎给这条线加的白 casing 只在它两侧各镶 1.0px 白边，'
+                         f'线心与段同色时读者看到的是一条被白线镶了两道边的段色带，'
+                         f'认不出哪一半是线、哪一半是它压着的那一段；'
+                         f'而且图例靠颜色认身份，{rhs_color} 在图例里会出现两次，'
+                         f'那张图的色→量对应当场断掉。'
+                         f'出路：换线的颜色（段色由 SEG_COLORS 定序，不要在段那边让）。')
 
 # ══════════════════════════ §2  gs_bar ════════════════════════════════════
 #: gs_bar() 建过的**存量口径**图号（kind=YOY.STOCK）。页尾那条「读存量的是哪一张」
