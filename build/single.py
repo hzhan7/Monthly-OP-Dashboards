@@ -40,8 +40,8 @@
 
 ## 用法
 
-    python3 build/single.py ice              # 建一家
-    python3 build/single.py ice ndaq db1     # 建几家
+    python3 build/single.py ndaq             # 建一家
+    python3 build/single.py ndaq db1 sgx     # 建几家
     python3 build/single.py --all            # build/specs/ 下全部
 
 退出码：0 = 成功或「门槛没到、本次不出页」（原文件原地不动）；1 = spec 写错 / 数据结构
@@ -6690,12 +6690,12 @@ def main(argv=None):
     owned = [t for t in ts if os.path.exists(os.path.join(HERE, f'{t}.py'))]
     if owned:
         for t in owned:
-            print(f'[{t}] 跳过：本页已归 build/mrbase.py（build/{t}.py 是薄壳），'
+            print(f'[{t}] 跳过：本页由 build/{t}.py 接管（mrbase 薄壳或手写生成器），'
                   f'用 `python3 build/{t}.py` 重建，不要走 single.py')
         ts = [t for t in ts if t not in owned]
         if not ts:
             # 显式点名给的 ticker 全被挡下 ⇒ 是用错命令了，非零退出把它喊出来。
-            # `--all` 展开后全被挡下不可能发生（specs/ 里还有 10 家交易所）。
+            # `--all` 展开后全被挡下不可能发生（specs/ 里还有 9 家交易所）。
             return 1
 
     for t in ts:

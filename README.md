@@ -46,8 +46,8 @@
 ```
 index.html          总览页
 <ticker>/index.html 34 个页面外壳 —— 里面没有任何公司专属内容
-                    13 个（11 家老单公司页 + tsm + wealth）由 build/make_shells.py 生成；
-                    22 个（5 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
+                    14 个（11 家老单公司页 + tsm + wealth + ice）由 build/make_shells.py 生成；
+                    21 个（5 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
                     由 build/make_shells12.py 生成
                     （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 34）
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
@@ -82,7 +82,8 @@ fetch/cost_sec.py   /cost/ 的**第二个数据源**：SEC 申报层（CIK 00009
                     理由见 docs/CRON_WIRING.md §2.5）
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
-build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所走这条）
+build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所里的 9 家走这条；
+                    ice 2026-09 改成手写的 build/ice.py，spec 已删）
 build/specs/<t>.py  一家一份配置（见 docs/SINGLE_SPEC.md）
 build/mrbase.py     月度营收页通用底座（台湾半导体 7 家）：build/mrspecs/<t>.py → data/<t>.js
                     配置契约写在 mrbase.py 自己的 §1（不在 docs/ 里另开一份，
@@ -406,7 +407,8 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   那句话在 cme / schw 改月度桶时就已经不成立，cboe 只是又多了一张；现按 `data/*.js`
   的实际清点重写。缺同口径（金额，数量）配对的页面明说「不具备数据条件」，
   不硬拆（db1 / enx / ice / ndaq 页各有一条说明）。
-- **brief**：11 家老单公司页 + 台湾半导体 7 家 + `/wealth/` 的页顶 ~300 字数据总结。
+- **brief**：21 页的页顶 ~300 字数据总结 —— 11 家老单公司页 + `/ice/` + 台湾半导体 7 家
+  + `/wealth/` + `/asx/`。
   规则库在 `build/brief.py`（只算事实），句子由各家生成器自己拼（`build/mrbase.py`
   也 `import brief`，7 家共用底座拼出来的那几句 + spec 的 `brief_extra` 钩子）；
   刻意不复述图表里已有的数字，只写图表讲不出来的三件事 —— 基数效应、口径背离、所处区间。

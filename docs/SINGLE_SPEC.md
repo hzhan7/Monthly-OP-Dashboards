@@ -5,8 +5,8 @@
 产物：`data/<ticker>.js`（payload 与既有 12 家同构，由 `assets/page.js` + `assets/charts.js` 渲染）
 
 ```
-python3 build/single.py ice            # 建一家
-python3 build/single.py ice ndaq db1   # 建几家
+python3 build/single.py ndaq           # 建一家
+python3 build/single.py ndaq db1 sgx   # 建几家
 python3 build/single.py --all          # build/specs/ 下全部
 ```
 

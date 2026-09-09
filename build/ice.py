@@ -88,8 +88,10 @@ import os, sys, json, re
 # -*- coding: utf-8 -*-
 """build/ice.py 的【载入层 + 格式化层】—— 合并时整段搬进 build/ice.py 的开头。
 
-本文件是分段草稿：底部的 `if __name__ == '__main__':` 自测块**合并时删掉**，
-其余（导入、常量、COL、load()、格式化函数、窗口、col()）逐行进正式文件。
+本段原是分段草稿，2026-09 已并入 build/ice.py（导入、常量、COL、load()、格式化函数、
+窗口、col() 逐行进来）。⚠️ 草稿期那句「底部的 `if __name__ == '__main__':` 自测块合并时
+删掉」指的是**各段各自的**自测块，它们都已经没了；**文件底部现在那个 `__main__` 不要删**
+—— 它是本页唯一的生产入口，`monthly_run.builder()` 就是靠 `python3 build/ice.py` 跑它。
 
 它负责的三件事，别的段一件都不许重做：
   1. **唯一的读盘口**：`load()` 是 series/ice.csv 进入本页的唯一入口，
@@ -104,15 +106,7 @@ import os, sys, json, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ── 分段草稿期的 ROOT 修正 ───────────────────────────────────────────────
-# 正式文件里 HERE 是 <repo>/build，ROOT 就是仓库根，`ROOT = os.path.dirname(HERE)`
-# 一行到位。草稿在 scratchpad 下跑，两行只在这里存在，**合并时连同这段注释一起删**，
-# 换回冻结契约里那两行（`ROOT = os.path.dirname(HERE)` + `sys.path.insert(0, HERE)`）。
-_REPO = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
-
-ROOT = _REPO
-
-sys.path.insert(0, os.path.join(ROOT, 'build'))
+ROOT = os.path.dirname(HERE)
 
 CSV = os.path.join(ROOT, 'series', 'ice.csv')
 
@@ -602,8 +596,8 @@ def qcol(name, qwin, how='sum'):
 # -*- coding: utf-8 -*-
 """build/ice.py 的【COL 列元数据表 + 口径层】—— 本文件是这一段的独立可跑版本。
 
-合并进 build/ice.py 时：删掉文件底部的 `if __name__ == '__main__':` 自测块，
-以及下面 import 段里那三行标着「⚠️ 自测垫片」的路径改写；其余逐行原样搬。
+合并已于 2026-09 完成：下面 import 段里那三行「⚠️ 自测垫片」的路径改写已删。
+⚠️ 文件底部的 `if __name__ == '__main__':` **不要删** —— 它是本页的生产入口，不是自测块。
 
 ━━ 这一段为什么是全文件最承重的一段 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 手写页没有 `build/single.py` 那套「读 spec → 推 unit → 推口径」的自动流水线，
@@ -632,10 +626,6 @@ def qcol(name, qwin, how='sum'):
 **把这件事变成会响的**：它现场把 unit 换掉、验判定确实翻，翻不掉说明「靠 unit 挡住」
 这句话已经不成立（比如 classify 的正则改了），停机。
 """
-
-HERE__colmeta = os.path.join(ROOT, 'build')
-
-sys.path.insert(0, HERE__colmeta)
 
 MONTHS__colmeta = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -1381,16 +1371,6 @@ def cost_gates(ex, stock_ex=(), why=None):
     而硬失败的代价是整站不发布（同 :711-717 那笔账）。
 """
 
-# ══════════════════════════════════════════════════════════════════════════
-# ⚠️ 下面这一块是 **scratchpad 自测专用**。合并进 build/ice.py 时整块删掉 ——
-#    那时 HERE__guards/ROOT/CSV/OUT 与 import 由契约冻结的顶部导入块提供。
-_WT = ('/Users/hzhan/Documents/monthly-op-dashboards/'
-       '.claude/worktrees/cboe-page-redesign-dc42f8')
-
-HERE__guards = os.path.join(_WT, 'build')
-
-sys.path.insert(0, HERE__guards)
-
 # ══════════════════════════ 1. 列元数据的判据断言表 ══════════════════════════
 #
 # ── 为什么要有「期望值」这一栏，而不是直接信 SG ────────────────────────────
@@ -1993,12 +1973,6 @@ build/specs/ice.py:44-50 立的第二条：
 `comma()` / `pctf()` / `pp()` / `nz()`（那是另一段）。唯一的例外是
 `_ceil_to()` / `_floor_to()`：它们是**取整方向**的护栏，不是格式化。
 """
-
-sys.path.insert(0, HERE)
-
-if not os.path.exists(os.path.join(ROOT, 'series', 'ice.csv')):
-    ROOT = _REPO
-    sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 #: 迁移期的别名。specs/ice.py 里这个常量叫 `_CSV`，正文的 helper 全用它；
 #: 冻结契约里模块级的名字是 `CSV`。留一个别名，helper 体就能**逐字**搬过来。
@@ -2838,8 +2812,6 @@ _HANDLED = _handled_sum_check()
     的注释；用错成 ÷1000 会把现货收入低估 10 倍，而且不会有任何报错。
 """
 
-sys.path.insert(0, os.path.join(ROOT, 'build'))
-
 # ══════════════════════════════════════════════════════════════════════
 # 公共头的一小撮工具：正式合并进 build/ice.py 时**删掉本段**，直接用文件头那份。
 # 这里重复一遍只是为了让本文件能 `python3 revenue.py` 独立跑起来。
@@ -3355,9 +3327,6 @@ NYSE 期权腿**单独**的桥也放弃：`rpc_nyse_equity_options_usd` 只有 2
 docs/verify/ice.md:519-526）。**利率 / 其他金融各自**没有官方数可对，桥只用它们的合计。
 """
 
-# 分段草稿跑在 scratchpad 里，仓库根写死；合并后由页面统一的 ROOT__bridge / CSV 代替。
-ROOT__bridge = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
-
 EX_BRIDGE = 8            # 合并后走页面的 EX_* 常量，图注里一律按标题指代、不印字面编号
 
 EX_REV = 5               # 隐含收入那张（图注要说「菱形与它的同比线是同一条数」）
@@ -3466,8 +3435,10 @@ def bridge_rows(qtrs, V, Q, tag=''):
         rows.append(row)
     return rows
 
-# ══ 自测桩：季度腿表 ═══════════════════════════════════════════════════════
-# 正式合并时**整块删掉**，由「隐含收入」那一段提供 REV_Q / VOL_Q（见文末 INTERFACES）。
+# ══ 季度腿表 ═══════════════════════════════════════════════════════════════
+# ⚠️ 旧标题写的是「自测桩，正式合并时整块删掉，由『隐含收入』那一段提供 REV_Q / VOL_Q」，
+# **不要照做**：下面的 LEG_DEFS 是生产代码（正文引用 6 处），而 REV_Q / VOL_Q 这两个名字
+# 全文根本不存在 —— 那一段最终没有按草稿的接口拼进来。删掉这一块当场 NameError。
 # 口径（冻结）：季度收入($mn) = Σ_{季内3个月}(ADV × 该腿对应的交易日列) × **季末月**的 RPC ÷ 换算因子。
 # 三套交易日各归一各的（trading_days_commod / _rates / _us_equities）：
 # 「金融四条腿全部用 trading_days_rates」已用 10-K FY2025 合约数双向证伪，
@@ -3808,8 +3779,11 @@ def build_bridge(VQ, QQ, RPCQ, QTRS, ex_bridge=EX_BRIDGE):
 # -*- coding: utf-8 -*-
 """build/ice.py 的**图型构造库** —— 每种 chart kind 一个封装函数。
 
-本文件是 build/ice.py 的一个片段（合并时整段贴进去，`if __name__` 自测块删掉，
-下面 §0 的 bootstrap 块也删掉 —— 那一块里的名字由别的段提供）。
+本段原是 build/ice.py 的一个片段，2026-09 已整段并入。
+⚠️ 草稿期那句「§0 的 bootstrap 块也删掉、那一块里的名字由别的段提供」**已不成立**：
+`COL__exlib` 与 `_U_KD`/`_U_K`/`_U_UC`/`_U_MS`/`_U_P100`/`_U_BN`/`_U_PCT` 全文
+只此一份定义、正文在用（这一块里真正没人调的只有 `_load()`）。
+文件底部的 `if __name__ == '__main__':` 同样**不要删** —— 它是本页的生产入口。
 
 为什么要有这一层，而不是像 build/cboe.py 那样每张图手写一个 dict：
   · ICE 这一版有近十张 gs_bar（Ex2 / Ex15 …）与五张 stacked_dual（Ex3/7/10/12/13/16/18）。
@@ -3823,8 +3797,6 @@ def build_bridge(VQ, QQ, RPCQ, QTRS, ex_bridge=EX_BRIDGE):
 ⚠️ 本文件不生产任何图注正文（除了「排版 / 窗口 / 不可见段」这类**只有构造期知道**
    的机读说明）。论证性的图注是 exhibit 那几段的事，走 `note=` 传进来。
 """
-
-sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 BREAK_MONTH = '2013-11'     # 唯一口径断点：NYSE Euronext 收购完成
 
@@ -4699,8 +4671,6 @@ headline 2 行 + 8 个组共 52 行 = 54 个数据行，加 9 条组带 = 63 行
 `adv_rates_kcontracts` 与 `SUM_ROWS` 末尾那条组带上方的注释。
 """
 
-sys.path.insert(0, os.path.join(ROOT, 'build'))
-
 def num__summary(v, dec=0):
     """cme.py:206 的 num__summary：缺失印「—」（表格里的空位要看得出是没有数，不是零）。"""
     if v is None or not np.isfinite(v):
@@ -5328,17 +5298,6 @@ brief 与图注说「**这个月**这组读数怎么读」、每月重写；这�
      本文件里唯一的全称断言（「计数列没有小数格」）自带 `_nonint_guard()` 停机。
 """
 
-# 自测时要 import build/ 下的 glossary.py；并进 build/ice.py 之后这一段随文件头的
-# `sys.path.insert(0, HERE)` 一起走，不再需要。
-_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))), 'build')
-
-if not os.path.isdir(_BUILD):                       # 自测在 scratchpad 里跑，路径要写死
-    _BUILD = ('/Users/hzhan/Documents/monthly-op-dashboards/'
-              '.claude/worktrees/cboe-page-redesign-dc42f8/build')
-
-sys.path.insert(0, _BUILD)
-
 # ══════════════════════════════════════════════════════════════════════════════
 # §1 现算 helper —— 释义里出现的每一个数都从这里来，一个快照都不抄
 #
@@ -5720,9 +5679,12 @@ brief 说「**这个月**这组读数怎么读」（每月重写）；图注说�
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
-# §0 合并进 build/ice.py 时**整块删除** —— 这些名字由前面的段提供
-#    （冻结契约：mlab / qlab__notes / num / comma / pctf / pp / L / nz / caliber_stats /
-#     yoy_cal_zh / COST_LOG / COL / WIN_FROM / WIN_TABLE）
+# §0 ⚠️ 旧标题写的是「合并时整块删除 —— 这些名字由前面的段提供」，**不要照做**：
+#    本块自己定义了 qlab__notes / _TD_COLS__notes / _TD_ZH / BREAK_ZH / _coverage，
+#    全文各只此一份（AST 核过：ice.py 没有任何重名的顶层定义），正文在用，删掉当场 NameError。
+#    真正由前面的段提供、本段只是引用的是这 13 个：mlab / num / comma / pctf / pp / L / nz /
+#    caliber_stats / yoy_cal_zh / COST_LOG / COL / WIN_FROM / WIN_TABLE
+#    （旧清单把 qlab__notes 也算进这一档，是错的 —— 它就定义在下面）。
 # ══════════════════════════════════════════════════════════════════════════════
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -6647,7 +6609,8 @@ def _assert_no_exhibit(notes):
             f'按<b>标题</b>点名（build/specs/enx.py:455、build/specs/sgx.py:841-848）。')
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. 自测（合并进 build/ice.py 时整块删除）
+# 3. 页面装配的桩 —— 原为本段自测，合并后**已经是生产代码**（`main()` 调 `_stub_page()`），
+#    所以旧标题里那句「合并时整块删除」作废，删掉它 /ice/ 会当场构建失败。
 #    下面的桩全部按冻结契约搭：真实 CSV、真实 SG / YOY 判据、真实图序。
 # ══════════════════════════════════════════════════════════════════════════════
 def _stub_page(df):
@@ -6811,10 +6774,10 @@ def _stub_page(df):
 # -*- coding: utf-8 -*-
 """build/ice.py 的一段：页顶 ~300 字数据总结（payload 的 `brief`）。
 
-⚠️ 这是**待合并的片段**。正式并进 build/ice.py 时：
-    · 删掉本文件底部的 `if __name__ == '__main__':` 自测块；
-    · 删掉本文件顶部那段「片段自足化」的 import 与 COL 子集，改吃 ice.py 自己的
-      冻结导入与完整的 COL 表（本片段用到的 COL 键名一个字都没改，见 COL_BRIEF）。
+⚠️ 这原是待合并的片段，合并已于 2026-09 完成：顶部那段「片段自足化」的 import 已删，
+    COL 子集 `COL_BRIEF` 保留下来仍在用（键名与 ice.py 的完整 COL 表逐字一致）。
+    文件底部的 `if __name__ == '__main__':` **不要删** —— 它是本页的生产入口，
+    不是自测块。
 
 ═══ 为什么 ICE 到今天还没有 brief ═══
 不是谁忘了写，是**通用引擎根本不产这个键** —— build/single.py 组装 payload 的那一段
@@ -6865,11 +6828,6 @@ brief 最常复发的 bug（brief.py::quant 的 docstring 记着 CME 的历史�
   · **没有反向指标**（ADV / 份额 / RPC 都是越高越好）⇒ `peak_scan` 一律不传 inverse；
     也没有公司 Notes 的一次性重述 ⇒ 无「（还原口径）」标注。
 """
-
-# ── 片段自足化（合并进 build/ice.py 时整块删掉，换成 ice.py 顶部那段冻结导入）──
-ROOT__brief = '/Users/hzhan/Documents/monthly-op-dashboards/.claude/worktrees/cboe-page-redesign-dc42f8'
-
-sys.path.insert(0, os.path.join(ROOT__brief, 'build'))
 
 # ── COL 的子集：本段用到的三列。合并时删掉，直接吃 ice.py 的完整 COL 表。
 #   `unit` 字符串是**承重**的 —— SG.col_is_ratio / col_is_money_ratio 靠它把
@@ -7385,16 +7343,14 @@ ICE 的 spec 注册了 52 列，于是核对表就是 52 列 × 13 行，横向�
 砍掉页面从不印、也不进任何推导值的 9 列，同时把 3 列从没上过图的交易日**请进来**。
 """
 
-HERE__table = os.path.join(ROOT, 'build')
-
-sys.path.insert(0, HERE__table)
-
 # ══════════════════════ 1. 列元数据（COL__table 的表相关子集）════════════════════
 #
-# 合并进 build/ice.py 之后这一块**整块删掉**，直接用公共段那个 COL__table。
-# 留在这里只为让本文件能独立跑；`__main__` 里有一道闸门，把下面每一格
-# 与 build/specs/ice.py 的 SPEC 逐字比对（zh / unit / fmt / scale / stock），
-# 差一个字就停机 —— unit 串是承重的（specs/ice.py:560、:589 记着理由：
+# ⚠️ 旧注释写的是「合并之后这一块整块删掉，直接用公共段那个 COL__table」，**不要照做**：
+# 下面这份就是全文唯一的 COL__table（正文引用 2 处），没有第二份「公共段的」可用。
+# 同样作废的是下一句「`__main__` 里有一道闸门，把每一格与 build/specs/ice.py 的 SPEC
+# 逐字比对（zh / unit / fmt / scale / stock）」—— 那份 spec 已随 cf89490 的改写一并删除，
+# 这道比对闸门不复存在，unit 串今天只由本表自己把关。它仍然是承重的
+# （原 specs/ice.py:560、:589 记着理由：
 # 把 'USD/contract' 改写成别的量纲白名单外的写法，`SG.col_is_ratio()` 第 ③ 级
 # 会静默翻掉，同比从「美元差」变成「百分比变化」，页面不报错）。
 def _c__table(col, zh, unit, fmt, scale=1.0, stock=False):
