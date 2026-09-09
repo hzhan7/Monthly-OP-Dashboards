@@ -2006,6 +2006,18 @@ class Page:
             if t['level']['no_yoy']:
                 _ny.append(f'level_yoy[{i}]「{t.get("zh", "?")}」的 level'
                            f'「{t["level"]["zh"]}」→ 走 ex_level_yoy')
+        # `decomp` 的四个列位置也走 `_norm_col`，所以 `no_yoy` 在那里**语法上写得进去**，
+        # 而 `ex_decomp` 从不读它 —— 声明会被静默吞掉、payload 一字不改、零报错。
+        # 这正是本守卫要消灭的那种失效方式，漏了它守卫自己的报错文案就是假的。
+        # （`_norm_col` 共 7 个调用点：headline、groups[].cols、level_yoy.level
+        #   与这里的四个；前三处在上面已经点过名。）
+        for i, d in enumerate(self.decomp):
+            for k in ('value', 'qty', 'bench_value', 'bench_qty'):
+                c = d.get(k)
+                if isinstance(c, dict) and c.get('no_yoy'):
+                    _ny.append(f'decomp[{i}]「{d.get("zh", "?")}」的 {k}'
+                               f'「{c["zh"]}」→ 走 ex_decomp（分解图不画次轴同比，'
+                               f'这个开关那条路径根本不读）')
         if _ny:
             raise SpecError(
                 'no_yoy 只有 `ex_single`（groups 里**单独占一个单位桶**的流量列）'

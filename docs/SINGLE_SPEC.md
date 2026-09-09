@@ -72,7 +72,7 @@ data/<t>.js             产物
 | `fmt` | ✓ | 见 §4 的 18 个名字。引擎对不认识的名字**静默退回 f1**，所以底座硬校验 |
 | `stock` | | `True` = 存量（期末截面值，跨币种配月末汇率）；缺省 = 流量（日均或月总，配月均汇率）。存量列**单独成图**，不与流量列共轴 |
 | `scale` | | 恒等换算系数。唯一常见用途：源表存的是 0–1 的小数比率，而 `pct*` 格式器期望百分数刻度（29.0 → `29%`），此时写 `'scale': 100` |
-| `no_yoy` | | `True` = 这一列的单列柱图**不画次轴同比**（金线与右轴一并撤掉），改画深蓝虚线的 12 个月均值（`avg12`，口径 `[-13:-1]`，与 cboe / axp / lpla 三处既有实现同源）。**只有 `groups[].cols` 里落进单列单位桶的流量列读得到**（`ex_single`）；写在 headline / `stock: True` / `mix.total` / `mix.parts` / `level_yoy.level` 上，或写在 2 列以上的同单位桶里，**一律硬失败**（见 §4）。用它的前提是页面所有者点名要撤这一张的同比 —— 撤了之后该图不再进页尾「同比口径」那段点名，也不再印逐图代价与近零基数警告 |
+| `no_yoy` | | `True` = 这一列的单列柱图**不画次轴同比**（金线与右轴一并撤掉），改画深蓝虚线的 12 个月均值（`avg12`，口径 `[-13:-1]`，与 cboe / axp / lpla 三处既有实现同源）。**只有 `groups[].cols` 里落进单列单位桶的流量列读得到**（`ex_single`）；写在 `_norm_col` 的其余六个调用点（headline、`level_yoy.level`、`decomp` 的 `value`/`qty`/`bench_value`/`bench_qty`）、写在 `stock: True` / `mix.total` / `mix.parts` 上、或写在 2 列以上的同单位桶里，**一律硬失败**（见 §4）。用它的前提是页面所有者点名要撤这一张的同比 —— 撤了之后该图不再进页尾「同比口径」那段点名，也不再印逐图代价与近零基数警告 |
 
 ### 1.2 `breaks`
 
@@ -522,7 +522,7 @@ Exhibit 1 是汇总表，图从 2 起编号，末尾是核对表。顺序固定�
 | `fmt` 不是引擎实有的名字 | 列出全部 18 个可用名 |
 | 0–1 的小数比率配了 `pct*` 却没给 `scale` | `最大绝对值只有 0.19，看着是 0–1 的小数比率…请加 'scale': 100` |
 | `slow_cols` 里的列名拼错 / 没出现在 headline、groups 里 | 慢腿声明会静默失效，所以硬失败 |
-| `no_yoy` 写在 headline / 存量列 / `mix.total` / `mix.parts` / `level_yoy.level` 上，或写在 2 列以上的同单位桶里 | 那几条产图路径（`ex_head_bar` / `ex_yoy` / `ex_stock` / `ex_mix_total` / `ex_lines` / `ex_heat` / `ex_level_yoy`）都不读这个开关，声明会被静默忽略。**其中 `ex_heat` 尤其要拦**：>5 列的同单位桶画的就是同比热力矩阵，声明被忽略而同比照画 |
+| `no_yoy` 写在 headline / 存量列 / `mix.total` / `mix.parts` / `level_yoy.level` / `decomp` 的 `value`·`qty`·`bench_value`·`bench_qty` 上，或写在 2 列以上的同单位桶里 | 那几条产图路径（`ex_head_bar` / `ex_yoy` / `ex_stock` / `ex_mix_total` / `ex_lines` / `ex_heat` / `ex_level_yoy`）都不读这个开关，声明会被静默忽略。**其中 `ex_heat` 尤其要拦**：>5 列的同单位桶画的就是同比热力矩阵，声明被忽略而同比照画 |
 | `mix` 同时写了 `abs_stack` 与 `rhs_share` / `share_note` | 后两个只有 100% 占比那张图读得到，而 `abs_stack` 根本不出那张图 —— 留着是死配置 |
 | 某列既是头条又是慢腿 | 头条定义门槛，慢腿被排除在门槛外，两者不能同时成立 |
 | `ticker` 与文件名不一致 | 目录名 = data 文件名 = `payload.ticker` 必须逐字相同 |
