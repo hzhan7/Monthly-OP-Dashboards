@@ -221,8 +221,13 @@ def _neg_bar_guard(ex):
     再补一道 `yfloor` 只会互相打架：`yfloor = mn×1.22` 会盖掉引擎算出来的下界，
     而且 `ycap != None or yfloor != None` 是引擎的**截轴开关**（`charts.js` 的
     `capOn`），一置上顶边距就从 14 跳到 30、图上多出一行给竖排真值的留白 ——
-    可这张图一根柱都没被截。现存 23 张 stacked_dual 的列合计全非负、
+    可这张图一根柱都没被截。现存 stacked_dual 的列合计**全部**非负、
     这条护栏从来没在它们身上触发过，所以摘掉它对既有页面是零影响（已复跑全站核过）。
+    （判据：扫 `data/*.js` 取 kind == 'stacked_dual' 的 stacks[].values，最小值 ≥ 0。
+     **这里不写张数** —— 这一处先后写过「23 张」又改成「33 张」，两次都是图长了数
+     没跟着长；张数、页数逐月都在变，要当期数字照这条判据自己扫。全仓还有哪几份副本、
+     哪几份是不该动的历史回归声明、以及**不要按写死数字去 grep** 的理由，
+     名单在 docs/CHART_KINDS.md §3.14 那条 ⚠️ 里。）
 
     真正还写死 `y0 = 0` 的只剩 gs_bar 与 bars_labeled 两个 kind，在 `charts.js`
     的 ylim 分支里各占一行 —— `if (kind === 'gs_bar') { y0 = 0; … }`（charts.js:911）
