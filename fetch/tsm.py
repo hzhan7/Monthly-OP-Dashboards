@@ -78,8 +78,17 @@
      2026-03→04/10、2026-04→05/08（10 日是周日，提前）、2026-05→06/10、
      2026-06→07/13（10 日是周五却压到下周一）。四个月里两个不在 10 日，
      所以 fetch_release_date() 每次都去新闻稿现读，不做任何外推。
-· 美联储 H.10 每周一更新（含上周日度值），月度平均在次月第 1 个营业日即可算全，
-  所以汇率永远不会拖累营收：营收 M 月的数在 M+1 月 10 日才有，那时 M 月汇率早已齐。
+· 汇率有**两个** Fed 源，用途不同，别混：
+  - G.5（Foreign Exchange Rates - Monthly）：官方月均，**次月第 1 个营业日**发布。
+    这是本模块写 tsm_fx.csv 的**主源**。
+  - H.10 的 dat00_ta.htm：日度历史页，**周更**（周一发上周一~周五，逢联邦假日顺延）。
+    它是 G.5 拿不到时的兜底、以及事后交叉校验。
+  ⚠️ 曾经这里写着「月度平均在次月第 1 个营业日即可算全」—— 那句话对 G.5 成立，
+     对 H.10 那张页面**不成立**：某月最后一周要等次月第一次覆盖它的周更才登出，
+     实测滞后 4~9 天。2026-09-05 就是照着这句话去平均一张只登到 8/28 的表，
+     写出 32.0405（真值 32.0229），此后被重述哨兵锁死整整 4 天。见 update_fx()。
+  即便如此，汇率仍不会拖累营收：G.5 在次月第 1 个营业日就有，而营收 M 月的数
+  要到 M+1 月 10 日前后才有。
 · TWSE OpenAPI 的「资料年月」是 ROC 年 + 月（11506 = 2026-06），换算要 +1911。
 
 ────────────────────────────────────────────────────────────────────────
@@ -167,6 +176,8 @@ ROOT = os.path.dirname(HERE)
 IR_PAGE = 'https://investor.tsmc.com/english/monthly-revenue'
 IR_ORIGIN = 'https://investor.tsmc.com'
 H10_TAIWAN = 'https://www.federalreserve.gov/releases/h10/hist/dat00_ta.htm'
+#: G.5 = Fed 对 H.10 日度值做的官方月度平均，次月第 1 个营业日发布。见 fetch_g5()。
+G5_CURRENT = 'https://www.federalreserve.gov/releases/g5/current/'
 TWSE_API = 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L'
 TWSE_CODE = '2330'
 
@@ -202,6 +213,12 @@ FX_SERIES_START = '2013-01'
 TOL_REV = 0.51
 TOL_YOY = 0.051
 TOL_FX = 5e-4
+
+#: 兜底路径（G.5 拿不到）下，等 H.10 日度页登全某月的最长天数，相对该月最后一个工作日。
+#: 实测滞后 4~9 天（周更 + 联邦假日顺延；最坏那档是「月末逢周一 + 次月首个周一撞假日」，
+#: 2026-08 正是这一档）。取 14 = 比最坏多留 5 天，且仍比 TWSE_CROSSCHECK_GRACE_DAY(20)
+#: 早 6 天报警。超过它说明上游停更或版式变了，那才是故障。
+FX_MAX_LAG_DAYS = 14
 
 
 # ── 底层 IO ─────────────────────────────────────────────────────────────
@@ -443,23 +460,90 @@ def _with_yoy(rev, months):
 
 # ── 源 2：美联储 H.10 台湾日度牌价 → 月均 ────────────────────────────────
 def fetch_fx(cache_dir):
-    """返回 {'YYYY-MM': (月均汇率, 该月计入的营业日天数)}。"""
+    """返回 {'YYYY-MM': (月均汇率, 该月计入的营业日天数, 该月在页面上出现过的最大日期)}。
+
+    第 3 位是「H.10 这一页把该月登到哪天了」，update_fx() 的兜底判据要用它。
+    它**含 ND 行，且必须在跳过 ND 之前记**：ND 是美国联邦假日那天的占位，H.10 照发、
+    日期照印，只是没有牌价。把它记到 `continue` 之后，会让「最后一个工作日恰好是假日」
+    的月份永远判不出登全 —— 实测这样的月份有 5 个：2004-05、2010-05、2010-12、
+    2021-05、2021-12（皆 5/31 阵亡将士纪念日或 12/31 元旦观察日）。
+    """
     html = _get(H10_TAIWAN, timeout=120).decode('utf-8', 'replace')
     _cache_write(cache_dir, 'tsm_h10_taiwan.htm', html)
-    buckets = {}
+    buckets, seen = {}, {}
     for tr in re.findall(r'<tr.*?</tr>', html, re.S | re.I):
         cells = [re.sub(r'<[^>]+>', '', c).replace('&nbsp;', ' ').strip()
                  for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.S | re.I)]
         if len(cells) < 2 or not re.match(r'^\d{1,2}-[A-Za-z]{3}-\d{2}$', cells[0]):
             continue
         d = _dt.datetime.strptime(cells[0].upper(), '%d-%b-%y')
+        k = _mkey(d.year, d.month)
+        if d.date() > seen.get(k, _dt.date.min):   # ← 必须在下面 continue 之前
+            seen[k] = d.date()
         v = cells[1].replace(',', '')
         if v.upper() in ('ND', 'NA', 'N/A', ''):    # 美方假日/停牌，H.10 写 ND；跳过不当 0
             continue
-        buckets.setdefault(_mkey(d.year, d.month), []).append(float(v))
+        buckets.setdefault(k, []).append(float(v))
     if not buckets:
         raise RuntimeError('H.10 台湾页面解析出 0 条日度牌价，版式变了或被 Cloudflare 挡了')
-    return {k: (sum(v) / len(v), len(v)) for k, v in buckets.items()}
+    return {k: (sum(v) / len(v), len(v), seen[k]) for k, v in buckets.items()}
+
+
+def _last_weekday(month):
+    """'YYYY-MM' → 该月最后一个工作日（周一~周五）。纯日历，**不查假日表**。
+
+    不需要假日表：H.10 对美国联邦假日照发，只把牌价写成 ND，那一行的**日期仍在页面上**
+    （见 fetch_fx 的 docstring）。所以「页面已登到 M 的最后一个工作日」等价于「M 已登全」。
+    """
+    y, mo = int(month[:4]), int(month[5:])
+    d = _dt.date(y + (mo == 12), 1 if mo == 12 else mo + 1, 1) - _dt.timedelta(days=1)
+    while d.weekday() >= 5:                         # 5=周六 6=周日
+        d -= _dt.timedelta(days=1)
+    return d
+
+
+# ── 源 2b：美联储 G.5 官方月均（写 tsm_fx.csv 的主源）──────────────────
+def fetch_g5(cache_dir):
+    """返回 {'YYYY-MM': 月均汇率}，取自 Fed G.5「Foreign Exchange Rates - Monthly」。
+
+    **为什么要它**：G.5 就是 Fed 自己对 H.10 日度值做的算术平均，口径与 fetch_fx()
+    完全一致 —— 实测 2025-02..2026-08 共 15 个可对照月，与 series/tsm_fx.csv 逐位相同，
+    唯一不符的那个月正是 2026-09-05 写坏的 2026-08。但它**发布得早得多**：
+    次月第 1 个营业日（实测 2026-03-02 / 05-01 / 06-01 / 07-01 / 08-03 / 09-01 各一期），
+    而 H.10 那张日度页是周更，某月最后一周要等次月第一次覆盖它的周更才登出，滞后 4~9 天。
+
+    2026-09-05 的事故就长在这条缝里：H.10 只登到 8/28，本模块自己平均出 20 天的
+    半截值 32.0405 写进去；而 Fed 早在 09-01 就把 8 月官方月均 32.0229 挂在 G.5 上了。
+    **有权威月度发布可用时，不该自己去平均一张还没登全的日度表。**
+
+    页面只挂最近 3 个月 + 去年同月共 4 列，够用：本函数只服务「刚过完的那个月」。
+    更早的月份（比如仓库停跑几个月后回补）走 fetch_fx() 的日度兜底，见 update_fx()。
+    """
+    html = _get(G5_CURRENT, timeout=90).decode('utf-8', 'replace')
+    _cache_write(cache_dir, 'tsm_g5_monthly.htm', html)
+    cols, out = None, {}
+    for tr in re.findall(r'<tr.*?</tr>', html, re.S | re.I):
+        cells = [re.sub(r'<[^>]+>', '', c).replace('&nbsp;', ' ').strip()
+                 for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.S | re.I)]
+        if len(cells) < 3:
+            continue
+        if cells[0].upper() == 'COUNTRY':           # 表头：'August 2026' → '2026-08'
+            cols = []
+            for c in cells[2:]:
+                mm = re.match(r'^([A-Za-z]+)\s+(\d{4})$', c)
+                cols.append(_mkey(int(mm.group(2)), MONTH_EN.index(mm.group(1)) + 1)
+                            if mm and mm.group(1) in MONTH_EN else None)
+            continue
+        # 部分国家名带前导 '*'（如 '*AUSTRALIA' 表示口径为「每单位外币兑美元」）
+        if cols and cells[0].lstrip('*').strip().upper() == 'TAIWAN':
+            for k, v in zip(cols, cells[2:]):
+                v = v.replace(',', '')
+                if k and re.match(r'^\d+(\.\d+)?$', v):
+                    out[k] = float(v)
+            break
+    if not out:
+        raise RuntimeError('G.5 月度页面解析出 0 个台湾月均，版式变了或被挡了')
+    return out
 
 
 # ── 源 3：TWSE OpenAPI，仅交叉校验 ──────────────────────────────────────
@@ -1002,7 +1086,7 @@ def latest_month(cache_dir):
     return latest
 
 
-def update_fx(series_dir, cache_dir, fx_src=None):
+def update_fx(series_dir, cache_dir, fx_src=None, g5_src=None):
     """只把新月份写进 series/tsm_fx.csv，返回新增月份列表（已排序）。
 
     **为什么它必须能脱离 tsm.csv 单独跑**（2026-09-05 拆出来的）：
@@ -1018,32 +1102,86 @@ def update_fx(series_dir, cache_dir, fx_src=None):
     xlsx 还停在 7 月、tsm_fx.csv 也还停在 2026-07，umc 当轮 FAIL、之后每轮 NOCHANGE。
     所以 monthly_run.py 在**按家循环之前**单独跑这一步，让共享底座先就位。
 
-    汇率月份的推进**不依赖 TSMC 披不披露**：H.10 是美联储的周更序列，
-    月均在次月第 1 个营业日就算得全（见文首第 2 节），与台湾任何一家的披露节奏无关。
+    汇率月份的推进**不依赖 TSMC 披不披露**：主源 G.5 是美联储的月度发布，
+    次月第 1 个营业日就有（见 fetch_g5），早于台湾任何一家的营收披露（次月 5~10 日）。
+    ⚠️ 这句话曾经写的是「H.10 ⋯ 月均在次月第 1 个营业日就算得全」，那是错的 ——
+    H.10 那张日度页周更、滞后 4~9 天才登全一个月，照着它平均就写出了 2026-09-05
+    那格半截值。见下面完整性判据那段。
 
     幂等：已有月份一律不重复追加。fx_src 传入可复用已经抓好的那份，省一次 HTTP。
     """
     fx_path = os.path.join(series_dir, FX_CSV)
     if fx_src is None:
         fx_src = fetch_fx(cache_dir)
+    if g5_src is None:
+        try:
+            g5_src = fetch_g5(cache_dir)
+        except Exception as e:      # G.5 不可达不该拖垮整条腿，降级到 H.10 兜底判据
+            print('[fx] ⚠ G.5 取不到（%s: %s）—— 本轮退回 H.10 日度兜底判据'
+                  % (type(e).__name__, e))
+            g5_src = {}
     fx_fields, fx_rows = _read_csv(fx_path)
     have_fx = {r['month'] for r in fx_rows}
+    today = _dt.date.today()
+    # ── 重述哨兵：只在两边都是「定案值」时才开口 ──────────────────────
+    # 参照值优先取 G.5 官方月均；G.5 没有该月时才回落到 H.10 日均，且**必须该月已登全**。
+    # 那个「已登全」的限定是 2026-09-09 那次死锁教出来的反向教训：拿一张只登到月中的
+    # 日度表算出的半截均值，去质问一个正确的入库值，会把整个模块每天卡死一次 ——
+    # 而 _append_rows 只追加不改写，没有任何自愈通道，一格错就得人工进来改。
     for r in fx_rows:
         m = r['month']
-        if m in fx_src and abs(fx_src[m][0] - float(r['ntd_per_usd'])) > TOL_FX:
+        ref = g5_src.get(m)
+        if ref is None and m in fx_src and fx_src[m][2] >= _last_weekday(m):
+            ref = fx_src[m][0]
+        if ref is not None and abs(ref - float(r['ntd_per_usd'])) > TOL_FX:
             raise ValueError('汇率重述/口径漂移：%s 重算 %.4f vs 已入库 %s'
-                             % (m, fx_src[m][0], r['ntd_per_usd']))
+                             % (m, ref, r['ntd_per_usd']))
 
     # 只收「已经走完」的月份：当月还没结束时月均是半截数，写进去下次就得改
-    today = _dt.date.today()
     cur = _mkey(today.year, today.month)
     new_fx_months = sorted(m for m in fx_src
                            if m >= FX_SERIES_START and m not in have_fx and m < cur)
-    # H.10 一个月至少有 15 个营业日；明显偏少说明该月数据还没灌全
-    for m in new_fx_months:
-        if fx_src[m][1] < 15:
-            raise ValueError('H.10 %s 只有 %d 个日度观测，月均不可信，本次不写入'
-                             % (m, fx_src[m][1]))
+
+    # ── 完整性判据：G.5 已发 ⇒ 该月定案；否则要求 H.10 已登到该月最后一个工作日 ──
+    # 旧判据是「该月 >= 15 个日度观测」，测的是**量**不是**边界**：一个月刚走完时
+    # H.10 页面上照样有 18~22 个观测，永远过得了 15 那道坎，缺的恰恰是月末那一周。
+    # 逐日回放 2024-01~2026-08 共 32 个月：旧判据会写错 27 个月，新判据 0 个。
+    # 2026-09-05 就是这么把 2026-08 写成 32.0405 的（缺 8/31 = 31.67，当月最低值），
+    # 比真值 32.0229 高 0.0176 = TOL_FX 的 35 倍，此后被上面那道哨兵锁死 4 天。
+    # 顺带一提：旧阈值 15 在 2000-01~2026-09 整条序列里从未命中过任何已走完的月 ——
+    # 它是一道死闸门。而按天数收紧也不行：完整的 2025-11 只有 18 天、2026-02 只有 19 天，
+    # 都比这次出事的截断月（20 天）还少，不存在能区分两者的阈值。
+    #
+    # ⚠ 没定案 ⇒ **跳过，不抛异常**。「M 月还没定案」是每个月都要经历的正常等待期，
+    #   抛成 FAIL 等于每年制造几十天 tsm_fx FAIL、六页跟着 build 失败 —— 每月都响的
+    #   警报一周就被人学会无视，理由同 TWSE_CROSSCHECK_GRACE_DAY 那段。真正的故障是
+    #   「等过头」，交给下面的逾期哨兵。而主源 G.5 在次月第 1 个营业日就发，早于台湾
+    #   任何一家披露营收（次月 5~10 日），所以正常路径下这个等待期根本不会与营收撞上，
+    #   六页不会因此停更 —— 这正是本判据敢用「跳过」的前提。
+    #
+    # break 而不是 continue：M 没定案时 M+1 必然也没定案（时间单调）。跳过 M 却写 M+1
+    # 会在 CSV 中间挖个洞，而下面那道乱序护栏只看得见「往回写」、看不见「往前跳」。
+    ready = []
+    for m in new_fx_months:                          # 已排序
+        if m in g5_src:
+            if abs(g5_src[m] - fx_src[m][0]) > TOL_FX:
+                print('[fx] %s：H.10 日度页尚未登全（本地日均 %.4f，最后观测 %s），'
+                      '按 G.5 官方月均 %.4f 入库'
+                      % (m, fx_src[m][0], fx_src[m][2], g5_src[m]))
+        elif fx_src[m][2] < _last_weekday(m):
+            overdue = (today - _last_weekday(m)).days
+            if overdue > FX_MAX_LAG_DAYS:
+                raise ValueError(
+                    'H.10 %s 已过该月最后一个工作日 %s 共 %d 天，页面却只登到 %s，'
+                    '且 G.5 也没有这个月。正常滞后 4~9 天，超出说明上游停更或版式变了，'
+                    '本次不写入'
+                    % (m, _last_weekday(m), overdue, fx_src[m][2]))
+            print('[wait] %s 尚未定案：G.5 未发，H.10 只登到 %s（未及最后一个工作日 %s，'
+                  '已等 %d 天）；本轮不写入'
+                  % (m, fx_src[m][2], _last_weekday(m), overdue))
+            break
+        ready.append(m)
+    new_fx_months = ready
     # _append_rows 只会往**文件尾**写。下界放到 2013-01 之后，「待写月份早于已入库
     # 最大月」第一次成为可能（文件被截断、或哪个中间月漏了），那会写出一份乱序 CSV，
     # 而乱序 CSV 不会报错、只会让下游按行序取「最新月」时静默取错。宁可停下。
@@ -1051,7 +1189,10 @@ def update_fx(series_dir, cache_dir, fx_src=None):
         raise ValueError('待写汇率月份 %s 早于已入库最大月 %s；追加会写出乱序 CSV。'
                          '先确认 tsm_fx.csv 是不是缺了中间月份'
                          % (sorted(m for m in new_fx_months if m < max(have_fx)), max(have_fx)))
-    new_fx_rows = [{'month': m, 'ntd_per_usd': '%.4f' % fx_src[m][0]} for m in new_fx_months]
+    # G.5 有就用 G.5 的官方月均（两者口径相同，实测 15 个可对照月逐位一致），
+    # 这样「H.10 还没登全但 Fed 已定案」的那几天也能写出正确值，不必空等。
+    new_fx_rows = [{'month': m, 'ntd_per_usd': '%.4f' % g5_src.get(m, fx_src[m][0])}
+                   for m in new_fx_months]
     if new_fx_rows:
         _append_rows(fx_path, fx_fields, new_fx_rows)
     return new_fx_months
