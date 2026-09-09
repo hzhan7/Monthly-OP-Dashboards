@@ -3099,7 +3099,8 @@ class Page:
         }
         if zero_ok:
             # 纵轴从 0 起：不给的话引擎走 y0 = min − 极差×5%，那是一次没有任何标注的
-            # 隐性截轴，长历史图上会把增长幅度凭空放大（cboe Ex6 / hkex Ex15 都栽过）。
+            # 隐性截轴，长历史图上会把增长幅度凭空放大（cboe Ex6 / hkex Ex15 都栽过 ——
+            # 两个都是当时的号，那两张全历史线后来分别按页面所有者的指令删了）。
             ex['zero_base'] = True
         hit = self.mark_breaks(ex, win, [c])
         cur, plo, phi = v[-1], lo[-1], hi[-1]
