@@ -2823,8 +2823,18 @@ _HANDLED = _handled_sum_check()
 sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 # ══════════════════════════════════════════════════════════════════════
-# 公共头的一小撮工具：正式合并进 build/ice.py 时**删掉本段**，直接用文件头那份。
-# 这里重复一遍只是为了让本文件能 `python3 revenue.py` 独立跑起来。
+# ⚠️ 旧标题写的是「正式合并进 build/ice.py 时**删掉本段**，直接用文件头那份；这里
+# 重复一遍只是为了让本文件能 `python3 revenue.py` 独立跑起来」，**三句都不要照做**：
+#   · 合并已于 2026-09 完成 —— 这里就是 build/ice.py，没有「正式合并」这一步待办。
+#   · `revenue.py` 不存在：worktree 与主 checkout 里都没有，`git log --all -- '*revenue.py'`
+#     也是空的。本段今天没有、也从未有过独立入口。
+#   · 「文件头那份」不存在 —— 1-120 行里没有任何 qlab。本段（到下一条 ══ 为止）合并后
+#     只剩 `qlab__revenue` 这一个定义，全文唯一一份，`reconcile` / `assert_official_gates` /
+#     `closure_stats` / `monthly_form_audit` / `coverage` / `bridge_coverage` 六个函数里
+#     共调 10 处，直接删掉当场 NameError。
+#     行为等价的那份是【loader】段的 `qlab()`（return 式逐字相同），但换过去是一次改
+#     10 个调用点的动作；而装配裁决规则是**宁可留重复，不许静默换语义**（见文件头
+#     「本文件的来历」），当时就是照那条规则选了留。
 # ══════════════════════════════════════════════════════════════════════
 def qlab__revenue(q):
     """季度 Period → '2026-Q2'（与 cboe.py:197-203 同写法：读者能拿它回 CSV grep）。"""
@@ -3337,7 +3347,18 @@ NYSE 期权腿**单独**的桥也放弃：`rpc_nyse_equity_options_usd` 只有 2
 docs/verify/ice.md:519-526）。**利率 / 其他金融各自**没有官方数可对，桥只用它们的合计。
 """
 
-EX_BRIDGE = 8            # 合并后走页面的 EX_* 常量，图注里一律按标题指代、不印字面编号
+# ⚠️ 下面这行的旧注释写的是「合并后走页面的 EX_* 常量，图注里一律按标题指代、不印
+# 字面编号」，两句都不成立：
+#   · 「合并后走页面的 EX_* 常量」——【page】段那张编号表把 EX_RPC / EX_REV / EX_REVMIX /
+#     EX_BRIDGE 四行**注释掉**、逐行旁注「—— bridge 段已定义」，表头也写明「由 bridge 段
+#     先定义（它的图注要回指）」。这四行就是全文唯一的定义，没有第二份可换。删掉
+#     EX_BRIDGE 是**导入期** NameError：`build_bridge()` 拿它当默认参数，def 一执行就求值。
+#   · 「图注里不印字面编号」—— 本段桥图的 note 里 `Exhibit {EX_REVMIX}` / `{EX_RPC}` /
+#     `{EX_REV}` 三处就是印出来的，data/ice.js 里 grep 得到「Exhibit 7 / 4 / 5」。
+#     EX_* 常量存在的理由正是让图注的回指跟着图序走，不是让图注避开编号。真正一个图号
+#     都不许出现的是另外两处：**页尾 notes**（`_assert_no_exhibit()` 写出前停机）与
+#     **汇总表表注**（`summary['note']` 那道 Exhibit\s*\d 正则）。
+EX_BRIDGE = 8            # ③ 量 / 费率分解（衍生品四腿）；值由 main() 的图号连号闸门核住
 
 EX_REV = 5               # 隐含收入那张（图注要说「菱形与它的同比线是同一条数」）
 
@@ -4643,7 +4664,17 @@ def finalize(exs):
 # ==========================================================================
 
 # -*- coding: utf-8 -*-
-"""build/ice.py 的 **Exhibit 1 汇总表** 段（独立可跑的草稿，合并时删掉 __main__ 块）。
+"""build/ice.py 的 **Exhibit 1 汇总表** 段（原是独立可跑的草稿，2026-09 已并入）。
+
+⚠️ 草稿期那句「合并时删掉 __main__ 块」**不要照做**：全文只剩文件底部那一个
+`if __name__ == '__main__':`，它调 `main()`，而 `main()` 是唯一写出 data/ice.js 的地方
+（`payload_guard.write_dash`）。`monthly_run.builder()` 第一条分支就命中 `build/<t>.py`，
+拿 `[sys.executable, <repo>/build/ice.py]` 起子进程跑它，**没有 fallback** ——
+`build/specs/ice.py` 已随 cf89490 删除，走不到 `single.py` 那条分支。删掉它不会报错：
+模块级只有构表与 `_col_gate` / `_caliber_gate` / `_unit_gate` 三道闸门，进程跑到文件尾就
+正常结束，**退出码 0、无输出**，monthly_run 判成功而 data/ice.js 悄悄停在上个月 ——
+最坏的一种失败形态，因为它静默。同类段头（【loader】【colmeta】【exlib】【brief】）
+已在 9edf217 改成「不要删」，这一处是漏网的第五个。
 
 本段负责三件事：
   ① `COL__summary` —— 手写页的列元数据表。手写页没有引擎那套 `unit` 推导，所以这里保留一份
@@ -5315,10 +5346,24 @@ brief 与图注说「**这个月**这组读数怎么读」、每月重写；这�
 # ══════════════════════════════════════════════════════════════════════════════
 # §1 现算 helper —— 释义里出现的每一个数都从这里来，一个快照都不抄
 #
-# ⚠️ 这五个函数**应当由 facts 段提供**（interfaces_needed 里已声明）。合并进
-# build/ice.py 时，凡是 facts 段已经有同义 helper 的，删掉这里的、改调它的 ——
-# build/pctile.py 的模块头记着这条教训：各写各的判据，正是同一条序列在两页被判定
-# 相反的原因。这里留一份只为本文件能独立跑起来。
+# ⚠️ 旧标题写的是「这**五个**函数应当由 facts 段提供（interfaces_needed 里已声明）；
+# 合并进 build/ice.py 时，凡是 facts 段已经有同义 helper 的，删掉这里的、改调它的；
+# 这里留一份只为本文件能独立跑起来」，**不要照做**：
+#   · 是**六个**不是五个：_win__glossary / _split_vs_total__glossary / _rpc_in_sync /
+#     _tape_denom_mult / _cds_span / _nonint_guard。「五」是本段 docstring 里那五个**量**
+#     的个数，`_win__glossary` 是它们共用的切窗零件，不对应任何一个量。
+#   · 六个全文各只此一份，全部在用：`compose_glossary()` 里各调一次，`_win__glossary`
+#     另有 `_cds_span` 内部一次（共 2 处）。整块删掉当场 NameError ——「只为本文件能
+#     独立跑起来」今天是假的。`interfaces_needed` 那张表，全文再无第二处提及。
+#   · 「facts 段已经有同义 helper」只对 `_win__glossary` ↔【facts】段的 `_win()` 成立。
+#     `_rpc_in_sync` / `_tape_denom_mult` 在 facts 段没有对手；`_split_vs_total__glossary`
+#     与 `_cds_span` 跟 facts 段的 `_split_vs_total()` / `_cds_start()` **同名不同物** ——
+#     facts 那两个不吃 df、自己 `_rows()` 直读全表 CSV，返回元组的语义也不一样。
+#     `__glossary` 后缀本身就是反证：按文件头的装配规则，带 `<名字>__<段名>` 的正是
+#     装配时比对过、判定行为**不**等价才保留的那一档。
+#   · 所以 build/pctile.py 那条教训在这里指向相反的方向：真照做去改调 facts 版，
+#     `_split_vs_total__glossary` 会把「精确相等的月数」静默换成「中位相对差」、窗口从
+#     WIN_FROM 换成 2011-01 全样本，释义板照印、护栏全绿。那才是「各写各的判据」要防的。
 # ══════════════════════════════════════════════════════════════════════════════
 def _win__glossary(df, win_from=WIN_FROM):
     """本页月度窗口（WIN_FROM 起）。释义里的实测一律只量**读者看得见**的那一段 ——
@@ -5652,10 +5697,14 @@ def compose_glossary(df, win_from=WIN_FROM):
 # -*- coding: utf-8 -*-
 """build/ice.py 的「页尾 notes」段（口径与方法说明）。
 
-本文件是**分段草稿**：正式合并进 build/ice.py 时，
-  · 「§0 合并时删除」那一整块（本地 helper 与 __main__ 自测桩）删掉，
-    因为 mlab / qlab__notes / comma / pctf / pp / nz / L / COL / COST_LOG / … 由其他段提供；
-  · 其余部分（现算 helper + build_notes）原样搬过去。
+本段原是分段草稿，2026-09 已并入 build/ice.py（现算 helper + build_notes 原样搬了过来）。
+⚠️ 草稿期那三句「§0 那一整块删掉 / 那一块里有 __main__ 自测桩 / qlab__notes 由其他段提供」
+**一句都不要照做** —— 下面 §0 的横幅（9edf217 改过）已经逐条驳过，这里同步：
+  · §0 里没有任何 __main__ 自测桩：全文只剩文件底部那一个 `if __name__`，是生产入口；
+  · §0 自己定义 qlab__notes / _TD_COLS__notes / _TD_ZH / BREAK_ZH / _coverage，全文各只
+    此一份、正文在用，整块删掉当场 NameError；
+  · 真正由前面的段提供、本段只是引用的，是 §0 横幅里列的那 13 个（mlab / num / comma /
+    pctf / pp / L / nz / caliber_stats / yoy_cal_zh / COST_LOG / COL / WIN_FROM / WIN_TABLE）。
 
 ━━ 这一段在页面上的分工 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 brief 说「**这个月**这组读数怎么读」（每月重写）；图注说「**这一张图**怎么读」
@@ -6843,7 +6892,13 @@ brief 最常复发的 bug（brief.py::quant 的 docstring 记着 CME 的历史�
     也没有公司 Notes 的一次性重述 ⇒ 无「（还原口径）」标注。
 """
 
-# ── COL 的子集：本段用到的三列。合并时删掉，直接吃 ice.py 的完整 COL 表。
+# ── COL 的子集。⚠️ 旧注释写的是「本段用到的三列。合并时删掉，直接吃 ice.py 的完整
+#   COL 表」，两句都要打折：合并已于 2026-09 完成（本段 docstring 自陈），没有「合并时」
+#   这一步待办；而三条里今天只有 `share_nyse_us_cash_matched` 有读点（`compose_brief()`
+#   里那句 `SG.ratio_diff_txt`），另外两条没人读。直接删掉本表而不动那个读点是当场
+#   NameError。真换成完整 COL 表那份是可行的 —— 两边的 col / unit / fmt / scale 逐字
+#   相同，而 `ratio_diff_txt()` 只看 unit / fmt、不看 zh（两边 zh 有意不同：这里是给
+#   brief 读的短标签）—— 但那是一次要改代码的动作，不是「合并时顺手」。
 #   `unit` 字符串是**承重**的 —— SG.col_is_ratio / col_is_money_ratio 靠它把
 #   ycal.classify() 的假阳性挡回去，改一个字判定就翻，而且不报错。
 COL_BRIEF = {
