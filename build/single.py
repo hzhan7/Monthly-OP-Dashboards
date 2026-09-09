@@ -1962,9 +1962,16 @@ class Page:
         #    照样画在页面上」的路 —— 漏了它，这段守卫自己的报错文案就是假的。
         #    2–5 列的桶走 `ex_lines`（本来就不画同比），危害小，但同样点名。
         #
-        # 分桶逻辑与 `payload()` 里那一段逐字同源（先剔 stock、再剔被 mix 吃掉的、
-        # 然后按 unit 顺序分桶）。两处必须一起改 —— 分叉了这道守卫就会放错人。
-        _ny = []
+        # ⚠️ **分桶要按「最坏情形」算，不能照抄 `payload()`。** 两处的 `eaten` 天生不同源：
+        #    `payload()` 按**真画出来的图**扣列（`mix_pair` 那张没出成就一列都不扣），
+        #    而守卫在 `__init__` 里跑、那时还不知道图出不出得来，只能按**声明**扣。
+        #    照声明算就会漏人：mix 那张图因为窗口不足而没出时，被「声明扣掉」的列
+        #    会重新回到桶里，桶一超过 MAX_LINES 就走 `ex_heat`（画同比）——
+        #    声明既没报错、又没生效，而同比照画在页面上，正是这道守卫要消灭的形状。
+        #    所以下面对**两种情形各分一次桶**：mix 生效（扣列）与 mix 落空（不扣列），
+        #    任一种下这一列不是独占一桶就拦。宁可多拦：多拦是一句报错，
+        #    漏拦是页面上一条没人知道的假同比。
+        _ny, _seen_ny = [], set()
         for i, c in enumerate(self.head):
             if c['no_yoy']:
                 _ny.append(f'headline[{i}]「{c["zh"]}」→ 走 ex_head_bar / ex_yoy')
@@ -1984,24 +1991,33 @@ class Page:
                 if c['no_yoy'] and c['stock']:
                     _ny.append(f'groups「{g["zh"]}」的「{c["zh"]}」'
                                f'（stock=True）→ 走 ex_stock')
-            flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
-            buckets = []
-            for c in flow:
-                for b in buckets:
-                    if b[0] == c['unit']:
-                        b[1].append(c)
-                        break
-                else:
-                    buckets.append((c['unit'], [c]))
-            for _u, cs in buckets:
-                if len(cs) == 1:
-                    continue                      # ← 唯一读得到 no_yoy 的桶
-                path = ('ex_heat（>{} 列，画的是同比热力矩阵，同比照画）'.format(MAX_LINES)
-                        if len(cs) > MAX_LINES else 'ex_lines（多列折线，本来就不画同比）')
-                for c in cs:
-                    if c['no_yoy']:
-                        _ny.append(f'groups「{g["zh"]}」的「{c["zh"]}」与同单位的另外 '
-                                   f'{len(cs) - 1} 列同桶 → 走 {path}')
+            # 没有 mix 的组只有一种情形；有 mix 的组两种都要算（见上面那段的理由）。
+            cases = ([('', set())] if not eaten
+                     else [('mix 生效（分项被扣掉）', eaten),
+                           ('mix 落空（分项回到桶里）', set())])
+            for eaten_case, ea in cases:
+                flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in ea]
+                buckets = []
+                for c in flow:
+                    for b in buckets:
+                        if b[0] == c['unit']:
+                            b[1].append(c)
+                            break
+                    else:
+                        buckets.append((c['unit'], [c]))
+                for _u, cs in buckets:
+                    if len(cs) == 1:
+                        continue                  # ← 唯一读得到 no_yoy 的桶
+                    path = ('ex_heat（>{} 列，画的是同比热力矩阵，**同比照画**）'
+                            .format(MAX_LINES) if len(cs) > MAX_LINES
+                            else 'ex_lines（多列折线，本来就不画同比）')
+                    for c in cs:
+                        if c['no_yoy'] and c['zh'] not in _seen_ny:
+                            _seen_ny.add(c['zh'])
+                            _ny.append(
+                                f'groups「{g["zh"]}」的「{c["zh"]}」'
+                                + (f'在「{eaten_case}」这种情形下' if eaten_case else '')
+                                + f'与同单位的另外 {len(cs) - 1} 列同桶 → 走 {path}')
         for i, t in enumerate(self.level_yoy):
             if t['level']['no_yoy']:
                 _ny.append(f'level_yoy[{i}]「{t.get("zh", "?")}」的 level'
@@ -4297,6 +4313,18 @@ class Page:
                 f'分项之和逐月恰等于合计（最大残差 {big * 100:.2g}%，在容差 '
                 f'{MIX_RESID_TOL:.0e} 之内）—— 一条恒为 0 的「其他」段会让读者'
                 f'以为存在一块查不到的业务。请删掉它')
+
+        neg = [(parts[i]['zh'], mlab(win[int(np.argmin(pv))]),
+                float(np.min(pv))) for i, pv in enumerate(pvs) if float(np.min(pv)) < 0]
+        if neg:
+            raise SpecError(
+                f'groups「{gz}」.mix（abs_stack）：这些分项在窗口内出现负值 '
+                + '；'.join(f'{zh} 在 {m} 为 {v:.6g}' for zh, m, v in neg)
+                + ' —— 引擎的 stacked_dual 把正段自 0 向上堆、负段削成零高度不画，'
+                  '于是柱顶落在**正段之和**上而不是合计；一个负分项配一个补偿的正分项'
+                  '还能让「各段之和 = 合计」这道收尾自检照常通过，图上却已经画错。'
+                  'build/verify_pages.py 的负段 ERROR 只覆盖 gs_bar，接不住这一种，'
+                  '所以在这里硬失败')
 
         palette = MIX_SEG_COLORS[len(parts)]
         segs = [(c['zh'], pvs[i], palette[i]) for i, c in enumerate(parts)]
