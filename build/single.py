@@ -260,12 +260,31 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              #   callable(page)）。此前只有手写生成器写得出，spec 页一律空着。
              # 'headline_section' / 'season_section'：头条派生的那两段图（①② 与 ④）
              #   由 spec 自己命名章节 —— 它们不属于任何一个 group，没有别的挂载点。
+             #   `headline_style='none'` 下 ①② 那一段是空的，再写 headline_section 硬失败
+             #   （死配置，见 HEADLINE_STYLES 上方那段）。
              'brief', 'headline_section', 'season_section'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio', 'no_yoy'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap', 'stock_inline'}
 GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].stock_inline —— 本组的存量图**就地**排在本组流量图之后（2026-09 补，默认关）──
+# 缺省（不给 / `False`）：存量图一律排在 ⑤，即季节性之后、与本页其余存量图集中排列 ——
+# 逐字节回到没有这个开关之前。`True`：本组的存量图（合计是存量列的那条 mix，
+# 以及没被它吃掉的存量列各自那张 `ex_stock`）改在 ③ 里、紧跟本组流量图出，
+# 排在本组 `_mark_section` / `_decomp_here` 之前；⑤ 跳过这一组。两处共用同一个
+# `Page._stock_here()`，不许各写一份（一份忘了 `flat0_skip` 或 section，两处图就不一样）。
+#
+# 由来：/sgx/ 页面所有者 2026-09-12 的指令「月末未平仓那张挪到衍生品成交那组旁边」——
+# 它与同组的当月成交是同一批合约的两个读数，隔着十几张图（季节性之后）才出现，
+# 读者对不上号。**只改排序，不改口径**：存量仍然单独成图、不与流量共轴，
+# 次轴仍是点对点同比，标题里「（存量，期末口径）」一字不动。
+#
+# 落在 group 上而不是 SPEC 顶层，理由与 `spike_cap` / `ratio_rhs` 一样：需求是逐组提的，
+# 页级开关会把同一页其余组的存量图一起挪走，而那些图没人要求过。
+# 声明了却没有任何存量图可挪（本组 cols 里没有存量列、mix 的合计也不是存量）
+# 是**死配置**，`Page.__init__` 硬失败 —— 本仓对死配置一律如此，理由见 `_norm_mix` 的 abs_stack 那段。
 
 # ── groups[].spike_cap —— 尖刺截轴的**开关**（2026-09 补，默认关）────────────────
 # `True` = 本组的多列对比图允许 `Page.spike_cap()` 截轴（判据仍然全部现算，见那个方法）。
@@ -334,7 +353,7 @@ RATIO_RHS_COLORS = ('GREEN', 'MBLUE', 'BLUE', 'NAVY', 'GRAY')
 _COLOR_ZH = {'GREEN': '绿', 'MBLUE': '中蓝', 'BLUE': '浅蓝', 'NAVY': '深蓝',
              'GRAY': '灰', 'GOLD': '金', 'RED': '红'}
 
-# ── groups[].mix —— 「总量柱 + 分项 100% 占比堆叠」两张图 ─────────────────────
+# ── groups[].mix —— 「总量柱 + 分项 100% 占比堆叠」两张图（`alt_splits` 再多几张占比图）──
 # 这个字段做的是 `groups[].cols` 里那几列**彼此独立**这条默认假设的例外：
 # 声明了 mix，就是声明「total 这一列 ≡ parts 各列之和（+ 可选残差）」这个**加总关系**。
 # docs/SINGLE_SPEC.md §2.1 原来写着「本套 SPEC 里没有『分部』这个概念，所以不产出
@@ -355,8 +374,26 @@ _COLOR_ZH = {'GREEN': '绿', 'MBLUE': '中蓝', 'BLUE': '浅蓝', 'NAVY': '深�
 # 开了 abs_stack 还写它们就是死配置（本文件删掉 granularity / total_col / weight_col
 # 时记过同一条账：死配置会让下一个人以为这张图做过什么它其实没做的事）。
 MIX_KEYS = {'total', 'parts', 'residual_zh', 'rhs_share', 'note', 'share_note',
-            'abs_stack'}
+            'abs_stack',
+            # ── 以下两个 2026-09 新增，**纯加法**：不写就与从前逐字节相同 ──
+            # 'alt_splits'：同一个 total 的**另几种切法**（每条一张 100% 占比堆叠）；
+            # 'split_zh'：主切法（上面那组 parts）那张图的标题标签，给了 alt_splits 才必填。
+            'alt_splits', 'split_zh'}
 MIX_REQUIRED = {'total', 'parts'}
+# ── groups[].mix.alt_splits —— 「一个合计、两种切法」────────────────────────
+# 页面所有者 2026-09-12 对 /sgx/ 的指令：衍生品当月成交合计既要按「期货 / 期权 / 掉期」
+# 看结构，也要按「股指 / 外汇 / 商品 / 其他」看业务构成。两种切法的**分母是同一列**，
+# 所以合计柱只该画一次；而两套分项放进同一张堆叠会让各段之和变成 200%，
+# 另写一个 group 再声明一条 mix 又会把同一张合计柱画两遍（撞 `log_yoy_bar` 的同族同窗
+# 硬失败）。⇒ 做成**同一条 mix 上的附加切法**：合计柱一张，随后主切法那张占比图，
+# 再按声明顺序连着出每条 alt 的占比图，几张都回指同一张合计柱。
+# 每条 alt 与主切法走**同一套**校验（机械的在 `_norm_mix`，列 / 单位 / 存量档 / 比率在
+# `Page.__init__`，残差符号 / 容差 / 100% 收尾在 `ex_mix_share`），一条都不少 ——
+# 少一条就是那张图可以带着一句静默的假话上页。
+# 刻意**不收** `note`（它属于合计柱，合计柱只有一张）与 `abs_stack`（绝对值堆叠的柱高
+# 就是合计，两种切法各堆一张等于把合计柱画两遍，见 `_norm_mix` 的互斥检查）。
+ALT_SPLIT_KEYS = {'zh', 'parts', 'residual_zh', 'rhs_share', 'share_note'}
+ALT_SPLIT_REQUIRED = {'zh', 'parts'}
 
 #: 页尾断点那段里，「这一图型本身不挂断点线」那一档要报的**图型中文名**。
 #: 判据不在这里 —— 是不是这一档由构建期的事实账 `Page._brk_asked` 说了算
@@ -462,7 +499,18 @@ GRANS = ('monthly_total', 'daily_avg')
 #: 图型），所以选 `'bar_yoy'` 就等于把 P10/P90 那条常态区间从页面上拿掉 ——
 #: 汇总表的「3Y %ile」列还在（它不靠这张图），但页尾那句「Exhibit 2 的灰色分位带与它
 #: 同窗口同口径」会自动消失，不会留下一句指着不存在的图的话。
-HEADLINE_STYLES = ('band_yoy', 'bar_yoy')
+#:
+#:   'none'      **零张**：①② 整段不出，页面从 ③ 的第一组图开始
+#:
+#: `'none'` 是 2026-09-12 按 /sgx/ 页面所有者的指令加的：「删掉开篇那四张」（SDAV / DDAV
+#: 各一张分位带、各一张单月同比）—— 两条头条列在组图里本来就各有一张「柱 + 次轴单月同比」，
+#: 开篇再画一遍是同一批数说两次。⚠️ **只删图，头条的其余职责一样不少**：`data_through`
+#: 与发布门槛（`resolve_through`）、抬头数据条、汇总表的头条行、④ 季节性照旧由 `headline`
+#: 决定。代价同 `'bar_yoy'`：分位带随之离开页面（页尾那句按 `headline_style` 分三支收放）。
+#: 头条列若没在任何 `groups[].cols` 里声明，这一档下它在组图里也没有位置 ——
+#: 不硬失败（页面仍然成立，汇总表 / 抬头 / 季节性里都有它），`build()` 打一行告警。
+#: 同时声明 `headline_section` 是死配置（它只命名 ①② 那一段，而那一段是空的）→ 硬失败。
+HEADLINE_STYLES = ('band_yoy', 'bar_yoy', 'none')
 
 # 分解出来的那个**派生量**（= 金额 ÷ 数量）到底是什么，全仓有三类，含义互不相通：
 # 混用一套措辞会让读者把「订单碎片化」读成「价格下跌」，把「费率」读成「成交价」。
@@ -1629,33 +1677,7 @@ def _norm_mix(m, where):
     if not isinstance(m, dict):
         raise SpecError(f'{where} 必须是 dict，收到 {type(m).__name__}')
     _check_keys(m, MIX_KEYS, MIX_REQUIRED, where)
-    parts = list(m['parts'])
-    if not parts:
-        raise SpecError(f'{where} 的 parts 一项都没有 —— 没有分项就没有占比可画')
-    if len(parts) != len(set(parts)):
-        raise SpecError(f'{where} 的 parts 里有重复列名 {parts} —— 同一列堆两次会让'
-                        f'各段之和超过合计，而图上只会画成一根更高的柱')
-    if str(m['total']) in parts:
-        raise SpecError(f'{where} 的 total={m["total"]!r} 同时出现在 parts 里 —— '
-                        f'合计不是自己的分项，堆进去各段之和会是合计的两倍')
-    # 分项段数上限跟着配色走（见 MIX_SEG_COLORS 上方那段）：残差段用的是它自己的
-    # GRAY，不占分项的配色位，所以上限就是配色表的长度。
-    if len(parts) not in MIX_SEG_COLORS:
-        raise SpecError(
-            f'{where} 有 {len(parts)} 个分项'
-            + ('（外加一个残差段）' if m.get('residual_zh') else '')
-            + f'，超过本图配色能分开的 {max(MIX_SEG_COLORS)} 段 —— '
-              f'请先在 spec 里把小项并进残差（docs/CHART_KINDS.md §3.6.1：'
-              f'分段一多就只能靠颜色区分，而数据色只有 6 个、RED 是断点专用色）')
-    rs = m.get('rhs_share')
-    if rs and rs != 'residual' and rs not in parts:
-        raise SpecError(
-            f'{where} 的 rhs_share={rs!r} 既不是 parts 里的列名，也不是字面量 '
-            f"'residual' —— 右轴那条线的语义是「把其中**一段**换个刻度重画一遍」，"
-            f'它不许是第四个量。可选：{parts + ["residual"]}')
-    if rs == 'residual' and not m.get('residual_zh'):
-        raise SpecError(f"{where} 的 rhs_share='residual' 但没有 residual_zh —— "
-                        f'没有残差段就没有那条线可画')
+    parts = _check_split_parts(m, m['total'], where)
     abs_stack = _norm_flag(m.get('abs_stack'), f'{where}.abs_stack')
     dead = [k for k in ('rhs_share', 'share_note') if abs_stack and m.get(k)]
     if dead:
@@ -1663,6 +1685,61 @@ def _norm_mix(m, where):
             f'{where} 同时写了 abs_stack 与 {dead} —— 后者只有 100% 占比那张图'
             f'读得到，而 abs_stack 根本不出那张图（只出一张绝对值堆叠柱）。'
             f'留着就是死配置：下一个人会以为这张图上有一条右轴线 / 一段占比说明')
+
+    # ── alt_splits / split_zh：同一个 total 的另几种切法（见 MIX_KEYS 下方那段）──────
+    # 两个键**成对出现**：split_zh 只在「这一组不止一张占比图」时才有用（给主切法那张
+    # 起一个能与 alt 区分开的标题），单独写它是死配置；反过来只写 alt_splits 不写
+    # split_zh，主切法那张的标题仍是「各分项占比」，而旁边那张写着「按 X 的占比」——
+    # 读者会以为前一张是「全部分项」、后一张是它的子集，那是一句静默的假话。
+    alts_raw = m.get('alt_splits')
+    split_given = m.get('split_zh') is not None
+    split_zh = str(m.get('split_zh') or '').strip()
+    if alts_raw is not None and (not isinstance(alts_raw, (list, tuple)) or not alts_raw):
+        raise SpecError(
+            f'{where} 的 alt_splits 必须是非空列表，收到 {alts_raw!r} —— '
+            f'一条切法都没有就是死配置，请直接删掉这个键')
+    if alts_raw and abs_stack:
+        raise SpecError(
+            f'{where} 同时写了 abs_stack 与 alt_splits —— abs_stack 不出 100% 占比图，'
+            f'柱高本身就是合计；给第二种切法再堆一张绝对值柱，等于把同一张合计柱画两遍')
+    if alts_raw and not split_zh:
+        raise SpecError(
+            f'{where} 写了 alt_splits 却没写 split_zh（或写成空串）—— 这一组会出不止一张'
+            f'占比图，主切法那张必须有自己的切法名，否则它的标题仍是「各分项占比」，'
+            f'读起来像「全部分项」、而旁边那张像它的子集')
+    if split_given and not alts_raw:
+        raise SpecError(
+            f'{where} 写了 split_zh={m.get("split_zh")!r} 却没有 alt_splits —— '
+            f'只有一种切法时标题就是「各分项占比」，split_zh 一个字都上不了页，是死配置')
+    alts = []
+    # 同一组列 ⇒ 残差 = total − Σparts 也相同 ⇒ 两张占比图逐格一模一样。按**集合**比，
+    # 不按列表：换个声明顺序只是换了段的上下与配色，画的仍是同一种切法。
+    seen_sets = {frozenset(parts): '主切法（parts）'}
+    labels = {split_zh}
+    for i, a in enumerate(alts_raw or []):
+        w = f'{where}.alt_splits[{i}]'
+        if not isinstance(a, dict):
+            raise SpecError(f'{w} 必须是 dict，收到 {type(a).__name__}')
+        _check_keys(a, ALT_SPLIT_KEYS, ALT_SPLIT_REQUIRED, w)
+        zh = str(a['zh'] or '').strip()
+        if not zh:
+            raise SpecError(f'{w} 的 zh 是空的 —— 它是这张占比图标题里的切法名，'
+                            f'空着的话同一组的几张占比图标题分不开')
+        if zh in labels:
+            raise SpecError(f'{w} 的 zh={zh!r} 与 split_zh 或前面某条 alt_splits 重名 —— '
+                            f'标题相同的两张占比图，读者分不出哪张是哪种切法')
+        labels.add(zh)
+        ap = _check_split_parts(a, m['total'], w)
+        key = frozenset(ap)
+        if key in seen_sets:
+            raise SpecError(
+                f'{w}（{zh}）的 parts 与{seen_sets[key]}是同一组列 {sorted(ap)} —— '
+                f'残差 = total − Σparts 随之相同，两张占比图逐格一模一样，是同一张图画两遍')
+        seen_sets[key] = f'前面的 alt_splits[{i}]（{zh}）'
+        alts.append({'zh': zh, 'parts': [str(x) for x in ap],
+                     'residual_zh': str(a.get('residual_zh') or ''),
+                     'rhs_share': str(a.get('rhs_share') or ''),
+                     'share_note': str(a.get('share_note') or '')})
     return {
         'total': str(m['total']),
         'parts': [str(x) for x in parts],
@@ -1671,7 +1748,63 @@ def _norm_mix(m, where):
         'note': str(m.get('note') or ''),
         'share_note': str(m.get('share_note') or ''),
         'abs_stack': abs_stack,
+        'split_zh': split_zh,
+        'alt_splits': alts,
     }
+
+
+def _check_split_parts(d, total, where):
+    """一种切法（mix 的主切法，或 `alt_splits` 里的一条）的**机械**校验 → parts 列名表。
+
+    主切法与每条 alt 走的是**同一段**判据：一条 alt 就是一张照样声称「堆叠 = 100%」的
+    占比图，少校验一条（重复列、合计混进分项、段数超配色、右轴线指向第四个量），
+    那张图就能带着同一类静默的假话上页。所以抽成一处，不许两处各写一份。
+    """
+    parts = list(d['parts'])
+    if not parts:
+        raise SpecError(f'{where} 的 parts 一项都没有 —— 没有分项就没有占比可画')
+    if len(parts) != len(set(parts)):
+        raise SpecError(f'{where} 的 parts 里有重复列名 {parts} —— 同一列堆两次会让'
+                        f'各段之和超过合计，而图上只会画成一根更高的柱')
+    if str(total) in parts:
+        raise SpecError(f'{where} 的 total={total!r} 同时出现在 parts 里 —— '
+                        f'合计不是自己的分项，堆进去各段之和会是合计的两倍')
+    # 分项段数上限跟着配色走（见 MIX_SEG_COLORS 上方那段）：残差段用的是它自己的
+    # GRAY，不占分项的配色位，所以上限就是配色表的长度。
+    if len(parts) not in MIX_SEG_COLORS:
+        raise SpecError(
+            f'{where} 有 {len(parts)} 个分项'
+            + ('（外加一个残差段）' if d.get('residual_zh') else '')
+            + f'，超过本图配色能分开的 {max(MIX_SEG_COLORS)} 段 —— '
+              f'请先在 spec 里把小项并进残差（docs/CHART_KINDS.md §3.6.1：'
+              f'分段一多就只能靠颜色区分，而数据色只有 6 个、RED 是断点专用色）')
+    rs = d.get('rhs_share')
+    if rs and rs != 'residual' and rs not in parts:
+        raise SpecError(
+            f'{where} 的 rhs_share={rs!r} 既不是 parts 里的列名，也不是字面量 '
+            f"'residual' —— 右轴那条线的语义是「把其中**一段**换个刻度重画一遍」，"
+            f'它不许是第四个量。可选：{parts + ["residual"]}')
+    if rs == 'residual' and not d.get('residual_zh'):
+        raise SpecError(f"{where} 的 rhs_share='residual' 但没有 residual_zh —— "
+                        f'没有残差段就没有那条线可画')
+    return parts
+
+
+def _mix_all_parts(m):
+    """一条**已解析**的 mix（parts 已换成列配置）的全部分项列：主切法在前，
+    各条 `alt_splits` 按声明顺序在后，按列名去重、保序。没有 alt_splits 时就是 `m['parts']`。
+
+    凡是「被这一组的 mix 吃掉 / 可能吃掉」的**按声明**判据都走它（`no_yoy` 守卫的分桶、
+    `ratio_rhs` 的同桶判据、同列两根柱的 `eaten_max`）。alt 的分项与主切法的分项同样
+    由占比堆叠交代结构，漏算一处，那道判据就按「这一列还留在常规分桶里」去判，
+    而 `mix_pair` 把那张 alt 占比图画成之后会把它扣掉 —— 判据与真实出图对不上。
+    """
+    out, seen = [], set()
+    for c in list(m['parts']) + [c for a in (m.get('alt_splits') or []) for c in a['parts']]:
+        if c['col'] not in seen:
+            seen.add(c['col'])
+            out.append(c)
+    return out
 
 
 def _norm_flag(v, where):
@@ -1796,13 +1929,61 @@ class Page:
                 # 只认真正的布尔量：`'yes'` / `1` 这种写法在别处是「真」，在这里
                 # 会让下一个人以为可以写一个阈值或图号进去。硬失败比默默当真好。
                 'spike_cap': _norm_flag(g.get('spike_cap'),
-                                        f'groups[{gi}]（{g["zh"]}）.spike_cap')})
+                                        f'groups[{gi}]（{g["zh"]}）.spike_cap'),
+                # 同上：只认真布尔量。语义见模块头 GROUP_KEYS 下面 stock_inline 那一段。
+                'stock_inline': _norm_flag(g.get('stock_inline'),
+                                           f'groups[{gi}]（{g["zh"]}）.stock_inline')})
+
+        # ── stock_inline 的死配置：本组根本没有存量图可挪 ──────────────────────────
+        # 判据按 **spec 声明**，放在剔空列之前：「列本轮整列为空」是等数据，不许因此
+        # 把一个写对了的开关判成死配置。「有存量图可挪」两种来源，与 ⑤ 的两条产图路径
+        # 逐条对应（`_stock_here`）：本组 cols 里的存量列（`ex_stock`），或本组 mix 的
+        # 合计是存量列（`mix_pair` 的存量分支；合计允许跨组引用，所以按列名去全页查）。
+        _stock_of = {c['col']: c['stock']
+                     for c in self.head + [c for g in self.groups for c in g['cols']]}
+        for gi, g in enumerate(self.groups):
+            if not g['stock_inline']:
+                continue
+            if any(c['stock'] for c in g['cols']) or (
+                    g['mix'] and _stock_of.get(g['mix']['total'])):
+                continue
+            raise SpecError(
+                f'groups[{gi}]（{g["zh"]}）.stock_inline=True，但这一组没有任何存量图可挪：'
+                f'cols 里一列 stock=True 都没有，mix 的合计也不是存量列 —— '
+                f'这个开关只改存量图的排序（从 ⑤ 季节性之后挪到本组流量图之后），'
+                f'没有存量图时它什么都不做，留着就是死配置：下一个人会以为这一组的排序'
+                f'被它改过。要么删掉 stock_inline，要么把它写到真有存量列的那一组上')
 
         self.headline_style = str(spec.get('headline_style') or 'band_yoy')
         if self.headline_style not in HEADLINE_STYLES:
             raise SpecError(f"headline_style={self.headline_style!r} 只能是 "
-                            f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）或 "
-                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）")
+                            f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）、"
+                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）或 "
+                            f"{HEADLINE_STYLES[2]!r}（零张：不出开篇头条图）")
+        # `'none'` 下 ①② 那一段是空的，`headline_section` 没有任何一张图可命名 ——
+        # `_mark_section` 对空段是空操作，声明会被静默吞掉。死配置，硬失败。
+        if self.headline_style == 'none' and spec.get('headline_section'):
+            raise SpecError(
+                f"headline_style='none' 不出开篇头条图，而 headline_section="
+                f"{spec['headline_section']!r} 只命名那一段（①②）—— 那一段是空的，"
+                f"这个标题一个字都上不了页。要给 ④ 季节性起标题用 season_section，"
+                f"要给组图起标题用 groups[].section")
+        # `'none'` 下头条列只能靠组图出现。没在任何 groups[].cols 里声明的头条列，
+        # 本页就没有一张以它为主体的组图 —— **不硬失败**（页面仍然成立：门槛、抬头、
+        # 汇总表、季节性都还有它），但必须响一声：记账，`build()` 打印。
+        # 判据按 spec 声明、在剔空列之前（头条列整列为空时 `resolve_through` 另有出口）。
+        # mix 的 total / parts 按列名引用，允许引用头条列（`by_name` 含 head）—— 被引用的
+        # 头条列会画进那组的合计柱或占比堆叠，所以也算「在组图里」，不告警：否则告警行里
+        # 那句「组图里也没有它」对这一档是假话。
+        # `alt_splits[].parts` 同一个待遇：那几刀的占比图同样把头条列画成一段，
+        # 漏算它们，告警行会对一张画着这一列的占比图说「组图里也没有它」。
+        # （此时 alt 的 parts 还是列名字符串，与主切法一样。）
+        _in_groups = ({c['col'] for g in self.groups for c in g['cols']}
+                      | {x for g in self.groups if g['mix']
+                         for x in ([g['mix']['total']] + g['mix']['parts']
+                                   + [p for a in g['mix']['alt_splits'] for p in a['parts']])})
+        self.head_orphans = ([c for c in self.head if c['col'] not in _in_groups]
+                             if self.headline_style == 'none' else [])
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
         # ── `after_group` 的锚点必须**写得对**且唯一（这一档是「等人」，硬失败）──────
@@ -1940,38 +2121,80 @@ class Page:
                     f'{where} 引用了没有在本 spec 里声明的列 {miss} —— '
                     f'mix 的 total/parts 写的是列名，列配置只在 groups[].cols 里声明一次'
                     f'（headline 也算）。现有列名：{sorted(by_name)}')
+            # alt_splits 引用的列同样必须已声明 —— 拼错是「spec 写错」，与下面「整列为空
+            # 是等数据」分开：放在 gone 之前查，主切法因为等数据整条落空时也照样拦得住。
+            for a in m['alt_splits']:
+                miss_a = [x for x in a['parts'] if x not in by_name]
+                if miss_a:
+                    raise SpecError(
+                        f'{where}.alt_splits（{a["zh"]}）引用了没有在本 spec 里声明的列 '
+                        f'{miss_a} —— 与主切法同一条规矩：parts 写的是列名，列配置只在 '
+                        f'groups[].cols 里声明一次（headline 也算）。现有列名：{sorted(by_name)}')
             gone = [x for x in [m['total']] + m['parts'] if x in self.empty]
             if gone:
                 # 整列为空是「等数据」不是「spec 写错」，所以不硬失败：记账、这张图不出。
-                self.mix_skipped.append(f'{g["zh"]}：{"、".join(gone)} 整列为空，'
-                                        f'总量柱与占比堆叠都不出')
+                # ⚠️ 合计或**主切法**缺列时整条 mix 落空 —— 连同全部 alt 占比图（与没有
+                # alt_splits 时同一条：主切法是这条 mix 的本体，合计柱与 `ratio_rhs.dup_part`
+                # 都挂在它上面）。那几张 alt 图本来画得出来，所以记账时逐张点名，
+                # 不许只说「占比堆叠」让读者以为只少了一张。没有 alt_splits 时逐字节不变。
+                self.mix_skipped.append(
+                    f'{g["zh"]}：{"、".join(gone)} 整列为空，'
+                    + ('总量柱与占比堆叠都不出' if not m['alt_splits'] else
+                       f'总量柱与全部 {1 + len(m["alt_splits"])} 张占比堆叠（'
+                       + '、'.join(f'「{z}」' for z in [m['split_zh']]
+                                   + [a['zh'] for a in m['alt_splits']])
+                       + '）都不出 —— 合计或主切法缺列时整条 mix 不出，alt_splits 那几刀一起落空'))
                 g['mix'] = None
                 continue
+            # 某条 alt 引用的列整列为空：**只丢那一条**，合计柱与其余切法照常出。
+            # 同一个理由（等数据不是写错），但落点窄一档 —— 一种切法缺数据，
+            # 不该连带把另一种本来画得出来的切法、以及合计柱一起删掉。
+            # （反方向不对称：合计或主切法缺列见上面那一支，整条落空。）
+            # 声明了几刀先记下来（`n_splits_declared`）：页尾「声明了 N 种切法」要按声明数说，
+            # 这一步丢掉的刀不许从 N 里悄悄消失（`mix_multi_zh` / `mix_folded_zh`）。
+            m['n_splits_declared'] = 1 + len(m['alt_splits'])
+            keep = []
+            for a in m['alt_splits']:
+                gone_a = [x for x in a['parts'] if x in self.empty]
+                if gone_a:
+                    self.mix_skipped.append(f'{g["zh"]}：{"、".join(gone_a)} 整列为空，'
+                                            f'「{a["zh"]}」那张占比堆叠不出')
+                    continue
+                keep.append(a)
+            m['alt_splits'] = keep
             m['total'] = by_name[m['total']]
             m['parts'] = [by_name[x] for x in m['parts']]
-            bad_unit = [c['zh'] for c in m['parts'] if c['unit'] != m['total']['unit']]
-            if bad_unit:
-                raise SpecError(
-                    f'{where} 的分项 {bad_unit} 与合计 {m["total"]["zh"]} 单位不同'
-                    f'（{m["total"]["unit"]}）—— 占比 = 分项 ÷ 合计，两边不同单位时'
-                    f'这个比值不指代任何东西')
-            bad_kind = [c['zh'] for c in m['parts'] if c['stock'] != m['total']['stock']]
-            if bad_kind:
-                raise SpecError(
-                    f'{where} 的分项 {bad_kind} 与合计 {m["total"]["zh"]} 一个是流量'
-                    f'一个是存量 —— 流量按月累计发生、存量是某一天的截面，两者不能相加，'
-                    f'堆出来的柱高没有指称')
-            bad_ratio = [c['zh'] for c in [m['total']] + m['parts'] if self.is_ratio(c)]
-            if bad_ratio:
-                raise SpecError(
-                    f'{where} 里 {bad_ratio} 是比率列（判据见 `col_is_ratio`：'
-                    f'spec 的 ratio 声明、或 fmt ∈ {sorted(RATIO_FMT)}、'
-                    f'或列名与单位的量纲都认它是比率）—— '
-                    f'比率不许进 mix：合计柱的次轴走的是流量的单月同比（本列除本列），'
-                    f'而比率的同比应当是**百分点差**（CONTRACT §6.1 第 4 条：'
-                    f'0.24 → 0.25 是 +1bp，不是 +4.2%）；'
-                    f'占比堆叠那一侧更直接 —— 几个比率相加不等于合计那个比率。'
-                    f'要画比率就走常规的单列 gs_bar（`ex_single` 会按 pp 处理）')
+            for a in m['alt_splits']:
+                a['parts'] = [by_name[x] for x in a['parts']]
+            # 单位 / 存量档 / 比率三道判据对每一种切法**逐条**跑：一条 alt 就是一张照样
+            # 除以同一个合计的占比图，理由与主切法逐字相同。主切法那一轮的报错文案不变。
+            splits_ = [(where, [m['total']] + m['parts'])] + [
+                (f'{where}.alt_splits（{a["zh"]}）', a['parts']) for a in m['alt_splits']]
+            for w_, cs_ in splits_:
+                ps_ = [c for c in cs_ if c is not m['total']]
+                bad_unit = [c['zh'] for c in ps_ if c['unit'] != m['total']['unit']]
+                if bad_unit:
+                    raise SpecError(
+                        f'{w_} 的分项 {bad_unit} 与合计 {m["total"]["zh"]} 单位不同'
+                        f'（{m["total"]["unit"]}）—— 占比 = 分项 ÷ 合计，两边不同单位时'
+                        f'这个比值不指代任何东西')
+                bad_kind = [c['zh'] for c in ps_ if c['stock'] != m['total']['stock']]
+                if bad_kind:
+                    raise SpecError(
+                        f'{w_} 的分项 {bad_kind} 与合计 {m["total"]["zh"]} 一个是流量'
+                        f'一个是存量 —— 流量按月累计发生、存量是某一天的截面，两者不能相加，'
+                        f'堆出来的柱高没有指称')
+                bad_ratio = [c['zh'] for c in cs_ if self.is_ratio(c)]
+                if bad_ratio:
+                    raise SpecError(
+                        f'{w_} 里 {bad_ratio} 是比率列（判据见 `col_is_ratio`：'
+                        f'spec 的 ratio 声明、或 fmt ∈ {sorted(RATIO_FMT)}、'
+                        f'或列名与单位的量纲都认它是比率）—— '
+                        f'比率不许进 mix：合计柱的次轴走的是流量的单月同比（本列除本列），'
+                        f'而比率的同比应当是**百分点差**（CONTRACT §6.1 第 4 条：'
+                        f'0.24 → 0.25 是 +1bp，不是 +4.2%）；'
+                        f'占比堆叠那一侧更直接 —— 几个比率相加不等于合计那个比率。'
+                        f'要画比率就走常规的单列 gs_bar（`ex_single` 会按 pp 处理）')
             # 本组自己声明了哪几列 —— `mix_pair` 拿它把「被吃掉的列」限定在本组内。
             # 跨组引用的语义是「借它的数画结构」，不是「替它把水平值也讲了」。
             g['declared'] = {c['col'] for c in g['cols']}
@@ -2000,16 +2223,26 @@ class Page:
         _ny, _seen_ny = [], set()
         for i, c in enumerate(self.head):
             if c['no_yoy']:
-                _ny.append(f'headline[{i}]「{c["zh"]}」→ 走 ex_head_bar / ex_yoy')
+                # 路径名跟着 `headline_style` 走：'none' 下 ex_head_bar / ex_yoy 一张都不画，
+                # 照旧写那两个名字就是把维护者指到不存在的代码路径上（2026-09-12 审稿）。
+                # 另外两档沿用原措辞（逐字节不变，只是报错文案）。
+                _ny.append(f'headline[{i}]「{c["zh"]}」→ '
+                           + ("headline_style='none' 不出开篇图，头条列只进 ex_season / "
+                              '汇总表 / 抬头行，三处都不读这个开关'
+                              if self.headline_style == 'none' else '走 ex_head_bar / ex_yoy'))
         for g in self.groups:
             m = g.get('mix')
             eaten = set()
             if m:
-                eaten = {m['total']['col']} | {c['col'] for c in m['parts']}
+                # alt_splits 的分项与主切法的分项同一个待遇（`_mix_all_parts`）：它们也由
+                # 占比堆叠交代、画成了也被 `mix_pair` 扣列，也不读 no_yoy。「mix 落空」那一档
+                # 仍是一列都不扣 —— 部分切法画成、部分没画成时，桶里的列是它的子集，
+                # 两个端点（全扣 / 全不扣）已经把「这一列会不会与别人同桶」的最坏情形盖住了。
+                eaten = {m['total']['col']} | {c['col'] for c in _mix_all_parts(m)}
                 if m['total']['no_yoy']:
                     _ny.append(f'groups「{g["zh"]}」.mix 的 total'
                                f'「{m["total"]["zh"]}」→ 走 ex_mix_total')
-                for c in m['parts']:
+                for c in _mix_all_parts(m):
                     if c['no_yoy']:
                         # 措辞不能写「根本不出水平值柱」：`abs_stack` 那张图的每一段
                         # 画的**就是**分项的水平值（jpx Exhibit 9 两段 = 两个分项的
@@ -2116,8 +2349,10 @@ class Page:
             # 这一桶会是三根柱 + 一条只解释其中两根的比值线。
             eaten = set()
             if g.get('mix'):
+                # 含 alt_splits 的分项（`_mix_all_parts`）：本组里被任一种切法收走的同单位列，
+                # 画成之后都不在这一桶里，按声明算时同样不该把它数成「第三列」。
                 eaten = ({g['mix']['total']['col']}
-                         | {c['col'] for c in g['mix']['parts']}) & set(own)
+                         | {c['col'] for c in _mix_all_parts(g['mix'])}) & set(own)
             same = [c for c in g['cols']
                     if not c['stock'] and c['unit'] == cn['unit'] and c['col'] not in eaten]
             if {c['col'] for c in same} != {r['num'], r['den']}:
@@ -2178,13 +2413,27 @@ class Page:
             # 图注里那句话会因为数据变化变成假话，而假话不会自己响。
             if not r['dup_part']:
                 continue
+            # ⚠️ **只查各条 mix 的主切法 `parts`，不查 `alt_splits`。** 反向那句交代挂在
+            # 宿主 mix 上（`dup_back`），由主切法那张占比图印出；alt 那几张占比图拿到的是
+            # 一份 `dup_back=None` 的视图（见 `mix_pair`），没有这条通路。放宽查找范围
+            # 而不补通路，就会让比值线那张图说「与某张占比图的某一段是同一个数」，
+            # 而那张占比图上一个字都没有 —— 正是这里要消灭的单向交代。
             host = next((h for h in self.groups if h.get('mix')
                          and r['dup_part'] in {c['col'] for c in h['mix']['parts']}), None)
             if host is None:
+                in_alt = [f'「{h["zh"]}」.mix.alt_splits「{a["zh"]}」'
+                          for h in self.groups if h.get('mix')
+                          for a in h['mix']['alt_splits']
+                          if r['dup_part'] in {c['col'] for c in a['parts']}]
                 raise SpecError(
-                    f'{where} 的 dup_part={r["dup_part"]!r} 不是本页任何一条 mix 的分项 —— '
+                    f'{where} 的 dup_part={r["dup_part"]!r} 不是本页任何一条 mix **主切法**'
+                    f'（parts）的分项 —— '
                     f'它的语义是「本比值 ≡ 100% − 那张 100% 堆叠图里的那一段」，'
                     f'那一段不存在就没有重复可交代。'
+                    f'（dup_part 只认主切法、不认 alt_splits：反向那句交代只有主切法那张'
+                    f'占比图印得出来'
+                    + (f'；它出现在 {"、".join(in_alt)} 里，那几张图没有这条通路' if in_alt else '')
+                    + '。）'
                     f'现有分项：{sorted({c["col"] for h in self.groups if h.get("mix") for c in h["mix"]["parts"]})}')
             c_part = next(c for c in host['mix']['parts'] if c['col'] == r['dup_part'])
             c_tot = host['mix']['total']
@@ -2233,7 +2482,9 @@ class Page:
         for g in self.groups:
             mm = g.get('mix')
             if mm:
-                eaten_max |= ({mm['total']['col']} | {c['col'] for c in mm['parts']}) \
+                # 上界要把 alt_splits 的分项一起算上（`_mix_all_parts`）：它们画成之后
+                # 同样被 `mix_pair` 从本组扣掉，不算进来这里就会多报一条「两根柱」。
+                eaten_max |= ({mm['total']['col']} | {c['col'] for c in _mix_all_parts(mm)}) \
                     & {c['col'] for c in g['cols']}
         plain = {c['col'] for g in self.groups for c in g['cols']} - eaten_max
         dup = sorted(totals & plain)
@@ -2252,6 +2503,11 @@ class Page:
         # 两个出口：页尾「图型选择规则」那一段由 `mix_folded_zh()` 现算（哪几组、
         # 两张的窗口、绝对量去哪看、占比那张有没有画成），`build()` 另打一行给维护者。
         self.mix_folded = []
+        # 「一个合计、不止一张占比图真上了页」这本账（`alt_splits`，记账在 `mix_pair`）。
+        # 出口是页尾「图型选择规则」⑤ 后面那句例外（`mix_multi_zh()`）：⑤ 的正文写的是
+        # 「声明了 mix 的组出两张」，这种组真出的是合计柱 + N 张。这里只兜底建账，
+        # 每轮清零在 `payload()` 里（理由与 `mix_folded` 逐字同源）。
+        self.mix_multi = []
         # decomp 的自检行（柱构成 + YTD 覆盖月份）：ex_decomp 记账、build() 打印。
         self.decomp_report = []
         # 同比口径账本：各 ex_* 每画一条同比就记一笔 (图号, 口径类别)，
@@ -3920,6 +4176,8 @@ class Page:
     #   · 柱图回答「这门生意有多大、在不在长」；
     #   · 占比图回答「结构往哪边走」—— 而占比最有价值的场合恰恰是「总量在涨、某一块的
     #     占比反而在掉」，那正是绝对量图上看不出来的。
+    # 声明了 `alt_splits` 的 mix（2026-09-12 /sgx/ 的指令：一个合计、两种切法）在后一张
+    # 之后**连着**再出每种切法各一张占比堆叠；合计柱仍只画一张，几张都回指它（`mix_pair`）。
     def mix_window(self, cols):
         """合计与全部分项**都有值**的、以 `WIN_FROM` 为左界的末端连续窗口。
 
@@ -4056,9 +4314,12 @@ class Page:
             所以这句成立；但两张的窗口照样印出来，让读者自己数得出来它宽在哪。
           · **「是它右边一段」按 `side` 分叉**：右端相同才叫右边一段。
           · **「所以只出占比那一张」按占比图是否真画出来分叉。** 占比图自己也有几条
-            画不出来的路（窗口不足 24 个月、某月合计 ≤ 0），两张都没出的时候这一组是
+            画不出来的路（窗口不足 24 个月、某月合计 ≤ 0），两张都没出的时候这条 mix 是
             **0 张图**，再说「只出占比那一张」就是一句读者一数就能拆穿的假话，而且会与
             页尾「本轮未出的派生图」那一段当场打架。
+          · **「0 张图」只说 mix 自己那几张，不说整组。** 占比图没画成时 `mix_pair` 不扣分项列，
+            那几列回到本组常规分桶照常出图，本组的存量列也照出 —— 从前写「这一组这一次
+            一张图都没有」，在那种页面上同样一数就拆穿（2026-09-12 审稿实测）。
         """
         if not self.mix_folded:
             return ''
@@ -4068,13 +4329,108 @@ class Page:
                  f'<b>横轴更宽</b>的柱图画过（那张画 {d["wide"][0]} → {d["wide"][1]}，'
                  f'{d["wide"][2]} 个月；本组的合计柱只会画 {d["own"][0]} → {d["own"][1]}，'
                  f'{d["own"][2]} 个月，是它{d["side"]}的逐点复制）')
-            b += (f'，所以只出占比那一张，<b>合计的绝对量看 Exhibit {d["n"]}</b>。'
+            # 声明了 `alt_splits` 的组，占比图可能真出了**不止一张**（`shares` 由 `mix_pair`
+            # 按真画出来的图记）。那时「只出占比那一张」是读者一数就能拆穿的假话 ——
+            # 改成现算张数并逐张点名；「一张都没出」那一支同理按声明了几种切法分叉。
+            # 没有 alt_splits 的组 `shares` 至多一张、`n_splits` 恒为 1，走原来那两句，逐字节不变。
+            # `n_splits` 是 spec **声明**的刀数（`mix_pair` 记账时含整列为空先丢掉的刀）：
+            # 画成的张数少于声明数时补一句「其余几种本轮没画成」，不让没画成的那几刀从页面上
+            # 静默消失。只在声明了 alt_splits（n_splits > 1）时出现。
+            k_ = len(d.get('shares') or [])
+            n_ = d.get('n_splits', 1)
+            rest_ = (f'；声明的 {n_} 种切法里其余 {n_ - k_} 种本轮没画成'
+                     f'（原因见「本轮未出的派生图」那一段）' if n_ > 1 and 0 < k_ < n_ else '')
+            b += ((f'，所以只出占比那 {k_} 张（'
+                   + '、'.join(f'Exhibit {j}「{lb}」' for j, lb in d['shares'])
+                   + f'：同一个合计的 {k_} 种切法{rest_}），<b>合计的绝对量看 Exhibit {d["n"]}</b>。')
+                  if k_ > 1 else
+                  (f'，所以只出占比那一张（Exhibit {d["shares"][0][0]}「{d["shares"][0][1]}」'
+                   f'{rest_}），<b>合计的绝对量看 Exhibit {d["n"]}</b>。'
+                   if rest_ else
+                   f'，所以只出占比那一张，<b>合计的绝对量看 Exhibit {d["n"]}</b>。')
                   if d['share_drawn'] else
-                  f'；而占比堆叠这一张本轮也没画成（原因见「本轮未出的派生图」那一段），'
-                  f'所以<b>这一组这一次一张图都没有</b>，'
-                  f'合计的绝对量仍看 Exhibit {d["n"]}。')
+                  (f'；而 {n_} 张占比堆叠（同一个合计的 {n_} 种切法）'
+                   f'本轮一张也没画成（原因见「本轮未出的派生图」那一段），'
+                   if n_ > 1 else
+                   f'；而占比堆叠这一张本轮也没画成（原因见「本轮未出的派生图」那一段），')
+                  # ⚠️ 只说 mix 这几张，不说「这一组一张图都没有」：占比图没画成时，被这条 mix
+                  # 声明吃掉的分项会回到本组的常规分桶照常出图（`mix_pair` 按真画出来的图扣列），
+                  # 本组的存量列也照出 —— 那句话在那种页面上一数就拆穿（2026-09-12 审稿实测）。
+                  + f'所以<b>这一组的合计柱与占比堆叠这一次一张都没有</b>，'
+                    f'合计的绝对量仍看 Exhibit {d["n"]}。')
             bits.append(b)
         return '⚠️ <b>例外</b>：' + ''.join(bits)
+
+    def mix_multi_zh(self):
+        """`mix_multi` 这本账 → 页尾「图型选择规则」⑤ 后面另一句例外。空账返回 ''。
+
+        ⑤ 的正文写的是「声明了 mix 的组出两张」。声明了 `alt_splits` 的组真画出来的是
+        「合计柱 + N 张占比堆叠」—— 不在这里点名，那句「两张」对这一组就是假话。
+        与 `mix_folded_zh` 同一条纪律：按**真画出来的图**记账（`mix_pair` 里、全部占比图
+        出结果之后），≥2 张占比图真上了页才记。合计柱被折叠的组不进这本账 ——
+        `mix_folded_zh` 那句已经按张数把「只出占比那 N 张」说了，两处各说一遍就是重复。
+        合计柱自己没画成（`skipped` 那一档）时不写「合计柱之后」，只说连着出了几张。
+        """
+        if not self.mix_multi:
+            return ''
+        bits = []
+        for d in self.mix_multi:
+            k = len(d['shares'])
+            # 「声明了 N 种」的 N 是 spec 上的刀数，画成的是 k 张 —— 两个数分开印。
+            # 从前两处都印 k：某一刀窗口不足没画成时，页面说「声明了 2 种」而 spec 写着 3 种，
+            # 与同一页「本轮未出的派生图」里点名的那一刀当场打架。N == k 时措辞与从前逐字节相同。
+            n_ = d.get('n_splits', k)
+            bits.append(
+                f'「{d["gz"]}」声明了同一个合计（{d["total_zh"]}）的 {n_} 种切法，'
+                + (f'本轮画成其中 {k} 种（其余 {n_ - k} 种没画成，原因见「本轮未出的派生图」那一段），'
+                   if n_ > k else '')
+                + (f'合计柱（Exhibit {d["total_n"]}）之后' if d['total_n'] else '')
+                + f'连着出 <b>{k} 张</b> 100% 占比堆叠（'
+                + '、'.join(f'Exhibit {j}「{lb}」' for j, lb in d['shares'])
+                + '）：分母是同一列，只是切法不同，跨图的段不能相加也不能相减。')
+        return '⚠️ <b>例外</b>：' + ''.join(bits)
+
+    def mix_sibling_zh(self, e, others, tot_c):
+        """同一个合计的几张占比图**互相指认**的那句话（`alt_splits`）。
+
+        由 `mix_pair` 在几张占比图都出结果之后回填，只在真画出来 ≥2 张时调用 ——
+        指向的图号、两边的段名、各自的窗口全部现读已经建好的 exhibit，一个都不写死。
+        没有这句，读者会把两张图当成两个独立的结构去拼：把「期货」那段与「股指期货」
+        那段加起来，或者拿一段去减另一段。要说清三件事，每件都只说底座证得了的：
+          · **分母是同一列** —— 按构造成立（几张共用同一个 `total`）；
+          · **跨图的段不能相加** —— 每张的收尾自检保证各段之和逐格等于 100，
+            N 张的段全部加起来就是 N×100%，同一份合计被数了 N 遍；
+          · **跨图的段也不能相减** —— 底座不校验几套名单之间的包含关系，
+            差出来的数不指代任何校验过的量。**不写**「因为两套名单互不
+            包含」：那是底座证不了的断言（某一套完全可以是另一套的细分）。
+            ⚠️ 也**不写**「spec 没有声明包含关系」（2026-09-12 审稿删）：spec 完全可以在
+            `share_note` 里把包含关系写明（/sgx/ 那两刀就写了「期货那一段含着三类期货」），
+            底座读不懂散文，这句话在那种页面上就是与同页正文打架的假话。只说底座自己的事。
+        窗口不写死「相同」：每张各自取「合计与本张分项都有值」的末端连续段
+        （`mix_window`），分项起点不同就会不一样长 —— 不一样时照实印出各自的窗口。
+        """
+        def seg(x):
+            return '、'.join(s_['name'] for s_ in x['stacks'])
+
+        def span(x):
+            return (x['xlabels'][0], x['xlabels'][-1], len(x['xlabels']))
+
+        k = len(others) + 1
+        s = ('<b>同一个分母，另有切法</b>：'
+             + '、'.join(f'Exhibit {o["n"]}' for o in others)
+             + f' 的分母也是{tot_c["zh"]}，只是段按另一套名单切 —— 本图是「{seg(e)}」，'
+             + '，'.join(f'Exhibit {o["n"]} 是「{seg(o)}」' for o in others) + '。'
+             + f'每张各自恒为 100%，所以<b>跨图的段不能相加</b>'
+               f'（{k} 张的段全部加起来是 {k * 100}%，同一份{tot_c["zh"]}被数了 {k} 遍），'
+               f'<b>也不能相减</b>（底座不校验{"两" if k == 2 else f"这 {k} "}套名单之间的包含关系，'
+               f'跨图差出来的数不指代任何校验过的量）。')
+        diff = [o for o in others if span(o) != span(e)]
+        if diff:
+            s += ('⚠️ 这几张的<b>窗口不一样长</b>（各自取「合计与本张分项都有值」的末端连续段）：'
+                  f'本图 {span(e)[0]} → {span(e)[1]}（{span(e)[2]} 个月），'
+                  + '，'.join(f'Exhibit {o["n"]} {span(o)[0]} → {span(o)[1]}'
+                             f'（{span(o)[2]} 个月）' for o in diff) + '。')
+        return s
 
     def mix_pair(self, n, g):
         """一条 `mix` → ([合计柱图, 占比堆叠图], 本组被这一组的 mix 吃掉的列名集合)。
@@ -4085,6 +4441,9 @@ class Page:
 
         ⚠️ **返回的不一定是两张。** 合计柱有三种不出的情形，前两种是「想画画不成」、
         第三种是「有意不画」，语义不同，处理也不同 —— 见下面 `total_drawn_wider` 那一支。
+        声明了 `alt_splits` 时还可能**多于两张**：合计柱之后是主切法那张占比图，再按声明顺序
+        每种切法各一张（2026-09-12 /sgx/ 的指令：一个合计、两种切法），几张连号、都回指
+        同一张合计柱，谁没画成谁不占号。
         """
         m, gz = g['mix'], g['zh']
         # ── abs_stack：整组只出**一张**绝对值堆叠柱 ──────────────────────────────
@@ -4132,23 +4491,67 @@ class Page:
         # ⚠️ 括号里那个**名字**也得跟着 `total_n` 的语义走：折叠档下它指的是别人家的图，
         # 页面上没有任何地方管那张叫「合计柱」（它的标题、它自己的图注、页尾三处都不叫），
         # 一个解析不出去的指路牌与写错图号是同一类错。
-        share, why_s = self.ex_mix_share(n + (1 if total else 0), gz, m,
-                                         total_n=(n if total else drawn),
-                                         total_zh=('合计柱' if total else
-                                                   '同一列、横轴更宽的那张柱图'))
+        # ── 占比图：主切法一张，随后每条 `alt_splits` 各一张（声明顺序、连号）──────────
+        # 几张的分母是同一列，所以 `total_n` / `total_zh` 与切法无关、每张传的是同一对；
+        # 谁没画成谁不占号（与「合计柱没出时占比图顶上来」同一条图号不留洞的规矩）。
+        # alt 那几张拿到的是一份**视图**：total / note 与主切法共用，parts / residual_zh /
+        # rhs_share / share_note 换成 alt 自己的，`dup_back` 显式置 None ——
+        # `ratio_rhs.dup_part` 只认主切法（见 `Page.__init__` 那一段），反向那句交代
+        # 只该印在主切法那张上。没有 alt_splits 时这里只跑一轮、label / where 都是 None，
+        # 与从前那一次调用逐字节相同。
+        total_n_ = n if total else drawn
+        total_zh_ = '合计柱' if total else '同一列、横轴更宽的那张柱图'
+        splits = [(m, m['split_zh'] or None, None)] + [
+            ({**m, 'parts': a['parts'], 'residual_zh': a['residual_zh'],
+              'rhs_share': a['rhs_share'], 'share_note': a['share_note'], 'dup_back': None},
+             a['zh'], f'groups「{gz}」.mix.alt_splits「{a["zh"]}」')
+            for a in m['alt_splits']]
+        shares, whys, k = [], [why_t], n + (1 if total else 0)
+        for sm, label, where in splits:
+            share, why_s = self.ex_mix_share(k, gz, sm, total_n=total_n_, total_zh=total_zh_,
+                                             label=label, where=where)
+            whys.append(why_s)
+            if share is not None:
+                shares.append((share, sm, label))
+                k += 1
         if fold is not None:
-            # ⚠️ 记账必须在 `ex_mix_share` **出结果之后**：页尾那句话要按占比图是否
-            # 真画出来分叉（见 `mix_folded_zh`）。在这之前记，占比图也没画成时这一组
+            # ⚠️ 记账必须在**全部**占比图出结果之后：页尾那句话要按占比图是否真画出来、
+            # 真画出来几张分叉（见 `mix_folded_zh`）。在这之前记，占比图也没画成时这一组
             # 是 0 张图，而页尾会同时印「所以只出占比那一张」与「占比堆叠不出」。
-            self.mix_folded.append({**fold, 'gz': gz, 'share_drawn': share is not None})
-        for w in (why_t, why_s):
+            # `n_splits` = spec **声明**了几刀（含 `Page.__init__` 因整列为空先丢掉的那几刀），
+            # 不是本轮进了 `ex_mix_share` 几刀：页尾说「声明了 N 种」时 N 必须是 spec 上数得出来的数。
+            n_decl = m.get('n_splits_declared', len(splits))
+            self.mix_folded.append({**fold, 'gz': gz, 'share_drawn': bool(shares),
+                                    'shares': [(e['n'], lb) for e, _sm, lb in shares],
+                                    'n_splits': n_decl})
+        elif len(shares) > 1:
+            # 页尾 ⑤ 那句「声明了 mix 的组出两张」对这一组不成立 —— 记账，由
+            # `mix_multi_zh()` 现算点名。折叠档不记：那一档的例外已经按张数说过了。
+            # 同时记声明了几刀（`n_splits`）：画成的张数可能少于声明数（某一刀窗口不足 /
+            # 整列为空），「声明了 k 种切法」里的 k 不许拿画成的张数去顶。
+            self.mix_multi.append({'gz': gz, 'total_zh': m['total']['zh'],
+                                   'total_n': total['n'] if total is not None else None,
+                                   'shares': [(e['n'], lb) for e, _sm, lb in shares],
+                                   'n_splits': m.get('n_splits_declared', len(splits))})
+        for w in whys:
             if w:
                 self.skipped.append(w)
-        if total is not None and share is not None:
+        if total is not None and shares:
             # 图号是算出来的，两边互指都在这里回填 —— 写死会在增删图之后指到错的图上
             # （`log_yoy` 的 docstring 记的是同一条教训）。
-            total['note'] += (f'各分项的构成见 Exhibit {share["n"]}（100% 占比堆叠）—— '
-                              f'本图只讲规模，那张只讲结构。')
+            # 不止一张占比图时**全部点名**：只指第一张，读者就不知道同一个合计还有另一种切法。
+            total['note'] += (
+                f'各分项的构成见 Exhibit {shares[0][0]["n"]}（100% 占比堆叠）—— '
+                f'本图只讲规模，那张只讲结构。' if len(shares) == 1 else
+                '各分项的构成见 '
+                + '、'.join(f'Exhibit {e["n"]}「{lb}」' for e, _sm, lb in shares)
+                + f'（同一个合计的 {len(shares)} 种切法，每张都是 100% 占比堆叠）—— '
+                  f'本图只讲规模，那 {len(shares)} 张只讲结构。')
+        if len(shares) > 1:
+            # 几张占比图互相指认（同一个分母、不同切法、跨图的段不许加减），同样现算回填。
+            for e, _sm, _lb in shares:
+                e['note'] += self.mix_sibling_zh(
+                    e, [x for x, _s, _l in shares if x is not e], m['total'])
         # 「哪几列算被这一组吃掉了」跟着**真画出来的图**走，不跟声明走：
         # 两张图各自都可能不出（合计整列为空、占比窗口不足 24 个月、某月合计 ≤0）。
         # 按声明扣列的后果是那几列的图**整批消失**而页面上没有任何痕迹 ——
@@ -4161,9 +4564,12 @@ class Page:
         # 🟡 R4，但退出码仍是 0）。这是这一支最容易漏的一处。
         if total is not None or drawn is not None:
             eaten.add(m['total']['col'])
-        if share is not None:
-            eaten |= {c['col'] for c in m['parts']}
-        return [e for e in (total, share) if e is not None], eaten & g['declared']
+        # 每张**真画出来**的占比图收走它自己那种切法的分项（同一条「跟着真出的图走」）：
+        # 一种切法没画成，那几列就留在本组的常规分桶里，不连带消失。
+        for _e, sm, _lb in shares:
+            eaten |= {c['col'] for c in sm['parts']}
+        return ([e for e in [total] + [s for s, _sm, _lb in shares] if e is not None],
+                eaten & g['declared'])
 
     #: 图注里报口径差异所需的最少月份数（两种口径**都有值**、且都落在本图窗口内）。
     #: 比 `yoy.MIN_DIAG_MONTHS`（12）保守一倍，理由与 yoy.py 那段注释同源：12 是
@@ -4612,13 +5018,22 @@ class Page:
             + (' ' + md_bold(m['note']) if m['note'] else ''))
         return ex, None
 
-    def ex_mix_share(self, n, gz, m, total_n=None, total_zh='合计柱'):
-        """`mix` 的第二张：分项占合计的比重，**100% 堆叠柱**（`stacked_dual`）。
+    def ex_mix_share(self, n, gz, m, total_n=None, total_zh='合计柱', label=None, where=None):
+        """`mix` 的占比图：分项占合计的比重，**100% 堆叠柱**（`stacked_dual`）。
+        主切法那张排在合计柱之后；声明了 `alt_splits` 时每种切法各一张，按声明顺序连着排在其后。
 
         `total_n` / `total_zh` 是「合计的绝对量看第几张、那张在页面上叫什么」——
         **两个都由调用方现算**（`mix_pair`）。图号会随增删图整体位移，名字则会随
         「指的是本组自己那张合计柱、还是别处那张更宽的图」换人：折叠那一档下页面上
         没有任何地方管被指的那张叫「合计柱」，写死这三个字就是一块解析不出去的指路牌。
+
+        `label` / `where` 是 `alt_splits`（一个合计、几种切法）那一支用的，同样由 `mix_pair` 传：
+          · `label` = 这张的切法名，进标题（缺省「各分项占比」）与「画不成」的理由
+            （`组名「切法名」：…`）—— 同一组几张占比图，页尾「本轮未出的派生图」点名时
+            必须分得出是哪一张；
+          · `where` = 报错指向 spec 的哪一处（缺省 `groups「组名」.mix`；alt 那几张指到
+            `.mix.alt_splits「切法名」`），改错的人才知道该改哪一条。
+        两个都不给时标题、理由、报错与从前逐字节相同。
 
         **缺省不给右轴那条线**：占比型堆叠里各段之和恒为 100，段高本身就把每一块读出来了，
         再拿其中一段换个刻度画一遍是同一个数说两遍（`build/CONTRACT.md` §3 的
@@ -4633,19 +5048,23 @@ class Page:
           · 声明了 `residual_zh` 而残差恒为 0 → 也硬失败：一条恒为 0 的「其他」段
             会让读者以为存在一块查不到的业务。
         """
+        # `who` 只进「请给 … 加一个 residual_zh」那句：主切法照旧叫 mix，alt 指到那一条。
+        who = 'mix' if where is None else '这条 alt_splits'
+        where = where or f'groups「{gz}」.mix'
+        tag = gz if label is None else f'{gz}「{label}」'
         tot_c, parts = m['total'], m['parts']
         cols = [tot_c] + parts
         win = self.mix_window(cols)
         got = 0 if win is None else len(win)
         if got < MIX_MIN_MONTHS:
-            return None, (f'{gz}：合计与全部分项都有值的连续窗口只有 {got} 个月'
+            return None, (f'{tag}：合计与全部分项都有值的连续窗口只有 {got} 个月'
                           f'（不足 {MIX_MIN_MONTHS} 个月），占比堆叠不出 —— '
                           f'100% 堆叠是 DENSE 图型，窗口只能截不能补')
         tv = self.vals(tot_c, win)
         pvs = [self.vals(c, win) for c in parts]
         if float(np.min(tv)) <= 0:
             k = int(np.argmin(tv))
-            return None, (f'{gz}：{tot_c["zh"]} 在 {mlab(win[k])} 为 '
+            return None, (f'{tag}：{tot_c["zh"]} 在 {mlab(win[k])} 为 '
                           f'{fmt_val(tv[k], tot_c["fmt"])}（≤0），占比无定义，本图不出')
         resid = tv - np.sum(pvs, axis=0)
         rel = resid / tv
@@ -4657,7 +5076,7 @@ class Page:
         # 只钳容差之内的：真的超出容差就该在上面那两条硬失败里炸掉，不该被悄悄抹平。
         if float(rel[k_lo]) < -MIX_RESID_TOL:
             raise SpecError(
-                f'groups「{gz}」.mix：分项之和在 {mlab(win[k_lo])} **超过**合计 '
+                f'{where}：分项之和在 {mlab(win[k_lo])} **超过**合计 '
                 f'{abs(float(rel[k_lo])) * 100:.4g}%'
                 f'（{tot_c["zh"]} {fmt_val(tv[k_lo], tot_c["fmt"])} vs 分项之和 '
                 f'{fmt_val(float(tv[k_lo] - resid[k_lo]), tot_c["fmt"])}）—— '
@@ -4666,15 +5085,15 @@ class Page:
         big = float(rel[k_hi])
         if big > MIX_RESID_TOL and not m['residual_zh']:
             raise SpecError(
-                f'groups「{gz}」.mix：{"、".join(c["zh"] for c in parts)} 之和'
+                f'{where}：{"、".join(c["zh"] for c in parts)} 之和'
                 f'并不等于 {tot_c["zh"]} —— 残差最大出现在 {mlab(win[k_hi])}，'
                 f'占合计 {big * 100:.4g}%（{fmt_val(float(resid[k_hi]), tot_c["fmt"])} '
                 f'{tot_c["unit"]}）。这张图会声称「堆叠 = 100%」，所以残差必须画出来：'
-                f"请给 mix 加一个 'residual_zh'，用它说清楚那一块是什么"
+                f"请给 {who} 加一个 'residual_zh'，用它说清楚那一块是什么"
                 f'（官方未单列的品种？已停的旧合约？），别让它消失')
         if big <= MIX_RESID_TOL and m['residual_zh']:
             raise SpecError(
-                f'groups「{gz}」.mix 声明了 residual_zh={m["residual_zh"]!r}，'
+                f'{where} 声明了 residual_zh={m["residual_zh"]!r}，'
                 f'但窗口内 {mlab(win[0])}–{mlab(win[-1])} 分项之和逐月恰等于合计'
                 f'（最大残差 {big * 100:.2g}%，在容差 {MIX_RESID_TOL:.0e} 之内）—— '
                 f'一条恒为 0 的「其他」段会让读者以为存在一块查不到的业务。请删掉它')
@@ -4691,7 +5110,7 @@ class Page:
         ssum = np.sum([sv for _z, sv, _c in segs], axis=0)
         off = float(np.max(np.abs(ssum - 100.0)))
         if not off <= MIX_RESID_TOL * 100 + 1e-9:
-            raise SpecError(f'groups「{gz}」.mix：各段之和偏离 100% 达 {off:.3e}pp'
+            raise SpecError(f'{where}：各段之和偏离 100% 达 {off:.3e}pp'
                             f'（上限 {MIX_RESID_TOL * 100:.0e}pp）—— 底座算错了')
 
         ex = {
@@ -4699,7 +5118,9 @@ class Page:
             # 标题不写「{列名}的分项构成」：本仓的列名多半以拉丁字母收尾
             # （「股指期货合计 ADV」「CGB（10 年）」），后面直接跟「的」会挤成「ADV的」。
             # 把分母放进括号既避开了这个，又把「占谁的比重」摆在最显眼的位置。
-            'title': f'{gz}：各分项占比（分母 = {tot_c["zh"]}，堆叠 = 100%）',
+            # 切法名（`label`，见 docstring）只在声明了 alt_splits 的组里出现：同一组几张
+            # 占比图的标题必须分得开。缺省仍是「各分项占比」，没有 alt_splits 的页逐字节不变。
+            'title': f'{gz}：{label or "各分项占比"}（分母 = {tot_c["zh"]}，堆叠 = 100%）',
             'xlabels': [mlab(p) for p in win],
             'ylab': f'% of {axis_short(tot_c["zh"], 18)}（堆叠 = 100%）',
             'stacks': [{'name': zh, 'color': cc, 'values': LN(sv), 'label': False}
@@ -4733,7 +5154,7 @@ class Page:
                           None)
             if c_line is None:
                 raise SpecError(
-                    f'groups「{gz}」.mix 要画右轴线，但 6 个数据色已经被 {len(segs)} 段'
+                    f'{where} 要画右轴线，但 6 个数据色已经被 {len(segs)} 段'
                     f'占满（{"、".join(sorted(used))}），没有一个色留给这条线 —— '
                     f'同色的线与它压着的那一段在图上、在图例里都分不开'
                     f'（引擎给这条线打的白 casing 只镶边，不解决同色）。'
@@ -6447,6 +6868,63 @@ class Page:
             _mark_section(ex, _d0, d.get('section'))
         return n
 
+    def _stock_here(self, ex, n, g):
+        """出组 g 的存量图（就地追加进 `ex`）→ 新的图号计数 n。
+
+        就是原来 `payload()` ⑤ 的循环体，一字未改地提出来：2026-09-12 起它有**两个
+        调用点** —— ⑤（缺省，季节性之后集中出）与 ③（本组声明了 `stock_inline`，
+        紧跟本组流量图就地出）。留两份的下场与 `stock_tail0` 那段记的一样：
+        一份哪天改了（例如补一道 `flat0_skip`、改 section 的涂法），另一份不跟，
+        同一页上两组存量图一组对一组错，而没有任何护栏会响。
+
+        顺序固定：先合计是存量列的那条 mix（`mix_pair` 的存量分支），再本组 cols 里
+        没被它吃掉的存量列各一张 `ex_stock`；末尾给这一段涂本组的 section。
+        """
+        _g0 = len(ex)
+        eaten = set()
+        if g['mix'] and g['mix']['total']['stock']:
+            pair, eaten = self.mix_pair(n, g)
+            for e in pair:
+                ex.append(e); n += 1
+        for c in g['cols']:
+            if not c['stock'] or c['col'] in eaten:
+                continue
+            e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
+            if e is not None:
+                ex.append(e); n += 1
+        _mark_section(ex, _g0, g.get('section'))
+        return n
+
+    def stock_order_zh(self):
+        """`stock_inline` 的排序那半句 → 页尾「存量与流量分开读」那一段的末尾。
+
+        没有任何一组**真的**就地出过存量图 ⇒ 返回 ''，页尾逐字节不变。
+        每个断言都由 `payload()` 记的三本账现算（`stock_inline_ns` / `stock_tail_ns` /
+        `season_ns`），一个图号、一个位置都不写死：
+          · 「紧跟本组的流量图」只在本组在 ③ 里真出过流量图时才说 —— 一组只有存量列、
+            或流量图全被 `flat0_skip` 跳过时，它前面挨着的是**上一组**的图；
+          · 「其余存量图」只在 ⑤ 真出过图时才说，否则整半句不印；
+          · 「季节性图之后」只在 ④ 真出过图时才说（头条列同月历史不足时 ④ 一张都没有），
+            否则退成「全部组图之后」—— ⑤ 按构造排在 ③ 整个循环之后，这句恒真。
+        """
+        got = [d for d in (getattr(self, 'stock_inline_ns', None) or []) if d['ns']]
+        if not got:
+            return ''
+
+        def _ns(ns):
+            return '、'.join(str(k) for k in ns)
+        bits = []
+        for d in got:
+            b = f'「{d["gz"]}」组的存量图（Exhibit {_ns(d["ns"])}）按组的顺序就地排列'
+            if d['flow']:
+                b += f'，紧跟本组的流量图（Exhibit {_ns(d["flow"])}）'
+            bits.append(b)
+        tail = getattr(self, 'stock_tail_ns', None) or []
+        where = '季节性图之后' if getattr(self, 'season_ns', None) else '全部组图之后'
+        return ('排序上，' + '；'.join(bits)
+                + (f'；其余存量图（Exhibit {_ns(tail)}）集中排在{where}' if tail else '')
+                + '。')
+
     # ────────────────────── 组装 ──────────────────────
     def payload(self):
         got, why = self.resolve_through()
@@ -6472,6 +6950,8 @@ class Page:
         # 「合计柱有意不出」的账，同样每次组装从零记：重复调用 payload() 时把上一轮的
         # 图号带进来，页尾那句「绝对量看 Exhibit k」就会指到上一轮的号上。
         self.mix_folded = []
+        # 「一个合计、不止一张占比图」的账（`alt_splits`，见 `mix_multi_zh`），理由同上。
+        self.mix_multi = []
         # 「这张图问过断点」的账（图号），由 mark_breaks() 记、页尾那段断点说明读。
         # 同样每次组装从零记，理由与上面几本账逐字同源。
         self._brk_asked = set()
@@ -6504,23 +6984,40 @@ class Page:
             # ①② 并成一张：全历史的水平值柱 + 次轴单月同比（见 HEADLINE_STYLES）。
             for c in self.head:
                 ex.append(self.ex_head_bar(n, c)); n += 1
-        else:
+        elif self.headline_style == 'band_yoy':
             for c in self.head:                               # ① 长历史 + 3Y 分位带
                 ex.append(self.ex_history(n, c)); n += 1
             for c in self.head:                               # ② 同比
                 ex.append(self.ex_yoy(n, c)); n += 1
+        # 'none'：①② 一张不出（/sgx/ 页面所有者 2026-09-12「删掉开篇那四张」）。
+        # 写成显式的 elif 而不是把 band_yoy 留在 else 里：第三个取值落进 else 会静默画出
+        # 分位带那两张 —— 与所有者要的正好相反，而页面结构完全正常、闸门全过。
+        # 头条列的其余职责（门槛、抬头、汇总表、④）不在这一段，一样不少。
+        # 这一段为空时下面那行 `_mark_section` 是空操作（`headline_section` 已在
+        # `__init__` 里挡掉）；`log_yoy_bar` 账上也就没有头条那几条登记，
+        # ③ 里同列的组图不再撞 `dup_yoy` 告警、`total_drawn_wider` 也不会折叠 ——
+        # 两者都跟着账本走，不需要在这里另判。
         _mark_section(ex, _h0, self.spec.get('headline_section'))
 
         # 「派生图没出成」的账本：③ 的 mix 也会往里记，所以要在 ③ 之前开。
         self.skipped = list(self.mix_skipped)
+        # 存量图排在哪的账（`stock_inline` 用）：页尾「存量与流量分开读」那句排序说明
+        # 按**真画出来的图**现算图号（见 `stock_order_zh`）。三本同生命周期，每次组装从零记，
+        # 理由与上面几本账逐字同源 —— 留着上一轮的图号，页尾就会指到上一轮的图上。
+        #   stock_inline_ns  [{'gz', 'flow': 本组流量图号, 'ns': 本组就地出的存量图号}]
+        #   stock_tail_ns    ⑤ 集中出的存量图号
+        #   season_ns        ④ 季节性图号（「集中排在季节性图之后」要它真有图才说得出）
+        self.stock_inline_ns, self.stock_tail_ns, self.season_ns = [], [], []
 
         for g in self.groups:                                 # ③ 每组多列对比
             _g0 = len(ex)
             # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」。
             # （**不写死「两张」**：合计那一列已被本页别处那张更宽的图画过时只出后一张，
-            #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成。）
+            #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成；
+            #   声明了 `alt_splits` 的组在占比堆叠之后还会连着多出几张。）
             # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
-            # 也不该在阅读顺序上互相插队）。
+            # 也不该在阅读顺序上互相插队）—— 除非本组声明了 `stock_inline`：
+            # 那时它与本组的存量列一起在本组流量图之后就地出（见本循环末尾那一支）。
             eaten = set()
             if g['mix'] and not g['mix']['total']['stock']:
                 pair, eaten = self.mix_pair(n, g)
@@ -6549,6 +7046,17 @@ class Page:
                         continue
                     ex.append(e)
                     n += 1
+            # `stock_inline`：本组的存量图紧跟本组流量图就地出（/sgx/ 页面所有者
+            # 2026-09-12「月末未平仓那张挪到衍生品成交那组旁边」，见模块头 GROUP_KEYS 那一段）。
+            # 位置是硬要求：必须在本组 `_mark_section` **之前** —— 否则存量图拿不到本组的
+            # section；也必须在 `_decomp_here` **之前** —— 就地分解图的语义是「排在这一组
+            # 之后」，而这一组现在包括它的存量图。与 ⑤ 共用 `_stock_here`，一处都不另写。
+            if g.get('stock_inline'):
+                _i0 = len(ex)
+                n = self._stock_here(ex, n, g)
+                self.stock_inline_ns.append({'gz': g['zh'],
+                                             'flow': [e_['n'] for e_ in ex[_g0:_i0]],
+                                             'ns': [e_['n'] for e_ in ex[_i0:]]})
             _mark_section(ex, _g0, g.get('section'))
             # 声明了 `after_group` 的分解图**就地**出图（见下面 ⑥ 那段注释里的例外条款）。
             # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
@@ -6561,21 +7069,14 @@ class Page:
             if e is not None:
                 ex.append(e); n += 1
         _mark_section(ex, _s0, self.spec.get('season_section'))
+        self.season_ns = [e_['n'] for e_ in ex[_s0:]]
 
         for g in self.groups:                                 # ⑤ 存量列单独成图
-            _g0 = len(ex)
-            eaten = set()
-            if g['mix'] and g['mix']['total']['stock']:
-                pair, eaten = self.mix_pair(n, g)
-                for e in pair:
-                    ex.append(e); n += 1
-            for c in g['cols']:
-                if not c['stock'] or c['col'] in eaten:
-                    continue
-                e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
-                if e is not None:
-                    ex.append(e); n += 1
-            _mark_section(ex, _g0, g.get('section'))
+            if g.get('stock_inline'):
+                continue          # 已在 ③ 里紧跟本组流量图出过，这里再出就是同一张画两遍
+            _i0 = len(ex)
+            n = self._stock_here(ex, n, g)
+            self.stock_tail_ns += [e_['n'] for e_ in ex[_i0:]]
 
         # ⑥ 量价分解 与 ⑦「水平值 + 单月同比」：**缺省追加在最末**（核对表之前）。
         # 缺省不插在 ③ 里，理由没变：图号一移，正文与图注里所有「见 Exhibit k」的
@@ -6965,7 +7466,11 @@ class Page:
             out.append(
                 f'<b>存量与流量分开读。</b>{"、".join(stock_zh)}是<b>存量</b>（期末截面值），'
                 f'其余列是流量（日均或当月合计）。两者不能相加；跨币种换算时流量配月均汇率、'
-                f'存量配月末汇率。存量列一律单独成图，不与流量列共轴。')
+                f'存量配月末汇率。存量列一律单独成图，不与流量列共轴。'
+                # `stock_inline` 改了存量图的**排序**（不改「单独成图、不共轴」这两条），
+                # 读者在组图中间撞见一张存量图时要知道那是有意的。排序那半句全部现算，
+                # 没有就地出过图就是 ''（逐字节不变），见 `stock_order_zh`。
+                + self.stock_order_zh())
         if self.empty:
             out.append(f'<b>本次跳过的列。</b>{"、".join(self.empty)} 在当前 CSV 里整列为空，'
                        f'已从图与表里剔除（不画空图，也不留一行「—」冒充有数据）。'
@@ -7012,10 +7517,13 @@ class Page:
                #    哪几组、宽在哪、绝对量去哪看、后一张有没有画成，全部由
                #    `mix_folded_zh()` 逐组现算 —— 写死一句「都出两张」，
                #    在这一页上就是一句读者一数就能拆穿的假话。
+               #    反方向同理：声明了 `alt_splits` 的组真出的是合计柱 + N 张占比堆叠，
+               #    由 `mix_multi_zh()` 逐组现算点名（没有这种组时返回 ''，逐字节不变）。
                + ('⑤ 声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
                   '（次轴同比，流量走单月、存量走点对点）与分项的 100% 占比堆叠。'
                   '各段之和逐月复算，对不上就不发页。'
                   + self.mix_folded_zh()
+                  + self.mix_multi_zh()
                   if _has_mix else '')
                + ('⑥ 声明了 <code>ratio_rhs</code> 的组（num ⊆ den 这个包含关系）'
                   '不画折线，改画并排柱 + 右轴比值线：引擎里 <code>lines</code> / '
@@ -7104,7 +7612,14 @@ class Page:
             # ⚠️ 这句话原来无条件印着「Exhibit 2 的灰色分位带与它同窗口同口径」——
             # `headline_style='bar_yoy'` 的页面上根本没有分位带那张图，那就是一句
             # 指着不存在的图的话。改成按**真画出来的图**收放。
+            # ⚠️ 没有分位带的那一支从前只有一种理由（「开篇图是柱 + 次轴同比」），
+            # 2026-09-12 加了 `headline_style='none'` 之后要分两支：那一档**根本没有开篇图**，
+            # 照旧印「开篇图是…」就是第二句指着不存在的图的话。判据仍然先看真画出来的图
+            # （`_band_n`），没有带时才按开关分叉 —— 不许倒过来只看开关。
             + (f'Exhibit {_band_n} 的灰色分位带与它同窗口同口径。' if _band_n else
+               '本页没有画分位带那张图（本页不设开篇头条图），'
+               '所以这一列的分位只在本表里出现。'
+               if self.headline_style == 'none' else
                '本页没有画分位带那张图（开篇图是「柱 + 次轴同比」，'
                '带的上下沿与柱同量纲、画上去会被读成第三根柱），'
                '所以这一列的分位只在本表里出现。')
@@ -7251,6 +7766,14 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
         print(f'[{t}] 跳过整列为空的列：{"、".join(page.empty)}')
     if page.holes and not quiet:
         print(f'[{t}] ⚠️ 源表缺 {len(page.holes)} 个月的行，已补空行：{page.holes[:6]}')
+    # `headline_style='none'` 下没在任何 groups[].cols 里声明的头条列（见 `Page.__init__`）。
+    # 不硬失败 —— 页面仍然成立；但本页少了一张以它为主体的组图，而页面上看不出来，
+    # 所以这一行是给维护者的：与「合计柱有意不出」那行同一个理由。
+    for c in (getattr(page, 'head_orphans', None) or []):
+        if not quiet:
+            print(f"[{t}] ⚠️ headline_style='none'：头条列 {c['col']}（{c['zh']}）没有在任何 "
+                  f"groups[].cols 里声明、也没有被任何 groups[].mix 引用 —— 开篇头条图不出，组图里也没有它；"
+                  f"门槛、抬头、汇总表头条行与季节性照旧有它，除此之外本页不会有以它为主体的组图")
     for why in (getattr(page, 'skipped', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 派生图未出：{why}')
