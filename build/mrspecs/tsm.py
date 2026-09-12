@@ -330,6 +330,11 @@ def _guidance_bridge(c):
     多少 NT$bn」—— 两个输入都是披露值、乘积是推导值（brief.py 的 R5），
     所以正文带「（推导值）」，并另给一个按已实现汇率重算的版本。
 
+    `c['compact']` 为真时只返回缺口那一半、不给重算版本。底座只在这一句与 MOPS 官方
+    备注引文放不进同一个 380 字预算时才这样要（brief.fit_optional；2026-09-12 首次：
+    8 月单月同比过 ±50% 门槛，完整版让自撰部分到 395 字）。季度已走完、或无新区间
+    那两支本来就只有一句，照旧返回。
+
     重算用的参照汇率**优先取落在该季之内的已实现月份**，而且必须从原始 fx series 取，
     不能用对齐到营收月份的 fx_al：FRED 的月均汇率比营收早一个月发布，
     `fx.reindex(rev.index)` 恰好把这唯一一个「落在指引季之内的已实现观测」截掉，
@@ -374,10 +379,15 @@ def _guidance_bridge(c):
             rem = (need - qtd) / (3 - k)
             alt = (float(g_mid[tq]) * rfx - qtd) / (3 - k)
             d1, d2 = rem / cur_bn - 1, alt / cur_bn - 1
-            head5 = (f'与{tq}指引对表：中值按公司假设汇率{gf:.1f}折算，'
-                     f'剩余{cnq(3 - k)}个月{"月均" if k < 2 else ""}需'
-                     f'<b>NT${B.num(rem)}bn</b>（推导值），'
-                     f'比本月{"高" if d1 >= 0 else "低"}{abs(d1) * 100:.1f}%；{ref}')
+            gap = (f'与{tq}指引对表：中值按公司假设汇率{gf:.1f}折算，'
+                   f'剩余{cnq(3 - k)}个月{"月均" if k < 2 else ""}需'
+                   f'<b>NT${B.num(rem)}bn</b>（推导值），'
+                   f'比本月{"高" if d1 >= 0 else "低"}{abs(d1) * 100:.1f}%')
+            # 精简版只留缺口本身，收掉「按已实现汇率重算」那一层 —— 底座只在这一句与
+            # MOPS 官方引文放不进同一个 380 时才来要它（见 brief.fit_optional）。
+            if c.get('compact'):
+                return gap + '。'
+            head5 = f'{gap}；{ref}'
             # 两者相差不到 0.05 时印出来根本是同一个数（假设一位小数、实现两位），
             # 这时再把同一个百分比印第二遍就是自己跟自己打架。
             if abs(rfx - gf) < 0.05:

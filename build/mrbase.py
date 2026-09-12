@@ -1618,9 +1618,10 @@ def compose_brief(ds, spec, EX):
     # ── s5：spec 的钩子（指引桥）。没有就退回趋势位置判断。
     s5 = ''
     hook = spec.get('brief_extra')
+    hook_ctx = {'ds': ds, 'spec': spec, 'i': i, 'B': B, 'Y': Y,
+                'cur_bn': cur_bn, 'cnq': cnq, 'mth': mth}
     if callable(hook):
-        s5 = hook({'ds': ds, 'spec': spec, 'i': i, 'B': B, 'Y': Y,
-                   'cur_bn': cur_bn, 'cnq': cnq, 'mth': mth}) or ''
+        s5 = hook(hook_ctx) or ''
     # 「这一句是钩子给的」与「spec 挂了钩子」是两回事：钩子每个月都可能返回空串。
     # 下面 s6 那里要按前者判，所以在这里就记住，别到那边再去问 callable(hook)。
     _s5_from_hook = bool(s5)
@@ -1692,6 +1693,13 @@ def compose_brief(ds, spec, EX):
     #    就记下来了，两处不许各判各的。
     if s6 and not _s5_from_hook:
         s5 = ''
+    elif s6:
+        # 钩子句「不动」只在它和官方引文放得进同一个 380 时才成立。超额的月份钩子句让位：
+        # 先向 spec 要精简版（ctx 带 compact=True；不认这个键的钩子会照旧返回原句，
+        # 那就等于没有精简版），再放不下整句不写。理由与边界见 B.fit_optional。
+        # 2026-09-12 tsm 就是在这里撞的：指引桥 84 字 + 引导语 50 字，自撰 395 > 380。
+        s5 = B.fit_optional([s1, s2, s3, s4, s5, s6], 4,
+                            compact=lambda: hook({**hook_ctx, 'compact': True}) or '')
     return B.render([s1, s2, s3, s4, s5, s6])
 
 

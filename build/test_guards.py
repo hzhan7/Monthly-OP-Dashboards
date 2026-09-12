@@ -356,6 +356,72 @@ class TestQuoteExemption(unittest.TestCase):
         PG.check({'brief': B.render([body])})
 
 
+class TestProseLen(unittest.TestCase):
+    """prose_len 与 render 的判据必须是同一个数（render 那两支没改，数法在两处）。"""
+
+    def test_matches_render_at_both_edges(self):
+        for q in ('', B.quote(REMARKS['mtk'])):
+            with self.subTest(quoted=bool(q)):
+                for n in (B.PROSE_LO, B.PROSE_HI):
+                    s = ['我' * n, q]
+                    self.assertEqual(B.prose_len(s), n)
+                    B.render(s)
+                for n in (B.PROSE_LO - 1, B.PROSE_HI + 1):
+                    s = ['我' * n, q]
+                    self.assertEqual(B.prose_len(s), n)
+                    with self.assertRaises(SystemExit):
+                        B.render(s)
+
+    def test_tags_not_counted(self):
+        self.assertEqual(B.prose_len(['<b>我我</b>', '我', '']), 3)
+
+
+class TestFitOptional(unittest.TestCase):
+    """可让位的句子：放得下原样、放不下换精简版、再放不下不写（2026-09-12 tsm 事故）。
+
+    形状照抄事故现场：前文 + 钩子句 + 引文句，引导语「公司填的是「」」。」8 字照常计费。
+    """
+
+    LEAD = '公司填的是「' + B.quote('因先進製程產品需求增加所致。') + '」。'
+
+    def test_fits_unchanged_and_compact_not_called(self):
+        s = ['我' * 300, '钩' * 50, self.LEAD]            # 358
+        called = []
+        out = B.fit_optional(s, 1, compact=lambda: called.append(1) or '短')
+        self.assertEqual(out, '钩' * 50)
+        self.assertEqual(called, [])
+
+    def test_overflow_takes_compact(self):
+        s = ['我' * 300, '钩' * 80, self.LEAD]            # 388
+        out = B.fit_optional(s, 1, compact=lambda: '钩' * 60)
+        self.assertEqual(out, '钩' * 60)                   # 368
+        B.render([s[0], out, s[2]])
+
+    def test_compact_still_overflows_drops_sentence(self):
+        s = ['我' * 300, '钩' * 80, self.LEAD]
+        out = B.fit_optional(s, 1, compact=lambda: '钩' * 79)   # 387，仍超
+        self.assertEqual(out, '')
+        B.render([s[0], out, s[2]])
+
+    def test_no_compact_drops_sentence(self):
+        s = ['我' * 300, '钩' * 80, self.LEAD]
+        self.assertEqual(B.fit_optional(s, 1), '')
+
+    def test_does_not_mask_overflow_elsewhere(self):
+        """别的句子本身就超额：这一句让掉了，render 照样硬失败。"""
+        s = ['我' * 390, '钩' * 10, self.LEAD]
+        out = B.fit_optional(s, 1, compact=lambda: '钩')
+        self.assertEqual(out, '')
+        with self.assertRaises(SystemExit):
+            B.render([s[0], out, s[2]])
+
+    def test_input_list_not_mutated(self):
+        s = ['我' * 300, '钩' * 80, self.LEAD]
+        before = list(s)
+        B.fit_optional(s, 1, compact=lambda: '钩' * 60)
+        self.assertEqual(s, before)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # D. 打真表 —— series/mops_remarks.csv 的每一条备注原文
 # ═══════════════════════════════════════════════════════════════════════════

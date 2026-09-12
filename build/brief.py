@@ -351,9 +351,60 @@ def quoted_len(body):
 
 # ── 渲染 + 字数护栏 ──────────────────────────────────────────────────────
 TITLE = '本月读数怎么读'
+PROSE_LO, PROSE_HI = 230, 380   # 自撰散文的上下限。理由见 render()。
 
 
-def render(sentences, title=TITLE, lo=230, hi=380):
+def prose_len(sentences):
+    """render() 拿去撞 PROSE_LO-PROSE_HI 的那个数：去标签总长减去逐字引文。
+
+    给调用方在 render 之前先量一次用（例如 `fit_optional`）。render 自己那两支判据
+    故意保留原样不改（q == 0 那一支要与引文豁免改造前逐字节等价，见 render 内注释），
+    所以这是**第二处数法** —— 两处一致由 test_guards 的 TestProseLen 钉住，
+    改任何一处之前先跑它。
+    """
+    body = ''.join(s for s in sentences if s)
+    return len(re.sub(r'<[^>]+>', '', body)) - quoted_len(body)
+
+
+def fit_optional(sentences, idx, compact=None, hi=PROSE_HI):
+    """`sentences[idx]` 是一句可让位的句子：放得下原样，放不下换精简版，再放不下就不写。
+
+    返回应放在 idx 位置的句子（原句 / 精简版 / 空串），不改动传进来的列表。
+    `compact` 是零参可调用对象，**只在超额时才调用**。
+
+    起因（2026-09-12）：台积电 8 月单月同比 +53.3%，首次在「当月」过 MOPS ±50% 门槛，
+    底座给 brief 加上官方备注引文那一句（引导语 50 字照常计费）。而 tsm 的第 5 句是
+    spec 钩子给的指引桥（84 字），底座对钩子句一律不动 —— 自撰部分 345 → 395 字，
+    撞 380 上限，整页构建失败。页面没有引文、CSV 却有备注，次日 preflight 的
+    test_quote_marker_only_where_the_csv_says_so 就会拦下整轮。
+
+    三条约束里只有这一句是软的：
+      · 380 是硬线 —— 引文不给自撰散文额外额度（见 render 的「引文豁免」一节）；
+      · 过门槛月的官方原文必须印出来 —— test_guards 按 CSV 逐页核对；
+      · 钩子句是真洞察，平时不动 —— 但「不动」只在前两条都守得住时才成立。
+    所以让位只发生在**超额的那个月**：先让精简版，实在放不下才整句不写。整句不写
+    也不会让页面比没挂钩子的家更差 —— 那几家在引文月本来就没有第 5 句
+    （通用替补句被引文替掉）。
+
+    其余句子本身就超额（去掉这一句也放不下）时照样返回空串，交给 render 硬失败 ——
+    那是别处拼坏了，这里不替它掩盖。
+    """
+    cur = sentences[idx]
+    if not cur:
+        return cur
+
+    def _with(s):
+        return sentences[:idx] + [s] + sentences[idx + 1:]
+
+    if prose_len(_with(cur)) <= hi:
+        return cur
+    alt = compact() if callable(compact) else ''
+    if alt and prose_len(_with(alt)) <= hi:
+        return alt
+    return ''
+
+
+def render(sentences, title=TITLE, lo=PROSE_LO, hi=PROSE_HI):
     """句子列表 → brief 的 HTML。
 
     ═══ 篇幅 ═══
