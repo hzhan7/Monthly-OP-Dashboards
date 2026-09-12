@@ -60,6 +60,10 @@ curl 浏览器 UA       → 200  352,432B 0.98s
 补充一条原文没写的：**`curl` 默认 UA 是干脆利落的 403，而 `urllib` 默认 UA 是挂住 30 秒**
 —— 无人值守要设 timeout，否则一旦 UA 配错，cron 会卡住而不是快速失败。
 
+> ⚠ **2026-09-10 起上面「不需要 curl_cffi/nscurl」作废**（原文保留）：ir.nasdaq.com 对 urllib 换什么 UA 都可能读超时 / 403，
+> 09-12 甚至见到默认 UA 放行、Chrome UA 被拒，判据在变。`fetch/ndaq.py` 的 `_http_get` 已改成 curl_cffi 打头、urllib 兜底，
+> 实测见其口径坑 7 末尾。「必须设 timeout」那半句仍然成立。
+
 ### 1.3 PDF 解析 —— 逐格比对，零差异
 
 我用自己的 `fitz` 文本流解析器重算，与原文声称的数字**逐个比对**：

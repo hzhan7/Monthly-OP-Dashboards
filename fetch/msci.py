@@ -8,10 +8,15 @@
 为什么用 IR 页面而不是找 xlsx：MSCI 这张表**没有**对应的下载文件。IR 站（Q4 Inc.
 托管的 Drupal）把整张表**服务端渲染**成 <table class="table nirtable">，一次
 GET 就拿到 2008-12 至今的全历史，不需要 JS、不需要 Cookie、不需要登录态。
-2026-08-05 实测：普通 python urllib + 桌面 Chrome UA，HTTP 200，无 Cloudflare /
-Akamai / PerimeterX 拦截。所以本模块**不依赖浏览器**，可无人值守跑。
+所以本模块**不依赖浏览器**，可无人值守跑。
 （/download-library、/static-files/* 下没有这份 AUM 数据；SEC 10-Q 里只有季度
 平均值的文字描述，粒度不够，不作为备源。）
+
+⚠ 2026-08-05 实测过「普通 python urllib + 桌面 Chrome UA，HTTP 200，无 Cloudflare /
+Akamai / PerimeterX 拦截」—— **这句 2026-09-10 起不再成立**。ir.msci.com 在 Akamai
+Bot Manager 后面，09-10 起 stdlib urllib 按本文件的请求头每发 45 s 读超时（只带 UA 则
+403 秒回），生产连挂三轮。现在主通道是 curl_cffi，urllib 退为兜底；实测表、排班与判据
+见 _download() 上方「两条通道」。
 
 ═══ 发布节奏 ═══
     每月一次，更新「上一个自然月」。MSCI 不为此发新闻稿，只是悄悄改这个页面，
@@ -44,9 +49,10 @@ Akamai / PerimeterX 拦截。所以本模块**不依赖浏览器**，可无人�
       · `x-age` **不能当新鲜度判据**：实测同一份副本（ETag 相同）在不同边缘节点
         报出 0 与 9452 两个值。它是非标准头，语义由节点自己定。
       · 可信的只有 `Last-Modified`（本站 `ETag` 就是它的 unix 戳，两者逐秒吻合），
-        它是**这份 HTML 的渲染时刻**。冷 miss 的响应里带 `X-Drupal-Dynamic-Cache:
-        UNCACHEABLE`，即源站每次回源都真渲染、不再叠第二层年龄 —— 所以
-        `now − Last-Modified` 就是这份 HTML 的真实陈旧度。判据见 MAX_RENDER_AGE。
+        它是**这份 HTML 的渲染时刻**，所以 `now − Last-Modified` 就是这份 HTML 的
+        真实陈旧度。判据见 MAX_RENDER_AGE。冷 miss 的响应里带 `X-Drupal-Dynamic-Cache:
+        UNCACHEABLE`，但它和 `x-age: 0` 一样**不是现渲染的证据**：2026-09-12 在 curl_cffi
+        通道上，这两个头原样出现在 31 分钟、44 分钟前渲染的副本上（见 _download() 上方「两条通道」）。
 
     另：判断有没有新数据仍然只能看解析出来的 max(month)；上面这些只保证「你看的
     这份 HTML 是刚渲染的」，不保证里面有新月份。
@@ -107,10 +113,18 @@ from email.utils import parsedate_to_datetime
 
 URL = "https://ir.msci.com/aum-etfs-linked-msci-indexes"
 
-# 用常规桌面 UA。实测该站不封 python-urllib（没有 403、没有验证码），但带默认
-# UA "Python-urllib/3.x" 时会**间歇性挂住**：2026-08-05 连试两次，一次 25s 超时、
-# 一次 0.8s 正常；换 Chrome UA 后多次均稳定 <1s。像是 WAF 的 tarpit 而非硬拦。
-# 所以：UA 换成 Chrome + 下面的重试，两条一起才能撑住无人值守。
+# 常规桌面 UA。**只给兜底通道 urllib 用，别拿它去覆盖 curl_cffi 的 UA**（理由见
+# _via_curl_cffi）。
+#
+# 当初加它的理由：2026-08-05 带默认 UA "Python-urllib/3.x" 时会间歇性挂住（连试两次，
+# 一次 25s 超时、一次 0.8s 正常），换这个 Chrome UA 后多次均稳定 <1s。那是 09-09 之前
+# 的事。09-10 起换 UA 救不回来，而且拒法跟着**请求头集合**走，不是同一组头时好时坏：
+# _via_urllib 带着它再加 Accept / Accept-Language / Cache-Control / Pragma 四个头，09-12 实测
+# 5 发 5 发 45 s 读超时（生产 09-10~09-12 每发也是）；同一键隔 2 分钟只带它一个头，0.25 s 就
+# 403。实测表见 _download() 上方「两条通道」。
+# **也别以为把版本号改新就行**：curl_cffi 发的是 Chrome/146，但它
+# 同时换掉了 TLS / HTTP2 指纹和整套请求头，UA 版本单独起不起作用从没测过（台账
+# prod_ua_chrome126_stale_untested_criterion_20260912）。
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 # 这份 HTML 最多允许有多旧。26 小时 = 一天（缓存键按日历日轮换）+ 2 小时余量：
@@ -121,8 +135,40 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 # + 1），余量十天，一天承受得起。
 MAX_RENDER_AGE = 26 * 3600
 
-RETRIES = 3          # 间歇性挂起是本源唯一的失败模式，重试是主要防线
+# ── 重试、超时、总时限（排班见 _download() 上方「两条通道」）──────────────────────
+# RETRIES 是**主通道**的发数：curl_cffi 一发没成就退避 5 s、10 s 再来；兜底 urllib 只在最后
+# 一轮上一发。curl_cffi 导入失败时 urllib 顶上当主通道、拿满 RETRIES 发（= 改写前的单通道）。
+# 它原来的旁注是「间歇性挂起是本源唯一的失败模式，重试是主要防线」—— 09-10 起不对了：按
+# 客户端拦截时同一条通道重试几次都一样（生产三轮、每轮 3 发全超时），主要防线是换通道，
+# 重试只防单发抖动。
+#
+# TIMEOUT 是每一发的超时，但对两条通道**不是一个意思**（127.0.0.1 滴灌实测，服务器每秒
+# 吐 1 字节）：
+#   · curl_cffi 的 timeout 是整发墙钟，到点就抛 Timeout；
+#   · urllib 的 timeout 只管单次 socket 读，每收到一个字节就重新计时，所以 timeout=2 也能
+#     一直读下去，那一发被滴灌时**不封顶**。实测数字见 _download() 上方「排班」。
+#
+# BUDGET 是一次 _download() 里所有发共用的总时限，护栏 A 换键后重跑的那一整条排班也算在
+# 里面。到点就不再发新请求、不再退避，带着已试过的每一发抛；每一发的 timeout 也压到剩余
+# 时间以内。
+#   · 单个键按排班最坏 = curl_cffi 3 × 45 + 退避 15 + urllib 45 = 195 s；curl_cffi 导入
+#     失败时 = urllib 3 × 45 + 15 = 150 s。240 s 两种都放得下，换键那条只能用剩下的。
+#   · 不设它，换键会把 195 s 整个再来一遍（390 s）。monthly_run 串行跑各家，09-12 整轮
+#     6 分 41 秒（日志 07:18:28 建、07:25:09 最后写入），旧码 msci 按排班自己就占 150 s。
+#   · 它**不是硬上界**：已经发出去的那发 urllib 若被滴灌，只受单次读超时约束，会超出。
+#     09-12 实测 urllib 的挂法是一个字节都不回的 45 s 读超时，碰不到这一条。
+# 改写第一版旁注写的「最坏 3 × (45 + 45) + 15 = 285 s，只在注定失败的那一天才付」两半都不对：
+# 换键会翻倍、urllib 滴灌不封顶；而且那版每轮 curl_cffi → urllib 交错，curl_cffi 偶发抖一下
+# 就要先陪 urllib 读挂 45 s，并不只在注定失败的日子才付。
+RETRIES = 3
 TIMEOUT = 45
+BUDGET = 240
+
+# 「2xx 却没有 nirtable」时，正文多大才算「源站的整页」而不是拦截页 / 挑战页。它只决定报错
+# 怎么说，不决定抛不抛（见「每一发怎么判」）。09-12 实测：curl_cffi 拿到的整页 63,547 B，其中
+# 表格 30,773 B，去掉表格还剩 32,774 B；urllib 被拦的 Akamai「Access Denied」页 407 B。
+# 取 20 KB，两边都有余量。
+PAGE_MIN_BYTES = 20_000
 
 # ── 缓存键 ────────────────────────────────────────────────────────────────
 # 边缘按 path 做键（见文件头「CDN 缓存陷阱」），所以每天换一个**没被请求过的
@@ -133,8 +179,10 @@ TIMEOUT = 45
 # ⚠ **池长必须远大于 s-maxage 的 30 天**，否则键回环时会撞上自己 30 天前钉住的
 #   旧副本，护栏 A 就会天天误 FAIL —— 这是本模块唯一一个「写小了会让护栏反过来
 #   咬人」的常数。24 个字母位取一或二 = 300 种，是 30 天的 10 倍。
-# ⚠ 若哪天源站改成大小写敏感，这里会拿到 **HTTP 404**，而 _download() 把 4xx 当
-#   确定性错误直接抛（见其重试段）—— 那是一次响亮的失败，不是静默退化，可接受。
+# ⚠ 若哪天源站改成大小写敏感，这里会拿到 **HTTP 404**，而 _download() 把 404 当
+#   确定性错误、不换通道当场抛（403 / 429 / 5xx 只算这一发没成，见「每一发怎么判」）——
+#   那是一次响亮的失败，不是静默退化，可接受。报错会同时点出「slug 改了 / 页面下线」这
+#   另一种可能，别一看到 404 就认定是大小写。
 _SLUG = "aum-etfs-linked-msci-indexes"
 _URL_ROOT = URL[:-len(_SLUG)]
 _LETTER_POS = [i for i, c in enumerate(_SLUG) if c.isalpha()]
@@ -201,80 +249,386 @@ _MONTH_RE = re.compile(
 
 
 # ────────────────────────────── 下载 ──────────────────────────────
+#
+# ═══ 两条通道（2026-09-10 起）═══
+# 09-09 07:17 生产还用 urllib 取到了页面（cache/msci_aum_20260908.html，63,184 B）；
+# 09-10 / 09-11 / 09-12 三轮全是「MSCI IR 连续 3 次抓取失败：TimeoutError: The read
+# operation timed out」，抛在落盘之前。同一个 24 小时窗口里 ndaq 的 ir.nasdaq.com 也以
+# 同样的形态开始失败 —— 两家同在 gcs-web IR 平台、同在 Akamai Bot Manager 后面，收紧的
+# 是平台这一侧，不是 MSCI 页面变了。
+#
+# 2026-09-12 本机实测，按「通道 + 请求头集合」分行。时间是 SGT；「变体键」= 当日生产键
+# auM-etFs-linked-msci-indexes（生产失败的正是它），「规范 URL」= 全小写 slug：
+#
+#   通道与请求头                              结果
+#   urllib + _via_urllib 的全套头             45 s 读超时、一个字节都没回，5 发 5 发，全在变体键：
+#     （Chrome/126 UA、Accept、                 10:52:59 45.27 s；10:58:54 45.04 s；
+#       Accept-Language、Cache-Control、        11:08–11:10 三发 45.09 / 45.05 / 45.41 s。
+#       Pragma）                                生产 09-10~09-12 每发也是它
+#   urllib + 只带 Chrome/126 UA               10:54:45 变体键 403，0.25 s，正文是 407 B 的
+#                                             Akamai「Access Denied」
+#   urllib，只记了 UA、没记整组头             10:36 规范 URL：Chrome/126 UA → 403 秒回；
+#                                             curl 的 UA → 403；Python-urllib 默认 UA → 12 s 读超时
+#   curl_cffi(impersonate='chrome')，不传头   200 / 63,547 B / 0.7–1.7 s / 含 nirtable：
+#                                             10:36 规范 URL；07:34、10:54、10:58、11:07、
+#                                             11:39 变体键（11:39 那次拿到的是缓存副本，见下）
+#
+# 读法：
+#   · urllib 是 403 秒回还是 45 s 读超时，跟着**请求头集合**走，不是同一组头时好时坏：
+#     10:52:59 与 10:54:45 两发同一变体键、同一 IP、隔 2 分钟，只差 Accept / Accept-Language
+#     / Cache-Control / Pragma 四个头，一发读挂 45 s、一发 0.25 s 就 403。是四个里的哪个没
+#     隔离。所以兜底通道按现在的头**每发都要白烧满一个超时**，排班里只让它在最后一轮上一发
+#     （见下）。别为了让它失败得快一点去删头：墙撤了那天哪组头进得来，没测过。
+#   · curl_cffi 这条也会拿到缓存副本，别以为它次次现渲染：同一个变体键上留了响应头记录的
+#     07:34 / 10:54 / 11:07 三次都是 Last-Modified = Date；11:39:19 那次拿到的却是 11:07:55 渲染的那份
+#     （Last-Modified 比 Date 早 31 分钟，与 11:07 那次的响应逐字节相同），而 x-age 照样报 0、
+#     X-Drupal-Dynamic-Cache 照样是 UNCACHEABLE。是边缘还是源站那层缓存的，没隔离。两条结论：
+#     ① 文件头「可信的只有 Last-Modified」在 curl_cffi 通道上同样成立，x-age 0 与 UNCACHEABLE
+#     都不是现渲染的证据；② **别删按日轮换的缓存键和护栏 A**：钉住 30 天是 09-07 在 urllib 通道
+#     上实测的，兜底仍走它；curl_cffi 这条也实测到了缓存，只是这回 31 分钟、远在 MAX_RENDER_AGE
+#     以内。
+#   · 按日轮换的缓存键不是诱因：curl_cffi 请求那条变体键次次 200，解析 213 行与
+#     series/msci.csv 零差异。别去动 _cache_key_url()。
+#
+# 判据**不要收窄**：curl_cffi 一次同时换掉了 TLS 指纹 / HTTP2 指纹 / 头集合与顺序 /
+# UA 版本，没做单变量隔离，只能说判据落在这几类的并集里（同 fetch/cme.py 文件头那段）。
+# 所以修法是整套换通道，不是改 UA 字符串。
+#
+# ═══ 排班（一次 _once() 取一个 URL）═══
+#   curl_cffi#1 →没成→ 退避 5 s → curl_cffi#2 →没成→ 退避 10 s → curl_cffi#3 →没成→ urllib#1 →没成→ 抛
+#   · curl_cffi 打头、重试都给它：今天只有它进得来；全仓既有范式也是它打头（fetch/cme.py
+#     的 _CHANNELS、fetch/hood.py 的 fetch_bytes）。延迟 import。
+#   · urllib 只在最后一轮上一发：零依赖，墙哪天撤了（09-09 之前它一直能用）还能走，但按现在
+#     的头它每发白烧 45 s。改写第一版是每轮 curl_cffi → urllib 交错，curl_cffi 偶发抖一下，就得
+#     先陪 urllib 读挂 45 s 才轮到 curl_cffi#2；现在抖一下只花 5 s 退避。
+#   · curl_cffi 导入失败（没装 / 装了但动态库坏了）时一发请求都发不出去，urllib 当场顶上当
+#     主通道、拿满 RETRIES 发 —— 就是改写前的单通道行为。
+#   · 所有发共用 BUDGET（见其旁注），每一发的 timeout 压到剩余时间以内。两条通道的 timeout
+#     语义不同，127.0.0.1 滴灌实测（服务器每秒吐 1 字节，两次复测一致）：curl_cffi 是整发墙钟，
+#     timeout=3 在 3.00 s、timeout=2 在 2.00 s 抛 Timeout；urllib 只管单次读，timeout=3 跑了
+#     9.03–9.04 s、timeout=2 跑了 5.02 s，都正常读完。所以 BUDGET 管得住 curl_cffi，管不住一发
+#     正在被滴灌的 urllib。
+#
+# ═══ 每一发怎么判 ═══
+#   · 最终 URL ≠ 请求 URL → **当场抛**，不管状态码、不管有没有表（重定向护栏）。跳回规范
+#     路径，是文件头「CDN 缓存陷阱」要防的「缓存键静默变回被钉住的那个」；跳去别处（挑战页 /
+#     同意页 / slug 改了）是没见过的形态 —— 09-12 实测的拦法只有 403 与读超时 —— 没见过的就
+#     交给人看。改写前的码也是一发就抛。改写第一版把它排在「收下」之后才判，没有表的重定向
+#     就被当成通道失败重试了 6 发，报错里连最终 URL 和「重定向」几个字都没有（复核本机实测）。
+#   · 404 → **确定性错误，不换通道，当场抛**。404 不是拦截的样子（拦截给的是 403 / 读超时），
+#     它说的是「没有这个 path」，换条通道只会把同一句话再听一遍。缓存键那段写的「源站改成
+#     大小写敏感」就靠这一支响亮地报出来。
+#   · 2xx 且正文含 nirtable → 收下（护栏 A 在 _download 里判）。
+#   · 其余一律算这条通道这一发没成，记下来按排班继续：网络错误 / 超时 / 403 / 429 / 5xx /
+#     其它状态码，以及「2xx 却没有 nirtable」。最后这类再分两种，只决定报错怎么说：
+#       - 正文不到 PAGE_MIN_BYTES，或渲染年龄超过 MAX_RENDER_AGE / 读不出 → 拦截页 / 挑战页 / 旧副本；
+#       - 正文够大、渲染年龄在上限内 → 源站的整页，只是没有表 → 多半是页面改版。报错首行
+#         直说「拿到了整页却没有表」，不说「全部没取到」、不往 Bot Manager 上引（第一版就是
+#         这么误诊的，复核本机实测）。它**也不当场抛**：单发分不清「改版」和「源站那一刻表格
+#         区块没渲染出来」—— 后者没见过，但单发排除不了，退避重试能好；代价在墙撤了的日子是
+#         十几秒，在 urllib 被读挂的日子多一个 45 s。
+#
+# ⚠ Akamai 会往 curl_cffi 拿到的 HTML 里注入 Bot Manager 的脚本：</head> 前一段
+#   <script src="https://ir.msci.com/akam/13/<id>">、</body> 前一个 noscript 像素（urllib 取到的
+#   历次缓存里 0 次）。注入的内容和大小**每次都可能不同**，别拿任何固定差值当判据：akam id 会变；
+#   09-12 11:52 那次与 11:07、11:39 是同一次渲染（Last-Modified、ETag 都相同），却多了一段约 1 KB
+#   的 AKSB 性能脚本，比 11:39 那份大 1,020 B。当天几份 curl_cffi 快照 parse() 结果完全相同（213 行）。
+#   **字节相同与否都不是内容信号**：以后谁要拿 cache/msci_aum_*.html 推断「源哪天更新了」、
+#   或做 sha 去重，比 parse() 的 max(month)，别比字节。
+#   这也说明这条通道靠的是 Bot Manager 继续放行「不执行传感器 JS 的会话」，我们控制不了；
+#   真被收紧时 curl_cffi 也会拿到 403 / 挑战页，报错会把每一发的结果列出来。
+
+
+def _via_curl_cffi(url, timeout):
+    """通道 1：curl_cffi 用真 Chrome 的 TLS / HTTP2 指纹与整套请求头发包。
+    返回 (状态码, 正文, 响应头, 最终 URL)；HTTP 错误码不抛，交给 _download 统一分类。
+    timeout 是**整发墙钟**（见「排班」里的滴灌实测）。
+
+    **一个请求头都不传**，User-Agent 更不许手工塞：impersonate='chrome' 把 UA、
+    sec-ch-ua、Sec-Fetch-*、Accept、Accept-Language 连同指纹配成一整套（本机回显实测
+    它自己就发 Chrome/146 的 UA 和 Accept-Language: en-US,en;q=0.9），手工覆盖任何一个
+    都可能自相矛盾。urllib 那条带的 Cache-Control / Pragma 这里也不带：文件头「CDN 缓存
+    陷阱」实测过请求头对边缘缓存键全无作用，带上只会让头集合偏离真 Chrome。
+
+    延迟 import：导入失败（没装 / 动态库坏了）时抛 ImportError，_download 把这条标成
+    导入失败、本次不再排，urllib 当场顶上。
+    curl_cffi 默认跟随重定向，r.url 是**跳完之后**的地址（本机实测 301 之后 r.url 已变），
+    重定向护栏靠的就是它；r.headers.get() 大小写不敏感（同一次实测），护栏 A 不用分通道。
+    """
+    from curl_cffi import requests as cr
+    r = cr.get(url, impersonate="chrome", timeout=timeout)
+    return r.status_code, r.content, r.headers, r.url
+
+
+def _via_urllib(url, timeout):
+    """通道 2：零依赖兜底。返回值同 _via_curl_cffi；HTTP 错误码也照常返回、不抛 ——
+    403 的正文就是拦截页，要落快照。网络类错误（超时 / 连接重置）照常抛给调用方。
+    timeout 只管单次 socket 读，被滴灌时整发不封顶（见「排班」）。"""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            # 头与最终 URL 必须在这里取：出了 with 就没了。
+            # final_url 是护栏的一部分 —— urllib 默认跟随重定向，若源站哪天
+            # 给变体路径加了 301 到规范路径，缓存键会**静默**变回那个被钉住
+            # 的键，而只 read() 的写法完全看不见这件事。
+            return r.status, r.read(), r.headers, r.url
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read()
+        except Exception:             # 读错误页正文时又超时：状态码已经够分类了
+            body = b""
+        return e.code, body, e.headers, e.geturl() or url
+
+
+_CHANNELS = (("curl_cffi", _via_curl_cffi), ("urllib", _via_urllib))
+
+
+def _snapshot(cache_dir, name, raw):
+    """把一份**没被收下**的响应原样落盘，返回路径；没有正文时返回 None。
+
+    原来 nirtable / 护栏 A / 重定向这几支都在落盘之前抛，报错却叫人「看落盘文件」，
+    而那一轮 cache/ 里根本没有这个文件（台账
+    msci_download_error_msg_points_to_unwritten_file_20260910）。所以凡是要抛、要按排班
+    继续的支，先把拿到的字节存下来，再把路径写进报错 / 出声那一行。
+
+    **一次 _download() 里每个名字只写一次**：blocked 快照的名字带通道和「该通道第几发」，
+    换键那次再加 shift_ 前缀；stale、rejected 各自最多写一次。所以某一行点名的路径里就是
+    那一发的正文。改写第一版每条通道只有一个固定名、每发覆盖，报错里 curl_cffi#1 那行指向
+    的文件其实装着 curl_cffi#3 的正文（复核本机实测）—— 和上面台账是同一类毛病。
+    跨次运行仍然覆盖、名字集合固定（最多 14 个），墙挂几周也不会堆出一排；代价是 cache/ 里
+    可能留着更早某次的同名文件，**以报错里点名的路径为准**，别按目录里有什么去猜。
+
+    文件名刻意**不是** msci_aum_<日期>.html 的形状：那个形状是「源这一天的真实快照」，
+    monthly_run.py FACT_GATE 那段拿它观测源的真实发布日，拦截页混进去会污染这份观测。
+    """
+    if not raw:
+        return None
+    path = os.path.join(cache_dir, f"msci_aum_{name}.html")
+    with open(path, "wb") as f:
+        f.write(raw)
+    return path
+
 
 def _download(cache_dir):
     """抓页面并落盘到 cache_dir。返回 (html_text, saved_path)。
 
     每次都存一份带日期的快照：这张表是「活页面」，MSCI 改了历史行不会留痕，
     留快照才能事后判断某次数值变化是重述还是解析 bug。
+    没被收下的响应另存（见 _snapshot()），路径写进报错 / 出声那一行：
+      msci_aum_blocked_[shift_]<通道>_<第几发>.html   按排班算没成的那一发
+      msci_aum_stale.html                            护栏 A 换键之前，当日键拿到的旧副本
+      msci_aum_rejected.html                         当场抛的那一发（重定向 / 404 / 护栏 A）
     """
     os.makedirs(cache_dir, exist_ok=True)
+    deadline = time.monotonic() + BUDGET     # 当日键与换键两次 _once() 共用，见 BUDGET 旁注
 
-    def _once(url):
-        """返回 (raw, headers, final_url)。网络类错误重试，4xx/5xx 直接抛。"""
-        req = urllib.request.Request(url, headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-        })
-        last_err = None
-        for attempt in range(RETRIES):
+    def _once(url, key="", ctx=""):
+        """按上方「排班」「每一发怎么判」取 url，返回 (raw, headers, final_url)。
+
+        key 只进 blocked 快照的文件名（换键那次传 "shift_"，免得盖掉当日键那几发）；
+        ctx 补进抛错首行（换键那次写明当日键拿到了什么）。
+        """
+        tried = []           # (通道, 类别, 那一行)：降级成功时喊出来，全挂时整串抛出去
+        dead = set()         # 导入失败的通道：重试也不会好，本次不再排
+        count = {}           # 每条通道各自第几发：快照名和 #n 都用它
+        out_of_time = False
+
+        def schedule():
+            for rnd in range(RETRIES):
+                if rnd:
+                    time.sleep(max(0.0, min(5 * rnd, deadline - time.monotonic())))
+                for name, fn in _CHANNELS:
+                    if name in dead:
+                        continue
+                    primary = next((n for n, _ in _CHANNELS if n not in dead), None)
+                    if name != primary and rnd < RETRIES - 1:
+                        continue             # 兜底只在最后一轮上一发
+                    yield name, fn
+
+        for name, fn in schedule():
+            left = deadline - time.monotonic()
+            if left < 3:                     # 剩这点时间连一发 curl_cffi 都不够看
+                out_of_time = True
+                break
+            count[name] = count.get(name, 0) + 1
+            tag = f"{name}#{count[name]}"
+            t0 = time.monotonic()
             try:
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                    # 头与最终 URL 必须在这里取：出了 with 就没了。
-                    # final_url 是护栏的一部分 —— urllib 默认跟随重定向，若源站哪天
-                    # 给变体路径加了 301 到规范路径，缓存键会**静默**变回那个被钉住
-                    # 的键，而只 read() 的写法完全看不见这件事。
-                    return r.read(), r.headers, r.url
-            except urllib.error.HTTPError as e:
-                # 4xx/5xx 是确定性错误，重试没意义，直接抛
-                raise RuntimeError(f"MSCI IR 返回 HTTP {e.code}（URL={url}）") from e
-            except Exception as e:        # URLError / socket.timeout / 连接重置
-                last_err = e
-                if attempt < RETRIES - 1:
-                    time.sleep(5 * (attempt + 1))
-        raise RuntimeError(
-            f"MSCI IR 连续 {RETRIES} 次抓取失败：{type(last_err).__name__}: "
-            f"{last_err}（URL={url}）")
+                status, raw, hdrs, final = fn(url, min(TIMEOUT, left))
+            except ImportError as e:
+                dead.add(name)
+                tried.append((name, "import",
+                              f"{tag}: 导入失败，一发请求都没发出去（{type(e).__name__}: {e}）"
+                              + (f"—— 2026-09-10 起它是唯一实测进得来的通道，修："
+                                 f"{sys.executable} -m pip install curl_cffi==0.16.0"
+                                 "（版本同 requirements.txt；装着却导入失败多半是动态库坏了）"
+                                 if name == "curl_cffi" else "")))
+                continue
+            except Exception as e:    # 超时 / 连接重置 / TLS 握手失败 / DNS
+                tried.append((name, "net", f"{tag}: {type(e).__name__}: {e}"
+                                           f"（{time.monotonic() - t0:.1f} s）"))
+                continue
+            took = time.monotonic() - t0
+            has_table = b"nirtable" in raw
+            before = "".join(f"\n  {ln}" for _, _, ln in tried)
+
+            if final != url:
+                snap = _snapshot(cache_dir, "rejected", raw)
+                age = _render_age(hdrs, time.time())
+                # 边缘按 path 做键、区分大小写、忽略 query（文件头「CDN 缓存陷阱」），所以只有逐字
+                # 跳回规范 URL 才是「缓存键变回被钉住的那个」；跳到同一页面的另一种写法（带 query /
+                # 尾斜杠 / 另一个大小写变体）键未必变回去，更像挑战页验完跳回原地址，分开报。
+                base = final.split("#")[0]
+                home = base == URL
+                same_page = not home and base.split("?")[0].rstrip("/").lower() == URL
+                raise RuntimeError(
+                    f"MSCI IR 把请求重定向到了 {final!r}（{tag}，请求的是 {url!r}；跳完之后 "
+                    f"HTTP {status}，{len(raw)} B，{'含' if has_table else '没有'} nirtable"
+                    + ("" if age is None else f"，渲染于 {age / 3600:.1f} 小时前")
+                    + (f"，响应已存 {snap}" if snap else "，没有正文") + "）"
+                    + ("—— 缓存键已经变回规范路径，此后拿到的都可能是被钉住 30 天的旧副本。"
+                       "需要重新找一种能生成新缓存键的写法，见文件头「CDN 缓存陷阱」。"
+                       if home else
+                       "—— 跳到了同一页面的另一种写法（加了 query / 尾斜杠 / 换了大小写），缓存键"
+                       "未必变回规范路径，多半是挑战页验完跳回；打开快照看拿到的是什么，见 _download()"
+                       " 上方「每一发怎么判」。"
+                       if same_page else
+                       "—— 跳去的不是这个页面本身（挑战页 / 同意页 / slug 改了？）。这是没见过的"
+                       "形态，不换通道当场抛；打开快照看跳到了什么，见 _download() 上方「每一发"
+                       "怎么判」。")
+                    + (f"\n  此前：{before}" if tried else ""))
+
+            if status == 404:
+                snap = _snapshot(cache_dir, "rejected", raw)
+                raise RuntimeError(
+                    f"MSCI IR 返回 HTTP 404（{tag}，URL={url}，没有重定向，{took:.1f} s，"
+                    + (f"响应已存 {snap}" if snap else "响应没有正文") + "）"
+                    "—— 这是确定性错误不是拦截，不换通道。"
+                    + ("两种可能：源站改成了路径大小写敏感（这个 URL 是 _cache_key_url() 的"
+                       "大小写变体，那样按日轮换就此失效，见其旁注），或者 slug 改了 / 页面下线。"
+                       f"手工请求规范小写 URL {URL} 看状态码与 Last-Modified 可以分清（它可能是"
+                       "边缘钉住的旧副本，别只看 200）。"
+                       if url != url.lower() else
+                       "请求的已经是规范小写 URL：slug 改了或页面下线了。")
+                    + (f"\n  此前：{before}" if tried else ""))
+
+            if 200 <= status < 300 and has_table:
+                if tried:
+                    # 主通道 / 第一发没成、后面成了：数据没事，但这是「下一次可能就
+                    # 全挂」的预警（同 fetch/cme.py 的口径）。tried 只在抛异常时才会
+                    # 被人读到，这里不喊，等兜底也挂的那天日志里连一句铺垫都没有。
+                    print(f"[msci] ⚠ 靠 {tag} 才取到页面（URL={url}），前序失败："
+                          + "；".join(ln for _, _, ln in tried), file=sys.stderr)
+                return raw, hdrs, final
+
+            snap = _snapshot(cache_dir, f"blocked_{key}{name}_{count[name]}", raw)
+            saved = f"，响应已存 {snap}" if snap else "，没有正文"
+            if 200 <= status < 300:
+                age = _render_age(hdrs, time.time())
+                aged = "，渲染年龄不明" if age is None else f"，渲染于 {age / 3600:.1f} 小时前"
+                # 渲染年龄读不出也不算整页：边缘自己吐的挑战页不带 Drupal 的 Last-Modified / ETag。
+                if len(raw) >= PAGE_MIN_BYTES and age is not None and age <= MAX_RENDER_AGE:
+                    kind, why = "page", f"整页却没有 nirtable 表格（多半是页面改版）{aged}"
+                else:
+                    kind, why = "chal", f"没有 nirtable 表格（拦截页 / 挑战页 / 旧副本）{aged}"
+            elif status in (403, 429):
+                kind, why = "block", ("被拦" if status == 403 else "被限流")
+            elif 500 <= status < 600:
+                kind, why = "http", "源站或边缘出错"
+            elif 300 <= status < 400:
+                kind, why = "http", "重定向没跟完（环 / 超过跳数上限）"
+            else:
+                kind, why = "http", "意外状态码"
+            tried.append((name, kind,
+                          f"{tag}: HTTP {status}，{len(raw)} B，{took:.1f} s，{why}{saved}"))
+
+        # ── 没取到：首行按各发实际的失败类型说，别一律往墙上引 ──
+        sent = {n: c - (n in dead) for n, c in count.items()}       # 真发出去的发数
+        spread = "、".join(f"{n} {c} 发" for n, c in sent.items() if c) or "一发都没发出去"
+        kinds = {n: {k for ch, k, _ in tried if ch == n} for n in count}
+        where = f"URL={url}" + (f"；{ctx}" if ctx else "")
+        hints = []
+        if any(k == "page" for _, k, _ in tried):
+            blocked_too = any(k in ("block", "chal") for _, k, _ in tried)
+            head = (f"MSCI IR 拿到了整页、里面却没有 nirtable 表格（{spread}，{where}）"
+                    + ("—— 但同一轮另有几发被拦（403 / 429 / 挑战页，见下），改版与墙收紧两种都要查"
+                       if blocked_too else "—— 多半是页面改版，不是被拦"))
+            if blocked_too:
+                hints.append("被拦的那几发见上：多半是 Bot Manager 又收紧了，见 _download() 上方「两条通道」。")
+            hints.append(f"「整页」= 正文 ≥ {PAGE_MIN_BYTES} B 且渲染年龄在上限内：09-12 实测这张页面"
+                         "去掉表格还有 32,774 B，拦截页 407 B。也可能是源站那一刻表格区块没渲染出来"
+                         "（没见过）。打开上面点名的快照看表格现在长什么样，再改 _TABLE_RE / parse()。")
+        else:
+            if out_of_time:
+                head = (f"MSCI IR 到了总时限 BUDGET={BUDGET} s 仍没取到页面（{spread}，{where}）"
+                        + ("；其中 curl_cffi 导入失败、一发请求都没发出去" if "curl_cffi" in dead else ""))
+            elif dead:
+                head = (f"MSCI IR 没取到页面：{'、'.join(sorted(dead))} 导入失败、一发请求都没发出去，"
+                        f"实际只有 {spread}（{where}）")
+            else:
+                head = f"MSCI IR {spread}全部没取到页面（{where}）"
+            if "curl_cffi" in dead:
+                hints.append("先修 curl_cffi（命令见上面那一行）。09-10 起单靠 urllib 进不来。")
+            elif sent.get("curl_cffi"):
+                ck = kinds["curl_cffi"]
+                if ck & {"block", "chal"}:
+                    hints.append("curl_cffi 发出去了、拿到了 HTTP 响应却被拦（403 / 429 / 挑战页，见上）："
+                                 "多半是 Bot Manager 又收紧了，见 _download() 上方「两条通道」。")
+                elif "http" in ck:
+                    hints.append("curl_cffi 拿到的是 5xx 或意外状态码，不是被拦的样子：先看源站自己是不是"
+                                 "出错（隔几小时再跑），再怀疑墙。")
+                else:
+                    hints.append("curl_cffi 每发都是网络层错误 / 超时，一个 HTTP 响应都没拿到：先排除本机"
+                                 "网络 / DNS / 代理，再怀疑墙。")
+        if sent.get("urllib") and not any(k == "page" for k in kinds.get("urllib", ())):
+            hints.append("urllib 没取到是 09-10 起的已知常态（按本文件的头每发 45 s 读超时），"
+                         "它失败本身不说明新问题。")
+        if out_of_time:
+            hints.append("总时限是一次 _download() 所有发（含护栏 A 换键）共用的，见 BUDGET 旁注。")
+        raise RuntimeError(head + "：" + "".join(f"\n  {ln}" for _, _, ln in tried)
+                           + "".join(f"\n  {h}" for h in hints))
 
     today = _date.today()
     url = _cache_key_url(today)
-    raw, hdrs, final = _once(url)
+    raw, hdrs, _final = _once(url)
     age = _render_age(hdrs, time.time())
 
     # ── 护栏 A：这份 HTML 有多旧 ───────────────────────────────────────────
-    # 放在下面 nirtable 结构检查**之前**：结构坏了是另一类故障，两个诊断不该
-    # 互相盖住（先知道「这份是三天前的」，再去看它长什么样）。
+    # 重定向护栏和 nirtable 检查都已经在 _once 里判过，能走到这里的一定是「最终 URL = 请求
+    # URL、含表」的 2xx。先后和改写前不一样了：原来护栏 A 在前、重定向在后，两个同时成立时
+    # （跳回规范路径、拿到钉住的旧副本）报的是「缓存副本太旧」，真正的原因「跳回了规范路径」
+    # 反而看不见；现在先报重定向，报错里带着渲染年龄，两个诊断都在。
+    first = ""
     if age is not None and age > MAX_RENDER_AGE:
+        stale = _snapshot(cache_dir, "stale", raw)
+        first = (f"当日键 {url} 拿到的是 {age / 3600:.1f} 小时前渲染的副本（Last-Modified="
+                 f"{hdrs.get('Last-Modified')!r}，已存 {stale}）")
         # 换一个久未使用的键再试一次。shift 取池长一半 ⇒ 该键上次被用是 150 天前，
-        # 早已过 s-maxage 的 30 天，必定是冷 miss。
+        # 早已过 s-maxage 的 30 天，必定是冷 miss。换键重跑的是整条排班，和当日键共用 BUDGET。
         url = _cache_key_url(today, shift=len(_KEY_POOL) // 2)
-        raw, hdrs, final = _once(url)
+        raw, hdrs, _final = _once(url, key="shift_", ctx=f"这是护栏 A 换键之后：{first}")
         age = _render_age(hdrs, time.time())
     if age is not None and age > MAX_RENDER_AGE:
+        snap = _snapshot(cache_dir, "rejected", raw)
         raise RuntimeError(
             f"MSCI IR 拿到的是 {age / 3600:.1f} 小时前渲染的缓存副本"
             f"（上限 {MAX_RENDER_AGE / 3600:.0f} 小时，Last-Modified="
             f"{hdrs.get('Last-Modified')!r}，ETag={hdrs.get('ETag')!r}，"
-            f"URL={url}）—— 换缓存键已经不起作用了，见文件头「CDN 缓存陷阱」。"
-            "**别把阈值调大绕过它**：那等于同意在旧表上判断『这个月没发』。")
-    if final != url:
-        raise RuntimeError(
-            f"MSCI IR 把请求重定向到了 {final!r}（请求的是 {url!r}）—— 缓存键已经"
-            "变回规范路径，此后拿到的都可能是被钉住 30 天的旧副本。"
-            "需要重新找一种能生成新缓存键的写法，见文件头「CDN 缓存陷阱」。")
+            f"URL={url}，响应已存 {snap}；换键之前{first}）—— 换缓存键已经不起作用了，"
+            "见文件头「CDN 缓存陷阱」。**别把阈值调大绕过它**：那等于同意在旧表上判断『这个月"
+            "没发』。")
     if age is None:
         print("[msci] ⚠ 响应里没有 Last-Modified 也没有可解析的 ETag —— 无法判断这份"
               " HTML 有多旧，护栏 A 本轮失效（放行）。源站或 CDN 换了，请人工看一眼；"
               "兜底靠 monthly_run.audit_overdue_headline()。", file=sys.stderr)
 
     text = raw.decode("utf-8", errors="replace")
-    if "nirtable" not in text:
-        raise RuntimeError(
-            "MSCI IR 页面里找不到 nirtable 表格——页面改版或被拦截页顶掉了，"
-            f"落盘文件请人工看一眼（{len(raw)} bytes）")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     path = os.path.join(cache_dir, f"msci_aum_{stamp}.html")

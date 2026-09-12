@@ -86,6 +86,11 @@ HTTP 请求，对方是 220KB 的 CDN 静态文件。
    本模块把主列与 Athex 备注列**都写进 CSV**（`athex_*` 前缀），让 build 层自己决定
    画哪条。只写主列 = 把断点焊死在数据里，之后谁也修不回来。
    跨 2025-11 的同比**不可直接比**，图上必须画红色断点竖线。
+   ⚠ 唯一的例外是股票清算量（adv_shares_cleared_kcontracts）。2026-08 版起官方把雅典按新计数
+   口径 pro-forma 并进了这一列有数的**全部**月份（2022-01 起，证据链见 ACCEPTED_RESTATEMENTS），
+   它的备注列在每个月都是「主列里属于雅典的那一块」，语义不翻转，2025-11 也不是这一列的断点。
+   但 Equity Markets 脚注 (3) 挂在整个现货分组头上、仍写着 "since November 2025"，
+   series/enx_breaks.csv 照抽不误 —— 不画这一条红线是页面那一侧（build/specs/enx.py）的事。
 
    验证（本机实测，非引用）：官方 Q2 2026 业绩稿第 13 页明写 "Q2 2025 volumes are
    including Euronext Athens on a pro forma basis"，其 Q2 2025 备考值
@@ -127,6 +132,17 @@ HTTP 请求，对方是 220KB 的 CDN 静态文件。
    ⇒ 结论不是「xlsx 错了」，而是 xlsx 内部自洽、当年新闻稿之间不自洽。本仓只认 xlsx，
    且**绝不能**把某一期新闻稿的数字手工补进序列 —— 那会插进一个 4-6% 的假台阶。
    本模块因此对已入库的值**永不覆盖**，冲突写 cache/enx_restatements.csv 供人工判断。
+   唯一的出口是 ACCEPTED_RESTATEMENTS：人核过一批冲突之后，把「列 × 月份区间」连同逐格
+   「旧值 → 新值」的指纹登记进去，update() 整批对上才覆盖，差一格都不动。
+   最大的一条是 **2026-08 版的股票清算量整列重述**（官方把雅典换成新的计数口径并
+   pro-forma 回填到 2022-01，adv_shares_cleared_kcontracts 与其 athex 备注列 2022-01..2026-06
+   共 108 格）。它与上面那种「按今天口径重述、与当年稿子对不上」是同一类事，区别在范围：
+   这回是整列，不采纳就是同一列里新旧两套口径拼接：拼接处有一个约 5% 的口径台阶，
+   其后 12 个月的同比都是新口径比旧口径。
+   另外几条是小批：次月更正（2026-06 基金只数 / CSD 结算指令；绿鞋补记进上市月的新上市募资额；
+   雅典再融资按配股实募改记）与市值去重（并表头五个月补剔布鲁塞尔、雅典双重挂牌的三家）。人核过但没采纳的冲突也列在
+   那张表的文末，免得下一个人再从头核一遍。
+   只差浮点表示的格子（官方单元格在 ULP 级别变了）不算冲突，见 _same_number。
 
 **5. FX 那一列的表头单位是错的。**
    FICC Markets 第 9 行写 `Volume (in M$, single counted)`，但格子里 2026-06 是
@@ -273,6 +289,7 @@ HTTP 请求，对方是 220KB 的 CDN 静态文件。
 import collections
 import csv
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -389,11 +406,14 @@ COLUMN_SPEC = [
        'cash', 1e3, '2012-01', 'athex_adv_cash_etf_adnv_eurbn', '2021-01'),
     # 结构化产品现货（€bn/日，单边）。入库不是为了画图，是为了每月撞恒等式
     # Total ≡ Equities + ETF + Structured（见 _validate），撞得上说明四列一格没错行。
+    # 撞不上也可能是官方工作簿自己不平：2026-08 就是（多 €600），靠 IDENTITY_UPSTREAM_GAPS 逐值登记放行。
     _c('adv_cash_structured_adnv_eurbn', S_EQ, (G_CASH, U_TURNOVER),
        'Turnover Structured Products', 'cash', 1e3, '2012-01'),
     # Euronext Clearing 清算的股票交易笔数/手数（千/日，**单边**）。官方标签
     # "Shares (nb of contracts)"，季报里叫 "number of transactions and lots cleared"，
-    # 与成交额不是同一层；值带小数（例：2026-06 月合计 26,166,723.5），不是纯计数。
+    # 与成交额不是同一层；值带小数（例：2026-06 月合计 27,358,633.5，8 月版），不是纯计数。
+    # ⚠ 2026-08 版起全程含雅典（官方 pro-forma 回填到 2022-01，备注列语义不随并表月翻转），
+    #   库里 2022-01..2026-06 是按 ACCEPTED_RESTATEMENTS 采纳后的新口径；见口径坑 1 的例外。
     _c('adv_shares_cleared_kcontracts', S_EQ, (G_CASH, U_CLEAR1),
        'Shares (nb of contracts)', 'cash', 1e3, '2022-01',
        'athex_adv_shares_cleared_kcontracts', '2022-01'),
@@ -945,13 +965,23 @@ def _scale(raw, days, scale, col, mon):
 def _validate(data):
     """返回最新月；任何一处不达标立刻抛异常。
 
+    ⚠ 每轮都把**全史**重扫一遍，不是只查最新月 —— hist 是滚动全历史文件，所以任何一个
+    历史月在这里被拦下，挡住的是之后的每一个新月份：整条腿停更，不是扣发一个月。
+
     三道检查：
       1. 起始月之后不许有空格 —— 起始月是本机对当前 xlsx 逐列实测出来的，
          之后再为空只可能是解析错行或官方停发，两种都必须人来看。
       2. 恒等式 Total ≡ Equities + ETF + Structured（Athex 备注列同理，它没有
-         结构化产品，所以是 Total ≡ Equities + ETF）。2026-08-18 实测 175 个月
-         最大相对差 3.7e-16（量级是浮点舍入，不随月数变；月数本身会变）。
-         这条撞不上，说明四列里至少有一列错行了 —— 而错行的数字全都「看上去很正常」。
+         结构化产品，所以是 Total ≡ Equities + ETF），tol=1e-9。2026-09-12 对 8 月版
+         hist 实测（py3.12.12，与 _identity 一样用内置 sum() —— 3.12 起它对浮点做补偿求和 ——
+         在入库的 ADV 空间量）：主恒等式 176 个月，除 2026-08 外最大相对差 3.414e-16（2024-09）；
+         Athex 那道 68 个月最大 2.478e-16 —— 量级是浮点舍入（不随月数变；月数本身会变）。
+         换成逐项 a+b+c（py<3.12 的 sum 语义）量，主恒等式是 3.738e-16（2021-01），41 个月
+         两种求和结果不同；旧 docstring 的「3.7e-16」就是这么量的，两个数都对，别当成对不上。
+         这道闸门要抓的是错行 —— 错行的数字全都「看上去很正常」。但撞不上不一定是错行：
+         2026-08 主恒等式相对差 2.274e-09，是 Euronext 自己的工作簿里总量比三个分项之和
+         多 €600（伴生 latest 工作簿三处独立旁证总量无误）。这类读数不靠放宽 tol 放行，
+         只认 IDENTITY_UPSTREAM_GAPS 逐值登记，登记之外照样抛，理由见那张表上面的注释。
       3. 交易日必须是正数。
     """
     have = [m for m in sorted(data) if data[m][ANCHOR] is not None]
@@ -1110,17 +1140,160 @@ def _write_breaks(series_dir, rows):
     return True
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 恒等式闸门，以及「上游自己就对不平」的逐格登记
+# ══════════════════════════════════════════════════════════════════════
+# 为什么要有这张登记表 —— 而不是调大 tol，也不是把 raise 降成警告：
+#
+#   · 这道闸门被某一格挡住，冻住的是整条腿，不是一个月。_validate 每轮把**全史**重扫一遍
+#     再逐月撞恒等式，hist 又是滚动全历史文件 ⇒ 那一格只要还在，之后每一个新月份都进不来。
+#     2026-08 就是这么把 enx 冻住的：2026-09-08 起 monthly_run 连续 5 轮 FAIL，而 raise
+#     在 update() 前段，latest 对表、停摆哨兵、断点表、重述落盘、发布日登记五步一并没跑。
+#   · 调大 tol 不是调参，是二选一。2026-09-12 对 8 月版 hist（sha256 见登记项）逐月复算
+#     （py3.12，与 _identity 同样用内置 sum() 在 ADV 空间量；逐项 a+b+c 量主恒等式是 3.738e-16 /
+#     2021-01，结论不变）：主恒等式 176 个月，除 2026-08 的 2.274e-09 外最大 3.414e-16（2024-09），
+#     相对差大于 1e-12 的有且只有 2026-08；Athex 备注那道 68 个月最大 2.478e-16。中间空着七个数量级
+#     ⇒ 任何能放 2026-08 过去的 tol，都恰好丢掉这道闸门全史唯一一次浮点噪声以上的读数；
+#     以后别的月份再冒出同量级的上游不平，就再也没人看得见。
+#   · 降成警告：连这道闸门本来要抓的「某列错行」也一起放过。
+#
+# 所以放行判据刻意做窄：(月份, 总量列) 命中登记，**且**本轮读到的交易日与登记严格相等、
+# 总量与分项之和折回官方原表单位后都与登记值相对差 ≤ _GAP_MATCH_REL —— 三条全满足才放行，
+# 并且每轮在 stdout 打一行（fetch 模块的 print 会进 monthly_run 日志，09-12 日志里
+# [lseg]/[nanya] 那些行就是这么来的）。同一格下一版要是换了个差额（改了但没改平），
+# 读数对不上登记，照样 raise；上游哪天把它改平了（rel ≤ tol），打一行「登记可删」，不 raise。
+#
+# 不按 sha256 放行：hist 下个月一追加新行 sha 就变，按 sha 认等于下个月再冻一次。
+# sha256 记在登记项里只是出处 ——「这两个数是从哪一版文件里读出来的」。
+#
+# ⚠ 往这里加一条之前，先把同一套证据链走一遍：至少要有一条**不经 hist 分项**的独立旁证
+#   说明总量本身没错（2026-08 用的是伴生 latest 工作簿，见下）。拿不出旁证的不平，
+#   正是闸门该拦的那种，不许登记。
+# ⚠ 增删登记时同步改 build/specs/enx.py 页尾注「现货恒等式」那一条 —— 那句读者看得见，
+#   里面点名了 2026-08 这个例外；只改这里，页面上就印着一句跟闸门对不上的话。
+IDENTITY_UPSTREAM_GAPS = {
+    ('2026-08', 'adv_cash_adnv_eurbn'): {
+        # hist 'Equity Markets' R186（Period 2026-08-01）的原始单元格，单位 €m 月合计：
+        #   C6  Total Turnover                 263866.89008645003
+        #   C8  Turnover Equities              240425.60853173997
+        #   C10 Turnover ETF                    20661.36798232
+        #   C12 Turnover Structured Products     2779.91297239
+        #   C3  Nb of trading days                 21
+        'unit': '€m 月合计',
+        'days': 21,
+        'total': 263866.89008645003,
+        'parts_sum': 263866.88948644995,     # C8 + C10 + C12，按此顺序浮点相加
+        'gap': '€600.00006（Decimal 精确差 0.000600000061695 €m）',
+        'rel': 2.2738739980062947e-09,       # _identity 实际比的 ADV 空间（÷21÷1000）的值
+        'hist_sha256':
+            '2b47522c3c5d882125ef2e9a46aa81684bccb6aa0c524947a88976cd848a99fb',
+        # ↑ 223,390 B，Last-Modified: Mon, 07 Sep 2026 15:35:21 GMT
+        #
+        # 为什么认定是上游自己不平、不是我们读错（2026-09-12 活网重取两份官方文件实测）：
+        #   ① 伴生 latest 工作簿（50,374 B，Last-Modified 07 Sep 2026 15:35:04 GMT，
+        #      sha256 54bd1ee9…）Equity Markets R13C2「Total Cash Market」2026-08
+        #      = 263866.89008645003，与 hist C6 逐位相等；分项之和那个数在 latest 里一格都没有。
+        #   ② latest R14C2 官方自算「ADV Cash Market」= 12565.090004116668 = 总量 ÷ 21，
+        #      逐位相等 —— 官方自己发布的 ADV 用的就是总量。
+        #   ③ latest R13C7「Q3 2026」= 597094.9775615999 = hist 7 月 + 8 月总量（相对差
+        #      2e-16）；拿分项之和去加就差这 €600。
+        #   ④ parse_workbook 每个月只认一个行号（同月两行直接抛），四列同行读取，
+        #      「某一列单独错行」在这里表达不出来；现货成交额分组（C6–C12）下除这四列外
+        #      只有三列 Athex 备注，没有第四个分项漏在恒等式外。
+        #   差额从哪来无从判断：月度新闻稿正文没有数字（口径坑 17）。对页面无影响：
+        #   €600 ÷ 21 = €28.57/日，现货 ADV 线按 0.1 €bn 显示。
+    },
+}
+
+# 登记值比对的相对容差。折回原表单位（× 交易日 × scale，即 _scale 的逆运算）2026-08 实测
+# 与原始单元格逐位相等，1e-14 只是给乘除留约 45 个 ULP 的余量。折成钱：263,866.89 €m
+# × 1e-14 ≈ €0.0026，不到 1 分钱 —— 这一格的差额只要变动 1 分钱以上就对不上登记
+# （离线实测：总量 +€0.01 即 raise），而 1 个 ULP 的浮点抖动照样放行。
+_GAP_MATCH_REL = 1e-14
+
+# 折回原表单位要知道每列的交易日列与 scale（athex_* 备注列与主列同口径）。
+_COL_BY_NAME = dict([(c.name, c) for c in COLUMN_SPEC]
+                    + [(c.memo, c) for c in COLUMN_SPEC if c.memo])
+_DAYS_COL = {key: name for name, key, _s in DAYS_SPEC}
+
+
+def _gap_mismatch(rec, total, rhs, reg):
+    """本轮读数与登记逐值比对，返回 (why, got)。
+
+    why：全对得上是 None，否则是「哪个数变了、偏了多少」的一句话（方便对着新 vintage 重新登记）。
+    got：本轮折回官方原表单位的 {'days', 'total', 'parts_sum'}（交易日就对不上时只有 days）——
+    放行那行打印的是它，不是登记常量：出声行要是抄登记值，本轮读数真变了日志上也看不出来。
+
+    比的是官方原表单位而不是入库的 ADV —— 登记值要能拿去 Excel 里逐位对照。
+    交易日要求严格相等：天数一变 ADV 全变，那已经不是登记的那份读数了。
+    「对得上」写成 `<=` 再取反，不写 `>`：NaN 参与的比较恒为 False，写成 `>` 时 NaN 读数
+    会被判成逐值一致而放行（2026-09-12 复核实测：登记月的总量或结构化产品置 NaN，旧写法
+    _validate 照样返回 2026-08）。生产路径今天产不出 NaN（openpyxl 3.1.5 读 'NaN' 直接抛），
+    这里防的是以后换解析路径。
+    """
+    col = _COL_BY_NAME[total]
+    got = {}
+    k = col.scale
+    if col.days:
+        got['days'] = days = rec.get(_DAYS_COL[col.days])
+        if days != reg['days']:
+            return '交易日 %r，登记是 %r' % (days, reg['days']), got
+        k = days * col.scale
+    got['total'], got['parts_sum'] = rec[total] * k, rhs * k
+    bad = []
+    for lab, key in (('总量', 'total'), ('分项之和', 'parts_sum')):
+        dev = abs(got[key] - reg[key])
+        if not (dev <= _GAP_MATCH_REL * abs(reg[key])):
+            bad.append('%s折回原表 %r，登记是 %r，相对偏差 %.3e'
+                       % (lab, got[key], reg[key], dev / abs(reg[key])))
+    return '；'.join(bad) or None, got
+
+
 def _identity(mon, rec, total, parts, tol=1e-9):
+    """total ≡ Σparts，相对差 > tol 就抛。
+
+    tol=1e-9 是给浮点舍入留的（全史实测噪声最大 3.4e-16，py3.12 内置 sum() 量，见 _validate），
+    不为任何一格上游残差放宽 —— 唯一的出口是 IDENTITY_UPSTREAM_GAPS 逐值登记过的格子，
+    理由见那张表上面的注释。
+    NaN 一律按不成立处理：rel 是 NaN 时 `rel <= tol` 为 False，未登记直接抛，登记过的
+    由 _gap_mismatch 判成对不上再抛（旧写法 `rel > tol` 对 NaN 为 False，会静默放过）。
+    """
     if rec.get(total) is None or any(rec.get(p) is None for p in parts):
         return
     lhs, rhs = rec[total], sum(rec[p] for p in parts)
     if lhs == 0:
         return
     rel = abs(lhs - rhs) / abs(lhs)
-    if rel > tol:
+    reg = IDENTITY_UPSTREAM_GAPS.get((mon, total))
+    if rel <= tol:
+        if reg:
+            print('[enx] 登记可删：%s %s 上游已经改平（本轮相对差 %.3e ≤ tol %.0e），'
+                  'IDENTITY_UPSTREAM_GAPS 里这一条可以删了，build/specs/enx.py 页尾注里点名'
+                  '这一格的那半句同步删。若该月已入库，官方改动的那一格'
+                  '会进 cache/enx_restatements.csv（本模块不覆盖已入库值）'
+                  % (mon, total, rel, tol))
+        return
+    msg = ('%s 恒等式不成立：%s=%r 与 %s 之和 %r 相对差 %.3e —— '
+           % (mon, total, lhs, parts, rhs, rel))
+    if reg is None:
+        # 前半句与 2026-09-08~12 生产日志里那 5 行 FAIL 逐字相同，只在后面补一句：
+        # 这道闸门撞不上的第一例（2026-08）恰恰不是错行，而是上游自己不平 —— 下一例
+        # 要是也这样，读日志的人不该先去翻解析器。
         raise EnxFetchError(
-            '%s 恒等式不成立：%s=%r 与 %s 之和 %r 相对差 %.3e —— '
-            '多半是某一列错行了' % (mon, total, lhs, parts, rhs, rel))
+            msg + '多半是某一列错行了。若不经 hist 分项的旁证（伴生 latest 工作簿的 Total/ADV、'
+            '季度合计）说明 Total 本身无误，则可能是上游工作簿自己不平：按 fetch/enx.py '
+            'IDENTITY_UPSTREAM_GAPS 上方注释逐值登记，不许放宽 tol')
+    why, got = _gap_mismatch(rec, total, rhs, reg)
+    if why:
+        raise EnxFetchError(
+            msg + '这一格在 IDENTITY_UPSTREAM_GAPS 有登记（上游自身不平），但本轮读数与'
+            '登记对不上（%s）—— 官方改了这一格却没改平，或者这回真是错行。'
+            '登记只认原来那份读数，拒绝放行' % why)
+    print('[enx] 恒等式放行（上游自身不平，已登记）：%s %s 相对差 %.3e > tol %.0e；'
+          '本轮折回原表（%s）交易日 %r、总量 %r vs 分项之和 %r，与 IDENTITY_UPSTREAM_GAPS '
+          '登记逐值一致（相对偏差 ≤ %.0e；登记出处 hist sha256 %s…）。上游改平之前每轮都会打这一行'
+          % (mon, total, rel, tol, reg['unit'], got.get('days'), got['total'],
+             got['parts_sum'], _GAP_MATCH_REL, reg['hist_sha256'][:12]))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1498,6 +1671,256 @@ def backfill_source_dates(series_dir, cache_dir, pages=8, months=None):
 # ══════════════════════════════════════════════════════════════════════
 # 对外接口
 # ══════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
+# 采纳登记：人核过、逐格钉死的官方重述（口径坑 4「永不覆盖」的唯一出口）
+# ══════════════════════════════════════════════════════════════════════
+# 为什么要有这张表 —— 而不是把 update() 改成「重述即覆盖」，也不是继续一律不覆盖：
+#
+#   · 默认规矩不变：已入库值永不覆盖，冲突写 cache/enx_restatements.csv。一格对不上，
+#     可能是官方改口径、官方更正，也可能是我们这边错行，机器分不清。
+#   · 但官方把**一整列**按新口径重述时，「永不覆盖」本身就在造错数：新月份按新口径进来、
+#     旧月份冻在旧口径，同一列两套口径拼在一起 —— 拼接处凭空一个口径台阶，其后一年的
+#     同比都是新口径比旧口径，而且安安静静：提示只进 gitignore 掉的 cache，全仓没有代码读那个文件。
+#   · 「重述即覆盖」又太宽：错行会被当成重述静默吞进 series，正是默认规矩要挡的事。
+#
+# 所以采纳做成**逐格钉死**。一条登记 = (列集合, 月份区间, 格数, 指纹)：本轮冲突里落在
+# 「列集合 × 月份区间」内的格子，按 (月, 列, 库内旧值, 官方新值) 排序、逐行逗号拼接、
+# 换行连接后取 sha256；格数与指纹都对上才整批覆盖，差一格、改一位都整批不采纳（照旧写
+# 冲突文件并打一行说明）。于是：
+#   · 登记只认人核过的那一次「旧值 → 新值」。官方以后再动这些格子，库内旧值已是新口径，
+#     指纹必然对不上 —— 回到默认路径等人核，不会被这条登记顺手吞掉；
+#   · 不按 hist 的 sha256 认：hist 每月追加新行 sha 就变（同 IDENTITY_UPSTREAM_GAPS 的理由），
+#     sha 只记作出处；
+#   · 采纳之后库内与官方一致，这条登记不再命中任何格子 —— 留着是出处，不是开关。
+# 覆盖值照旧由本轮解析值经 _fmt 写回（不手改 CSV）。逐格前后值 = 该次提交里 series/enx.csv
+# 的 diff；逐月前后对照表与官方出处链接见 docs/verify/enx.md「股票清算量整列重述（2026-08 版）」。
+#
+# ⚠ 往这里加一条之前，先走完同一套证据链：①逐列量清冲突（月数、幅度、与同表相邻列的算术
+#   关系）；②至少一条**不经 hist 本身**的官方旁证说明新值是官方现行口径；③同步改
+#   build/specs/enx.py 里描述这一列的释义与页尾注 —— 否则页面印着与数据对不上的话。
+#   关于 ②：伴生 latest 工作簿的「上月」/ Q3 / YTD 列可以给 2025-11 之后的月份作旁证（雅典并表之后
+#   两份文件的基准重合；更早的月份不行，见口径坑 6）。cache/raw/enx/ 里留着各版 latest 的存证。
+#   但 latest 与 hist 出自同一套数据，它只能证明「官方现在是这个数」，证明不了这个数不是录错的 ——
+#   录入层面的疑点要靠不走这套数据的出处（业绩稿、Cash 月报、发行人公告）去排除，排除不了就不采纳
+#   （例子见文末「不采纳」清单里的债券零售清算）。
+#   同一批冲突按「证据链」分条登记，每条的「列 × 月份区间」只圈人核过的格子：圈大了，以后官方在
+#   圈内别的格子上再改一次，这一条会整批报「对不上」，读日志的人会以为是已采纳的那几格出了事。
+ACCEPTED_RESTATEMENTS = [
+    {
+        'id': '2026-08 股票清算量：雅典换计数口径并 pro-forma 回填到 2022-01',
+        'columns': ('adv_shares_cleared_kcontracts', 'athex_adv_shares_cleared_kcontracts'),
+        'months': ('2022-01', '2026-06'),
+        'cells': 108,
+        'sha256': '303812a12f0a212a26f4f738f02e65cfb11c18636d7f57ba54f4cedcb24fee3c',
+        # 出处：hist 'Equity Markets' C13「Shares (nb of contracts) (4)」与 C14「Athex」。
+        #   7 月数据版（220,465 B，sha256 5f2fd7b0e696…）就已是新口径，库里 2026-07 那行（08-08 入库）
+        #   与它一致；本登记核的是 8 月数据版（223,390 B，Last-Modified Mon, 07 Sep 2026 15:35:21 GMT，
+        #   sha256 2b47522c3c5d882125ef2e9a46aa81684bccb6aa0c524947a88976cd848a99fb）。
+        #
+        # 冲突的形状（2026-09-12 对 8 月版逐月复算；库内旧值来自 2026-08-07 建表时的那一版）：
+        #   · 主列 54 个月全部上修 +3.29% ~ +15.19%（中位 +5.45%）；备注列 54 个月全部 ×6.84 ~ ×11.78。
+        #   · 2022-01..2025-10 共 46 个月：新主列 − 旧主列 ≡ 新备注列（相对差 < 1e-9）
+        #     ⇒ 并表前的主列现在含雅典（pro-forma），旧主列是 legacy；
+        #   · 2025-11..2026-05 共 7 个月：新主列 − 旧主列 ≡ 新备注列 − 旧备注列
+        #     ⇒ legacy 那一块一格没动，换掉的只是雅典那一块；
+        #   · 新备注列 ÷ 雅典现货成交笔数（双边计，athex_adv_cash_trades_k）在 2022-01..2026-08
+        #     56 个月里是 0.49850–0.49998，旧备注列是 0.04239–0.07304 ⇒ 新口径 = 雅典单边成交笔数，
+        #     与本列表头 "Clearing volume (single counted)" 自洽；
+        #   · 2026-06 另有一处：8 月版在口径切换之外把 legacy 那一块又上修了 1.1274 千/日
+        #     （×22 天 = 24,802.5，+0.09%），同一版里的数据更正，一并采纳。
+        #   同一版里其余列的冲突（mktcap_eurtn 等）都是 2025-11 之后个别月份的更正或浮点表示差，不在这条登记里：
+        #   人核之后另起了几条登记（见下），浮点表示差由 _same_number 滤掉，余下的列在文末「不采纳」清单。
+        #
+        # 为什么采纳（官方旁证，均不经 hist 本身；2026-09-12 读原文、本机复算）：
+        #   ① 旧值当年是忠实的：Q4 2024 业绩稿「Shares (number of contracts – single counted)」
+        #      FY2024 234,777,332 / FY2023 83,486,969，Q2 2026 业绩稿（07-30）Q2 2026 75,523,319，
+        #      都等于旧主列逐月加总（差 ≤ 0.5，官方取整）；同稿 Q2 2025 备考 76,120,584 = 旧主列
+        #      + 旧备注列 ⇒ 7 月底以前官方口径就是旧的，库里旧值不是我们抓错的。
+        #   ② 官方现行口径是新的：伴生 latest 工作簿（50,374 B，Last-Modified 07 Sep 2026 15:35:04 GMT，
+        #      sha256 54bd1ee92daa…）「CLEARING (nb of contracts - Single counted) / Shares」印的
+        #      2025-08 = 18,858,349、Q3 2025 = 42,344,286、YTD 2025 = 200,872,961，与新主列逐位相等
+        #      （旧口径分别低 5.5% / 5.1% / 4.0%）；它印的 8 月同比 +8.2426% 与新口径逐位相等，
+        #      旧口径算出来是 +14.60%。
+        #   ③ 新雅典数是 ATHEX 自己的数：ATHEX 年报 Cash Market「Number of trades」2022 = 7.5m、
+        #      2023 = 9.2m；新备注列还原成年合计是 7.437m / 9.186m（−0.84% / −0.15%），旧备注列只有
+        #      约 0.97m / 1.19m，本机在 ATHEX 年报与 FESE 年报里都没找到它对应的量。
+        #   ④ 官方没有为这次切换写说明：两版 hist 表头与脚注逐字相同，脚注 (4) 仍只讲 2023-11
+        #      清算扩容；Equity Markets 脚注 (3) 仍写 "Euronext Athens since November 2025"，与这一列的
+        #      新口径矛盾 —— series/enx_breaks.csv 照抽不误，页面那一侧不画这一列的雅典红线
+        #      （build/specs/enx.py `_read_breaks`，前提从 series 现算）。
+        #   不采纳的后果：同一列 2026-07 起新口径、之前旧口径 —— 2026-07 那一格的环比与其后 12 个月
+        #   的同比都是新口径比旧口径（汇总表 2026-07 同比印 +20.3%、同口径 +14.5%；2026-08 印 +14.6%、
+        #   官方 +8.2%），水平上 2026-07 凭空一个约 5% 的台阶，且 2022-01 起的历史都少算了雅典。
+    },
+    {
+        'id': '2026-07 版次月更正：2026-06 挂牌基金只数 −5、CSD 结算指令 +18 笔（全在雅典）',
+        'columns': ('listed_funds', 'csd_settlement_instructions_m',
+                    'athex_csd_settlement_instructions_m'),
+        'months': ('2026-06', '2026-06'),
+        'cells': 3,
+        'sha256': 'b19d8327c29179e8221adbf649e76597508f2fe27b9d2a8cb948cf4be9b5b1b4',
+        # 出处：hist 'Capital Markets'「Nb of Listed Instruments / Funds」与 'Securities Services'
+        #   「Central Securities Depositary / Nb of Settlement instructions」的 Total、Athens 备注列。
+        #   库内旧值来自 6 月数据版（2026-08-07 建表）；7 月数据版 hist（220,465 B，sha256 5f2fd7b0e696…）
+        #   起就是新值，8 月数据版（sha256 2b47522c3c5d…）沿用。
+        #
+        # 冲突的形状：listed_funds 2178 → 2173；结算指令 Total 13,801,173 → 13,801,191（+18 笔），
+        #   雅典备注 570,856 → 570,874（同样 +18）⇒ legacy（Total − 雅典）一笔没动，更正全在雅典那一块。
+        # 定性：次月更正 —— 官方在下一期发布里改上一期的数。
+        #
+        # 为什么采纳（官方旁证，均不经 hist）：
+        #   ① 7 月数据版 latest 工作簿（47,476 B，sha256 1143b9710d68…）「上月」列 2026-06：
+        #      Funds = 2173、Nb of Settlement instructions = 13,801,191，与新值逐位相等；
+        #   ② 旧值当年是忠实的：Q2 2026 业绩稿（2026-07-30）印 Nb of listed Funds 2,178、Q2 结算指令
+        #      38,060,160（= 4、5 月 + 6 月旧值，docs/verify/enx.md 第 2 组）⇒ 官方是 07-30 之后才改的；
+        #   ③ 雅典那 18 笔：Euronext Securities 的 key figures 工作簿（https://www.euronext.com/en/media/11654/download，
+        #      不含雅典；2026-09-12 取的副本 sha256 ed046905f2d0…）2026-06 奥斯陆 1,921,495 + 哥本哈根 3,746,524
+        #      + 波尔图 174,780 + 米兰 7,387,518 = 13,230,317 = 旧 Total − 旧雅典 = 新 Total − 新雅典
+        #      ⇒ 四家一笔没动，+18 全在雅典（5 / 7 / 8 月同样逐位相等）。
+        #   同类更正还在路上：8 月数据版 latest「上月」列印 2026-07 结算指令 13,287,660，hist 仍是
+        #   13,287,622（+38）。hist 跟上那一版会冒出 2026-07 的冲突，不在本条月份区间内，走默认路径等人核。
+    },
+    {
+        'id': '2026-07/08 版次月更正：新上市募资额补记超额配售（2026-06 +€15.11m、2026-07 +€4.43m）',
+        'columns': ('money_raised_new_listings_eurm',),
+        'months': ('2026-06', '2026-07'),
+        'cells': 2,
+        'sha256': '83d7d4964ff211132ede2ad3ce32446ab88c41003bdd6d4522059442f29c211d',
+        # 出处：hist 'Capital Markets'「Money Raised (mln of €) / Equities - New Listings」，8 月数据版
+        #   （sha256 2b47522c3c5d…）。库内旧值：2026-06 来自 6 月数据版、2026-07 来自 7 月数据版
+        #   （2026-08-08 入库）。7 月数据版 hist 里 2026-06 还是旧值 —— latest 工作簿先改，hist 晚一期才跟上。
+        #
+        # 冲突的形状：2026-06 177.9021795393444 → 193.0097577893444（+15.10757825 €m，+8.49%）；
+        #   2026-07 303.791169610157 → 308.22587511015706（+4.4347055 €m，+1.46%）。雅典备注（6 月 0、7 月 57.5）不动。
+        # 定性：次月更正。本列含超额配售（官方行头 "incl over allotment"），绿鞋在上市后约 30 天内行使，
+        #   官方在下一期发布里把它记回**上市那个月**。逐笔对得上（发行人行权公告，2026-09-12 检索代理读原文、
+        #   本机复算乘积与合计）：
+        #   · 6 月 = Bohus ASA（Oslo Børs，06-18 上市，07-05 公告全额行使 4,200,000 股 × NOK 31 = NOK 130.2m，
+        #     按 0.09005 €/NOK 折 €11,724,510.00）+ Alia Mentis（Euronext Growth Milan，06-29 上市，07-09 公告
+        #     979,021 股 × €3.25 = €3,181,818.25）+ OPT（Euronext Growth Milan，06-26 上市，07-24 公告 287,500 股
+        #     × €0.70 = €201,250.00）= €15,107,578.25，与 +15.10757825 €m 逐分相等。0.09005 是 ECB 06-18 参考价
+        #     1/11.1050 取 5 位 —— 汇率是反推出来的，另两笔是股数 × 价格直接乘；
+        #   · 7 月 = Gens Aurea（Euronext Milan，07-14 上市，08-13 公告部分行使 276,818 股 × €10）+ Giunti
+        #     Psychometrics（08-19，310,339 股 × €4.50）+ First Point（08-25，120,000 股 × €1.00）+ Dipietro Group
+        #     （08-31，100,000 股 × €1.50）= €4,434,705.50，与 +4.4347055 €m 逐分相等；去掉 Gens Aurea 余
+        #     €1,666,525.50，恰是 latest「SMEs」那一块 2026-07 的变动（202.791169610157 → 204.457695110157）。
+        #
+        # 为什么采纳（官方旁证，均不经 hist）：
+        #   ① 7 月数据版 latest 工作簿（sha256 1143b9710d68…）「上月」列 2026-06 = 193.0097577893444，
+        #      其 YTD 2026 = 4914.110985244195 = 库内 1–7 月加总 + 15.10757825；
+        #   ② 8 月数据版 latest 工作簿（50,374 B，sha256 54bd1ee92daa…）「上月」列 2026-07 = 308.22587511015706，
+        #      Q3 2026 与 YTD 2026 都等于新值加总（逐位）；
+        #   ③ 旧值当年是忠实的：7 月数据版 latest「最新月」列 2026-07 = 303.791169610157 就是首发值；
+        #      Q2 2026 业绩稿印 Q2 新上市募资 178（docs/verify/enx.md 第 2 组）= 6 月旧值。
+        #   ⚠ 这是**每月都会发生**的结构性更正：只要最新月有带绿鞋的 IPO，下一版 hist 就会改它 ——
+        #     库里最新月永远是首发值。本条只采纳人核过的这两格，以后的月份照默认路径进冲突文件等人核。
+    },
+    {
+        'id': '2026-07 版次月更正：雅典 2026-06 再融资募资额 533 → 532.79（Interwood 配股按实募改记）',
+        'columns': ('athex_money_raised_followon_eurm',),
+        'months': ('2026-06', '2026-06'),
+        'cells': 1,
+        'sha256': '524d38bb5f01ed32652592fee78fb158e6c0e6b7129b80d17c52d24e2405d6d9',
+        # 出处：hist 'Capital Markets'「Money Raised (mln of €) / Equities - Follow-ons」右侧的 Athex 备注列。
+        #   库内旧值 533 来自 6 月数据版；7 月数据版 hist（sha256 5f2fd7b0e696…）起是 532.79，8 月数据版沿用。
+        #   主列（集团合计）2026-06 = 1434.4866826325715，hist 两版都没动。
+        #
+        # 冲突的形状：533 → 532.79（−0.21 €m，−0.04%）。
+        # 定性：次月更正（雅典那一块）。当月雅典再融资是两笔（发行人公告，2026-09-12 检索代理读原文、本机复算）：
+        #   ADMIE Holding 增发 130,864,197 股 × €4.05 = €529,999,997.85（06-19 定价公告、06-23 获准上市）；
+        #   Interwood 配股（06-26 除权，07-01..07-14 认购）现金部分上限 12,000,000 股 × €0.25 = €3,000,000，
+        #   07-16 公告实募 €2,792,835.50。ADMIE + 上限 = €532,999,997.85 → 旧值 533；ADMIE + 实募 = €532,792,833.35
+        #   → 新值 532.79 ⇒ 官方先按上限记，认购结果出来后按实募改。
+        #
+        # 为什么采纳（官方旁证，不经 hist）：
+        #   ① 8 月数据版 latest 工作簿（sha256 54bd1ee92daa…）「Money Raised - Follow-ons on equities」YTD 2026
+        #      = 20114.055633982607，比 7 月数据版 latest 的 YTD（19503.328424208412）+ 8 月（610.937207624192）
+        #      少 0.209997849997 €m，而 Q3（7+8 月）与库内逐位相等 ⇒ 1–6 月里恰有一格被改小 0.20999785 €m，
+        #      正是 532.99999785（ADMIE 精确值 + Interwood 上限）→ 532.79；
+        #   ② 旧值当年也是忠实的：533 与 ADMIE + Interwood 上限对得上，不是我们抓错。
+        #   latest 与 hist 同出一套数据，所以录入层面的疑点靠发行人公告那两笔排除（见上）。
+        # ⚠ 集团合计还没跟上：hist 主列 2026-06 仍含旧的 532.99999785，latest 已按新值算 ⇒ hist 跟上那一版会冒出
+        #   money_raised_followon_eurm 2026-06 −0.20999785 的冲突（不在本条列集合里，走默认路径等人核）。
+        #   在那之前本库 2026-06 的「主列 − 雅典备注」比 legacy 多 0.21 €m（0.02%）。
+    },
+    {
+        'id': '2026-08 版市值去重：2025-11..2026-03 剔除布鲁塞尔、雅典双重挂牌的 Titan / Viohalco / Cenergy',
+        'columns': ('mktcap_eurtn',),
+        'months': ('2025-11', '2026-03'),
+        'cells': 5,
+        'sha256': '296ae300e175db6a1ffcecdb55fb6fe9df5580fc4fc57d3ac62472194b715de9',
+        # 出处：hist 'Capital Markets'「Market cap. (trillion of €) / Total end of month」，8 月数据版
+        #   （sha256 2b47522c3c5d…）；6、7 月数据版都还是旧值（库内旧值来自 6 月数据版建表）。Athex 备注列一格没动。
+        #
+        # 冲突的形状（€m）：2025-11 −9,310.2、2025-12 −10,429.1、2026-01 −11,911.4、2026-02 −12,525.4、2026-03 −52.0
+        #   （−0.136% / −0.152% / −0.169% / −0.171% / −7.7e-6）。
+        # 定性：雅典并表带进来的重复计数，官方补做了去重。拿 Euronext 自己的 Cash 月报工作簿复算
+        #   （live.euronext.com/sites/default/files/statistics/cash/monthly/Cash%20YYYYMM.xlsx，不含雅典；
+        #   'PM - Overview' 的 Euronext 市值合计 + 'SM - Instrument level MTD' 的逐只市值；2026-09-12 取 2025-11..2026-08
+        #   共 10 个月度版本，Cash 202608 那版 Last-Modified Wed, 09 Sep 2026 08:15:05 GMT，sha256 fe7d0bda230e…）：
+        #   · 新值 = Cash 合计 + 雅典备注 − 布鲁塞尔主挂牌、同时在雅典挂牌的三家（Titan S.A.、Viohalco、Cenergy，
+        #     取 Cash 表 XBRU 行）的市值，五个月逐月差 < €0.05m（Cash 表精确到 €1k）。三家合计（€m）：
+        #     9,310.2 / 10,429.1 / 11,911.4 / 13,047.6 / 10,852.4；
+        #   · 旧值 2025-11 / 12 / 2026-01 = Cash 合计 + 雅典备注，同样 < €0.05m ⇒ 三家算了两次；旧值 2026-02 比这个和
+        #     少 €522.2m、2026-03 比新值多 €52.0m —— 旧版这两个月已是半截去重，原因不明，不影响新值；
+        #   · Euronext N.V. 自己不在雅典挂牌（换股对价股只在阿姆斯特丹 / 布鲁塞尔 / 里斯本 / 巴黎上市），
+        #     而且它的市值走势与差额对不上 —— 不是它。
+        #
+        # 为什么采纳（官方旁证，均不经 hist）：
+        #   ① Cash 月报 'Methodology' sheet 原文 "For all euronext statistics the multi-listed instruments are computed
+        #      once" —— 去重是官方写明的方法，新值合方法、旧值不合；
+        #   ② 同一套复算，hist 的 2026-05 / 06 / 08 首发时就已去重（残差 +42.7 / −30.4 / −119.9 €m）⇒ 去重是官方
+        #      现行口径，这一版是把并表头几个月补齐；
+        #   ③ 这五个月的 Cash 合计在各月度版本里逐位不变 —— 改的是 hist 的加总方式，不是底层市值。
+        #   不采纳的后果：并表头四个月多算 €93–125 亿（+0.14% ~ +0.17%），与 2026-05 起的去重口径拼在一起。
+        #
+        # ⚠ 没采纳 2026-04（+€2.9m）：Cash 合计 + 雅典备注逐位等于**旧值**，新值多出的 €2.9m 找不到出处；而且新旧两版
+        #   2026-04 都还没去重（比去重口径多 €12,434.3m）—— 官方多半还会再改这一格，留在默认路径等人核。
+        # ⚠ 读法后果：去重只动主列、没动雅典备注列（三家仍计在雅典的数里），所以去重过的月份「主列 − 雅典备注」
+        #   比 legacy 少这三家 —— build/specs/enx.py 页尾注有一条专门说；增删这条登记时同步改那条。
+    },
+]
+
+# ── 人核过、决定**不采纳**的冲突（照旧每轮写进 cache/enx_restatements.csv；官方以后再动，重新核）──────────
+#   · adv_bonds_retail_cleared_kcontracts 2026-06：首发 827,199 张（×22 天）→ 7 月数据版起 987,654 张（+19.4%）。
+#     latest 工作簿的「上月」列与两版 YTD 都是新值，但它们与 hist 出自同一套数据，只能证明「官方现在是这个数」。
+#     987,654 是整本 hist 工作簿里唯一一格连续递减的整数（疑为占位数）；不走这套数据的官方出处只有 Q2 2026
+#     业绩稿，印的 Q2 2,950,200 = 旧值；两条间接估算（Euronext Clearing CPMI-IOSCO Q2 披露的日均 × 天数、
+#     Cash 月报米兰债券成交笔数 × 历史上约 2 倍的清算/成交比）落在约 88–96 万张，新旧都不像。拿不准，不采纳 ——
+#     库内保留首发值（页面没画这一列、pools 也不读它，没有页尾注要改）。
+#   · mktcap_eurtn 2026-04：+€2.9m 无出处，见上面市值那条登记的注释。
+
+
+def _accept_registered(restated):
+    """把本轮冲突格分成 (照旧只记账的, 按 ACCEPTED_RESTATEMENTS 采纳的) 两份。
+
+    restated 每一项是 (月, 列, 库内旧值, 官方新值) 四个字符串，与 cache/enx_restatements.csv
+    的行同形。判据见 ACCEPTED_RESTATEMENTS 上方注释：整批对上才采纳，否则整批留在冲突里。
+    """
+    keep, accepted = list(restated), []
+    for reg in ACCEPTED_RESTATEMENTS:
+        lo, hi = reg['months']
+        hit = sorted(r for r in keep if r[1] in reg['columns'] and lo <= r[0] <= hi)
+        if not hit:
+            continue
+        digest = hashlib.sha256(
+            '\n'.join(','.join(r) for r in hit).encode('utf-8')).hexdigest()
+        scope = '%s × %s..%s' % ('/'.join(reg['columns']), lo, hi)
+        if len(hit) != reg['cells'] or digest != reg['sha256']:
+            print('[enx] ⚠ 本轮 %d 格落在采纳登记「%s」的范围内（%s），但与登记（%d 格、'
+                  '指纹 %s…）对不上（本轮指纹 %s…）—— 整批不采纳，照旧只写冲突文件。'
+                  '官方又动了这些格子，或者这回是解析出错：人核过之后另起一条登记'
+                  % (len(hit), reg['id'], scope, reg['cells'], reg['sha256'][:12],
+                     digest[:12]))
+            continue
+        got = set(hit)
+        keep = [r for r in keep if r not in got]
+        accepted.extend(hit)
+        print('[enx] 采纳登记「%s」：%d 格（%s）逐格指纹与登记一致，库内旧值改写为本轮官方值'
+              % (reg['id'], len(hit), scope))
+    return keep, accepted
+
+
 def latest_month(cache_dir):
     """官方源当前最新月 'YYYY-MM'。
 
@@ -1522,6 +1945,29 @@ def _fmt(v):
     return str(int(f)) if f.is_integer() and abs(f) < 1e15 else repr(f)
 
 
+def _same_number(old, new):
+    """库内字符串与本轮 _fmt 出来的字符串是不是同一个数（只差浮点表示）。解析不成数一律 False。
+
+    只在「两个字符串不相等」之后用来判冲突，**不改写已有值** —— 已入库的字符串照旧原样搬运，
+    重跑字节级幂等不受影响。容差 max(1e-9, 1e-12*|old|)，与 fetch/lseg.py 合流比对是同一个式子。
+
+    为什么要有：官方工作簿里某一格有时只在 ULP 级别变了（多半是 Excel 重算换了求和顺序），
+    _fmt 的最短往返表示随之变一两位，数值本身没变。2026-09-12 对 8 月版 hist（sha256 2b47522c…）
+    实测 mktcap_eurtn 两格：2026-06 `7.39423611742153` → `7.3942361174215305`（1 个 ULP，相对 1.2e-16）、
+    2026-07 `7.4328688714973` → `7.4328688714972975`（3 个 ULP，相对 3.6e-16）。不滤掉，它们就与
+    真更正混在 cache/enx_restatements.csv 里，而那份文件是往 ACCEPTED_RESTATEMENTS 登记的底稿。
+    同一版里最小的真更正是 mktcap_eurtn 2026-04 的 +2.9e-6（€2.9m），比容差大三个数量级以上。
+    1e-9 这个绝对下限折成各列最小的钱：市值（万亿欧元）€1,000、托管资产（十亿欧元）€1、
+    FX（十亿美元/日）约 $20/月 —— 都远在页面显示精度之下；错行、口径变更动辄百分之几，碰不到它。
+    NaN / inf：比较恒为 False，照旧记冲突，不静默放过。
+    """
+    try:
+        a, b = float(old), float(new)
+    except ValueError:
+        return False
+    return abs(a - b) <= max(1e-9, 1e-12 * abs(a))
+
+
 def update(series_dir, cache_dir):
     """把新月份写进 series/enx.csv，返回新增月份列表（升序）。
 
@@ -1529,7 +1975,11 @@ def update(series_dir, cache_dir):
       · 已存在的月份不重复追加；
       · 已经有值的单元格**永不覆盖** —— 官方明确会回溯重述（口径坑 4，实测
         2019-01 现货 +6.4%、2020-06 现货 −4.1%），重述不由无人值守任务自动吞进来；
-        官方与本仓不一致的格子写进 cache/enx_restatements.csv 供人工判断；
+        官方与本仓不一致的格子写进 cache/enx_restatements.csv 供人工判断（每轮整份重写）；
+        唯一例外是 ACCEPTED_RESTATEMENTS 里人核过、逐格钉死指纹的那几批 —— 整批对上才覆盖；
+        覆盖只改值不加行，所以不进返回值（monthly_run 靠 series 指纹变化照样重建页面）；
+      · 字符串不同、数值只差浮点表示的格子（_same_number，容差同 fetch/lseg.py）不算冲突，
+        也不改写 —— 库内字符串照旧不动；
       · 只在既有行**原本为空**的格子上回补（正常情况下不会有：Euronext 一次给全所有列）；
       · 什么都没变时未被触碰的单元格是原样字符串搬运 ⇒ 文件字节级不变，重跑返回 []。
 
@@ -1586,7 +2036,7 @@ def update(series_dir, cache_dir):
         print('[enx] series/%s 已更新（口径断点来自官方脚注原文）' % BREAKS_NAME)
 
     have = {r[0]: r for r in body}
-    added, filled, restated = [], [], []
+    added, filled, restated, reprs = [], [], [], []
     for mon in sorted(data):
         rec = data[mon]
         if rec[ANCHOR] is None:
@@ -1601,7 +2051,11 @@ def update(series_dir, cache_dir):
                 if not row[idx[name]].strip():
                     row[idx[name]] = new
                     filled.append((mon, name, new))
-                elif row[idx[name]] != new:
+                elif row[idx[name]] == new:
+                    continue
+                elif _same_number(row[idx[name]], new):
+                    reprs.append((mon, name))      # 只差浮点表示：不改写、不记冲突
+                else:
                     restated.append((mon, name, row[idx[name]], new))
             continue
         row = [''] * len(header)
@@ -1613,18 +2067,28 @@ def update(series_dir, cache_dir):
         added.append(mon)
 
     # 官方与本仓不一致的格子一律落盘、绝不自动覆盖 —— 是口径重述还是解析出错，
-    # 只有人能判断（照 fetch/hkex.py 与 fetch/ice.py 的做法）。
+    # 只有人能判断（照 fetch/hkex.py 与 fetch/ice.py 的做法）。唯一的例外是
+    # ACCEPTED_RESTATEMENTS 里人核过、逐格钉死的那几批，判据见那张表上面的注释。
+    restated, accepted = _accept_registered(restated)
+    for mon, name, _old, new in accepted:
+        have[mon][idx[name]] = new
+    # 冲突文件每轮整份重写，一格冲突都没有也写（只剩表头）：它是「这一轮官方与库内哪里
+    # 不一致」的快照，也是往 ACCEPTED_RESTATEMENTS 登记时的底稿。旧写法只在有冲突时才写，
+    # 冲突清空的那一轮会把上一轮的行原样留下，照着过期底稿算出来的指纹必然对不上。
+    os.makedirs(cache_dir, exist_ok=True)
+    rp = os.path.join(cache_dir, 'enx_restatements.csv')
+    with open(rp, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f, lineterminator='\n')
+        w.writerow(['month', 'column', 'in_series_csv', 'in_official_xlsx'])
+        w.writerows(restated)
     if restated:
-        os.makedirs(cache_dir, exist_ok=True)
-        rp = os.path.join(cache_dir, 'enx_restatements.csv')
-        with open(rp, 'w', newline='', encoding='utf-8') as f:
-            w = csv.writer(f, lineterminator='\n')
-            w.writerow(['month', 'column', 'in_series_csv', 'in_official_xlsx'])
-            w.writerows(restated)
-        print('[enx] 官方源与 series 有 %d 处不一致，已写 %s（本模块不覆盖，请人工判断）'
-              % (len(restated), rp))
+        print('[enx] 官方源与 series 有 %d 处不一致，已写 %s（不在 ACCEPTED_RESTATEMENTS '
+              '登记内，本模块不覆盖，请人工判断）' % (len(restated), rp))
+    if reprs:
+        print('[enx] 另有 %d 格与官方只差浮点表示（_same_number 容差内），不算冲突、库内值不动：%s'
+              % (len(reprs), ', '.join('%s %s' % r for r in reprs[:6])))
 
-    if not (added or filled):
+    if not (added or filled or accepted):
         return []
 
     body.sort(key=lambda r: r[0])
