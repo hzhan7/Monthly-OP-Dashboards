@@ -96,6 +96,9 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
       **是两个不同合约，不是改名**，所以本模块拆成两列各存各的，绝不接成一条线。
     · `Iron Ore 62% Futures` → `SGX IODEX Iron Ore Futures`；
       `Iron Ore Options On Futures` → `SGX Options On IODEX Iron Ore Futures`。
+    · `Iron Ore Lump Premium Futures` / `Swaps` →（2025-09 那期起）
+      `SGX Platts Iron Ore CFR China (Lump Premium) Index Futures` / `... Swaps` ——
+      新名字在 PDF 里**折成两行**，见口径坑 19。
     · `INR_USD FX FFutures`（2016 年那代的拼写错误，两个 F）→ `INR_USD FX Futures`。
     · At-A-Glance 行名改过两轮：`(Securities)` → `(Stock Market)`、
       `Securities Market Turnover Value` → `Stock Market Turnover Value`，
@@ -183,6 +186,29 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
     ⚠ p8 那张表最右边那列是**去年同月**，官方偶尔会在那一列上印一个与当年 M0 列差 1pp
       的数（38 个月里 3 处：Feb-2015 39 vs 40、Aug-2015 57 vs 58、Sep-2015 44 vs 45）。
       本模块一律只取 M0 列（_row_value 的既有约定），那三处与入库值无关。
+19. **行名折成两行时，上半截会被当成标题候选丢掉 —— 铁矿石静默少加一整行。**
+    2025-09 那期起 Lump Premium 改名为 `SGX Platts Iron Ore CFR China (Lump Premium) Index Futures`，
+    版面上折成两行、数字排在两行中间：文字层里上半截 `SGX Platts Iron Ore CFR China (Lump Premium)`
+    在数值行上方约 5.5pt，下半截 `Index Futures` 在下方约 5.5pt。_parse_page 原先只把**下半截**
+    挂回数值行，上半截进了「下一小节标题」的候选列表就再没人读，于是这一行的标签只剩
+    `Index Futures` —— _read_iron_ore 按 "iron ore" 扫不到它，vol_iron_ore_contracts 从 2025-09 到
+    2026-08 连续 12 个月每月少加 8,023~36,473 张。少加之后的数照样完全合理；商品合计按小节 Total 取、
+    不受影响，自检 3（商品 ≥ 铁矿石）也就管不到它。发现方式是拿 2026-08 期 PDF 逐行手加对账。
+    ⇒ _parse_page 现在**两半都接**：上半截先记下来，下一行数值行离它不到 12pt、且比离上一行近，
+      就补到那一行的标签前面。数字夹在两行正中（上半截在上方 ~5.5pt）与数字跟最后一行齐平
+      （上半截在上方 ~10.8pt）两种排法都实测过，见该函数里的注释。
+      2026-09-12 拿全部 72 期缓存 PDF 新旧解析器逐格对比（M0 与 M-1 两个月各解析一次）：
+      **除 vol_iron_ore_contracts 外其余各列逐格相同**（这一列也只在 2025-09 起那 12 期里变），
+      异常与 stderr 警告也逐字相同；标签层补全了 75 种折行，全部是官方行名（SORA / TONA 利率期货、
+      东盟各国国债期货、FM Cobalt、MSCI / FTSE 气候与新兴市场指数期货、Lump Premium 等），
+      没有一处把标题或脚注接进标签。⚠ 只补**紧挨着的那一截**：三行的行名仍会丢最上面一截
+      （按国别成交额表里读出 `(excluding China) Value ($Million)` 就是这样）。本模块取数的行里
+      目前没有三行的；真出现时症状与本条相同 —— 标签残缺、取不到数或少加一行。
+      唯一连带的是小节标题：原先被误当标题的折行上半截（`Number Of Subsequent…`）现在归还给了行，
+      那几个块的 title 变成 None —— 它们本来就不在任何白名单里，不影响取数。
+    ⇒ 已入库的那 12 格由 build/basefill/sgx_iron_ore_lump.py 一次性更正
+      （「已有值永不覆盖」的一次例外，理由与逐格清单写在那个脚本里）。
+      2025-08 及更早的期次行名是单行 `Iron Ore Lump Premium Futures`，一直都算进去了，不受影响。
 
 ━━ series/sgx.csv 每一列的确切口径 ━━
 月份 `month` = **数据月**（YYYY-MM），不是发布月。所有「本月」值取该期报告里表头等于数据月
@@ -219,7 +245,7 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
 | `vol_usdcnh_futures_contracts`      | USD_CNH FX Futures（标准合约，**不含** Mini / FlexC），张，月总量 |
 | `vol_inrusd_futures_contracts`      | INR_USD FX Futures（**不含** FlexC；2016 那代官方拼成 `INR_USD FX FFutures`），张，月总量 |
 | `vol_rates_futures_contracts`       | 利率期货合计（`Interest Rates Futures Volume` 小节的 Total），张，月总量。量级很小 |
-| `vol_iron_ore_contracts`            | 铁矿石衍生品合计，张，月总量 = **所有成交量小节里行名含 "Iron Ore" 的行之和**（62%/65%/58%/IODEX/Lump Premium，期货+期权+掉期，含 OTC 清算腿）。跨世代都成立：2016-01 期算出的 Dec-2015 = **988,532**，与 SGX 自己的新闻稿 "Iron Ore Derivatives volume was 988,532" 逐位相同 |
+| `vol_iron_ore_contracts`            | 铁矿石衍生品合计，张，月总量 = **所有成交量小节里行名含 "Iron Ore" 的行之和**（62%/65%/58%/IODEX/Lump Premium，期货+期权+掉期，含 OTC 清算腿）。Lump Premium 那一行 2025-09 起行名折行，要靠 _parse_page 把上下两半接起来才含 "Iron Ore"（口径坑 19；2026-09 之前这一句对 2025-09~2026-08 是假话，已由 build/basefill/sgx_iron_ore_lump.py 回补）。跨世代都成立：2016-01 期算出的 Dec-2015 = **988,532**，与 SGX 自己的新闻稿 "Iron Ore Derivatives volume was 988,532" 逐位相同 |
 | `vol_commodities_contracts`         | 商品合计，张，月总量 = 商品类成交量小节的 Total 之和（现代：SICOM+Energy+Metal&DryBulk+Dairy期货+Dairy期权+EnergyMetals；2018 之前：Agri-Commodities+Energy+AsiaClear 三节）。**不含 crypto**（口径坑 12） |
 | `vol_crypto_contracts`              | Bitcoin / Ethereum Perpetual Futures 合计，张，月总量。**2025-11 才上线**，之前官方没有这一节 |
 | `ipos_count`                        | 当月新上市**家数** = Mainboard IPOs + Catalist IPOs（**不含** RTO，RTO 官方单列一行） |
@@ -534,6 +560,7 @@ def _parse_page(page, running_head):
     blocks = []
     cur = None
     pending = []
+    above = None        # (y, 文字, 离上一行数值行的距离)：上一行是「没挂到前一行上的无数值文字行」时才有值
     for r in rows:
         hdrs = [c for c in r if _is_hdr_cell(c['t'])]
         if len(hdrs) >= 2 and len(hdrs) >= len(r) - 1:
@@ -545,6 +572,7 @@ def _parse_page(page, running_head):
                    'rows': []}
             blocks.append(cur)
             pending = []
+            above = None
             continue
         if cur is None:
             pending.append(' '.join(c['t'] for c in r))
@@ -553,19 +581,40 @@ def _parse_page(page, running_head):
         labs = [c for c in r if c['x0'] < xmin]
         vals = [c for c in r if c['x0'] >= xmin]
         if vals:
-            cur['rows'].append({'y': r[0]['yc'],
-                                'lab': ' '.join(c['t'] for c in labs),
-                                'vals': [(c['x0'], c['t']) for c in vals]})
+            row = {'y': r[0]['yc'],
+                   'lab': ' '.join(c['t'] for c in labs),
+                   'vals': [(c['x0'], c['t']) for c in vals]}
+            # 折行标签的**上半截**（见下面 else 分支）：紧贴在本行上方、且没被挂到前一行的
+            # 那行文字，补到本行标签前面。`lab_head` 记下补进来的是哪一截 ——
+            # build/basefill/sgx_iron_ore_lump.py 靠它复原「修之前会读成什么」。
+            if above is not None and row['y'] - above[0] < min(12.0, above[2]):
+                row['lab'] = (above[1] + ' ' + row['lab']).strip()
+                row['lab_head'] = above[1]
+                pending.pop()            # 它是行标签的一截，不是下一小节标题的候选
+            cur['rows'].append(row)
+            above = None
         else:
             txt = ' '.join(c['t'] for c in r)
             # 折行的行标签（'SGX FTSE 10-Year Indonesia Government' / 'Bond Futures'
             # 分两行，数字排在两行中间）与「下一小节的标题」都表现为「一整行没有数值」。
             # 区别是距离：行距约 17pt，折行的两半离数值行 5~6pt；标题离最近的数据行
             # 有一整个表头的距离（26pt 以上）。
+            # **两半都要接**：下半截在数值行下方，这里直接挂到上一行；上半截在数值行
+            # 上方、此刻那一行还没读到，先记进 above，等下一行数值行来了再判。
+            # 上半截离自己那一行有两种排法，都实测过：
+            #   · 数字夹在两行正中，上下各约 5.5pt（2026-08 期 p24 的 Lump Premium）；
+            #   · 数字与**最后一行**齐平，上半截在上方约 10.8pt（2024-07 期 p12 的
+            #     `FTSE Emerging Market inc Korea Net Total Return (USD)` / `Index Futures`）。
+            # 判据：离下一行不到 12pt，且比离上一行近 —— 行距约 17pt，两种排法都落在里面；
+            # 标题下面接的是表头行而不是数值行，走不到这条路。
+            # 2026-09 之前只接了下半截，上半截落进 pending 就丢了 —— 口径坑 19。
             if cur['rows'] and abs(r[0]['yc'] - cur['rows'][-1]['y']) < 9:
                 cur['rows'][-1]['lab'] = (cur['rows'][-1]['lab'] + ' ' + txt).strip()
+                above = None
             else:
                 pending.append(txt)
+                above = (r[0]['yc'], txt,
+                         abs(r[0]['yc'] - cur['rows'][-1]['y']) if cur['rows'] else float('inf'))
     return blocks
 
 
@@ -966,6 +1015,11 @@ def _read_iron_ore(blocks, mon):
     2018 起并进 `Metal And Dry Bulk Volume` 叫 `Iron Ore 62% Futures`；
     2025 起又改叫 `SGX IODEX Iron Ore Futures` / `SGX Options On IODEX Iron Ore Futures`。
     固定清单每换一次名就静默少加一块，而少加之后的数字看上去仍然合理。
+
+    ⚠ 按名字扫的前提是**标签读全了**。2025-09 起 Lump Premium 叫
+    `SGX Platts Iron Ore CFR China (Lump Premium) Index Futures`，在 PDF 里折成两行，
+    "Iron Ore" 恰好落在上半截 —— 只接下半截的话标签是 `Index Futures`，这一行就被静默跳过
+    （口径坑 19，已在 _parse_page 修掉）。
 
     必须限定在「小节标题以 Volume 结尾」的成交量节里：同名产品在
     `... Month-End Open Interest` 节里也有一行，混进来就是把存量加进流量。

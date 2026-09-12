@@ -11,8 +11,11 @@ SGX 衍生品的头部产品全部是**离岸挂牌的他国标的**，与 JPX /
     2026-06 实测（占当月 SGX 衍生品总成交 34,315,225 张的比重）
       FTSE 中国 A50 期货    11,724,378 张   34.2%   ← 与 HKEX 的 A 股衍生品同赛道
       外汇期货合计          10,268,040 张   29.9%   （USD/CNH + INR/USD 为主）
-      铁矿石衍生品           5,354,979 张   15.6%
+      铁矿石衍生品           5,383,753 张   15.7%
       日経225 期货              748,048 张    2.2%   ← 与 JPX 的旗舰合约同标的
+
+    （铁矿石这一格 2026-09 更正过：原先是 5,354,979 / 15.6%，少加了折行没读到的
+     Lump Premium 期货 28,774 张，见 fetch/sgx.py 口径坑 19 与 build/basefill/sgx_iron_ore_lump.py。）
 
 所以 A50 与日経225 在本页必须**各自成段**（「股指期货」那组的 100% 占比堆叠里各占一段），
 不许并进最上面那段残差「其他股指期货」里看不见 —— 它们是判断 SGX 竞争位置的直接读数。
@@ -131,9 +134,10 @@ _RESID_EQIX_ZH = '其他股指期货（含 GIFT Nifty、台湾指数期货）'
 # USD/CNH (Mini) 只有 3,533、USD_CNH FlexC 90，最大的一块是**别的货币对** KRW/USD (Mini)
 # 748,352（逐项见 `_FX_OTHER_2608`）⇒ 货币对在前，变体在后。
 _RESID_FX_ZH = '其他外汇期货（其他货币对与合约变体）'
-# 上一版叫「铁矿石以外的商品」—— 那是假话：「其中：铁矿石」这一列在 2026-08 期漏收了
-# 一行铁矿石（Lump Premium 指数期货，见 `_IRON_2608` 那段），漏掉的量正落在这一段里。
-# 解析器修好之前这一段不能叫「铁矿石以外」，只能叫「其他」。
+# 上一版叫「铁矿石以外的商品」—— 那时是假话：「其中：铁矿石」这一列 2025-09 ~ 2026-08 漏收了
+# 一行铁矿石（Lump Premium 指数期货：行名在 PDF 里折成两行，解析器没读到），漏掉的量正落在这一段里。
+# 2026-09-12 解析器已修、那 12 格已按官方原值更正（fetch/sgx.py 口径坑 19、
+# build/basefill/sgx_iron_ore_lump.py）；名字仍叫「其他商品」：它不依赖这一列逐期收全，任何一期都成立。
 _RESID_COMM_ZH = '其他商品'
 
 
@@ -468,9 +472,9 @@ def _fx_share():
 def _iron_share():
     """「其中：铁矿石」这一列占「商品合计」的中位比重与样本首月；算不出返回 (None, None)。
 
-    是**这一列**的占比，不是官方全部铁矿石合约的占比 —— 这一列 `_IRON_WRAP0`（2025-09）起
-    每期漏收一行（见 `_IRON_LUMP_MISSED`，之前缓存的各期逐位相等）。2015-01 起的全期中位里只有
-    最后十几个月受影响，而且每期只低 1% 以内，所以印出来的整数中位不受影响；但这不是「官方口径」的中位。
+    是**这一列**（本仓按行名汇总的那一条，见释义「铁矿石」）的占比，不是官方某一行 Total 的占比。
+    这一列 2025-09 ~ 2026-08 那 12 期曾漏收 Lump Premium 一行，2026-09-12 已按官方原值更正
+    （fetch/sgx.py 口径坑 19）。
     """
     hit = [(r['month'], _num(r, 'vol_iron_ore_contracts') / _num(r, 'vol_commodities_contracts')
             * 100.0)
@@ -706,86 +710,11 @@ _stamp_guard(f'「外汇期货」占比图残差段在 {_FX_2105_M} 期的逐行
 # 两期里「两条单列同一货币对的其他合约」各是哪几行 —— 图注按它们现算占比，不手写。
 _FX_SAME_PAIR = ('USD/CNH (Mini)', 'USD/CNH FlexC', 'USD/INR (USD)')
 
-# ── 「其中：铁矿石」这一列漏收的那一行（解析器缺陷，修复另有任务）─────────────────────
-# 官方 Metal And Dry Bulk 小节里行名含 "Iron Ore" 的非零行，该期共 4 行、4,749,207 张；
-# 而 vol_iron_ore_contracts 在 2026-08 是 4,714,191 —— 差的正是
-# "SGX Platts Iron Ore CFR China (Lump Premium) Index Futures" 35,016 张：这一行的行名在 PDF 里
-# 折成两行，解析器读到的行名只剩 "Index Futures"，匹配不上 "Iron Ore"。
-# 同一份 PDF 并排印着 Jun / Jul 2026 两列，拿来核 CSV 的 2026-06 / 07 也是恰好少这一行
-# （5,354,979 / 5,053,553 = 不含 Lump Premium 的三行之和）。
-# 本轮**不动** fetch/ 与 series/（修复另起任务），所以页面文字照实交代漏收，不许说含 Lump Premium。
-# ⚠️ 修复落地之后这一列会变，下面的守卫就会响：那时删掉 `_NOTE_COMM` 里那段 caveat、
-#    释义「铁矿石」里那段 ⚠️、以及这一整段常数与守卫。
-_IRON_COL_2608 = 4714191
-_IRON_LUMP_2608 = 35016
-_IRON_OFFICIAL_2608 = (
-    ('SGX IODEX Iron Ore Futures', 4127939),
-    ('SGX Options On IODEX Iron Ore Futures', 552512),
-    ('SGX Platts Iron Ore CFR China (Lump Premium) Index Futures', _IRON_LUMP_2608),
-    ('Iron Ore 65% Futures', 33740),
-)
-_IRON_OFFICIAL_2608_TOTAL = 4749207
-_stamp_guard('铁矿石 caveat 引用的官方铁矿石行', _IRON_OFFICIAL_2608,
-             _IRON_OFFICIAL_2608_TOTAL, None, '')
-if _IRON_OFFICIAL_2608_TOTAL - _IRON_LUMP_2608 != _IRON_COL_2608:
-    raise _StampMismatch('[sgx] 铁矿石 caveat 的三个常数自相矛盾：官方合计 − Lump Premium ≠ 本列值')
-if _stamp_row() is not None and _num(_stamp_row(), 'vol_iron_ore_contracts') is not None \
-        and _num(_stamp_row(), 'vol_iron_ore_contracts') != _IRON_COL_2608:
-    raise _StampMismatch(
-        f'[sgx] 铁矿石列已变 —— 若 Lump Premium 修复已落地，删掉这段 caveat 与本守卫'
-        f'（series/sgx.csv 的 vol_iron_ore_contracts 在 {_STAMP_M} 现为 '
-        f'{_num(_stamp_row(), "vol_iron_ore_contracts"):,.0f}，caveat 写的是 {_IRON_COL_2608:,}；'
-        '要删的是 build/specs/sgx.py 里 `_NOTE_COMM` 的 caveat、释义「铁矿石」的 ⚠️ 与 `_IRON_*` 这段）')
-
-# ── 这一行从哪一期开始漏（2026-09-12 第二轮审稿逐期核）───────────────────────────
-# 拿本仓缓存的全部官方 PDF 逐期把行名含 "Iron Ore" 的行（折行的那一行也算上）加总、对 CSV：
-#   · 2025-08 及之前缓存的 60 期（2015-01–2018-04 连续；2018-09、2019-06、2020-01、2021-05、
-#     2022-11、2023-07；2024-07–2025-08 连续）**逐位相等** —— 那些期里这一行叫
-#     "SGX Iron Ore Lump Premium Futures" / "Iron Ore Lump Premium Futures"，行名不折行，解析器收得到；
-#   · 2025-09 起官方改名为折成两行的 "SGX Platts Iron Ore CFR China (Lump Premium) Index Futures"，
-#     之后缓存的 12 期每期都恰好少这一行（下表第二格）。
-# 所以上一版 caveat 的「更早的月份待修复时逐期核」「有这一行成交的月份系统性偏低」都说大了：
-# 页面只许说 2025-09 起偏低。表的第三格是 CSV 在那一期的值，守卫逐期对 —— 解析器修好、回补之后
-# 这一列会变，守卫就响（与上面 2026-08 那一道同进同出）。
-_IRON_WRAP0 = '2025-09'
-_IRON_CACHED_OK = 60
-_IRON_LUMP_MISSED = (          # (月份, 漏收的 Lump Premium 张数, CSV 那一期的列值)
-    ('2025-09', 8023, 6892804),
-    ('2025-10', 8850, 5970671),
-    ('2025-11', 9588, 4782724),
-    ('2025-12', 22870, 5373102),
-    ('2026-01', 17430, 6072415),
-    ('2026-02', 19130, 4671490),
-    ('2026-03', 36473, 7110182),
-    ('2026-04', 24398, 5227211),
-    ('2026-05', 12750, 4884570),
-    ('2026-06', 28774, 5354979),
-    ('2026-07', 29391, 5053553),
-    ('2026-08', 35016, 4714191),
-)
-_IRON_BY_M = {m: (lump, col) for m, lump, col in _IRON_LUMP_MISSED}
-if _IRON_LUMP_MISSED[0][0] != _IRON_WRAP0 or _IRON_BY_M.get(_STAMP_M) != (_IRON_LUMP_2608, _IRON_COL_2608):
-    raise _StampMismatch('[sgx] 铁矿石 caveat 的逐期表自相矛盾：首月不是 _IRON_WRAP0，'
-                         '或 2026-08 那一格与 _IRON_LUMP_2608 / _IRON_COL_2608 不等')
-for _m, _lump, _col in _IRON_LUMP_MISSED:
-    _r = _stamp_row(_m)
-    if _r is not None and _num(_r, 'vol_iron_ore_contracts') is not None \
-            and _num(_r, 'vol_iron_ore_contracts') != _col:
-        raise _StampMismatch(
-            f'[sgx] 铁矿石列已变 —— series/sgx.csv 的 vol_iron_ore_contracts 在 {_m} 现为 '
-            f'{_num(_r, "vol_iron_ore_contracts"):,.0f}，caveat 的逐期表写的是 {_col:,}'
-            f'（该期漏收 Lump Premium {_lump:,} 张）。若 Lump Premium 修复已落地，删掉 '
-            '`_NOTE_COMM` 的 caveat、释义「铁矿石」的 ⚠️、notes 里「SGX 的头部衍生品」那条中'
-            '2026-06 铁矿石后面的括号，以及 `_IRON_*` 这两段常数与守卫')
-_IRON_LUMP_LO = min(l for _m, l, _c in _IRON_LUMP_MISSED)
-_IRON_LUMP_HI = max(l for _m, l, _c in _IRON_LUMP_MISSED)
-# 漏收量占「这一列 + 漏收量」的比例区间（= 这条线比官方口径低多少），给图注一个量级。
-_IRON_GAP_PCT = [l / (c + l) * 100.0 for _m, l, c in _IRON_LUMP_MISSED]
-# notes 里「SGX 的头部衍生品」那条引的是 2026-06 一期的铁矿石：那一期也在漏收表里，
-# 所以那半句要带着括号交代（审稿 2026-09-12）。分母是那一期的衍生品当月成交合计（官方原值，
-# 同一条 note 与 DDAV 那条 note 都引它），守卫对 CSV。
+# notes 里「SGX 的头部衍生品」那条的占比分母是 2026-06 一期的衍生品当月成交合计（官方原值），守卫对 CSV。
+# （2026-09-12 之前这里还有一整段 `_IRON_*` 常数与守卫，交代「其中：铁矿石」2025-09 起漏收
+#  Lump Premium 一行；解析器修复与 12 格更正落地后，按那段自己写明的指示整段删掉 ——
+#  见 fetch/sgx.py 口径坑 19 与 build/basefill/sgx_iron_ore_lump.py。）
 _DERIV_2606 = 34315225
-_IRON_LUMP_2606, _IRON_COL_2606 = _IRON_BY_M['2026-06']
 if _stamp_row('2026-06') is not None \
         and _num(_stamp_row('2026-06'), 'deriv_vol_contracts') not in (None, _DERIV_2606):
     raise _StampMismatch(
@@ -957,8 +886,9 @@ _NOTE_FX = (
 )
 
 # 2026-09-12 审稿后改写。上一版说残差段「即官方商品各节里行名不含 "Iron Ore" 的那些合约」——
-# 假话：这一列在 2026-08 期漏收了一行行名含 "Iron Ore" 的合约（`_IRON_2608` 那段），
-# 那一行的量就在残差段里。caveat 与 `_IRON_*` 守卫同进同出：修复落地、守卫一响，两样一起删。
+# 那时是假话：这一列 2025-09 ~ 2026-08 漏收了一行行名含 "Iron Ore" 的合约（Lump Premium），
+# 那一行的量就在残差段里。当时加的 caveat 在解析器修复与 12 格更正落地后（fetch/sgx.py 口径坑 19）
+# 按约定删掉；残差段仍只按定义说「≡ 商品合计 − 这一列」，不改回「行名不含 "Iron Ore"」。
 _NOTE_COMM = (
     '<b>「其中：铁矿石」是本仓自己汇总的一条</b>，不是官方某一行的 Total：'
     '按设计是各成交量小节里行名含 "Iron Ore" 的行（期货 ＋ 期权 ＋ 掉期，含 OTC 清算腿）全部相加，'
@@ -966,20 +896,6 @@ _NOTE_COMM = (
     f'<b>最上面那段「{_RESID_COMM_ZH}」</b> ≡ 商品合计 − 「其中：铁矿石」这一列'
     + (f'；这一列占商品合计 {_IO[1]} 起全期中位 {_IO[0]:.0f}%' if _IO[0] else '')
     + '。'
-    # 第二轮审稿（2026-09-12）把 caveat 收窄到 `_IRON_WRAP0` 起：更早的缓存各期逐位相等，
-    # 「更早的月份待核」「有这一行成交的月份系统性偏低」都说大了（逐期表与守卫见 `_IRON_LUMP_MISSED`）。
-    f'⚠️ <b>这一列 {_IRON_WRAP0} 起漏收一行铁矿石</b>：{_STAMP_M} 期官方月报（<code>{_STAMP_SRC}</code>）里'
-    f'行名含 "Iron Ore" 的非零行共 {len(_IRON_OFFICIAL_2608)} 行、合计 '
-    f'{_IRON_OFFICIAL_2608_TOTAL:,} 张，这一列却是 {_IRON_COL_2608:,} 张 —— 差的 '
-    f'{_IRON_LUMP_2608:,} 张正是 "SGX Platts Iron Ore CFR China (Lump Premium) Index Futures" 那一行。'
-    f'拿本仓缓存的各期官方 PDF 逐期核过（2026-09-12）：{_IRON_WRAP0} 之前缓存的 {_IRON_CACHED_OK} 期'
-    '这一列与官方逐位相等（那时这一行叫 "Iron Ore Lump Premium Futures"，行名不折行，解析器收得到）；'
-    f'{_IRON_WRAP0} 起官方改成上面那个在 PDF 里折成两行的行名，解析器没认出来，'
-    f'之后 {len(_IRON_LUMP_MISSED)} 期每期都恰好少这一行'
-    f'（{_IRON_LUMP_LO:,}–{_IRON_LUMP_HI:,} 张，这条线因此比官方口径低 '
-    f'{min(_IRON_GAP_PCT):.1f}–{max(_IRON_GAP_PCT):.1f}%）。'
-    f'<b>所以 {_IRON_WRAP0} 起、修复落地之前，这一行的量画在「{_RESID_COMM_ZH}」里</b>，'
-    '「其中：铁矿石」那一段相应偏薄 —— 最上面那段不能读成「铁矿石以外的商品」。'
     '分母按官方定义<b>不含加密</b>（加密永续另成一组，页尾有逐项对账）。'
 )
 
@@ -1208,26 +1124,16 @@ _GLOSSARY = [
      + f'⇒ 「外汇期货」那张 100% 占比堆叠把这一块画成最上面那段「{_RESID_FX_ZH}」，'
        '它<b>不是</b>漏了数，也不是一块查不到的业务。'),
 
-    # 2026-09-12 审稿后改写：上一版写「62% / 65% / 58% / IODEX / Lump Premium」全部相加、
-    # 「口径与官方对得上」。2026-08 期官方月报逐行核下来，Lump Premium 那一行没收进来
-    # （常数与守卫见 `_IRON_*` 那段）。Dec-2015 那一次逐位核对是真的，但它管不到后来新增的行。
-    # 这段 ⚠️ 与 `_NOTE_COMM` 的 caveat、`_IRON_*` 守卫同进同出。
+    # 2026-09-12 审稿时这里挂过一段 ⚠️「2025-09 起漏收 Lump Premium 一行」：官方那一年把行名改长、
+    # PDF 里折成两行，解析器只读到下半截 `Index Futures`。解析器已修（fetch/sgx.py 口径坑 19），
+    # 库里那 12 格由 build/basefill/sgx_iron_ore_lump.py 更正，⚠️ 随之删掉。「按设计是」不改回
+    # 「口径与官方对得上」：逐位核过的是 Dec-2015 那一期与本仓缓存的各期，不是全部月份。
     ('铁矿石',
      '<b>本仓自己汇总的一条</b>，不是官方某一行的 Total：按设计是把各成交量小节里行名含 '
      '"Iron Ore" 的行（62% / 65% / 58% / IODEX 等，'
      '<b>期货 ＋ 期权 ＋ 掉期</b>，含 OTC 清算腿）全部相加，'
      '<code>fetch/sgx.py</code> 拿 SGX 新闻稿逐位核过 Dec-2015 那一期（＝ 988,532）。'
-     f'⚠️ <b>但它 {_IRON_WRAP0} 起漏收一行</b>：官方从那一期起把 Lump Premium 那一行改名为 '
-     '"SGX Platts Iron Ore CFR China (Lump Premium) Index Futures"，行名在 PDF 里折成两行，'
-     f'解析器没认出来（{_STAMP_M} 期那一行 {_IRON_LUMP_2608:,} 张：官方行名含 "Iron Ore" 的行合计 '
-     f'{_IRON_OFFICIAL_2608_TOTAL:,} 张，这一列是 {_IRON_COL_2608:,} 张）。'
-     f'拿本仓缓存的官方 PDF 逐期核过：{_IRON_WRAP0} 之前缓存的 {_IRON_CACHED_OK} 期逐位相等'
-     f'（那时这一行不折行、解析器收得到），{_IRON_WRAP0} 起缓存的 {len(_IRON_LUMP_MISSED)} 期每期都恰好少这一行。'
-     f'⇒ 修复落地之前，这条线 {_IRON_WRAP0} 起<b>逐月偏低</b>'
-     f'（每期少 {_IRON_LUMP_LO:,}–{_IRON_LUMP_HI:,} 张，比官方口径低 '
-     f'{min(_IRON_GAP_PCT):.1f}–{max(_IRON_GAP_PCT):.1f}%），'
-     f'漏掉的量画在「商品」那张占比图的「{_RESID_COMM_ZH}」段里'
-     '（「商品合计」本身取官方各节 Total，不受影响）。它落在「商品合计」里面'
+     '它落在「商品合计」里面'
      + (f'，是那一档里最大的一块（{_IO[1]} 起全期中位占 {_IO[0]:.0f}%）。' if _IO[0] else '。')),
 
     ('永续期货',
@@ -1793,8 +1699,7 @@ SPEC = {
         # 2026-09-12：原「商品与利率」→「商品」，mix = 「其中：铁矿石」这一列 vs 其他商品。
         # （改版初稿叫「商品（不含加密）」，审稿时改短：图题是「组名：列名」，列名里已经带着
         # 「不含加密」，组名再写一遍就是同一句话在一行标题里出现两次。）
-        # 残差段叫「其他商品」而不是「铁矿石以外的商品」：铁矿石那一列在 2026-08 期漏收一行
-        # 铁矿石合约（Lump Premium），那一行的量正落在残差段里 —— 见 `_IRON_*` 那段与 `_NOTE_COMM`。
+        # 残差段叫「其他商品」而不是「铁矿石以外的商品」，理由见 `_RESID_COMM_ZH` 上方那段。
         # 利率期货不是商品合计的分项（官方另起一节），进不了这条 mix，拆到下一组。
         # 列名「商品合计（不含加密）」没跟着组名改：汇总表与末尾核对表的行头只印列名、
         # 不印组名，「不含加密」这半句在那两处只能靠列名自己带着。
@@ -1928,13 +1833,7 @@ SPEC = {
 
         'SGX 的头部衍生品产品全部是离岸挂牌的他国标的。2026-06 实测：'
         'FTSE 中国 A50 期货 11,724,378 张（占当月衍生品总成交 34.2%）、'
-        '外汇期货合计 10,268,040 张（29.9%）、'
-        # 2026-09-12 审稿后补括号：那一期的铁矿石列漏收 Lump Premium 一行（`_IRON_LUMP_MISSED`），
-        # 引列值就要把漏的量与含上之后的读数一起给出，否则与「商品」占比图注当场打架。
-        f'铁矿石 {_IRON_COL_2606:,} 张（{_IRON_COL_2606 / _DERIV_2606 * 100:.1f}%；'
-        f'这是本仓那一列的值，它 {_IRON_WRAP0} 起漏收 Lump Premium 那一行，这一期漏 '
-        f'{_IRON_LUMP_2606:,} 张，含上是 {_IRON_COL_2606 + _IRON_LUMP_2606:,} 张、'
-        f'{(_IRON_COL_2606 + _IRON_LUMP_2606) / _DERIV_2606 * 100:.1f}%，见「商品」占比图注）、'
+        '外汇期货合计 10,268,040 张（29.9%）、铁矿石 5,383,753 张（15.7%）、'
         '日経225 期货 748,048 张（2.2%）。A50 与日経225 分别对着 HKEX 与 JPX 的同标的合约，'
         # 2026-09-12 改写：上一版是「本页把两者单列而不是并进『股指期货合计』」——
         # 那时它们是折线里的两条线；现在是占比堆叠里的两段，并进去的反面是残差段。
