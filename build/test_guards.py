@@ -1051,6 +1051,109 @@ class TestMixAbsStack(unittest.TestCase):
                               'abs_stack': True, 'rhs_share': 'b'}, 'test')
 
 
+class TestMixTotalPlainPerGroup(unittest.TestCase):
+    """「同一列不许被画成两根柱」—— 「被吃掉」必须逐组算，不能先并成全页集合再减。
+
+    `payload()` 里的 `eaten` 是每组各自一份：一组的常规分桶只看**这一组自己的**
+    mix 吃没吃这一列。守卫若按全页并集减，同一列声明在两组、只被其中一组的 mix
+    吃掉时，它会从「常规列」里被整页减掉 ⇒ 守卫放行 ⇒ 另一组照样给它画一张常规图。
+    现网每一页仍然构造得出来，由 `TestNoYoyGuard.test_all_live_specs_still_construct` 守。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls.spec = single.load_spec('jpx')
+
+    def test_eaten_in_one_group_still_plain_in_another(self):
+        import copy
+        sp = copy.deepcopy(self.spec)
+        g = [x for x in sp['groups'] if x.get('mix')][0]
+        tot = g['mix']['total']
+        col = [c for c in g['cols'] if c['col'] == tot][0]
+        # 同一列在第二组里再声明一次，第二组没有 mix ⇒ 在第二组是常规列。
+        sp['groups'].append({'zh': 'G_plain', 'cols': [copy.deepcopy(col)]})
+        with self.assertRaises(self.S.SpecError) as cm:
+            self.S.Page(sp)
+        msg = str(cm.exception)
+        self.assertIn('既是某条 mix 的 total', msg)
+        self.assertIn(tot, msg)
+        self.assertIn('G_plain', msg)       # 报错要点名是哪一组把它当常规列
+
+
+class TestMixRuleNote(unittest.TestCase):
+    """页尾「图型选择规则」⑤ 按**真画出来的图**说话（`Page.mix_rule_zh`）。
+
+    从前那句按「页上有没有 stacked_dual」无条件印「声明了 mix 的组出两张」，
+    而 abs_stack 那张绝对值堆叠柱也是 stacked_dual —— /jpx/ 唯一的 mix 就是它：
+    页面上一张图，页尾说两张。四道闸门看结构与数值，看不见散文。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+
+    def _rule(self, t):
+        page = self.S.Page(self.S.load_spec(t))
+        pay, why = page.payload()
+        self.assertIsNotNone(pay, f'{t} payload 没产出来：{why}')
+        hit = [s for s in pay['notes'] if isinstance(s, str) and '图型选择规则' in s]
+        self.assertEqual(len(hit), 1)
+        return page, pay, hit[0]
+
+    @staticmethod
+    def _d(gz, abs_=False, total=False, share=False, stack=False, folded=False):
+        return {'gz': gz, 'abs': abs_, 'total': total, 'share': share,
+                'stack': stack, 'folded': folded}
+
+    def _ledger_page(self, ledger):
+        page = self.S.Page(self.S.load_spec('jpx'))
+        page.mix_drawn, page.mix_folded = ledger, []
+        return page
+
+    def test_abs_stack_page_says_one_chart(self):
+        page, pay, s = self._rule('jpx')
+        abs_gz = [g['zh'] for g in page.groups if g.get('mix') and g['mix']['abs_stack']]
+        self.assertTrue(abs_gz, 'jpx 不再有 abs_stack 的组 —— 这条换一页测')
+        self.assertTrue(all(not g['mix']['abs_stack'] for g in page.groups
+                            if g.get('mix') and g['zh'] not in abs_gz))
+        self.assertNotIn('出<b>两张</b>', s)
+        self.assertIn('只出<b>一张</b>', s)
+        for gz in abs_gz:
+            self.assertIn(f'「{gz}」', s)
+
+    def test_two_chart_page_unchanged(self):
+        """普通 mix 的页：规则句仍是「两张」，折叠档的例外照旧由 mix_folded_zh 点名。"""
+        page, _pay, s = self._rule('tmx')
+        self.assertIn('出<b>两张</b>', s)
+        self.assertNotIn('abs_stack', s)
+        self.assertEqual(bool(page.mix_folded), '⚠️ <b>例外</b>' in s)
+
+    def test_nothing_drawn_says_nothing(self):
+        self.assertEqual(self._ledger_page([]).mix_rule_zh(), '')
+        self.assertEqual(self._ledger_page([self._d('A')]).mix_rule_zh(), '')
+
+    def test_mixed_page_names_both_kinds(self):
+        s = self._ledger_page([self._d('A', total=True, share=True),
+                               self._d('B', abs_=True, stack=True)]).mix_rule_zh()
+        self.assertIn('出<b>两张</b>', s)
+        self.assertIn('但写了 <code>abs_stack</code> 的组（「B」）只出<b>一张</b>', s)
+        self.assertNotIn('「A」', s)
+        self.assertNotIn('没出齐', s)
+
+    def test_shortfall_is_named_not_swallowed(self):
+        """画不成（不是有意不出）的组不许藏在「两张 / 一张」那句规则后面。"""
+        s = self._ledger_page([self._d('A', total=True, share=True),
+                               self._d('C', total=True),
+                               self._d('B', abs_=True, stack=True),
+                               self._d('D', abs_=True)]).mix_rule_zh()
+        self.assertIn('「C」只出了合计柱', s)
+        self.assertIn('「D」那张绝对值堆叠柱没画成', s)
+        self.assertIn('本轮未出的派生图', s)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # J. exchanges12 的缺月闸门 —— gate_holes()
 # ═══════════════════════════════════════════════════════════════════════════

@@ -2228,19 +2228,28 @@ class Page:
         # 两条路都会给同一列画一张柱图，而页面上看不出这是同一批数
         # （标题里的组名不同）。跨组引用 total 时最容易撞上：合计列声明在 A 组、
         # 被 B 组的 mix 当 total，而 A 组没把它吃掉，于是 A、B 各画一张。
+        # ⚠️ 「被吃掉」必须**逐组**算，不能先并成一个全页集合再减：`payload()` 里的
+        # `eaten` 是每组各自一份（`mix_pair` 只收本组 `declared` 里的列），一组的常规
+        # 分桶只看**这一组自己的** mix 吃没吃。全页并集的写法下，同一列在 A、B 两组都
+        # 声明、只被 B 组的 mix 吃掉时，它落在并集里被整页减掉 ⇒ 这道检查放行，
+        # 而 A 组照样给它画一张常规图（2026-09 实测：jpx 加一组只声明
+        # adt_cash_total_jpytn 的组，页上多出一张同列 gs_bar，四道闸门一道不响）。
+        # 「被吃掉」仍按声明取上界 —— `__init__` 里还不知道 mix 那张图出不出得来。
         totals = {g['mix']['total']['col'] for g in self.groups if g.get('mix')}
-        eaten_max = set()          # 按声明算的「最多能被吃掉」的列（保守上界）
+        plain = {}                 # 列名 → 把它当常规列画的那几组（组名）
         for g in self.groups:
             mm = g.get('mix')
-            if mm:
-                eaten_max |= ({mm['total']['col']} | {c['col'] for c in mm['parts']}) \
-                    & {c['col'] for c in g['cols']}
-        plain = {c['col'] for g in self.groups for c in g['cols']} - eaten_max
-        dup = sorted(totals & plain)
+            own = ({mm['total']['col']} | {c['col'] for c in mm['parts']}) if mm else set()
+            for c in g['cols']:
+                if c['col'] not in own:
+                    plain.setdefault(c['col'], []).append(g['zh'])
+        dup = sorted(totals & set(plain))
         if dup:
+            where = '；'.join(k + ' 在「' + '」「'.join(plain[k]) + '」' for k in dup)
             raise SpecError(
-                f'{dup} 既是某条 mix 的 total（会画成合计柱），又在自己那一组里没有被'
-                f'吃掉（会再画一张常规柱）—— 同一列两根柱，页面上看不出是同一批数。'
+                f'{dup} 既是某条 mix 的 total（会画成合计柱），又在某一组里没有被'
+                f'**那一组自己的** mix 吃掉（会再画一张常规柱：{where}）—— '
+                f'同一列两根柱，页面上看不出是同一批数。'
                 f'要么把它移进声明 mix 的那一组，要么让它自己那一组的 mix 也引用它')
 
         # 窗口内恒为 0 的图由各 ex_* 自己判（flat0_skip），这里只开账本。
@@ -2252,6 +2261,10 @@ class Page:
         # 两个出口：页尾「图型选择规则」那一段由 `mix_folded_zh()` 现算（哪几组、
         # 两张的窗口、绝对量去哪看、占比那张有没有画成），`build()` 另打一行给维护者。
         self.mix_folded = []
+        # 「每组 mix 真画出了哪几张」这本账（`mix_pair` 记、`mix_rule_zh()` 读）：页尾
+        # 「图型选择规则」⑤ 按它说「两张 / 一张 / 没出齐」，不按页上有没有 stacked_dual。
+        # 每条 {'gz', 'abs', 'total', 'share', 'stack', 'folded'}，后五个是 bool。
+        self.mix_drawn = []
         # decomp 的自检行（柱构成 + YTD 覆盖月份）：ex_decomp 记账、build() 打印。
         self.decomp_report = []
         # 同比口径账本：各 ex_* 每画一条同比就记一笔 (图号, 口径类别)，
@@ -4076,6 +4089,49 @@ class Page:
             bits.append(b)
         return '⚠️ <b>例外</b>：' + ''.join(bits)
 
+    def mix_rule_zh(self):
+        """`mix_drawn` 这本账 → 页尾「图型选择规则」的 ⑤ 整句。本页一张 mix 图都没出 → ''。
+
+        ⚠️ 张数不许无条件印，三类组出的张数不同：
+          · 普通 mix：合计柱 + 100% 占比堆叠，**两张**（`ex_mix_total` / `ex_mix_share`）；
+          · 合计柱有意不出（`mix_folded`）：只出占比那一张 —— 它是「两张」的例外，
+            仍由 `mix_folded_zh()` 点名，措辞一字不改；
+          · `abs_stack`：只出**一张**绝对值堆叠柱（`ex_mix_abs`），另外两张都不出。
+        从前这里按「ex 里有没有 stacked_dual」印一句「两张」，而绝对值堆叠柱也是
+        stacked_dual —— /jpx/ 唯一的 mix 就是 abs_stack：页面上一张图、页尾说两张，
+        四道闸门看结构与数值，看不见散文。所以每一类只在本页真有这种组时才印，
+        abs_stack 的组逐个点名。
+        张数不够的组（**画不成**，不是有意不出）另列一句：规则句只讲设计，读者照着
+        数图会数出差，差在哪一组必须说出来；原因不在这里重复，指到
+        「本轮未出的派生图」那一段（`skipped`）。
+        """
+        rows = getattr(self, 'mix_drawn', [])
+        if not any(d['total'] or d['share'] or d['stack'] or d['folded'] for d in rows):
+            return ''
+        two = [d for d in rows if not d['abs']]
+        one = [d for d in rows if d['abs']]
+        s = '⑤ '
+        if two:
+            s += ('声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
+                  '（次轴同比，流量走单月、存量走点对点）与分项的 100% 占比堆叠。')
+        if one:
+            s += (('但写了' if two else '声明了 <code>mix</code> 并写了')
+                  + ' <code>abs_stack</code> 的组（'
+                  + '、'.join(f'「{d["gz"]}」' for d in one)
+                  + '）只出<b>一张</b>：绝对值堆叠柱，柱高是合计的水平值、'
+                    '各段是分项的水平值（原始单位），不出合计柱、不出 100% 占比堆叠，'
+                    '也不画次轴同比。')
+        s += '各段之和逐月复算，对不上就不发页。' + self.mix_folded_zh()
+        short = [f'「{d["gz"]}」' + ('只出了合计柱（占比堆叠没画成）' if d['total'] else
+                                   '只出了占比堆叠（合计柱没画成）' if d['share'] else
+                                   '两张都没画成')
+                 for d in two if not d['folded'] and not (d['total'] and d['share'])]
+        short += [f'「{d["gz"]}」那张绝对值堆叠柱没画成' for d in one if not d['stack']]
+        if short:
+            s += ('⚠️ <b>本轮没出齐</b>：' + '；'.join(short)
+                  + ' —— 原因见「本轮未出的派生图」那一段。')
+        return s
+
     def mix_pair(self, n, g):
         """一条 `mix` → ([合计柱图, 占比堆叠图], 本组被这一组的 mix 吃掉的列名集合)。
 
@@ -4095,6 +4151,8 @@ class Page:
             one, why = self.ex_mix_abs(n, gz, m)
             if why:
                 self.skipped.append(why)
+            self.mix_drawn.append({'gz': gz, 'abs': True, 'total': False, 'share': False,
+                                   'stack': one is not None, 'folded': False})
             if one is None:
                 return [], set()
             # 吃掉合计与全部分项：三条序列的水平值都在这一张图上（柱高 + 各段），
@@ -4141,6 +4199,9 @@ class Page:
             # 真画出来分叉（见 `mix_folded_zh`）。在这之前记，占比图也没画成时这一组
             # 是 0 张图，而页尾会同时印「所以只出占比那一张」与「占比堆叠不出」。
             self.mix_folded.append({**fold, 'gz': gz, 'share_drawn': share is not None})
+        self.mix_drawn.append({'gz': gz, 'abs': False, 'total': total is not None,
+                               'share': share is not None, 'stack': False,
+                               'folded': fold is not None})
         for w in (why_t, why_s):
             if w:
                 self.skipped.append(w)
@@ -6472,6 +6533,7 @@ class Page:
         # 「合计柱有意不出」的账，同样每次组装从零记：重复调用 payload() 时把上一轮的
         # 图号带进来，页尾那句「绝对量看 Exhibit k」就会指到上一轮的号上。
         self.mix_folded = []
+        self.mix_drawn = []        # 同上：留着上一轮的账，⑤ 会把同一组点名两遍
         # 「这张图问过断点」的账（图号），由 mark_breaks() 记、页尾那段断点说明读。
         # 同样每次组装从零记，理由与上面几本账逐字同源。
         self._brk_asked = set()
@@ -6981,8 +7043,10 @@ class Page:
         # 不能靠扫 kind，改由 `ex_lines` / `ex_heat` 自己记账（见那两个函数）。
         _has_lines = bool(getattr(self, 'saw_group_lines', False))
         _has_heat = bool(getattr(self, 'saw_group_heat', False))
-        _has_mix = any(e.get('kind') == 'stacked_dual' for e in (ex or [])
-                       if isinstance(e, dict))
+        # ⑤ 整句由 `mix_rule_zh()` 按「每组真画出了几张」现算，它非空 ⇔ 本页有 mix 图。
+        # 从前按「ex 里有没有 stacked_dual」判 —— abs_stack 那张也是 stacked_dual。
+        _mix5 = self.mix_rule_zh()
+        _has_mix = bool(_mix5)
         _has_rr = bool(getattr(self, 'saw_ratio_rhs', False))
         out.append(
             # ⚠️ 这一段**只讲这一页真画过的那几条规则**。它原来是一段无条件文案，
@@ -7006,16 +7070,10 @@ class Page:
                   if _has_lines else '')
                + ('④ 热力矩阵画同比不画水平值：色标是全表共用的 5/95 分位，'
                   '水平值量级差几十倍时会被最大的那列吃掉整条色标。' if _has_heat else '')
-               # ⑤ 的「两张」不能无条件印：合计那一列已经被本页别处那张更宽的柱图
-               #    画过时，这一组只出后一张（`mix_folded`，见 `total_drawn_wider`）。
-               #    哪几组、宽在哪、绝对量去哪看、后一张有没有画成，全部由
-               #    `mix_folded_zh()` 逐组现算 —— 写死一句「都出两张」，
-               #    在这一页上就是一句读者一数就能拆穿的假话。
-               + ('⑤ 声明了 <code>mix</code> 的组出<b>两张</b>：合计的水平值柱'
-                  '（次轴同比，流量走单月、存量走点对点）与分项的 100% 占比堆叠。'
-                  '各段之和逐月复算，对不上就不发页。'
-                  + self.mix_folded_zh()
-                  if _has_mix else '')
+               # ⑤ 的张数不能无条件印：普通 mix 两张、合计柱有意不出的只出占比那张
+               #    （`mix_folded_zh()`）、abs_stack 只出一张绝对值堆叠柱、画不成的另列。
+               #    全部由 `mix_rule_zh()` 按 `mix_drawn` 逐组现算（理由见它的 docstring）。
+               + _mix5
                + ('⑥ 声明了 <code>ratio_rhs</code> 的组（num ⊆ den 这个包含关系）'
                   '不画折线，改画并排柱 + 右轴比值线：引擎里 <code>lines</code> / '
                   '<code>lines_endlabels</code> 没有次轴，而比值与水平值不同量纲，'
