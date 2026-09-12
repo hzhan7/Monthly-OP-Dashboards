@@ -93,7 +93,7 @@ D 组 · Nasdaq Nordic 交易所公告档案 —— 北欧衍生品的长历史�
 A 组：次月第 2–6 个日历日；**季末月晚几天**（那一期要一起更新第 2 页的季度面板）。
       逐条打开新闻稿实测（不是推算）：
         2026-01→02-04  2026-02→03-05  2026-03→**04-08**  2026-04→05-05
-        2026-05→06-03  2026-06→**07-08**  2026-07→08-05
+        2026-05→06-03  2026-06→**07-08**  2026-07→08-05  2026-08→09-03（电头 "Sept. 03"，见口径坑 15）
         2019-01→02-04  2019-07→08-06  2019-11→12-02   2016-01→02-04  2016-10→11-03
       ⇒ `build/roster.py` 的 LAG 建议 **(6, 9)**：常规月实测最晚第 6 天，季末月最晚第 8 天，
       季末月留 1 天余量。
@@ -235,6 +235,28 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
     确实完全不挑 UA，但 2026-09-02 实测它已经换成 Imperva，**判据在 UA 之外**（urllib 换
     什么 UA 都过不去），至于具体是哪一类**没做单变量隔离、不要收窄**，见
     `_fetch_marketshare` 上方那段 —— 两个域两种墙，别拿这一条去推那一个。
+    ⚠⚠ **2026-09-10 起上面「拦的是 UA、不需要 curl_cffi」这个结论作废**，原文留着只当
+    「墙是怎么变的」的证据，别删。实测：
+      · 09-10 / 11 / 12 三轮生产 07:1x SGT，urllib + `_UA`（Chrome/126）取落地页全是
+        45 s `TimeoutError('The read operation timed out')`，整家 FAIL；
+      · 09-10 独立复发，urllib 对四条 ir.nasdaq.com 路径 8/8 全挂，三种脸：45 s 读超时、
+        20 s RemoteDisconnected、0.1 s 403；plain curl 带同一 UA 拿到 HTTP/2 403
+        `Access Denied` + `Reference #18.…` + `x-reference-error` 头 ⇒ **Akamai**；
+      · 09-12 10:36 SGT 同一落地页：urllib **默认 UA → 200**、urllib + Chrome/126 → 403 秒回
+        —— 和 08-06「默认 UA 挂住、浏览器 UA 放行」**正好反过来**；10:57 / 10:58 两发
+        urllib + Chrome/126（timeout 设 20 s）又都是读超时、一个字节没回，不是 403；
+      · 同期 curl_cffi(impersonate='chrome') 全过。09-12 10:56 SGT 走共享 Session 跑一遍 update()
+        （scratch 目录）：落地页 200 / 104,103 B / 0.71 s，static-file 200 / 353,166 B / 0.46 s、
+        `content-disposition: inline; filename="Monthly Reporting Sheet - August 2026 FINAL.pdf"`，
+        新闻稿页 200 / 106,004 B / 0.99 s，全是 HTTP/2。
+    ⇒ 判据在变，**UA 押不住**；`_http_get` 因此改成 curl_cffi 打头、urllib 兜底（见「网络」那一节）。
+      「必须设 timeout」那半句仍然成立。
+    附带两条（同一次实测）：
+      (a) curl_cffi 拿到的落地页 HTML 里有 Akamai Bot Manager 注入的脚本（`/akam/` 2 处，
+          09-09 urllib 版 0 处，+321 B），每次抓都可能不同 ⇒ **别对 ndaq_ir_landing.html 做 sha 去重**；
+          `_STATIC_FILE` 正则照样只命中那一条链接。
+      (b) PDF 不受注入影响：curl_cffi 版与 09-09 urllib 版**逐字节相同**（sha256 0dcc245e02c6…），
+          rawkeep 的内容寻址照常去重，不会因为换通道每天多存一份。
 
  8. **PDF 左缘有旋转 90° 的分区侧标**（Equity Derivatives / Cash Equities / Index / Listings）。
     按 y 聚行会把它们混进正文，第 1 页会拼出 "Derivatives January February …" 导致表头识别当场失配。
@@ -282,6 +304,11 @@ series/ndaq_q.csv（季度，quarter 形如 2026Q2，与 series/hood_q.csv 同�
     ⚠ 新闻稿 slug **2024 及更早还有别的拼法**，实测 `nasdaq-june-2019-volumes-and-2q19-statistics`
     与 `nasdaq-march-2020-volumes` 都 404 —— 回补老月份的发布日大概率要人工找。
     本模块只为**当期**记发布日，不做历史回补，所以不受影响。
+    ⚠ 电头月份是 AP 体缩写，**"Sept." 是四个字母**，strptime 的 %b / %B 都不认。2026-08 那期
+    （电头 "NEW YORK, Sept. 03, 2026"）因此解析失败、静默回落成 PDF creationDate 09-02，
+    又被「已有记录不覆盖」钉住。2026-09-12 修了 `_press_release_date`，并按模块自己写出的
+    格式把 series/source_dates.csv 那一行手工改回 09-03（本模块活网重跑、写进 scratch 台账的
+    就是那一行，逐字照抄）。回落 creationDate 现在会打一行 ⚠，别再让它静默发生。
 
 16. **拿季度 8-K 对账时，「北欧现货」两边不是同一个东西 —— 8-K 那个是全市场分母。**
     NDAQ 季度 8-K EX-99.1「Key Drivers Detail」里的
@@ -405,6 +432,10 @@ PyMuPDF（读 PDF，需要 `line['dir']`）+ openpyxl（读 xlsx）+ **xlrd ≥ 
 2016-12 及更早那批 .xls；xlrd 2.x 只支持 .xls，正好是我们要它做的事）。
 xlrd 是**延迟 import** 的：只有真的要回补 2017 年以前的月份才会用到，
 装不上也不影响每月的常规更新（那条路只碰 PDF 与 xlsx）。
+**curl_cffi**（同样延迟 import，requirements.txt 锁 0.16.0）：2026-09 起是两道墙的主通道 ——
+B 组 nasdaqtrader（Imperva，09-02 起）与 A/C 组 ir.nasdaq.com（Akamai，09-10 起）。
+没装不会在 import 期崩，各调用点降级到 urllib 并出声；但 09-10..12 实测本模块的 urllib 通道
+在 ir.nasdaq.com 上过不去（读超时、RemoteDisconnected、403 三种脸都见过），所以**眼下「没装」就等于 A 组抓不到**。
 不依赖 pandas，避免 to_csv 重排既有行的格式（幂等要求：没变的行必须字节级不变）。
 """
 
@@ -440,9 +471,13 @@ NORDIC_DERIVS_QUERY = 'Derivatives volumes per month'
 # 官方档案实测可达的最早**数据**月（最早那册是 1302，含 2013-01 与 2013-02）。
 NORDIC_DERIVS_START = '2013-01'
 
-# 口径坑 7：static-file 路径对默认 UA 是「挂住 30 秒」而不是快速失败，UA 是硬要求。
+# `_UA` 只给 urllib 那条通道（`_urllib_get`）用；curl_cffi 通道不设 UA，交给 impersonate。
+# 口径坑 7 原先据 08-06 实测说「UA 是硬要求」，2026-09-12 同一落地页上默认 UA 放行、这个
+# Chrome/126 UA 反被 403 —— 判法已经反转过（见口径坑 7 末尾），它现在只是兜底通道的一个参数。
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+# 两条通道各用一次，但语义不同：curl_cffi 是整次传输的总时限；urllib 只是每次 socket 读的时限，
+# 对隔几秒滴一个字节的连接封不住（实测见 `_http_get` docstring）。
 _TIMEOUT = 45           # 秒。宁可快速失败，也不要让 cron 卡在一条挂住的连接上。
 
 _MS_SHEET = 'US Equities'          # 口径坑 5：硬锁，取不到就抛，不做兜底
@@ -613,8 +648,52 @@ class NdaqFetchError(RuntimeError):
 
 
 # ── 网络 ─────────────────────────────────────────────────────────────────
-def _http_get(url, timeout=_TIMEOUT):
-    """返回 (bytes, headers)。**必须带 UA 且必须带 timeout**，理由见口径坑 7。"""
+# 两条通道：curl_cffi（冒充 chrome 指纹，复用 B 组那条进程内共享 Session）打头，urllib 兜底。
+#
+# 为什么 2026-09-10 起 curl_cffi 必须打头（全是实测，细节见口径坑 7 末尾那段）：
+#   · 09-10 / 09-11 / 09-12 三轮生产（07:1x SGT）第一句 `_http_get(IR_LANDING)` 走 urllib，
+#     全是 45 s `TimeoutError('The read operation timed out')` → update() 当场抛、整家零字节落盘；
+#   · 同期 curl_cffi(impersonate='chrome') 对落地页 / static-file / 新闻稿页都是 200。09-12 各发实测耗时：
+#     落地页 0.2–1.2 s；static-file（353 KB）0.46–1.06 s，但 11:09 SGT 有一发 **16.18 s**；新闻稿页 0.95–1.0 s，但 11:38 SGT 有一发 **14.07 s**。
+#     curl_cffi 的 timeout 是**整次传输的总时限**（见 `_http_get` docstring），16 s 已吃掉 45 s 的三分之一多，
+#     超了就降级到 urllib，而 urllib 眼下在 ir.nasdaq.com 上过不去 ⇒ 整家 FAIL。
+#     哪天 ⚠ / FAIL 行里出现 `curl_cffi: Timeout … curl: (28)`，先看这一条，别急着判成被墙；
+#   · 墙拿什么判在变：09-12 10:36 SGT urllib 默认 UA → 200、urllib + Chrome/126 UA → 403 秒回，
+#     跟 08-06「默认 UA 挂住、浏览器 UA 放行」正好反过来 ⇒ **别再靠换 UA 修**。
+# urllib 留着当兜底：零依赖；北欧公告域（api.news.eu.nasdaq.com）09-10 实测 urllib 200；
+# 墙哪天对 curl_cffi 收紧、对 urllib 放松（09-12 已经见过 urllib 默认 UA 被放行），它还能接住。
+#
+# ⚠ 这一层只认 HTTP 状态码（2xx 算拿到），**不判内容** —— 200 的挑战页会原样返回，
+#   内容判据留在调用点（`%PDF` / 电头正则 / JSON 结构 / B 组三态），那里失败照样抛。
+#   代价：curl_cffi 哪天拿到的是 200 挑战页，不会自动降级到 urllib，而是在调用点报「不是 PDF」一类。
+# ⚠ 非 2xx **一律**算这条通道没成、再打一发 urllib，**404 / 410 也不例外**，这是有意的：
+#   这一层分不清「源站确证没有」和「墙拿 404 当拒绝码」（两个域上都还没见过后者，但判不出就不赌），
+#   短路掉 urllib 等于放弃墙翻转那天的兜底；而且不管短不短路，调用点拿到的都是 NdaqFetchError。
+#   代价只是延迟，且只落在本来就不正常的路径上：urllib 眼下在 ir.nasdaq.com 上是读超时，
+#   每个非 2xx 就多等一个 timeout（45 s）。最容易碰上的是新闻稿：季末月先试
+#   `-and-{Q}q{yy}-statistics`，官方哪期没用这个 slug、或新闻稿还没挂出来，一个 slug 多 45 s，
+#   两个都没成多 90 s。2026-09-12 本地实测：curl_cffi 拿到 404 之后，服务器确实又收到一发 urllib。
+#   ⚠ 新闻稿「还没挂出来」线上回的**不是 404**：09-12 实测未发布的常规 slug 是 HTTP 503 / 0 B
+#   （cache-control max-age=30，同一 Session 取落地页照样 200），季末 slug 回的是 Page Not Found 页。
+#   日志里新闻稿路径出现 `curl_cffi: HTTP 503 (0 B)`，先按「还没挂出来」读，别判成墙。
+# ⚠ curl_cffi 通道不手工设 UA / 头：impersonate 配的是一整套（TLS + HTTP/2 + 头集合 + 头顺序），
+#   0.16.0 的 'chrome' 就是 chrome146，自己发 `Chrome/146.0.0.0` 的 UA（09-12 本地服务器收到的原文），
+#   手工塞 `_UA` 的 Chrome/126 就和它冒充的版本号对不上。**这一条实测过，不只是推理**：
+#   09-12 10:49–10:51 SGT，新建 `cr.Session(impersonate='chrome')` 打落地页 ——
+#     设 `User-Agent=_UA`（带或不带 Accept / Accept-Language）：2/2 发 0.15–0.2 s
+#       `curl: (92) HTTP/2 stream 1 reset by server (error 0x2 INTERNAL_ERROR)`；
+#     不设 UA（完全不设头 / 只设 Accept + Accept-Language）：2/2 发 200（0.72 / 0.61 s）。
+#   样本只有 2+2，只够说明「手工设 UA 会被认出来」，别据此收窄成墙具体判的是哪一项。
+#   这种 reset 是抛异常（curl_cffi 的 HTTPError，属 CurlError），不是状态码，由 `_http_get` 的 except 接住。
+# ⚠ B 组 `_fetch_marketshare` 的通道 1 **直接调 `_urllib_get`，不走 `_http_get`**：那边通道 2
+#   已经是「同一个 Session + 退避重试」的 curl_cffi，通道 1 再塞一发 curl_cffi，
+#   它 tried 里的 'urllib: …' 与「主通道 urllib 没成」那句降级告警就都说假话了。
+def _urllib_get(url, timeout=_TIMEOUT):
+    """urllib 单发 → (bytes, headers)；失败抛 NdaqFetchError。**必须带 timeout**（口径坑 7）。
+
+    2026-09-12 之前这就是 `_http_get` 的全部。现在它是 `_http_get` 的兜底，
+    以及 B 组 `_fetch_marketshare` 通道 1 的专用入口（理由见上方最后一个 ⚠）。
+    """
     req = urllib.request.Request(url, headers={
         'User-Agent': _UA,
         'Accept': '*/*',
@@ -625,6 +704,48 @@ def _http_get(url, timeout=_TIMEOUT):
             return r.read(), r.headers
     except Exception as e:                                # noqa: BLE001
         raise NdaqFetchError('下载失败 %s: %r' % (url, e)) from e
+
+
+def _http_get(url, timeout=_TIMEOUT):
+    """返回 (bytes, headers)。curl_cffi 打头、urllib 兜底，两条都挂才抛 NdaqFetchError。
+
+    · headers 两条通道都支持**大小写不敏感**的 `.get()`（urllib 是 HTTPMessage，curl_cffi 是
+      它自己的 Headers；HTTP/2 线上的头名全小写，`hdr.get('Content-Disposition')` 照样取得到），
+      `_fetch_ir_pdf` 不用管走的是哪条。
+    · timeout 两条各用一次，**但两边不是同一种时限**：
+        curl_cffi 那边 float timeout 进 `CURLOPT_TIMEOUT_MS`，是整次传输的**总时限**，一定封得住；
+        urllib 那边是**每一次 socket 读**的时限，服务器一个字节都不回才触发 —— 对「隔几秒滴一个
+        字节」的连接它**封不住**，整次调用可以远超 2×timeout。2026-09-12 本地实测：服务器按
+        1 B/s 滴 8 B，`_http_get(url, timeout=2)` → curl_cffi 2002 ms 超时（收到 1/8 B），
+        urllib 接着一路读完，总耗时 10 s（不是 4 s）。旧代码只有 urllib，一直是这个口子。
+        09-10..12 在 ir.nasdaq.com 上见过的挂法全是零字节的（读超时 / RemoteDisconnected），
+        所以眼下「两条都挂最坏约 2×timeout」成立，但那是墙今天的行为，不是这段代码的保证。
+    · 降级成功要出声（同 fetch/cme.py、fetch/cost_release.py、本模块 B 组）：不喊的话，
+      「curl_cffi 哪天开始被拦」又得像 09-10 那样事后翻 cache mtime 才考据得出来。
+    · 报错只有**一行**、列出每条通道的结果 —— monthly_run 把 `str(e)` 原样印进 FAIL 那行表格，
+      换行会把表格撑破，也会让「两条都试过」这件事被截在第二行之后。
+    """
+    global _MS_SESSION
+    tried = []
+    try:
+        r = _ms_session().get(url, timeout=timeout)
+        if 200 <= r.status_code < 300:
+            return r.content, r.headers
+        tried.append('curl_cffi: HTTP %d (%d B)' % (r.status_code, len(r.content)))
+    except ImportError as e:
+        tried.append('curl_cffi: 没装（%s；`pip install curl_cffi`）' % e)
+    except Exception as e:                                # noqa: BLE001 —— 通道失败要继续试下一条
+        tried.append('curl_cffi: %s: %s' % (type(e).__name__, e))
+        _MS_SESSION = None          # 连接层出错就把坏 Session 扔掉，别让后面的调用（含 B 组）接着抱着用
+    try:
+        body, hdr = _urllib_get(url, timeout)
+    except NdaqFetchError as e:
+        tried.append('urllib: %r' % (e.__cause__ or e,))
+        raise NdaqFetchError('下载失败 %s —— 两条通道都没取到：%s'
+                             % (url, '；'.join(tried))) from e
+    print('[ndaq] ⚠ %s 主通道 curl_cffi 没成，降级到 urllib 才取到（前序：%s）'
+          % (url, '；'.join(tried)))
+    return body, hdr
 
 
 def _write_bytes(path, data):
@@ -736,11 +857,24 @@ _MS_RETRY_SLEEPS = (0, 3, 8, 20)
 _MS_BLOCK_MARK = b'Incapsula incident ID'
 _MS_NOYEAR_MARKS = (b'id=http404', b'Page Not Available')
 
-_MS_SESSION = None          # 进程内共享的 curl_cffi Session；cookie 复用是过墙的关键
+# 进程内共享的 curl_cffi Session；cookie 复用是过墙的关键。
+# 2026-09-12 起 `_http_get`（ir.nasdaq.com、北欧公告域）也用这一个。cookie 按域名匹配，
+# 但**隔开的只是注册域**，别读成「每个主机各管各的」：
+#   · nasdaqtrader.com 与 nasdaq.com 互不串：本域的 visid_incap_* / incap_ses_* 不去 ir.nasdaq.com，
+#     ir.nasdaq.com 的 Akamai cookie 也不来本域；
+#   · 但 ir.nasdaq.com 回的 `ak_bmsc` 是 **Domain=.nasdaq.com**（09-12 11:15 SGT 实测 Set-Cookie 原文，
+#     Max-Age=7199），所以**会被带去北欧公告的 api.news.eu.nasdaq.com / attachment.news.eu.nasdaq.com**
+#     （两者都是 https，它带 Secure 照发）。09-12 本地实测：用 CURLOPT_RESOLVE 把这三个主机和
+#     www.nasdaqtrader.com 钉到 127.0.0.1，jar 里放一条 Domain=.nasdaq.com 的 cookie，
+#     三个 nasdaq.com 子域都收到了，nasdaqtrader 没收到。
+#   眼下无害：同一 Session 先打落地页、再打北欧检索，仍是 200 / application/json / 144,062 B，
+#   解析出 163 册（09-12 11:15 SGT）。北欧那条哪天 curl_cffi 开始 403 或回挑战页，**先查这一条**。
+_MS_SESSION = None
 
 
 def _ms_session():
-    """共享 Session。curl_cffi 是**延迟 import**：没装时前面的 urllib 通道照走。"""
+    """共享 Session（B 组通道 2 与 `_http_get` 共用）。curl_cffi 是**延迟 import**：
+    没装时这里抛 ImportError，两个调用方各自记下「没装」并走 urllib。"""
     global _MS_SESSION
     if _MS_SESSION is None:
         from curl_cffi import requests as cr
@@ -778,8 +912,10 @@ def _fetch_marketshare(cache_dir, year):
 
     # 通道 1：urllib。实测在墙下必失败，但零依赖、失败也快（403 秒回），
     # 而且墙哪天撤掉就该走回这条最省事的路，所以留着当第一顺位。
+    # ⚠ 调的是 `_urllib_get` 不是 `_http_get`：后者 2026-09-12 起 curl_cffi 打头，放在这里会让
+    #   下面 tried 里的 'urllib: …' 与降级告警说假话（理由见「网络」那一节最后一个 ⚠）。
     try:
-        body, _hdr = _http_get(url)
+        body, _hdr = _urllib_get(url)
         st = _ms_classify(body)
         tried.append('urllib: %s (%d B)' % (st or 'unknown', len(body)))
         if st in ('ok', 'noyear'):
@@ -1366,25 +1502,42 @@ def _press_release_date(month):
     if mo % 3 == 0:
         slugs.insert(0, 'nasdaq-reports-%s-%d-volumes-and-%dq%02d-statistics'
                      % (name, y, mo // 3, y % 100))
+    why = []
     for slug in slugs:
         try:
-            body, _hdr = _http_get(PR_BASE + slug, timeout=30)
-        except NdaqFetchError:
+            # 用 _TIMEOUT 不用原来的 30 s：curl_cffi 通道的 timeout 是整次传输总时限（原来 urllib 是
+            # 每次读的时限），09-12 11:38 实测新闻稿页一发 14.07 s。超了会降级到眼下读超时的 urllib，
+            # 两条都挂就回落 PDF creationDate 并被「已有记录不覆盖」钉住 —— 正是 2026-08 那条错日期。
+            body, _hdr = _http_get(PR_BASE + slug, timeout=_TIMEOUT)
+        except NdaqFetchError as e:
+            why.append(str(e))
             continue
         text = re.sub(r'<[^>]+>', ' ', body.decode('utf-8', 'replace'))
         text = re.sub(r'\s+', ' ', text)
         m = _DATELINE.search(text)
         if not m:
+            why.append('%s 里没有 GLOBE NEWSWIRE 电头（%d B）' % (slug, len(body)))
             continue
+        # AP 体月份缩写里 "Sept." 是唯一的四字母写法（Jan. Feb. Aug. Sept. Oct. Nov. Dec.，
+        # March–July 不缩写）。`_DATELINE` 的 `Sep[a-z]*\.?` 认得它，strptime 却不认：
+        # %b 只吃 "Sep"、%B 只吃 "September"。2026-08 那期电头 "NEW YORK, Sept. 03, 2026"
+        # 因此三个格式全 ValueError → 回落 PDF creationDate 2026-09-02 → 被「已有记录不覆盖」
+        # 钉进 series/source_dates.csv（2026-09-12 已按电头手工改回 09-03）。
+        # 只在喂给 strptime 的那份里把 Sept 折成 Sep；出处文字照抄官方原文。
+        ds = re.sub(r'^Sept\b', 'Sep', m.group(2))
         for fmt in ('%b. %d, %Y', '%B %d, %Y', '%b %d, %Y'):
             try:
-                d = datetime.strptime(m.group(2), fmt)
+                d = datetime.strptime(ds, fmt)
             except ValueError:
                 continue
             return d.strftime('%Y-%m-%d'), (
                 '新闻稿 %s 正文电头 "%s, %s (GLOBE NEWSWIRE)"'
                 % (slug, m.group(1).strip(), m.group(2)))
-        return None, None            # 认得出电头、读不懂日期 → 宁缺勿猜
+        # 认得出电头、读不懂日期 → 宁缺勿猜。但要出声：调用方会回落 PDF creationDate，
+        # 而那一笔落盘后不再覆盖 —— 2026-08 那期就是在这里一声不响地错掉的。
+        print('[ndaq] ⚠ 新闻稿 %s 电头日期 %r 读不懂，发布日不猜' % (slug, m.group(2)))
+        return None, None
+    print('[ndaq] ⚠ 当期 %s 新闻稿电头没取到：%s' % (month, '；'.join(why)))
     return None, None
 
 
@@ -1592,6 +1745,12 @@ def _record_source_date(series_dir, month, pdf_path):
     day, evidence = _press_release_date(month)
     if not day:
         day, evidence = _pdf_creation_date(pdf_path)
+        if day:
+            # 兜底是合法的，但必须出声：这一笔落盘后上面那句 lookup 会让它永不被覆盖。
+            # 2026-08 那期就是电头没解出来、静默记成 PDF 存盘日 09-02（电头是 09-03），事后只能人工改。
+            print('[ndaq] ⚠ %s 发布日回落到 PDF creationDate %s（新闻稿电头没拿到，原因见上一行）'
+                  '—— 这一笔之后不会被自动覆盖，电头能取到时请人工核对 series/source_dates.csv'
+                  % (month, day))
     if day:
         sd.record(series_dir, 'ndaq', month, day, evidence)
 

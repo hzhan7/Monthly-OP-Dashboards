@@ -501,6 +501,8 @@ HEADLINE = [
 # 若底座也画头条，去重是底座一行的事。反过来（漏掉旗舰图）修起来贵得多。db1.py 同约定。
 GROUPS = [
     # Total ≡ Equities + ETF + Structured 是官方恒等式，fetch/enx.py 每月撞一次；
+    # 例外 2026-08：官方工作簿自身 Total 比三分项之和多 €600，fetch/enx.py 的
+    # IDENTITY_UPSTREAM_GAPS 逐值登记放行（页尾注同一条点名了它，增删登记两处同步改）。
     # 结构化产品那一列量级很小（0.03–0.22 €bn/日），入图是为了让这条恒等式看得见。
     {'zh': '现货市场（Cash）', 'cols': [
         {'col': 'adv_cash_adnv_eurbn', 'zh': '成交额 ADV（全品种，单边）',
@@ -1014,7 +1016,14 @@ SPEC = {
         '与当期新闻稿原文 "stood at $20,050 million" 一致。',
 
         '现货恒等式：adv_cash_adnv_eurbn ≡ equities + etf + structured，'
-        'fetch/enx.py 每月撞一次，撞得上说明四列一格没错行。结构化产品那列量级很小'
+        'fetch/enx.py 每月撞一次，撞得上说明四列一格没错行。'
+        # 下面这半句与 fetch/enx.py 的 IDENTITY_UPSTREAM_GAPS 一一对应：增删登记时同步改。
+        # 数字出处（2026-09-12 实测，8 月版 hist sha256 2b47522c…）：Total 263,866.89008645 €m
+        # − 三分项之和 263,866.88948645 €m = €600.00006，相对差 2.27e-9；÷ 21 个交易日 = €28.57/日。
+        '例外是 2026-08：官方工作簿自身的 Total 就比三个分项之和多约 €600（相对差 2.3e-9，'
+        '折成日均 €28.57，远低于图上的显示精度），官方 latest 文件发布的 ADV 用的也是这个 Total；'
+        'fetch/enx.py 把这一格逐值登记后放行（IDENTITY_UPSTREAM_GAPS），没有放宽容差。'
+        '结构化产品那列量级很小'
         + ((f'（现算 {_STRU_MIN:.2f}–{_STRU_MAX:.2f} EUR bn/日）')
            if _STRU_MIN is not None else '')
         + '，入图是为了让这条恒等式看得见。',

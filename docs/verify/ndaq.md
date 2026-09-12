@@ -225,6 +225,9 @@ nasdaqtrader 的 `marketshare{YY}.xlsx` 慢得多：June-2026 那版 `Last-Modif
    **不需要 curl_cffi / nscurl**。同一站的新闻稿页面反而默认 UA 也能过（策略只挂在部分路径上），
    所以「有一条 URL 能通」不能证明「这个域没问题」。
    `nasdaqtrader.com` 完全不挑 UA。
+   ⚠ **2026-09-10 起本条结论作废**（原文留作「墙是怎么变的」的证据）：ir.nasdaq.com 对 urllib 换什么 UA
+   都可能读超时 / 403，`fetch/ndaq.py` 的 `_http_get` 已改成 curl_cffi 打头、urllib 兜底；
+   nasdaqtrader.com 也在 2026-09-02 换上了 Imperva。实测与判据见 `fetch/ndaq.py` 口径坑 7 末尾。
 
 6. **`msoption{YY}.xlsx` 不是期权版的 marketshare** —— 别拿它填 `vol_us_options_mmcontracts`。
    两个致命差别：(a) 它只含 **NOM + PHLX + NTX/BX 三家**，标题写死

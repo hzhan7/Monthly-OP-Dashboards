@@ -389,6 +389,7 @@ COLUMN_SPEC = [
        'cash', 1e3, '2012-01', 'athex_adv_cash_etf_adnv_eurbn', '2021-01'),
     # 结构化产品现货（€bn/日，单边）。入库不是为了画图，是为了每月撞恒等式
     # Total ≡ Equities + ETF + Structured（见 _validate），撞得上说明四列一格没错行。
+    # 撞不上也可能是官方工作簿自己不平：2026-08 就是（多 €600），靠 IDENTITY_UPSTREAM_GAPS 逐值登记放行。
     _c('adv_cash_structured_adnv_eurbn', S_EQ, (G_CASH, U_TURNOVER),
        'Turnover Structured Products', 'cash', 1e3, '2012-01'),
     # Euronext Clearing 清算的股票交易笔数/手数（千/日，**单边**）。官方标签
@@ -945,13 +946,23 @@ def _scale(raw, days, scale, col, mon):
 def _validate(data):
     """返回最新月；任何一处不达标立刻抛异常。
 
+    ⚠ 每轮都把**全史**重扫一遍，不是只查最新月 —— hist 是滚动全历史文件，所以任何一个
+    历史月在这里被拦下，挡住的是之后的每一个新月份：整条腿停更，不是扣发一个月。
+
     三道检查：
       1. 起始月之后不许有空格 —— 起始月是本机对当前 xlsx 逐列实测出来的，
          之后再为空只可能是解析错行或官方停发，两种都必须人来看。
       2. 恒等式 Total ≡ Equities + ETF + Structured（Athex 备注列同理，它没有
-         结构化产品，所以是 Total ≡ Equities + ETF）。2026-08-18 实测 175 个月
-         最大相对差 3.7e-16（量级是浮点舍入，不随月数变；月数本身会变）。
-         这条撞不上，说明四列里至少有一列错行了 —— 而错行的数字全都「看上去很正常」。
+         结构化产品，所以是 Total ≡ Equities + ETF），tol=1e-9。2026-09-12 对 8 月版
+         hist 实测（py3.12.12，与 _identity 一样用内置 sum() —— 3.12 起它对浮点做补偿求和 ——
+         在入库的 ADV 空间量）：主恒等式 176 个月，除 2026-08 外最大相对差 3.414e-16（2024-09）；
+         Athex 那道 68 个月最大 2.478e-16 —— 量级是浮点舍入（不随月数变；月数本身会变）。
+         换成逐项 a+b+c（py<3.12 的 sum 语义）量，主恒等式是 3.738e-16（2021-01），41 个月
+         两种求和结果不同；旧 docstring 的「3.7e-16」就是这么量的，两个数都对，别当成对不上。
+         这道闸门要抓的是错行 —— 错行的数字全都「看上去很正常」。但撞不上不一定是错行：
+         2026-08 主恒等式相对差 2.274e-09，是 Euronext 自己的工作簿里总量比三个分项之和
+         多 €600（伴生 latest 工作簿三处独立旁证总量无误）。这类读数不靠放宽 tol 放行，
+         只认 IDENTITY_UPSTREAM_GAPS 逐值登记，登记之外照样抛，理由见那张表上面的注释。
       3. 交易日必须是正数。
     """
     have = [m for m in sorted(data) if data[m][ANCHOR] is not None]
@@ -1110,17 +1121,160 @@ def _write_breaks(series_dir, rows):
     return True
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 恒等式闸门，以及「上游自己就对不平」的逐格登记
+# ══════════════════════════════════════════════════════════════════════
+# 为什么要有这张登记表 —— 而不是调大 tol，也不是把 raise 降成警告：
+#
+#   · 这道闸门被某一格挡住，冻住的是整条腿，不是一个月。_validate 每轮把**全史**重扫一遍
+#     再逐月撞恒等式，hist 又是滚动全历史文件 ⇒ 那一格只要还在，之后每一个新月份都进不来。
+#     2026-08 就是这么把 enx 冻住的：2026-09-08 起 monthly_run 连续 5 轮 FAIL，而 raise
+#     在 update() 前段，latest 对表、停摆哨兵、断点表、重述落盘、发布日登记五步一并没跑。
+#   · 调大 tol 不是调参，是二选一。2026-09-12 对 8 月版 hist（sha256 见登记项）逐月复算
+#     （py3.12，与 _identity 同样用内置 sum() 在 ADV 空间量；逐项 a+b+c 量主恒等式是 3.738e-16 /
+#     2021-01，结论不变）：主恒等式 176 个月，除 2026-08 的 2.274e-09 外最大 3.414e-16（2024-09），
+#     相对差大于 1e-12 的有且只有 2026-08；Athex 备注那道 68 个月最大 2.478e-16。中间空着七个数量级
+#     ⇒ 任何能放 2026-08 过去的 tol，都恰好丢掉这道闸门全史唯一一次浮点噪声以上的读数；
+#     以后别的月份再冒出同量级的上游不平，就再也没人看得见。
+#   · 降成警告：连这道闸门本来要抓的「某列错行」也一起放过。
+#
+# 所以放行判据刻意做窄：(月份, 总量列) 命中登记，**且**本轮读到的交易日与登记严格相等、
+# 总量与分项之和折回官方原表单位后都与登记值相对差 ≤ _GAP_MATCH_REL —— 三条全满足才放行，
+# 并且每轮在 stdout 打一行（fetch 模块的 print 会进 monthly_run 日志，09-12 日志里
+# [lseg]/[nanya] 那些行就是这么来的）。同一格下一版要是换了个差额（改了但没改平），
+# 读数对不上登记，照样 raise；上游哪天把它改平了（rel ≤ tol），打一行「登记可删」，不 raise。
+#
+# 不按 sha256 放行：hist 下个月一追加新行 sha 就变，按 sha 认等于下个月再冻一次。
+# sha256 记在登记项里只是出处 ——「这两个数是从哪一版文件里读出来的」。
+#
+# ⚠ 往这里加一条之前，先把同一套证据链走一遍：至少要有一条**不经 hist 分项**的独立旁证
+#   说明总量本身没错（2026-08 用的是伴生 latest 工作簿，见下）。拿不出旁证的不平，
+#   正是闸门该拦的那种，不许登记。
+# ⚠ 增删登记时同步改 build/specs/enx.py 页尾注「现货恒等式」那一条 —— 那句读者看得见，
+#   里面点名了 2026-08 这个例外；只改这里，页面上就印着一句跟闸门对不上的话。
+IDENTITY_UPSTREAM_GAPS = {
+    ('2026-08', 'adv_cash_adnv_eurbn'): {
+        # hist 'Equity Markets' R186（Period 2026-08-01）的原始单元格，单位 €m 月合计：
+        #   C6  Total Turnover                 263866.89008645003
+        #   C8  Turnover Equities              240425.60853173997
+        #   C10 Turnover ETF                    20661.36798232
+        #   C12 Turnover Structured Products     2779.91297239
+        #   C3  Nb of trading days                 21
+        'unit': '€m 月合计',
+        'days': 21,
+        'total': 263866.89008645003,
+        'parts_sum': 263866.88948644995,     # C8 + C10 + C12，按此顺序浮点相加
+        'gap': '€600.00006（Decimal 精确差 0.000600000061695 €m）',
+        'rel': 2.2738739980062947e-09,       # _identity 实际比的 ADV 空间（÷21÷1000）的值
+        'hist_sha256':
+            '2b47522c3c5d882125ef2e9a46aa81684bccb6aa0c524947a88976cd848a99fb',
+        # ↑ 223,390 B，Last-Modified: Mon, 07 Sep 2026 15:35:21 GMT
+        #
+        # 为什么认定是上游自己不平、不是我们读错（2026-09-12 活网重取两份官方文件实测）：
+        #   ① 伴生 latest 工作簿（50,374 B，Last-Modified 07 Sep 2026 15:35:04 GMT，
+        #      sha256 54bd1ee9…）Equity Markets R13C2「Total Cash Market」2026-08
+        #      = 263866.89008645003，与 hist C6 逐位相等；分项之和那个数在 latest 里一格都没有。
+        #   ② latest R14C2 官方自算「ADV Cash Market」= 12565.090004116668 = 总量 ÷ 21，
+        #      逐位相等 —— 官方自己发布的 ADV 用的就是总量。
+        #   ③ latest R13C7「Q3 2026」= 597094.9775615999 = hist 7 月 + 8 月总量（相对差
+        #      2e-16）；拿分项之和去加就差这 €600。
+        #   ④ parse_workbook 每个月只认一个行号（同月两行直接抛），四列同行读取，
+        #      「某一列单独错行」在这里表达不出来；现货成交额分组（C6–C12）下除这四列外
+        #      只有三列 Athex 备注，没有第四个分项漏在恒等式外。
+        #   差额从哪来无从判断：月度新闻稿正文没有数字（口径坑 17）。对页面无影响：
+        #   €600 ÷ 21 = €28.57/日，现货 ADV 线按 0.1 €bn 显示。
+    },
+}
+
+# 登记值比对的相对容差。折回原表单位（× 交易日 × scale，即 _scale 的逆运算）2026-08 实测
+# 与原始单元格逐位相等，1e-14 只是给乘除留约 45 个 ULP 的余量。折成钱：263,866.89 €m
+# × 1e-14 ≈ €0.0026，不到 1 分钱 —— 这一格的差额只要变动 1 分钱以上就对不上登记
+# （离线实测：总量 +€0.01 即 raise），而 1 个 ULP 的浮点抖动照样放行。
+_GAP_MATCH_REL = 1e-14
+
+# 折回原表单位要知道每列的交易日列与 scale（athex_* 备注列与主列同口径）。
+_COL_BY_NAME = dict([(c.name, c) for c in COLUMN_SPEC]
+                    + [(c.memo, c) for c in COLUMN_SPEC if c.memo])
+_DAYS_COL = {key: name for name, key, _s in DAYS_SPEC}
+
+
+def _gap_mismatch(rec, total, rhs, reg):
+    """本轮读数与登记逐值比对，返回 (why, got)。
+
+    why：全对得上是 None，否则是「哪个数变了、偏了多少」的一句话（方便对着新 vintage 重新登记）。
+    got：本轮折回官方原表单位的 {'days', 'total', 'parts_sum'}（交易日就对不上时只有 days）——
+    放行那行打印的是它，不是登记常量：出声行要是抄登记值，本轮读数真变了日志上也看不出来。
+
+    比的是官方原表单位而不是入库的 ADV —— 登记值要能拿去 Excel 里逐位对照。
+    交易日要求严格相等：天数一变 ADV 全变，那已经不是登记的那份读数了。
+    「对得上」写成 `<=` 再取反，不写 `>`：NaN 参与的比较恒为 False，写成 `>` 时 NaN 读数
+    会被判成逐值一致而放行（2026-09-12 复核实测：登记月的总量或结构化产品置 NaN，旧写法
+    _validate 照样返回 2026-08）。生产路径今天产不出 NaN（openpyxl 3.1.5 读 'NaN' 直接抛），
+    这里防的是以后换解析路径。
+    """
+    col = _COL_BY_NAME[total]
+    got = {}
+    k = col.scale
+    if col.days:
+        got['days'] = days = rec.get(_DAYS_COL[col.days])
+        if days != reg['days']:
+            return '交易日 %r，登记是 %r' % (days, reg['days']), got
+        k = days * col.scale
+    got['total'], got['parts_sum'] = rec[total] * k, rhs * k
+    bad = []
+    for lab, key in (('总量', 'total'), ('分项之和', 'parts_sum')):
+        dev = abs(got[key] - reg[key])
+        if not (dev <= _GAP_MATCH_REL * abs(reg[key])):
+            bad.append('%s折回原表 %r，登记是 %r，相对偏差 %.3e'
+                       % (lab, got[key], reg[key], dev / abs(reg[key])))
+    return '；'.join(bad) or None, got
+
+
 def _identity(mon, rec, total, parts, tol=1e-9):
+    """total ≡ Σparts，相对差 > tol 就抛。
+
+    tol=1e-9 是给浮点舍入留的（全史实测噪声最大 3.4e-16，py3.12 内置 sum() 量，见 _validate），
+    不为任何一格上游残差放宽 —— 唯一的出口是 IDENTITY_UPSTREAM_GAPS 逐值登记过的格子，
+    理由见那张表上面的注释。
+    NaN 一律按不成立处理：rel 是 NaN 时 `rel <= tol` 为 False，未登记直接抛，登记过的
+    由 _gap_mismatch 判成对不上再抛（旧写法 `rel > tol` 对 NaN 为 False，会静默放过）。
+    """
     if rec.get(total) is None or any(rec.get(p) is None for p in parts):
         return
     lhs, rhs = rec[total], sum(rec[p] for p in parts)
     if lhs == 0:
         return
     rel = abs(lhs - rhs) / abs(lhs)
-    if rel > tol:
+    reg = IDENTITY_UPSTREAM_GAPS.get((mon, total))
+    if rel <= tol:
+        if reg:
+            print('[enx] 登记可删：%s %s 上游已经改平（本轮相对差 %.3e ≤ tol %.0e），'
+                  'IDENTITY_UPSTREAM_GAPS 里这一条可以删了，build/specs/enx.py 页尾注里点名'
+                  '这一格的那半句同步删。若该月已入库，官方改动的那一格'
+                  '会进 cache/enx_restatements.csv（本模块不覆盖已入库值）'
+                  % (mon, total, rel, tol))
+        return
+    msg = ('%s 恒等式不成立：%s=%r 与 %s 之和 %r 相对差 %.3e —— '
+           % (mon, total, lhs, parts, rhs, rel))
+    if reg is None:
+        # 前半句与 2026-09-08~12 生产日志里那 5 行 FAIL 逐字相同，只在后面补一句：
+        # 这道闸门撞不上的第一例（2026-08）恰恰不是错行，而是上游自己不平 —— 下一例
+        # 要是也这样，读日志的人不该先去翻解析器。
         raise EnxFetchError(
-            '%s 恒等式不成立：%s=%r 与 %s 之和 %r 相对差 %.3e —— '
-            '多半是某一列错行了' % (mon, total, lhs, parts, rhs, rel))
+            msg + '多半是某一列错行了。若不经 hist 分项的旁证（伴生 latest 工作簿的 Total/ADV、'
+            '季度合计）说明 Total 本身无误，则可能是上游工作簿自己不平：按 fetch/enx.py '
+            'IDENTITY_UPSTREAM_GAPS 上方注释逐值登记，不许放宽 tol')
+    why, got = _gap_mismatch(rec, total, rhs, reg)
+    if why:
+        raise EnxFetchError(
+            msg + '这一格在 IDENTITY_UPSTREAM_GAPS 有登记（上游自身不平），但本轮读数与'
+            '登记对不上（%s）—— 官方改了这一格却没改平，或者这回真是错行。'
+            '登记只认原来那份读数，拒绝放行' % why)
+    print('[enx] 恒等式放行（上游自身不平，已登记）：%s %s 相对差 %.3e > tol %.0e；'
+          '本轮折回原表（%s）交易日 %r、总量 %r vs 分项之和 %r，与 IDENTITY_UPSTREAM_GAPS '
+          '登记逐值一致（相对偏差 ≤ %.0e；登记出处 hist sha256 %s…）。上游改平之前每轮都会打这一行'
+          % (mon, total, rel, tol, reg['unit'], got.get('days'), got['total'],
+             got['parts_sum'], _GAP_MATCH_REL, reg['hist_sha256'][:12]))
 
 
 # ══════════════════════════════════════════════════════════════════════

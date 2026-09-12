@@ -94,7 +94,12 @@ pdfplumber==0.11.10
 #   中文字体只有 Hiragino Sans GB 可用（本机无 YaHei/PingFang 可靠回落）。
 matplotlib==3.11.1
 
-# curl_cffi —— **可选**。fetch/hood.py:134 的首选下载通道（impersonate='chrome' 过 Robinhood 的
-#   TLS 指纹墙）；装不上会自动回落到通道 2 的 nscurl（fetch/hood.py:161 的 for 循环），
-#   所以缺它不会让 hood 挂。启动自检对这一条只提示、不当成异常。
+# curl_cffi —— import 期**可选**（全仓一律延迟 import，缺它不会崩），但**有两家实际离不开它**：
+#   · fetch/msci.py（ir.msci.com）与 fetch/ndaq.py 的 A 组（ir.nasdaq.com）：2026-09-10 起两站的
+#     Akamai 对 stdlib urllib 读超时 / 403，urllib 只剩兜底名义，缺 curl_cffi 这两家当天必 FAIL
+#     （FAIL 行会点名装它）；ndaq B 组（nasdaqtrader，Imperva）2026-09-02 起同样以它为主通道。
+#   · fetch/hood.py:134 的首选下载通道（impersonate='chrome' 过 Robinhood 的 TLS 指纹墙）；装不上
+#     会自动回落到通道 2 的 nscurl（fetch/hood.py:161 的 for 循环），所以缺它不会让 hood 挂。
+#     fetch/cme.py、fetch/cost_release.py、fetch/tsm.py、fetch/lseg_tradeweb.py 也延迟 import 它，回落见各文件。
+#   启动自检（monthly_run.OPTIONAL_DEPS）对这一条只提示、不当成异常 —— 缺它的后果落在上面那两家的 FAIL 行里。
 curl_cffi==0.16.0

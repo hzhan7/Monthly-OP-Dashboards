@@ -94,7 +94,9 @@ DATA = os.path.join(HERE, 'data')
 SERIES = os.path.join(HERE, 'series')
 CACHE = os.path.join(HERE, 'cache')
 REQUIREMENTS = os.path.join(HERE, 'requirements.txt')
-# 缺了不算故障的包：有代码级回落通道，理由写在 requirements.txt 对应那段。
+# 缺了不算故障的包：import 期不会崩（延迟 import、有代码级回落通道），理由写在 requirements.txt 对应那段。
+# ⚠ 「不崩」不等于「取得到」：2026-09-10 起 msci 与 ndaq A 组的 urllib 兜底实测过不了 Akamai，
+#   缺 curl_cffi 这两家当天必 FAIL（FAIL 行会点名装它），所以这里只提示不拦，后果落在那两家头上。
 OPTIONAL_DEPS = {'curl_cffi'}
 
 # 10 家新增交易所（2026-08 接入）—— **一行一条，删掉一家就删掉它这一行**。
