@@ -264,8 +264,25 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio', 'no_yoy'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap', 'stock_inline'}
 GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].stock_inline —— 本组的存量图**就地**排在本组流量图之后（2026-09 补，默认关）──
+# 缺省（不给 / `False`）：存量图一律排在 ⑤，即季节性之后、与本页其余存量图集中排列 ——
+# 逐字节回到没有这个开关之前。`True`：本组的存量图（合计是存量列的那条 mix，
+# 以及没被它吃掉的存量列各自那张 `ex_stock`）改在 ③ 里、紧跟本组流量图出，
+# 排在本组 `_mark_section` / `_decomp_here` 之前；⑤ 跳过这一组。两处共用同一个
+# `Page._stock_here()`，不许各写一份（一份忘了 `flat0_skip` 或 section，两处图就不一样）。
+#
+# 由来：/sgx/ 页面所有者 2026-09-12 的指令「月末未平仓那张挪到衍生品成交那组旁边」——
+# 它与同组的当月成交是同一批合约的两个读数，隔着十几张图（季节性之后）才出现，
+# 读者对不上号。**只改排序，不改口径**：存量仍然单独成图、不与流量共轴，
+# 次轴仍是点对点同比，标题里「（存量，期末口径）」一字不动。
+#
+# 落在 group 上而不是 SPEC 顶层，理由与 `spike_cap` / `ratio_rhs` 一样：需求是逐组提的，
+# 页级开关会把同一页其余组的存量图一起挪走，而那些图没人要求过。
+# 声明了却没有任何存量图可挪（本组 cols 里没有存量列、mix 的合计也不是存量）
+# 是**死配置**，`Page.__init__` 硬失败 —— 本仓对死配置一律如此，理由见 `_norm_mix` 的 abs_stack 那段。
 
 # ── groups[].spike_cap —— 尖刺截轴的**开关**（2026-09 补，默认关）────────────────
 # `True` = 本组的多列对比图允许 `Page.spike_cap()` 截轴（判据仍然全部现算，见那个方法）。
@@ -462,7 +479,18 @@ GRANS = ('monthly_total', 'daily_avg')
 #: 图型），所以选 `'bar_yoy'` 就等于把 P10/P90 那条常态区间从页面上拿掉 ——
 #: 汇总表的「3Y %ile」列还在（它不靠这张图），但页尾那句「Exhibit 2 的灰色分位带与它
 #: 同窗口同口径」会自动消失，不会留下一句指着不存在的图的话。
-HEADLINE_STYLES = ('band_yoy', 'bar_yoy')
+#:
+#:   'none'      **零张**：①② 整段不出，页面从 ③ 的第一组图开始
+#:
+#: `'none'` 是 2026-09-12 按 /sgx/ 页面所有者的指令加的：「删掉开篇那四张」（SDAV / DDAV
+#: 各一张分位带、各一张单月同比）—— 两条头条列在组图里本来就各有一张「柱 + 次轴单月同比」，
+#: 开篇再画一遍是同一批数说两次。⚠️ **只删图，头条的其余职责一样不少**：`data_through`
+#: 与发布门槛（`resolve_through`）、抬头数据条、汇总表的头条行、④ 季节性照旧由 `headline`
+#: 决定。代价同 `'bar_yoy'`：分位带随之离开页面（页尾那句按 `headline_style` 分三支收放）。
+#: 头条列若没在任何 `groups[].cols` 里声明，这一档下它在组图里也没有位置 ——
+#: 不硬失败（页面仍然成立，汇总表 / 抬头 / 季节性里都有它），`build()` 打一行告警。
+#: 同时声明 `headline_section` 是死配置（它只命名 ①② 那一段，而那一段是空的）→ 硬失败。
+HEADLINE_STYLES = ('band_yoy', 'bar_yoy', 'none')
 
 # 分解出来的那个**派生量**（= 金额 ÷ 数量）到底是什么，全仓有三类，含义互不相通：
 # 混用一套措辞会让读者把「订单碎片化」读成「价格下跌」，把「费率」读成「成交价」。
@@ -1796,13 +1824,57 @@ class Page:
                 # 只认真正的布尔量：`'yes'` / `1` 这种写法在别处是「真」，在这里
                 # 会让下一个人以为可以写一个阈值或图号进去。硬失败比默默当真好。
                 'spike_cap': _norm_flag(g.get('spike_cap'),
-                                        f'groups[{gi}]（{g["zh"]}）.spike_cap')})
+                                        f'groups[{gi}]（{g["zh"]}）.spike_cap'),
+                # 同上：只认真布尔量。语义见模块头 GROUP_KEYS 下面 stock_inline 那一段。
+                'stock_inline': _norm_flag(g.get('stock_inline'),
+                                           f'groups[{gi}]（{g["zh"]}）.stock_inline')})
+
+        # ── stock_inline 的死配置：本组根本没有存量图可挪 ──────────────────────────
+        # 判据按 **spec 声明**，放在剔空列之前：「列本轮整列为空」是等数据，不许因此
+        # 把一个写对了的开关判成死配置。「有存量图可挪」两种来源，与 ⑤ 的两条产图路径
+        # 逐条对应（`_stock_here`）：本组 cols 里的存量列（`ex_stock`），或本组 mix 的
+        # 合计是存量列（`mix_pair` 的存量分支；合计允许跨组引用，所以按列名去全页查）。
+        _stock_of = {c['col']: c['stock']
+                     for c in self.head + [c for g in self.groups for c in g['cols']]}
+        for gi, g in enumerate(self.groups):
+            if not g['stock_inline']:
+                continue
+            if any(c['stock'] for c in g['cols']) or (
+                    g['mix'] and _stock_of.get(g['mix']['total'])):
+                continue
+            raise SpecError(
+                f'groups[{gi}]（{g["zh"]}）.stock_inline=True，但这一组没有任何存量图可挪：'
+                f'cols 里一列 stock=True 都没有，mix 的合计也不是存量列 —— '
+                f'这个开关只改存量图的排序（从 ⑤ 季节性之后挪到本组流量图之后），'
+                f'没有存量图时它什么都不做，留着就是死配置：下一个人会以为这一组的排序'
+                f'被它改过。要么删掉 stock_inline，要么把它写到真有存量列的那一组上')
 
         self.headline_style = str(spec.get('headline_style') or 'band_yoy')
         if self.headline_style not in HEADLINE_STYLES:
             raise SpecError(f"headline_style={self.headline_style!r} 只能是 "
-                            f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）或 "
-                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）")
+                            f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）、"
+                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）或 "
+                            f"{HEADLINE_STYLES[2]!r}（零张：不出开篇头条图）")
+        # `'none'` 下 ①② 那一段是空的，`headline_section` 没有任何一张图可命名 ——
+        # `_mark_section` 对空段是空操作，声明会被静默吞掉。死配置，硬失败。
+        if self.headline_style == 'none' and spec.get('headline_section'):
+            raise SpecError(
+                f"headline_style='none' 不出开篇头条图，而 headline_section="
+                f"{spec['headline_section']!r} 只命名那一段（①②）—— 那一段是空的，"
+                f"这个标题一个字都上不了页。要给 ④ 季节性起标题用 season_section，"
+                f"要给组图起标题用 groups[].section")
+        # `'none'` 下头条列只能靠组图出现。没在任何 groups[].cols 里声明的头条列，
+        # 本页就没有一张以它为主体的组图 —— **不硬失败**（页面仍然成立：门槛、抬头、
+        # 汇总表、季节性都还有它），但必须响一声：记账，`build()` 打印。
+        # 判据按 spec 声明、在剔空列之前（头条列整列为空时 `resolve_through` 另有出口）。
+        # mix 的 total / parts 按列名引用，允许引用头条列（`by_name` 含 head）—— 被引用的
+        # 头条列会画进那组的合计柱或占比堆叠，所以也算「在组图里」，不告警：否则告警行里
+        # 那句「组图里也没有它」对这一档是假话。
+        _in_groups = ({c['col'] for g in self.groups for c in g['cols']}
+                      | {x for g in self.groups if g['mix']
+                         for x in [g['mix']['total']] + g['mix']['parts']})
+        self.head_orphans = ([c for c in self.head if c['col'] not in _in_groups]
+                             if self.headline_style == 'none' else [])
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
         # ── `after_group` 的锚点必须**写得对**且唯一（这一档是「等人」，硬失败）──────
@@ -6447,6 +6519,63 @@ class Page:
             _mark_section(ex, _d0, d.get('section'))
         return n
 
+    def _stock_here(self, ex, n, g):
+        """出组 g 的存量图（就地追加进 `ex`）→ 新的图号计数 n。
+
+        就是原来 `payload()` ⑤ 的循环体，一字未改地提出来：2026-09-12 起它有**两个
+        调用点** —— ⑤（缺省，季节性之后集中出）与 ③（本组声明了 `stock_inline`，
+        紧跟本组流量图就地出）。留两份的下场与 `stock_tail0` 那段记的一样：
+        一份哪天改了（例如补一道 `flat0_skip`、改 section 的涂法），另一份不跟，
+        同一页上两组存量图一组对一组错，而没有任何护栏会响。
+
+        顺序固定：先合计是存量列的那条 mix（`mix_pair` 的存量分支），再本组 cols 里
+        没被它吃掉的存量列各一张 `ex_stock`；末尾给这一段涂本组的 section。
+        """
+        _g0 = len(ex)
+        eaten = set()
+        if g['mix'] and g['mix']['total']['stock']:
+            pair, eaten = self.mix_pair(n, g)
+            for e in pair:
+                ex.append(e); n += 1
+        for c in g['cols']:
+            if not c['stock'] or c['col'] in eaten:
+                continue
+            e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
+            if e is not None:
+                ex.append(e); n += 1
+        _mark_section(ex, _g0, g.get('section'))
+        return n
+
+    def stock_order_zh(self):
+        """`stock_inline` 的排序那半句 → 页尾「存量与流量分开读」那一段的末尾。
+
+        没有任何一组**真的**就地出过存量图 ⇒ 返回 ''，页尾逐字节不变。
+        每个断言都由 `payload()` 记的三本账现算（`stock_inline_ns` / `stock_tail_ns` /
+        `season_ns`），一个图号、一个位置都不写死：
+          · 「紧跟本组的流量图」只在本组在 ③ 里真出过流量图时才说 —— 一组只有存量列、
+            或流量图全被 `flat0_skip` 跳过时，它前面挨着的是**上一组**的图；
+          · 「其余存量图」只在 ⑤ 真出过图时才说，否则整半句不印；
+          · 「季节性图之后」只在 ④ 真出过图时才说（头条列同月历史不足时 ④ 一张都没有），
+            否则退成「全部组图之后」—— ⑤ 按构造排在 ③ 整个循环之后，这句恒真。
+        """
+        got = [d for d in (getattr(self, 'stock_inline_ns', None) or []) if d['ns']]
+        if not got:
+            return ''
+
+        def _ns(ns):
+            return '、'.join(str(k) for k in ns)
+        bits = []
+        for d in got:
+            b = f'「{d["gz"]}」组的存量图（Exhibit {_ns(d["ns"])}）按组的顺序就地排列'
+            if d['flow']:
+                b += f'，紧跟本组的流量图（Exhibit {_ns(d["flow"])}）'
+            bits.append(b)
+        tail = getattr(self, 'stock_tail_ns', None) or []
+        where = '季节性图之后' if getattr(self, 'season_ns', None) else '全部组图之后'
+        return ('排序上，' + '；'.join(bits)
+                + (f'；其余存量图（Exhibit {_ns(tail)}）集中排在{where}' if tail else '')
+                + '。')
+
     # ────────────────────── 组装 ──────────────────────
     def payload(self):
         got, why = self.resolve_through()
@@ -6504,15 +6633,30 @@ class Page:
             # ①② 并成一张：全历史的水平值柱 + 次轴单月同比（见 HEADLINE_STYLES）。
             for c in self.head:
                 ex.append(self.ex_head_bar(n, c)); n += 1
-        else:
+        elif self.headline_style == 'band_yoy':
             for c in self.head:                               # ① 长历史 + 3Y 分位带
                 ex.append(self.ex_history(n, c)); n += 1
             for c in self.head:                               # ② 同比
                 ex.append(self.ex_yoy(n, c)); n += 1
+        # 'none'：①② 一张不出（/sgx/ 页面所有者 2026-09-12「删掉开篇那四张」）。
+        # 写成显式的 elif 而不是把 band_yoy 留在 else 里：第三个取值落进 else 会静默画出
+        # 分位带那两张 —— 与所有者要的正好相反，而页面结构完全正常、闸门全过。
+        # 头条列的其余职责（门槛、抬头、汇总表、④）不在这一段，一样不少。
+        # 这一段为空时下面那行 `_mark_section` 是空操作（`headline_section` 已在
+        # `__init__` 里挡掉）；`log_yoy_bar` 账上也就没有头条那几条登记，
+        # ③ 里同列的组图不再撞 `dup_yoy` 告警、`total_drawn_wider` 也不会折叠 ——
+        # 两者都跟着账本走，不需要在这里另判。
         _mark_section(ex, _h0, self.spec.get('headline_section'))
 
         # 「派生图没出成」的账本：③ 的 mix 也会往里记，所以要在 ③ 之前开。
         self.skipped = list(self.mix_skipped)
+        # 存量图排在哪的账（`stock_inline` 用）：页尾「存量与流量分开读」那句排序说明
+        # 按**真画出来的图**现算图号（见 `stock_order_zh`）。三本同生命周期，每次组装从零记，
+        # 理由与上面几本账逐字同源 —— 留着上一轮的图号，页尾就会指到上一轮的图上。
+        #   stock_inline_ns  [{'gz', 'flow': 本组流量图号, 'ns': 本组就地出的存量图号}]
+        #   stock_tail_ns    ⑤ 集中出的存量图号
+        #   season_ns        ④ 季节性图号（「集中排在季节性图之后」要它真有图才说得出）
+        self.stock_inline_ns, self.stock_tail_ns, self.season_ns = [], [], []
 
         for g in self.groups:                                 # ③ 每组多列对比
             _g0 = len(ex)
@@ -6520,7 +6664,8 @@ class Page:
             # （**不写死「两张」**：合计那一列已被本页别处那张更宽的图画过时只出后一张，
             #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成。）
             # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
-            # 也不该在阅读顺序上互相插队）。
+            # 也不该在阅读顺序上互相插队）—— 除非本组声明了 `stock_inline`：
+            # 那时它与本组的存量列一起在本组流量图之后就地出（见本循环末尾那一支）。
             eaten = set()
             if g['mix'] and not g['mix']['total']['stock']:
                 pair, eaten = self.mix_pair(n, g)
@@ -6549,6 +6694,17 @@ class Page:
                         continue
                     ex.append(e)
                     n += 1
+            # `stock_inline`：本组的存量图紧跟本组流量图就地出（/sgx/ 页面所有者
+            # 2026-09-12「月末未平仓那张挪到衍生品成交那组旁边」，见模块头 GROUP_KEYS 那一段）。
+            # 位置是硬要求：必须在本组 `_mark_section` **之前** —— 否则存量图拿不到本组的
+            # section；也必须在 `_decomp_here` **之前** —— 就地分解图的语义是「排在这一组
+            # 之后」，而这一组现在包括它的存量图。与 ⑤ 共用 `_stock_here`，一处都不另写。
+            if g.get('stock_inline'):
+                _i0 = len(ex)
+                n = self._stock_here(ex, n, g)
+                self.stock_inline_ns.append({'gz': g['zh'],
+                                             'flow': [e_['n'] for e_ in ex[_g0:_i0]],
+                                             'ns': [e_['n'] for e_ in ex[_i0:]]})
             _mark_section(ex, _g0, g.get('section'))
             # 声明了 `after_group` 的分解图**就地**出图（见下面 ⑥ 那段注释里的例外条款）。
             # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
@@ -6561,21 +6717,14 @@ class Page:
             if e is not None:
                 ex.append(e); n += 1
         _mark_section(ex, _s0, self.spec.get('season_section'))
+        self.season_ns = [e_['n'] for e_ in ex[_s0:]]
 
         for g in self.groups:                                 # ⑤ 存量列单独成图
-            _g0 = len(ex)
-            eaten = set()
-            if g['mix'] and g['mix']['total']['stock']:
-                pair, eaten = self.mix_pair(n, g)
-                for e in pair:
-                    ex.append(e); n += 1
-            for c in g['cols']:
-                if not c['stock'] or c['col'] in eaten:
-                    continue
-                e = self.ex_stock(n, g['zh'], c)              # 窗口内恒为 0 → None
-                if e is not None:
-                    ex.append(e); n += 1
-            _mark_section(ex, _g0, g.get('section'))
+            if g.get('stock_inline'):
+                continue          # 已在 ③ 里紧跟本组流量图出过，这里再出就是同一张画两遍
+            _i0 = len(ex)
+            n = self._stock_here(ex, n, g)
+            self.stock_tail_ns += [e_['n'] for e_ in ex[_i0:]]
 
         # ⑥ 量价分解 与 ⑦「水平值 + 单月同比」：**缺省追加在最末**（核对表之前）。
         # 缺省不插在 ③ 里，理由没变：图号一移，正文与图注里所有「见 Exhibit k」的
@@ -6964,7 +7113,11 @@ class Page:
             out.append(
                 f'<b>存量与流量分开读。</b>{"、".join(stock_zh)}是<b>存量</b>（期末截面值），'
                 f'其余列是流量（日均或当月合计）。两者不能相加；跨币种换算时流量配月均汇率、'
-                f'存量配月末汇率。存量列一律单独成图，不与流量列共轴。')
+                f'存量配月末汇率。存量列一律单独成图，不与流量列共轴。'
+                # `stock_inline` 改了存量图的**排序**（不改「单独成图、不共轴」这两条），
+                # 读者在组图中间撞见一张存量图时要知道那是有意的。排序那半句全部现算，
+                # 没有就地出过图就是 ''（逐字节不变），见 `stock_order_zh`。
+                + self.stock_order_zh())
         if self.empty:
             out.append(f'<b>本次跳过的列。</b>{"、".join(self.empty)} 在当前 CSV 里整列为空，'
                        f'已从图与表里剔除（不画空图，也不留一行「—」冒充有数据）。'
@@ -7103,7 +7256,14 @@ class Page:
             # ⚠️ 这句话原来无条件印着「Exhibit 2 的灰色分位带与它同窗口同口径」——
             # `headline_style='bar_yoy'` 的页面上根本没有分位带那张图，那就是一句
             # 指着不存在的图的话。改成按**真画出来的图**收放。
+            # ⚠️ 没有分位带的那一支从前只有一种理由（「开篇图是柱 + 次轴同比」），
+            # 2026-09-12 加了 `headline_style='none'` 之后要分两支：那一档**根本没有开篇图**，
+            # 照旧印「开篇图是…」就是第二句指着不存在的图的话。判据仍然先看真画出来的图
+            # （`_band_n`），没有带时才按开关分叉 —— 不许倒过来只看开关。
             + (f'Exhibit {_band_n} 的灰色分位带与它同窗口同口径。' if _band_n else
+               '本页没有画分位带那张图（本页不设开篇头条图），'
+               '所以这一列的分位只在本表里出现。'
+               if self.headline_style == 'none' else
                '本页没有画分位带那张图（开篇图是「柱 + 次轴同比」，'
                '带的上下沿与柱同量纲、画上去会被读成第三根柱），'
                '所以这一列的分位只在本表里出现。')
@@ -7250,6 +7410,14 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
         print(f'[{t}] 跳过整列为空的列：{"、".join(page.empty)}')
     if page.holes and not quiet:
         print(f'[{t}] ⚠️ 源表缺 {len(page.holes)} 个月的行，已补空行：{page.holes[:6]}')
+    # `headline_style='none'` 下没在任何 groups[].cols 里声明的头条列（见 `Page.__init__`）。
+    # 不硬失败 —— 页面仍然成立；但本页少了一张以它为主体的组图，而页面上看不出来，
+    # 所以这一行是给维护者的：与「合计柱有意不出」那行同一个理由。
+    for c in (getattr(page, 'head_orphans', None) or []):
+        if not quiet:
+            print(f"[{t}] ⚠️ headline_style='none'：头条列 {c['col']}（{c['zh']}）没有在任何 "
+                  f"groups[].cols 里声明、也没有被任何 groups[].mix 引用 —— 开篇头条图不出，组图里也没有它；"
+                  f"门槛、抬头、汇总表头条行与季节性照旧有它，除此之外本页不会有以它为主体的组图")
     for why in (getattr(page, 'skipped', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 派生图未出：{why}')
