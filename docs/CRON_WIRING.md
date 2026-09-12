@@ -34,6 +34,10 @@ fx()                   月度汇率表（横截面页共用）    → 不重跑�
 build_cross()          6 张横截面页，**无条件全跑**（它们没有闸门）
 roster()               重建 data/roster.js（首页与导航目录）
                        ↓
+report_restatement_logs()
+                       cache/ 里各 fetcher 的重述台账（行数 + mtime）→ 只告警，不改末行、不看 --only；
+                       印在收尾闸门之后、末行之前，读日志尾部的人才看得见（理由见它定义上方与调用处的注释）
+                       ↓
 data_changed()?        忽略首行构建日期的正文比较 → 有变化才 commit + push
 ```
 
