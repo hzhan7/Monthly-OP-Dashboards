@@ -124,10 +124,21 @@ def _read_breaks(charted):
     out, seen = [], set()
     months = collections.defaultdict(set)      # 月 -> 受影响的本页列
     skipped = collections.defaultdict(set)     # 月 -> 台账有、本页没画的列
+    dropped = {}                               # (月, 列) -> 这一条为什么不画
     for r in rows:
         month = (r.get('break_month') or '').strip()
         col = (r.get('column') or '').strip()
         if not month or not col:
+            continue
+        # 官方脚注挂在**分组头**上（Equity Markets (3) 管整个现货分组），管不到分组里某一列
+        # 被官方单独按 pro-forma 重述过的情况 —— 照画红线，页面就在说「左右两侧不可比」，
+        # 而数据左右是可比的。只在前提能从 series/enx.csv 现算出来时才不画（见 _cleared_proforma）。
+        if col == 'adv_shares_cleared_kcontracts' and '雅典' in _BREAK_ZH.get(month, '') \
+                and _CLR_PF is not None:
+            dropped[(month, col)] = (
+                '官方 2026-08 版工作簿把雅典按新计数口径 pro-forma 并进了这一列有数的'
+                '全部月份，雅典备注列 %d 个月都是雅典双边成交笔数的 %s 倍（现算）'
+                % (_CLR_PF[2], _CLR_ZH))
             continue
         if col not in charted:
             skipped[month].add(col)
@@ -153,6 +164,12 @@ def _read_breaks(charted):
                     % (len(only_skipped),
                        '、'.join('%s（%s）' % (m, '、'.join(sorted(skipped[m])))
                                  for m in only_skipped)))
+    for (m, c), why in sorted(dropped.items()):
+        note.append('台账里 %s × <code>%s</code> 这一条本页<b>刻意不画</b>：%s。'
+                    '所以这一列跨 %s 左右可比，同比照常读 —— 官方 Equity Markets 脚注 (3) '
+                    '挂在整个现货分组头上、写着雅典自 %s 起并入，那句话对这一列已经不成立'
+                    '（证据链见 fetch/enx.py 的 ACCEPTED_RESTATEMENTS）。'
+                    % (m, c, why, m, m))
     return out, note
 
 
@@ -384,6 +401,33 @@ _ATH_LO, _ATH_HI, _ATH_N, _ATH_M0 = _athex_share(
 #: 而四舍五入会把上界取小、下界取大 —— 印出来的区间装不下自己的数据。
 _ATH_BLO, _ATH_BHI = _band(_ATH_LO, _ATH_HI, 1)
 _ATH_ZH = ('%.1f–%.1f%%' % (_ATH_BLO, _ATH_BHI)) if _ATH_BLO is not None else '绝大部分'
+
+
+def _cleared_proforma():
+    """股票清算量是否已是官方 2026-08 版重述后的口径：是 → (最小, 最大, 月数)，否 → None。
+
+    判据：雅典备注列 ÷ 雅典现货成交笔数（双边计）在两列都有数的**每个**月都落在 0.4–0.6。
+    重述后的新计数口径是雅典单边成交笔数（2026-09-12 实测 56 个月 0.49850–0.49998），
+    重述前的旧口径只有 0.042–0.073 —— 两档隔着一个数量级，宽区间不会在两种口径之间摇摆。
+    这是「库里已经是重述后的数」的现算前提，不是主列 pro-forma 的独立证明：那条证明
+    （新主列 − 旧主列 ≡ 新备注列，46 个月）只能拿旧值做，写在 fetch/enx.py 的
+    ACCEPTED_RESTATEMENTS 登记项里。任何一个月掉出区间就返回 None —— 雅典红线照画、
+    释义退回不提这次重述的版本：宁可多一条要解释的红线，也不凭一句注释擦掉一条可能真实的断点。
+    """
+    v = []
+    for r in _rows():
+        a = _num(r, 'athex_adv_shares_cleared_kcontracts')
+        t = _num(r, 'athex_adv_cash_trades_k')
+        if a is not None and t:
+            v.append(a / t)
+    if not v or not all(0.4 <= x <= 0.6 for x in v):
+        return None
+    return min(v), max(v), len(v)
+
+
+_CLR_PF = _cleared_proforma()
+#: 印到页面上的区间走 `_band()`（下界向下取、上界向上取），理由同上面 `_ATH_BLO` 那条。
+_CLR_ZH = ('%.3f–%.3f' % _band(_CLR_PF[0], _CLR_PF[1], 3)) if _CLR_PF else None
 
 
 def _quarter_pulse(col, m0):
@@ -916,7 +960,9 @@ SPEC = {
          '主列＋备注列＝官方 pro-forma；'
          f'<b>{_ATH_M0_ZH} 起</b>主列<b>已含</b>雅典、这一列是主列里属于雅典的那一块 ⇒ '
          '主列−备注列＝legacy Euronext。'
-         '⇒ 它不是附录，是把那条红线两侧接得起来的<b>唯一</b>工具。'),
+         '⇒ 它不是附录，是把那条红线两侧接得起来的<b>唯一</b>工具。'
+         + ('（股票清算量那一列例外：官方已把雅典 pro-forma 回填进它的全部月份，'
+            '主列全程含雅典，见「清算笔数 / 手数」。）' if _CLR_PF else '')),
 
         ('单股期货',
          '官方 Individual Equity Futures。本页<b>最容易读错</b>的一条：并入雅典之后，'
@@ -970,7 +1016,15 @@ SPEC = {
          '它与现货成交笔数<b>不是同一层</b>：那条是交易所侧的成交笔数'
          '（双边计，且含 reported trades），'
          '这条是清算所侧。⚠ 官方给的值<b>带小数</b>，不是纯计数；'
-         '2023-11 Euronext Clearing 扩容之后这一列已由官方重述。'),
+         '2023-11 Euronext Clearing 扩容之后这一列已由官方重述。'
+         # 下面这半句与 _read_breaks 不画这一列的雅典红线共用一个开关（_cleared_proforma 现算），
+         # 证据链在 fetch/enx.py 的 ACCEPTED_RESTATEMENTS；开关关着时退回上面那句，不提这次重述。
+         + ((f'⚠ <b>2026-08 版起官方又把这一列整段重述了一次</b>：雅典那一块换成新的计数口径'
+             f'（现算 {_CLR_PF[2]} 个月都是雅典双边成交笔数的 {_CLR_ZH} 倍，即单边笔数），'
+             '并且并表<b>之前</b>的月份也 pro-forma 计进了主列 —— 所以这一列<b>全程含雅典</b>、'
+             '没有雅典那条断点，跨并表月的同比照常读。本页已按官方现行口径改写整段历史；'
+             '重述前发布的业绩稿里的清算量是旧口径，与本页对不上属正常。')
+            if _CLR_PF else '')),
 
         ('CSD 托管与结算',
          'CSD＝中央证券存管机构（官方分组 "Central Securities Depositary"）—— '
@@ -1000,7 +1054,10 @@ SPEC = {
 
         '⚠ 2025-11 并入雅典是本页最容易读错的一格。官方把雅典做成**贯穿全历史的备注列**'
         '（athex_*，2021-01 起），主列只从 2025-11 起含雅典 ⇒ 主列+备注列 = 官方 pro-forma、'
-        '主列−备注列 = legacy Euronext。最危险的是单股期货：'
+        '主列−备注列 = legacy Euronext'
+        + ('（股票清算量除外：官方 2026-08 版起已把雅典 pro-forma 回填进那一列的全部月份，'
+           '见释义「清算笔数 / 手数」）' if _CLR_PF else '')
+        + '。最危险的是单股期货：'
         + ((f'雅典占并表后的 {_ATH_ZH}（{_ATH_M0} 起 {_ATH_N} 个月现算的区间），')
            if _ATH_LO is not None else '雅典占并表后的绝大部分，')
         + '不做处理时 2025-11 那一格是 3–6 倍的假跳。实测 Q2-25 单股衍生品主列 19,608,871 + '
@@ -1097,7 +1154,9 @@ SPEC = {
 
         '⚠ 不要拿 euronext_latest_month_volumes.xlsx 核对本页的历史值：'
         '它的同比/上年列是**含雅典的 pro-forma**（脚注写 "since January 2025"），'
-        '与本页主列的 legacy 基准不同，单股衍生品会差到 23%；'
-        '而且它的 FX 是 M$，历史文件的 FX 是绝对美元，两个文件同一序列两种单位。',
+        '与本页主列的 legacy 基准不同，单股衍生品会差到 23%'
+        + ('（股票清算量例外：那一列本页已按官方 2026-08 版重述改成含雅典的 pro-forma，'
+           '与 latest 文件同口径）' if _CLR_PF else '')
+        + '；而且它的 FX 是 M$，历史文件的 FX 是绝对美元，两个文件同一序列两种单位。',
     ],
 }
