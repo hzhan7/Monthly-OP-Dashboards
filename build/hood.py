@@ -126,16 +126,33 @@ BRK_SWEEP = pd.Period('2026-02', 'M')      # High-Yield Cash 改版，>$6bn 从 
 BRK_TRUMP = pd.Period('2026-07', 'M')      # Trump Account 并入总平台资产与净流入（见下）
 WONDERFI_CUSTOMERS_MN = 0.3                # WonderFi 带进的 funded customers（公司披露 ~300k）
 
-# Trump Account 断点的口径边界**只有两条序列**，第三条明确排除 —— 官方 7 月 Monthly
-# Metrics Excel 的脚注原文（cache/hood_2026-07_*_July_2026_Monthly_Metrics_xlsx.xlsx）：
+# Trump Account 断点的口径边界**只有两条序列**，第三条明确排除 —— 官方 Monthly Metrics
+# Excel 原文（cache/hood_2026-07_*_July_2026_Monthly_Metrics_xlsx.xlsx 与
+# cache/hood_2026-08_*_August_2026_Monthly_Metrics_*.xlsx；脚注在 Monthly Metrics 页
+# B50–B52，定义在 Disclosures and Definitions 页 B22 / B24）：
 #   · "Starting in July 2026, Total Platform Assets include Trump Account assets
-#      custodied by Robinhood."          → BK_TPA 要这条断点
-#   · "Starting in July 2026, Net Deposits include Trump Account contributions."
-#                                        → BK_ND 要这条断点
-#   · "Funded Customers do not include Trump Accounts."
+#      custodied by Robinhood."          → BK_TPA 要这条断点（两个月的脚注 2 与定义同文）
+#   · Net Deposits：7 月的定义、7 月与 8 月的脚注 3 都只写 "Starting in July 2026,
+#     Net Deposits include Trump Account contributions."；**8 月的定义（B24）改成
+#     "...include Trump Account contributions and seed funding from Treasury."**
+#                                        → BK_ND 要这条断点，页面措辞按 8 月定义写全
+#   · "Funded Customers do not include Trump Accounts."（两个月的脚注 1 同文）
 #                                        → **BK_CUST 不要这条断点**
 # 三条序列一刀切全加会在客户数那张图上凭空画一条假断点，把一个口径没变的 m/m
 # 涂成「不可比」。加断点和不加断点一样，都要按脚注逐条对，不能按「这个月有新闻」加。
+#
+# 净流入为什么按 8 月定义页、不按脚注 3 写（2026-09-12 用 openpyxl 逐格对过两份工作簿）：
+# 两处说法不一致时，按**官方写明过的外延取并集**。脚注 3 两个月逐字未动，只说明它没跟着
+# 改，不说明口径没变；而漏写种子资金，页面就把一笔**不是客户自己汇入**的钱（财政部拨进
+# 账户的）说成了缴款，读者会高估自然净流入。同一次改动里 8 月定义还删掉了 "Starting in
+# June 2025, Net Deposits include results from Bitstamp."，脚注 3 却仍列着 —— 按同一条
+# 并集规则，BK_ND 的 Bitstamp 断点照旧。
+# 种子资金是不是 7 月那期就已经在数里：8 月工作簿 Monthly Metrics 页的 Jul-26 Net Deposits
+# （Q14）仍是 5.6，与 7 月工作簿（R14）相同、没有重述 —— 这与「7 月已含」「7 月还没到账」
+# 两种情形都相容。两份工作簿的产品时间线都把 "Trump Accounts initial funding" 列在
+# Jul-26 那一栏（7 月 I67、8 月 H67），偏向前者；但 initial funding 也可能指家长的首笔
+# 缴款，工作簿本身分不出来（推断，未证实）。所以页面只写官方定义「自 2026-07 起含」，
+# **不写** 7 月那 $5.6bn 里种子资金占多少。
 
 # 每条序列受哪些断点影响。汇总表的 m/m / y/y 是否跨断点、图上画哪几条竖虚线，
 # 都从这里推 —— 手写在两处必然走偏（原版就是图上画了 WonderFi、表里 m/m 照涂绿）。
@@ -1892,7 +1909,8 @@ summary = {
             f'把逾 $6bn 从 Cash sweep 挪到 Cash and deposits；WonderFi 自 {BRK_WONDERFI} '
             f'带进约 {WONDERFI_CUSTOMERS_MN * 1000:.0f}k funded customers（股权交易，不是自然获客）；'
             f'Trump Account 自 {BRK_TRUMP} 起并入总平台资产（Robinhood 托管部分）与净流入'
-            f'（缴款），<b>但不计入 funded customers</b>。'
+            f'（缴款与美国财政部种子资金，后者不是客户自己汇入的钱），'
+            f'<b>但不计入 funded customers</b>。'
             f'带 {MARK} 的格子表示<b>该格的比较区间跨过上述断点</b>，两端不是同一个口径下的数，'
             f'因此数值照登、但不涂红绿。{_fc_ex_txt}'
             '3Y %ile = 当月读数在近 36 个月里高于多少百分比的观测，判据统一取自 '
@@ -2029,8 +2047,8 @@ notes = [
                   f'WonderFi 带进约 {WONDERFI_CUSTOMERS_MN * 1000:.0f}k funded customers'
                   '（股权交易，不是自然获客）'),
         _brk_line(BRK_TRUMP,
-                  'Trump Account 并入总平台资产（Robinhood 托管部分）与净流入（缴款），'
-                  '不计入 funded customers'),
+                  'Trump Account 并入总平台资产（Robinhood 托管部分）与净流入'
+                  '（缴款与美国财政部种子资金），不计入 funded customers'),
     ])
     + '。汇总表里<b>跨断点的 m/m 与 y/y 都带 †</b>，数值照登但不涂红绿 —— 两端不是同一个口径下的数，'
       '「好消息还是坏消息」这个判断做不了。',
@@ -2283,16 +2301,18 @@ GLOSSARY = [
      '官方行名 <code>Funded Customers</code>，同样是<b>月末存量</b>。'
      '⚠️ 它的增量<b>不等于</b>自然获客：'
      f'{BRK_WONDERFI} 的 WonderFi 一次带进约 {_G_WF}，那是<b>股权交易</b>。'
-     f'反过来，Trump Account 的资产与缴款分别进了总平台资产与净流入，却<b>不计入</b>'
-     f'这一行（{BRK_TRUMP}）—— 同一个月这三行不同步是口径造成的，不是业务。'),
+     f'反过来，Trump Account 的资产进了总平台资产、缴款与财政部种子资金进了净流入，'
+     f'却<b>不计入</b>这一行（{BRK_TRUMP}）—— 同一个月这三行不同步是口径造成的，不是业务。'),
 
     ('净流入',
      '官方行名 <code>Net Deposits</code>：当月的客户净汇入，是<b>流量</b>（$bn/月），'
      '与总平台资产那个期末存量不是一回事，两者只在下面「市值变动」那条恒等式里相遇。'
      '⚠️ 它<b>不是纯有机流量</b>：'
      f'Bitstamp（{BRK_BITSTAMP}）、TradePMR 顾问资产的流量（{BRK_TRADEPMR}）、'
-     f'Trump Account 的缴款（{BRK_TRUMP}）先后并入 —— 跨这几个月比较时，'
-     f'两端不是同一个外延。'),
+     f'WonderFi（{BRK_WONDERFI}）、Trump Account 的缴款与<b>美国财政部种子资金</b>'
+     f'（{BRK_TRUMP}）先后并入 —— 跨这几个月比较时，两端不是同一个外延。'
+     '其中种子资金是政府拨入，<b>不是客户自己汇入的钱</b>'
+     '（2026 年 8 月期工作簿的定义页写明；同期月度表脚注 3 仍只写缴款）。'),
 
     ('年化有机增速',
      '<code>当月净流入 × 12 ÷ 上月末总平台资产</code>，与本系列里 Schwab core NNA、'
