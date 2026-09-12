@@ -1174,6 +1174,127 @@ def audit_overdue_headline(today=None):
         return []
 
 
+# ── 重述台账 ──────────────────────────────────────────────────────────────────
+# 七个 fetch 模块对**已入库的值永不覆盖**：官方新值与 series 对不上时，只把冲突写进
+# gitignore 的 cache/ 里一份台账「供人工判断」、stdout 打一行，然后照常返回 —— 按家状态
+# 照样是 NOCHANGE（同轮多了新月份就是 NEW，也只字不提冲突），末行照常。而仓里没有任何东西
+# 读这些台账。2026-08 Euronext 把
+# adv_shares_cleared_kcontracts 按新口径整列重述，fetch/enx.py 如约没覆盖、如约写了
+# cache/enx_restatements.csv，之后入库的新月份却是新口径 —— /enx/ 从 08-08 起挂着跨口径
+# 同比，09-03 才被人偶然看见。那一行 stdout 夹在日志中段，台账在 cache/ 里躺了一个月。
+#
+# ⚠ 只告警、不拦、不计入 fails（2026-09-12 按主 checkout 的 cache/ 实测定案）：
+#   · 当天在册 5 份 / 148 行，最早那份（db1）mtime 是 08-18。「台账非空就拦」= 全站 28 家
+#     至少从 08-18 起一页都发不出去，换来的只有 enx 那一件；
+#   · 写入方**没有一个会自己清台账**：快照型（enx / ice / hkex / lseg_lch）冲突消失时不写也
+#     不删，db1 / lseg 是去重累积账，lseg_tradeweb 逐轮追加。闸门红了只能等人删文件才绿，
+#     而「让人去看」本来就是告警在做的事；
+#   · 里面有舍入级的冲突（ice 1.73 vs 1.72、lseg_tradeweb 相对差 9e-6 ~ 8e-4），拦就是末行天天
+#     FAILED —— DEAD_COLS 那段「每季度假一次的警报，人很快学会无视」，只会来得更快；
+#   · 拦也修不了伤害本身：写入方已经拒绝覆盖，库里的旧值与线上一致；enx 的伤害是新口径的
+#     新月份接在旧口径历史后面，只有人判完、改那个 fetcher 才修得好。
+#   所以与 audit_stale_cols 同档：「该有人去看一眼」，不是「这一轮跑挂了」。
+#
+# ⚠ 「没文件」与「空文件」都不许静默通过，但分量不同：
+#   · 写入方都是**有冲突才建文件**，已知写入方没文件多半就是干净的 —— 可它也是 cache/ 被清过、
+#     换了机器之后的样子，而 db1 快腿的更早月份只在首次回补时比过一次（fetch/db1.py 的
+#     _record_conflicts docstring），那种冲突删了不会自己回来。两者分不清，所以逐个印一行，不带 ⚠。
+#   · 空台账（0 行数据）一定是异常：没有一个写入方会写出空台账，那是 'w' 截断之后没写完、
+#     或内容被人清掉了。按「没冲突」放过去，正是这道体检要防的那种静默。
+#
+# 「已知写入方」读 fetch/*.py 的源码现算（找 '…restatements.csv' 字面量），不另立名单 ——
+# 与 builder() 同一条理由：名单是第二处要同步的地方，漏同步的后果恰好是静默。实测 49 个文件
+# 约 0.01s，恰好七处。lseg_lch 写的是裸 'restatements.csv'、落在它自己的 cache/lseg_lch/ 里，
+# 只 glob cache/*_restatements.csv 会把它漏掉，所以两种形状都扫。
+#
+# 判了「不采纳」的冲突，写入方下一次比对还会写回来。要它闭嘴得在**那个 fetcher** 里认领
+# （容差或逐格登记），不在本文件 —— 本文件不认得任何一家的名字。
+RESTATE_LOG = re.compile(r"""['"]([A-Za-z0-9_]*restatements\.csv)['"]""")
+
+
+def check_restatement_logs():
+    """→ (已知写入方 {台账路径: 'fetch/<m>.py'}, 逐份台账 [dict])。只读文本，不 import 任何 fetch 模块。
+
+    每份台账一个 dict：path / who（写入方，源码里找不到为 None）/ mtime（没文件为 None）/
+    rows（数据行）/ cells（去重后的「月 × 列」格数，lseg_tradeweb 逐轮追加会让 rows 虚胖）/
+    cols / span（(首月, 末月)）。七个写入方的表头前两列都是 month, column。
+    """
+    known = {}
+    for fp in sorted(glob.glob(os.path.join(HERE, 'fetch', '*.py'))):
+        stem = os.path.splitext(os.path.basename(fp))[0]
+        with open(fp, encoding='utf-8') as f:
+            for name in set(RESTATE_LOG.findall(f.read())):
+                sub = (stem,) if name == 'restatements.csv' else ()   # 裸名 = 写进 cache/<模块名>/
+                known[os.path.join(CACHE, *sub, name)] = f'fetch/{stem}.py'
+    found = (glob.glob(os.path.join(CACHE, '*_restatements.csv'))
+             + glob.glob(os.path.join(CACHE, '*', 'restatements.csv')))
+    logs = []
+    for p in sorted(set(known) | set(found)):
+        d = {'path': p, 'who': known.get(p), 'mtime': None,
+             'rows': 0, 'cells': 0, 'cols': 0, 'span': None}
+        if os.path.exists(p):
+            d['mtime'] = os.path.getmtime(p)
+            with open(p, encoding='utf-8', newline='') as f:
+                body = [r for r in list(csv.reader(f))[1:] if any(c.strip() for c in r)]
+            ms = sorted(r[0] for r in body if r[0].strip())
+            d.update(rows=len(body), cells=len({tuple(r[:2]) for r in body}),
+                     cols=len({r[1] for r in body if len(r) > 1}),
+                     span=(ms[0], ms[-1]) if ms else None)
+        logs.append(d)
+    return known, logs
+
+
+def report_restatement_logs(since):
+    """把 check_restatement_logs 的结果打出来。永远不 exit、不计入 fails —— 理由见上面那段。
+
+    `since` = 本轮开跑的时间戳：mtime 不早于它的台账是**这一轮**有 fetcher 刚写的，
+    而那一家的按家状态照样可能是 NOCHANGE —— 这正是本函数要补的那一格。
+    整个函数体裹在 except 里，与 audit_stale_cols() 同规矩。
+    """
+    try:
+        known, logs = check_restatement_logs()
+        if not known:
+            print('  ⚠ 重述台账体检：fetch/*.py 里一个写入方都没扫到 —— 写法全改了，'
+                  '或 RESTATE_LOG 的正则已在空转；下面只剩按文件名 glob 到的台账。')
+        today = datetime.date.today()
+
+        def rel(p):                           # 按 CACHE 取相对路径：cache/ 不在仓内时也印成 cache/…
+            return os.path.join('cache', os.path.relpath(p, CACHE))
+
+        def when(d):
+            t = datetime.datetime.fromtimestamp(d['mtime'])
+            ago = (today - t.date()).days
+            tag = ' ← 本轮新写' if d['mtime'] >= since else f'（{ago} 天前）' if ago else '（今天，本轮之前）'
+            return f'写于 {t:%Y-%m-%d %H:%M}{tag}'
+
+        live = sorted((d for d in logs if d['rows']), key=lambda d: -d['mtime'])
+        empty = [d for d in logs if d['mtime'] is not None and not d['rows']]
+        gone = [d for d in logs if d['mtime'] is None]
+        if not (live or empty):
+            print(f'  重述台账：0 份（{len(gone)} 个已知写入方都没有台账：'
+                  f'{" / ".join(d["who"] for d in gone)} —— 没见过冲突，或 cache/ 被清过，分不清）')
+            return
+        n = sum(d['rows'] for d in live)
+        print(f'  ⚠ 重述台账 {len(live)} 份 / {n} 行待人判'
+              + (f'，另有 {len(empty)} 份空台账' if empty else '')
+              + '（写入方不覆盖已入库值，冲突只落在 cache/）——「NOCHANGE」说明不了库里的值还对得上官方：')
+        for d in live:
+            size = f'{d["rows"]} 行' + (f'（去重 {d["cells"]} 格）' if d['cells'] < d['rows'] else '')
+            a, b = d['span'] or ('?', '?')
+            print(f'     {rel(d["path"]):38s} {size} · {d["cols"]} 列 · {a if a == b else f"{a}..{b}"}  '
+                  f'{when(d)}  {d["who"] or "写入方不明：fetch/ 里已没有代码写这个名字，这份不会再更新"}')
+        for d in empty:
+            print(f'     {rel(d["path"]):38s} 0 行  {when(d)} ← 异常：没有写入方会写空台账'
+                  '（截断后没写完，或内容被清掉），不等于「没冲突」')
+        for d in gone:
+            print(f'     {rel(d["path"]):38s} 无文件 —— {d["who"]} 有冲突才写：没见过冲突，或 cache/ 被清过，分不清')
+        print('     处置：逐行判「官方重述」还是「解析错」，结论落进那个 fetcher（采纳 / 容差 / 逐格认领）'
+              '之后删掉该文件 —— 写入方从不自己清，不删就每轮都在这里。')
+        print('           没在本轮重写的快照可能是修过的旧账，也可能是那家今天被闸门跳过、没去比 —— 看 mtime 再判。')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 重述台账体检自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+
+
 def builder(t):
     """→ 重新生成 `data/<t>.js` 的命令行；三种写法都找不到时返回 None。
 
@@ -1731,6 +1852,7 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--force', action='store_true')
     a = ap.parse_args()
+    t_run = time.time()                   # report_restatement_logs 靠它认出「本轮新写」的台账
 
     # 第一件事就是核对依赖版本：后面任何一步的怪异结果都可能是它引起的，
     # 所以这行必须打在所有 fetch/build 输出之前，让人一眼看到「地板换过了」。
@@ -1902,6 +2024,15 @@ def main():
     if run_gate('check_yoy_caliber（同比口径，CONTRACT §6.6）',
                 [sys.executable, os.path.join(HERE, 'tools', 'check_yoy_caliber.py')]) != 0:
         gate_fail.append('check_yoy_caliber')
+    # 重述台账体检（定案与判据见 report_restatement_logs 上方那段）。它与 audit_stale_cols 同档，
+    # 却不跟着它印，是按**谁读得到**摆的：调度任务把 stdout 整份 tee 进日志，会话里看的是 tail -60。
+    # 2026-09-12 那轮日志 197 行，lseg_tradeweb 自己那句「⚠ 12 处与已入库值冲突」在第 64 行，
+    # 两道收尾闸门的转印从第 87 行一直占到末行之前 —— 印在陈旧列审计旁边，照样落在窗外。
+    # 摆在这里，NOTHING_TO_DO / PUBLISHED / PARTIAL / push FAILED / 产物闸门 FAILED 每条出口上
+    # 它离末行都只隔几行（DRY_RUN 另隔一段 diff --stat，那条路径调度任务不走）。
+    # 更早退出的那几条（脏树 / preflight / 未知 ticker）本轮一家都没抓，不会有新台账，下一轮照报。
+    # 不看 --only：台账可能是上一轮留下的，今天只跑 cme 也照报 enx 那份。
+    report_restatement_logs(t_run)
     # 两道都跑完再判，不在第一道失败时短路：一次跑出全部问题，人只需要修一遍、重跑一次。
     if gate_fail:
         print(f'FAILED 产物闸门未通过（{"、".join(gate_fail)}；逐条见上），'
