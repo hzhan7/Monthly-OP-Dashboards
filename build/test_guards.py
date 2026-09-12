@@ -605,6 +605,134 @@ class TestMsciCacheKeyPool(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# F2. fetch/sgx.py 的折行行标签 —— 上下两半都要接回数值行
+# ═══════════════════════════════════════════════════════════════════════════
+# 2025-09 起 SGX 月报把 Lump Premium 改名为
+# `SGX Platts Iron Ore CFR China (Lump Premium) Index Futures`，版面上折成两行、数字夹在中间。
+# `_parse_page` 当时只接下半截，标签读成 `Index Futures`，"Iron Ore" 在丢掉的上半截里 ——
+# vol_iron_ore_contracts 连续 12 个月静默少加一行（fetch/sgx.py 口径坑 19）。
+# 这里用**合成页面**复刻那一处的几何（上半截在数值行上方 ~5.5pt、下半截在下方 ~5.5pt、
+# 行距 ~17pt），不依赖 cache/（gitignore 且会被 prune）；有原件时再加一道真 PDF 的对账。
+class _FakeSgxPage:
+    """只实现 `_page_lines()` 用到的两样：`rect` 与 `get_text('dict')`。"""
+
+    def __init__(self, lines, w=595.0, h=842.0):
+        self.rect = type('R', (), {'width': w, 'height': h})()
+        self._lines = lines                           # [(x0, yc, text)]，行高固定 11.8pt
+
+    def get_text(self, kind):
+        assert kind == 'dict'
+        return {'blocks': [{'type': 0, 'lines': [
+            {'bbox': (x0, yc - 5.9, x0 + 6.0 * len(t), yc + 5.9), 'spans': [{'text': t}]}
+            for x0, yc, t in self._lines]}]}
+
+
+def _sgx_row(yc, label, nums, x0s=(300.0, 360.0, 420.0)):
+    out = [(51.0, yc, label)] if label else []
+    return out + [(x, yc, n) for x, n in zip(x0s, nums)]
+
+
+class TestSgxWrappedLabel(unittest.TestCase):
+    MON = '2026-08'
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_sgx_t', os.path.join(ROOT, 'fetch', 'sgx.py'))
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+
+    def _page(self):
+        lines = [(51.0, 300.0, 'Metal And Dry Bulk Volume'),
+                 (300.0, 330.0, 'Jun 2026'), (360.0, 330.0, 'Jul 2026'), (420.0, 330.0, 'Aug 2026')]
+        lines += _sgx_row(360.0, 'SGX IODEX Iron Ore Futures', ('4,774,524', '4,455,532', '4,127,939'))
+        lines += _sgx_row(377.0, 'SGX Options On IODEX Iron Ore Swaps', ('0', '0', '0'))
+        # 真 PDF（2026-08 期 p24）的排法：上半截、数值行、下半截三条各自独立的文字行
+        lines += [(51.0, 388.7, 'SGX Platts Iron Ore CFR China (Lump Premium)')]
+        lines += _sgx_row(394.2, '', ('28,774', '29,391', '35,016'))
+        lines += [(51.0, 399.5, 'Index Futures')]
+        lines += [(51.0, 411.0, 'SGX Platts Iron Ore CFR China (Lump Premium)')]
+        lines += _sgx_row(416.5, '', ('0', '0', '0'))
+        lines += [(51.0, 422.0, 'Swaps')]
+        lines += _sgx_row(439.0, 'Total', ('7,000,000', '6,500,000', '6,000,000'))
+        # 紧接着的下一张表：自己没有标题行、直接是表头 —— 它的 title 不许被上面某一行的碎片占掉
+        lines += [(300.0, 480.0, 'Jun 2026'), (360.0, 480.0, 'Jul 2026'), (420.0, 480.0, 'Aug 2026')]
+        lines += [(51.0, 509.5, 'SGX Platts Iron Ore CFR China (Lump Premium)')]
+        lines += _sgx_row(515.0, '', ('1', '2', '3'))
+        lines += [(51.0, 520.5, 'Index Futures')]
+        return _FakeSgxPage(lines)
+
+    def test_both_halves_rejoined(self):
+        b = self.m._parse_page(self._page(), running_head=None)
+        labs = [r['lab'] for r in b[0]['rows']]
+        self.assertEqual(labs, [
+            'SGX IODEX Iron Ore Futures',
+            'SGX Options On IODEX Iron Ore Swaps',
+            'SGX Platts Iron Ore CFR China (Lump Premium) Index Futures',
+            'SGX Platts Iron Ore CFR China (Lump Premium) Swaps',
+            'Total'])
+        self.assertEqual(b[0]['rows'][2].get('lab_head'),
+                         'SGX Platts Iron Ore CFR China (Lump Premium)')
+        self.assertIsNone(b[0]['rows'][0].get('lab_head'))
+
+    def test_upper_half_is_not_a_title_candidate(self):
+        b = self.m._parse_page(self._page(), running_head=None)
+        self.assertEqual(b[0]['title'], 'Metal And Dry Bulk Volume')
+        self.assertIsNone(b[1]['title'],
+                          '折行上半截被当成了下一张表的标题 —— 它已经补进了行标签，不许再用一次')
+
+    def test_iron_ore_total_counts_the_wrapped_row(self):
+        b = self.m._parse_page(self._page(), running_head=None)
+        # 4,127,939 + 0 + 35,016 + 0；只修下半截的旧逻辑会得到 4,127,939
+        self.assertEqual(self.m._read_iron_ore(b[:1], self.MON), 4127939 + 35016)
+
+    def test_bottom_aligned_wrap(self):
+        """第二种排法：数字与最后一行齐平，上半截在上方 ~10.8pt（2024-07 期 p12 实测）。"""
+        lines = [(51.0, 250.0, 'Equity Index Futures Volume'),
+                 (300.0, 280.0, 'Jun 2024'), (360.0, 280.0, 'Jul 2024')]
+        lines += _sgx_row(316.6, 'FTSE Emerging Market Index Futures', ('5', '6'))
+        lines += [(51.0, 332.8, 'FTSE Emerging Market inc Korea Net Total Return (USD)')]
+        lines += _sgx_row(343.6, 'Index Futures', ('0', '0'))
+        lines += _sgx_row(359.8, 'FTSE Emerging Markets ESG Index Futures', ('7', '8'))
+        b = self.m._parse_page(_FakeSgxPage(lines), running_head=None)
+        self.assertEqual([r['lab'] for r in b[0]['rows']], [
+            'FTSE Emerging Market Index Futures',
+            'FTSE Emerging Market inc Korea Net Total Return (USD) Index Futures',
+            'FTSE Emerging Markets ESG Index Futures'])
+
+    def test_orphan_text_between_rows_goes_to_nearer_row_only(self):
+        """离上一行更近（但 ≥ 9pt，不够挂回去）的文字行，不许被下一行抢走。"""
+        lines = [(51.0, 250.0, 'Energy Volume'),
+                 (300.0, 280.0, 'Jul 2026'), (360.0, 280.0, 'Aug 2026')]
+        lines += _sgx_row(310.0, 'Oil Futures', ('1', '2'))
+        lines += [(51.0, 320.0, 'stray note')]            # 离上一行 10pt、离下一行 11pt
+        lines += _sgx_row(331.0, 'Oil Swaps', ('3', '4'))
+        b = self.m._parse_page(_FakeSgxPage(lines), running_head=None)
+        self.assertEqual([r['lab'] for r in b[0]['rows']], ['Oil Futures', 'Oil Swaps'])
+
+    def test_lower_half_only_unchanged(self):
+        """老路径：标签与数字同一行、续行在下方 —— 修上半截不能把它改坏。"""
+        lines = [(51.0, 300.0, 'Interest Rates Futures Volume'),
+                 (300.0, 330.0, 'Jul 2026'), (360.0, 330.0, 'Aug 2026')]
+        lines += _sgx_row(360.0, 'SGX FTSE 10-Year Indonesia Government', ('10', '20'))
+        lines += [(51.0, 365.5, 'Bond Futures')]
+        lines += _sgx_row(382.0, 'Total', ('10', '20'))
+        b = self.m._parse_page(_FakeSgxPage(lines), running_head=None)
+        self.assertEqual([r['lab'] for r in b[0]['rows']],
+                         ['SGX FTSE 10-Year Indonesia Government Bond Futures', 'Total'])
+        self.assertIsNone(b[0]['rows'][0].get('lab_head'))
+
+    @unittest.skipUnless(os.path.exists(os.path.join(ROOT, 'cache', 'sgx_2026-08.pdf')),
+                         'cache/sgx_2026-08.pdf 不在（cache/ gitignore 且会被 prune）')
+    def test_real_pdf_2026_08_matches_hand_count(self):
+        """所有者拿官方 PDF 手加的数：IODEX 期货 4,127,939 + IODEX 期货期权 552,512
+        + Lump Premium 期货 35,016 + 65% 期货 33,740 = 4,749,207。"""
+        blocks = self.m._load_blocks(os.path.join(ROOT, 'cache', 'sgx_2026-08.pdf'))
+        self.assertEqual(self.m._read_iron_ore(blocks, self.MON), 4749207)
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # G. docs/CRON_WIRING.md 的闸门表 vs 代码真值
 # ═══════════════════════════════════════════════════════════════════════════
 # 这张表是「下一个人查闸门时会去看的地方」，而它漂过：2026-08-30 给 umc / ase 加
