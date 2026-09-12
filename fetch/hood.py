@@ -43,8 +43,8 @@ investors.robinhood.com → robinhood.gcs-web.com → Akamai。Akamai 按 **TLS 
      Q1'26 那份从 2023-01 起。**不是全历史** —— 早年月份要去 Quarterly Results 页翻
      当年的 Supplement（Q1'23 那份就覆盖 2021-01~2023-03），那是历史回填脚本
      build/basefill/hood_2021.py 的活，本模块不碰。
-   · 独立 Monthly Metrics：单 sheet 'Monthly Metrics'，只有**滚动 13 个月**，
-     且指标行整体下移 3 行。
+   · 独立 Monthly Metrics：单 sheet 'Monthly Metrics'，只有 **14 列（去年同月 → 本月）**，
+     且指标行整体下移 3 行。（2026-04/05/07/08 四份实数都是 14 列，不是 13。）
    build/extract_hood.py 是按行号硬取的（因为标签重复：'Equity ($B)' 在总量和日均各出现
    一次，'Robinhood App'/'Bitstamp' 也各两次），只对 Earnings Supplement 有效。
    本模块改成 **(章节标题, 行标签) 两级定位**，两种布局通吃，官方插一行也不会错位。
@@ -68,6 +68,7 @@ import unicodedata
 
 import openpyxl
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 INDEX_URL = 'https://investors.robinhood.com/financials/monthly-metrics/default.aspx'
 BASE = 'https://investors.robinhood.com'
@@ -496,9 +497,58 @@ def _grid(ws):
     return [list(r) + [None] * (W - len(r)) for r in ws.iter_rows(values_only=True)], W
 
 
-def _periods(rows, W, kind):
-    """扫出期次列。表头行号在各 sheet 不一致（月度 3 或 6，季度 P&L 4），所以扫不写死。"""
+# 月度表标题里自述的报告月。缓存里 2023-03 ~ 2026-08 的 16 份工作簿每份都有这一句，且都
+# 等于表头最后一列：Earnings Supplement 写在 B1（与公司名、(Unaudited) 挤在同一格，用换行
+# 隔开），独立月度文件写在 B3。只在 _periods 需要替上游补年份时拿来互证，见那里的 ③。
+_REPORT_RE = re.compile(r'Monthly Metrics Report for\s+([A-Za-z]+)\s+(20\d\d)', re.I)
+
+
+def _report_month(ws):
+    """月度表标题 → Period('YYYY-MM', 'M')；没有这一句、或月份词认不出，返回 None。"""
+    for r in ws.iter_rows(min_row=1, max_row=8, values_only=True):
+        for v in r:
+            m = _REPORT_RE.search(v) if isinstance(v, str) else None
+            if m and _month_of_label(m.group(1)):
+                return pd.Period(f'{m.group(2)}-{_month_of_label(m.group(1)):02d}', 'M')
+    return None
+
+
+def _periods(rows, W, kind, where='', report=None):
+    """扫出期次列 → [(列序号, Period)]。表头行号在各 sheet 不一致（月度 3 或 6，季度 P&L 4），
+    所以扫不写死；年份写在期次表头的**上一行**。
+
+    where  报错与日志里的定位（「文件名「sheet」」），由 parse_sheet 传进来。
+    report 月度表标题自述的报告月（_report_month），只在下面 ③ 推算年份时用来互证。
+
+    ═══ 年份：表头逐期连续 + 年份格定锚，缺格时必须和标题互证 ═══
+    原写法从左往右扫年份行，见到数字就更新 cur、贴给它右边的期次格，默认**每个年份块的
+    左上角都填了年份**。August 2026 Monthly Metrics（09-10 挂出）打破了这一点：
+        第 6 行只有 K6=2026；D6:I6 仍是合并区间，但左上角 D6 没有值；
+        第 7 行 D..I = Jul..Dec，K..R = Jan..Aug。
+        （July 2026 那份是 D6=2025、L6=2026，两块都填了。）
+    于是 D7 的「Jul」拿到 cur=None，拼出 'None-07'。pandas 先 .upper() 再解析，报出来的是
+    「unable to parse: NONE-07」，不带文件名、sheet、列号。09-11、09-12 两天 hood 都停在
+    这一句，8 月数据进不了 series。
+
+    现在分三步：
+      ① 期次表头必须逐期相邻（…→Dec→Jan→…），断开就抛。后面按日历推年份全靠这一条；
+         它也兜住「漏一列、多一列」这类会让某个月悄悄没了或错位的坏法。
+      ② 年份格只当锚点：每个年份格落在它右侧第一个期次格上，推出整排的起点。
+         几个年份格推出的起点必须一致，不一致就抛 —— 那说明某个年份格本身填错了，
+         挑一个信就可能把一整年的数平移到隔壁年。一个年份格都没有也抛。
+      ③ 按原来「往右沿用」读不到年份（今天的 D..I）、或沿用出来的年份与日历不符的期次格，
+         年份是推出来的，等于替上游补了一个它没写的格。只凭剩下那个年份格去补，前提是
+         那一格本身没填错；所以还要求标题自述的报告月（季度表取它所在季度）等于表头
+         最后一列 —— 两个互不依赖的来源说同一件事才补，并打一行日志说明上游版式变了。
+         对不上、或者工作簿里没有标题，就抛。
+
+    对版式正常的工作簿，结果与原写法逐列相同：缓存里 2023-03 ~ 2026-07 的 15 份工作簿
+    （月度表与两张季度表）修复前后逐列比对一致（2026-09-12 实测）。标题互证只在 ③ 发生时
+    才做 —— 年份格齐全的文件，不因为上游作者忘了改标题而被拦下。
+    """
     want = MON if kind == 'M' else ['Q1', 'Q2', 'Q3', 'Q4']
+    unit, per_year = ('月', 12) if kind == 'M' else ('季', 4)
+    where = where or f'{kind} 表'
     pr = None
     for ri in range(min(10, len(rows))):
         hits = sum(1 for i in range(W)
@@ -507,26 +557,99 @@ def _periods(rows, W, kind):
             pr = ri
             break
     if pr is None:
-        raise RuntimeError(f'找不到 {kind} 表头行')
-    yr, out, cur = rows[pr - 1], [], None
+        raise RuntimeError(f'{where}: 找不到 {kind} 表头行')
+
+    heads = []                                     # [(列序号, 期内序号：月 1..12 / 季 1..4)]
     for i in range(W):
-        v = yr[i]
-        if v is not None and str(v).replace(',', '').strip().isdigit():
-            cur = int(str(v).replace(',', '').strip())
         s = str(rows[pr][i]).strip()[:3] if rows[pr][i] else ''
         if kind == 'M' and s in MON:
-            out.append((i, pd.Period(f'{cur}-{MON.index(s) + 1:02d}', 'M')))
+            heads.append((i, MON.index(s) + 1))
         elif kind == 'Q' and s in ('Q1', 'Q2', 'Q3', 'Q4'):
-            out.append((i, pd.Period(f'{cur}Q{s[1]}', 'Q')))
-    if not out:
-        raise RuntimeError(f'{kind} 表头行找到了但一个期次都没解析出来')
+            heads.append((i, int(s[1])))
+    if not heads:
+        raise RuntimeError(f'{where}: {kind} 表头行找到了但一个期次都没解析出来')
+
+    def _head(k):
+        i = heads[k][0]
+        return f'{get_column_letter(i + 1)}{pr + 1}「{str(rows[pr][i]).strip()}」'
+
+    # ① 逐期相邻
+    for k in range(1, len(heads)):
+        if heads[k][1] != heads[k - 1][1] % per_year + 1:
+            raise RuntimeError(
+                f'{where}: 期次表头在 {_head(k - 1)} 与 {_head(k)} 之间断开了，不是相邻的两个{unit}。'
+                f'官方历来逐{unit}连续（缓存 2023-03 ~ 2026-08 的工作簿逐份实测），断开说明漏了或多了一列；'
+                f'年份要靠连续性推，这里不硬读。请人工打开 Excel 核对第 {pr + 1} 行')
+
+    # ② 年份格定锚。原写法认「去掉千分位后是数字」，这里收窄到 20xx：年份行里若混进脚注
+    #    序号之类的数字，原写法会把它当年份一路沿用下去。
+    yr = rows[pr - 1] if pr else [None] * W
+    labels = []                                    # [(落在第 k 个期次格, 年份, 年份格列序号)]
+    for c in range(W):
+        s = str(yr[c]).replace(',', '').strip() if yr[c] is not None else ''
+        if re.fullmatch(r'20\d\d', s):
+            k = next((k for k, (i, _n) in enumerate(heads) if i >= c), None)
+            if k is not None:
+                labels.append((k, int(s), c))
+    marks = '、'.join(f'{get_column_letter(c + 1)}{pr}={y}' for _k, y, c in labels)
+    if not labels:
+        raise RuntimeError(
+            f'{where}: 第 {pr} 行（期次表头上一行）一个年份格都没有 —— {_head(0)}..{_head(len(heads) - 1)} '
+            f'认出了 {len(heads)} 个{unit}，却不知道是哪一年。一个锚点都没有时不推算（标题只用来互证，'
+            f'不单独定年份）。请人工打开 Excel 核对第 {pr} 行')
+    starts = {}                                    # 第 0 个期次格的「年 × 每年期数 + 期内序号 - 1」
+    for k, y, c in labels:
+        starts.setdefault(y * per_year + heads[k][1] - 1 - k, []).append(
+            f'{get_column_letter(c + 1)}{pr}={y} 落在 {_head(k)}')
+    if len(starts) > 1:
+        raise RuntimeError(
+            f'{where}: 第 {pr} 行的年份格互相矛盾 —— {"；".join(sum(starts.values(), []))}。'
+            f'表头逐{unit}连续，这几个年份不可能同时成立，多半是官方某一格填错了。'
+            f'不挑一个信：挑错了就是把一整年的数平移到隔壁年。请人工打开 Excel 核对')
+    start = next(iter(starts))
+    out = []
+    for k, (i, n) in enumerate(heads):
+        y = (start + k) // per_year
+        out.append((i, pd.Period(f'{y}-{n:02d}', 'M') if kind == 'M' else pd.Period(f'{y}Q{n}', 'Q')))
+
+    # ③ 哪些期次格的年份是推出来的：按原写法「往右沿用最近的年份格」读不到，或读到的不等于日历
+    cols_years = sorted((c, y) for _k, y, c in labels)
+    guessed = [k for k, (i, p) in enumerate(out)
+               if next((y for c, y in reversed(cols_years) if c <= i), None) != p.year]
+    if guessed:
+        runs = []
+        for k in guessed:
+            if runs and k == runs[-1][1] + 1:
+                runs[-1][1] = k
+            else:
+                runs.append([k, k])
+        span = '、'.join(f'{get_column_letter(out[a][0] + 1)}..{get_column_letter(out[b][0] + 1)}'
+                        f'（{out[a][1]}..{out[b][1]}）' for a, b in runs)
+        anchor = report if report is None or kind == 'M' else report.asfreq('Q')
+        told = f'{report}' + (f'（即 {anchor}）' if kind == 'Q' and report is not None else '')
+        if anchor is None:
+            raise RuntimeError(
+                f'{where}: {span} 头上读不到年份格，只能按 {marks} 与逐{unit}连续去推；但工作簿里找不到'
+                f'「Monthly Metrics Report for <月> <年>」标题，没有第二个锚点互证，不推。'
+                f'请人工打开 Excel 核对第 {pr} 行')
+        if out[-1][1] != anchor:
+            raise RuntimeError(
+                f'{where}: {span} 头上读不到年份格，按 {marks} 与逐{unit}连续推算后表头最后一列是 '
+                f'{out[-1][1]}，标题自述的报告期却是 {told} —— 两个锚点对不上，至少一处是错的。'
+                f'宁可这一次失败，也不把某一年的数写进另一年的格子。请人工打开 Excel 核对第 {pr} 行与标题')
+        print(f'  [hood] {where}: {span} 读不到年份格（上游版式变了），按 {marks} 与逐{unit}连续推算，'
+              f'与标题自述的报告期 {told} 互证一致，照常取数')
     return out
 
 
-def parse_sheet(ws, spec, kind):
-    """按 (章节, 标签) 两级定位取数 —— 不用行号，两种布局通吃。"""
+def parse_sheet(ws, spec, kind, src='', report=None):
+    """按 (章节, 标签) 两级定位取数 —— 不用行号，两种布局通吃。
+
+    src（文件名）与 report（月度表标题自述的报告月）只转交给 _periods：前者让报错指得出是
+    哪份文件哪张表，后者是它推算年份时的互证锚点。"""
     rows, W = _grid(ws)
-    cols = _periods(rows, W, kind)
+    where = f'{src}「{ws.title}」' if src else ws.title
+    cols = _periods(rows, W, kind, where, report)
     data_cols = [i for i, _ in cols]
     hit, section = {}, None
     for r in rows:
@@ -545,7 +668,7 @@ def parse_sheet(ws, spec, kind):
     want = list(dict.fromkeys(spec.values()))      # 列序固定，跟 CSV 一致
     missing = [c for c in want if c not in hit]
     if missing:
-        raise RuntimeError(f'{ws.title}: 这些行没找到 → {missing}；'
+        raise RuntimeError(f'{where}: 这些行没找到 → {missing}；'
                            f'官方大概率改了标签或章节名，先人工看一眼 Excel')
     return pd.DataFrame({c: hit[c] for c in want}, index=[p for _, p in cols])
 
@@ -553,18 +676,21 @@ def parse_sheet(ws, spec, kind):
 def parse_workbook(path):
     """→ (月度 DataFrame, 季度 DataFrame 或 None)。季度那份只有 Earnings Supplement 才有。"""
     wb = openpyxl.load_workbook(path, data_only=True)
+    src = os.path.basename(path)
     msheet = next((s for s in wb.sheetnames
                    if s.strip().lower() in ('monthly kpis', 'monthly metrics')), None)
     if msheet is None:
-        raise RuntimeError(f'{os.path.basename(path)}: 找不到月度表，sheet 有 {wb.sheetnames}')
-    m = parse_sheet(wb[msheet], MONTHLY_SPEC, 'M')
+        raise RuntimeError(f'{src}: 找不到月度表，sheet 有 {wb.sheetnames}')
+    # 报告月从月度表标题取一次，三张表共用（两张季度表自己没有这一句）
+    report = _report_month(wb[msheet])
+    m = parse_sheet(wb[msheet], MONTHLY_SPEC, 'M', src, report)
 
     pl = next((s for s in wb.sheetnames if s.startswith('Quarterly GAAP')), None)
     if pl is None:
         return m, None
-    q = parse_sheet(wb[pl], PL_SPEC, 'Q')
+    q = parse_sheet(wb[pl], PL_SPEC, 'Q', src, report)
     k = next(s for s in wb.sheetnames if s.strip().lower() == 'quarterly kpis')
-    q = q.join(parse_sheet(wb[k], QVOL_SPEC, 'Q'), how='outer')
+    q = q.join(parse_sheet(wb[k], QVOL_SPEC, 'Q', src, report), how='outer')
     return m, q
 
 
