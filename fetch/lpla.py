@@ -18,8 +18,13 @@
   · **它把季末月（3/6/9/12）也一并列出**，而季末月没有独立月度新闻稿。
     也就是说季末月不必去季报里抠——等下一份 Historical File 出来就有官方原值（见下文"口径坑 2"）。
 
-反爬情况：无。普通 urllib + 常规浏览器 UA 即可 200（不带 UA 会被拒）。
-无 Cloudflare / Akamai / PerimeterX，不需要登录态、不需要浏览器、不需要验证码 → 可无人值守。
+反爬情况：**2026-09-12 起 stdlib urllib 进不来，下载靠 curl_cffi 打头、urllib 兜底**。
+原先这里写「普通 urllib + 常规浏览器 UA 即可 200；无 Cloudflare / Akamai / PerimeterX」——
+后半句一直是错的：investor.lpl.com CNAME 到 lplfinancialholdings.gcs-web.com → Akamai edgekey，
+与 ir.msci.com / ir.nasdaq.com 同一个 gcs-web IR 平台，只是 2026-09 之前没拦 urllib。
+那两家 09-10 起被拦；本站 09-12 实测索引页与 static-file PDF 上 urllib（原头集合）都 60 s 读超时、
+curl_cffi(impersonate='chrome') 都 200。实测表、排班、判据见 _get 上方「网络」三段。
+仍不需要登录态 / 浏览器 / 验证码 → 可无人值守，**但离不开 curl_cffi**（requirements.txt 锁 0.16.0）。
 
 ═══ 发布节奏 ═══
 月度新闻稿在**次月中旬**发布，实测：
@@ -137,6 +142,7 @@ import datetime
 import io
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -146,7 +152,9 @@ INDEX_URL = BASE + '/financials/monthly-results'
 QUARTER_INDEX_URL = BASE + '/financials/quarterly-results'
 STATIC_URL = BASE + '/static-files/%s'
 
-# 不带 UA 会被站点拒掉；这里用常规桌面 Chrome UA，无需 cookie / 登录态
+# 常规桌面 Chrome UA。**只给兜底通道 urllib 用，别拿它去覆盖 curl_cffi 的 UA**（理由见
+# _via_curl_cffi）。当初加它是因为「不带 UA 会被拒」；2026-09-12 实测带着它照样 60 s 读超时，
+# 换版本号救不救得回来没测过（见 _get 上方「两条通道」）。无需 cookie / 登录态。
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
 
@@ -179,23 +187,175 @@ class SourceError(RuntimeError):
 
 
 # ────────────────────────── 网络 ──────────────────────────
+#
+# ═══ 两条通道（2026-09-12 起 curl_cffi 打头）═══
+# investor.lpl.com 与 ir.msci.com / ir.nasdaq.com 同在 gcs-web IR 平台、同在 Akamai 后面
+# （2026-09-12 dig：investor.lpl.com → CNAME lplfinancialholdings.gcs-web.com →
+#  leapfrog-ssl-15401.edgekey.net → e15401.dsca.akamaiedge.net）。边缘池与那两家不是同一个，
+# 策略未必同步，所以下表每一格都是本站自己实测的，没有从 msci / ndaq 抄结论。
+# 那两家 2026-09-10 起对 stdlib urllib 读超时 / 403、连挂三天（fetch/msci.py「两条通道」、
+# fetch/ndaq.py「网络」）。本模块没跟着挂出来只是因为还没到开闸日：LAG 21 − EARLY 5 ⇒
+# 2026-08 期 09-16 才开始下载。
+#
+# 2026-09-12 12:26–12:28 SGT 本机实测，每个 URL 每条通道各一发、不重试：
+#
+#   URL                              通道与请求头                               结果
+#   /financials/monthly-results      curl_cffi(impersonate='chrome')，不传头    200 / 163,173 B / 15.09 s
+#                                    urllib + 改写前 _get 的整组头              60.05 s 读超时，0 B
+#   /static-files/92ca7c6b-…         curl_cffi(impersonate='chrome')，不传头    200 / 84,485 B / 1.18 s / %PDF-1.4
+#   （July 2026 … Historical File）   urllib + 改写前 _get 的整组头              60.13 s 读超时，0 B
+#
+#   「整组头」= Chrome/126 UA + Accept: */* + Accept-Language，timeout=60，即改写前 _get 的一发。
+#   改写前每个 URL 3 发全读超时 = 3 × 60 + 退避 2+4+6 = 192 s 后抛；update() 第一发就是索引页
+#   ⇒ 不改的话 09-16 那轮 lpla 必 FAIL，而且白占 monthly_run 串行时间 3 分多钟。
+#
+# 读法：
+#   · 判据**不要收窄**：curl_cffi 一次同时换掉 TLS 指纹 / HTTP2 指纹 / 头集合与顺序 / UA 版本，
+#     没做单变量隔离（同 fetch/msci.py、fetch/cme.py 文件头那段），所以修法是整套换通道，不是改 UA。
+#     也别为了让 urllib 失败得快一点去删头：墙撤了那天哪组头进得来，没测过。
+#   · 样本每格只有一发。索引页那发 15 s 要当真 —— ndaq 在同平台的 ir.nasdaq.com 上也见过
+#     curl_cffi 单发 14–16 s ⇒ 每发 timeout 给 45 s，别按「PDF 1 s 就回」去压。
+#
+# ═══ 排班（一次 _get() 取一个 URL）═══
+#   curl_cffi#1 →没成→ 退避 5 s → curl_cffi#2 →没成→ 退避 10 s → curl_cffi#3 →没成→ urllib#1 →没成→ 抛
+#   · 与 fetch/msci.py 同形。urllib 只在最后一轮上一发：零依赖、墙哪天撤了还能走，但按今天的
+#     实测它每发白烧一个超时，不该让 curl_cffi 偶发抖一下就先陪它读挂一轮。
+#   · curl_cffi 导入失败（没装 / 动态库坏了）时一发都发不出去，urllib 当场顶上当主通道、拿满
+#     _TRIES 发 = 改写前的单通道行为。
+#   · 所有发共用 _BUDGET，每发 timeout 压到剩余时间以内。curl_cffi 的 timeout 是整发墙钟；
+#     urllib 的只管单次 socket 读，被滴灌时整发不封顶（fetch/msci.py「排班」127.0.0.1 滴灌实测）。
+#     最坏：curl_cffi 3 × 45 + 退避 15 = 150 s，urllib 只剩 30 s ⇒ 一个 URL 约 180 s 封顶，
+#     不长于改写前的 192 s；导入失败时 urllib 3 × 45 + 15 = 150 s。
+#
+# ═══ 每一发怎么判 ═══
+#   · 2xx → 收下。**这一层只认状态码、不判内容**（同 fetch/ndaq.py 的 _http_get）：内容判据原样
+#     留在调用点 —— PDF 查 %PDF 头，索引页由 _index_entries 的分桶 + 未归类对账把关，不对照样抛
+#     SourceError。代价：哪天 curl_cffi 拿到 200 的挑战页，不会降级到 urllib，而是在调用点报
+#     「不是 PDF」/「索引页里没找到条目」—— 看到这两句先打开 cache 里那份，别直接判成改版。
+#   · 404 / 410 → **确定性错误，不重试、不换通道，当场抛**。static-files 的 uuid 撤了、页面下线、
+#     路径改了，说的都是「没有这个 path」，换条通道只会把同一句话再听一遍、再白等一轮超时。
+#     改写前连 404 都退避重试 3 发。今天见过的拦法只有读超时；哪天墙拿 404 当拒绝码，这一支会
+#     响亮地报出来（报错里写着这种可能），不会静默退化。
+#   · 其余一律算这一发没成，按排班继续：网络错误 / 超时 / 403 / 429 / 5xx / 其它状态码。
+#   · 前面有任何一发没成、后面成了 → 往 stdout 喊一行 `[lpla] ⚠`：数据没事，但那是「下一次可能
+#     全挂」的预警。tried 只在抛异常时才被人读到，不喊的话「curl_cffi 哪天开始被拦」又得像
+#     09-10 那样事后翻 cache mtime 考据。
+#   · 全挂 → SourceError **只有一行**：先写结论与该先查什么，再按顺序列出每一发（通道#n: 结果，
+#     耗时）。单行同 fetch/ndaq.py 的口径：报错要进 monthly_run 的 FAIL 那一格。
 
-def _get(url, tries=3, timeout=60):
-    """带 UA 的裸 urllib GET。源站无反爬，失败基本就是网络抖动，退避重试即可。"""
-    last = None
-    for i in range(tries):
+_TRIES = 3             # 主通道发数（见「排班」）
+_TIMEOUT = 45          # 每发上限；实际还要压到 _BUDGET 剩余时间以内
+_BUDGET = 180          # 一次 _get() 所有发共用的总时限
+_GONE = (404, 410)     # 确定性错误：不重试、不换通道
+
+
+def _via_curl_cffi(url, timeout):
+    """通道 1：curl_cffi 冒充 Chrome 的 TLS / HTTP2 指纹与整套请求头。返回 (状态码, 正文)，
+    HTTP 错误码不抛、交给 _get 分类；网络类错误（含 Timeout）照常抛。
+
+    **一个请求头都不传**，UA 更不许手工塞：impersonate='chrome' 把 UA、sec-ch-ua、Accept、
+    Accept-Language 连同指纹配成一整套，手工覆盖任何一个都会自相矛盾。同平台实测过：
+    fetch/ndaq.py 09-12 在 ir.nasdaq.com 上给 curl_cffi 设 Chrome/126 UA → 2/2 发 HTTP/2 stream
+    reset，不设 → 2/2 发 200。上面实测表里本站那两发 200 也都是不传头的。
+    延迟 import：导入失败抛 ImportError，_get 把这条通道标死、urllib 顶上。
+    """
+    from curl_cffi import requests as cr
+    r = cr.get(url, impersonate='chrome', timeout=timeout)
+    return r.status_code, r.content
+
+
+def _via_urllib(url, timeout):
+    """通道 2：零依赖兜底，头集合原样保留改写前 _get 的那一组。返回 (状态码, 正文)；
+    HTTP 错误码照常返回、不抛，网络类错误照常抛。timeout 只管单次 socket 读（见「排班」）。"""
+    req = urllib.request.Request(url, headers={
+        'User-Agent': UA,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
         try:
-            req = urllib.request.Request(url, headers={
-                'User-Agent': UA,
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-            })
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read()
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-            last = e
-            time.sleep(2 * (i + 1))
-    raise SourceError('下载失败 %s: %r' % (url, last))
+            body = e.read()
+        except Exception:                     # noqa: BLE001 —— 读错误页正文又超时：状态码够分类了
+            body = b''
+        return e.code, body
+
+
+_CHANNELS = (('curl_cffi', _via_curl_cffi), ('urllib', _via_urllib))
+
+
+def _get(url):
+    """GET url 返回正文 bytes；取不到抛 SourceError。排班与判据见上方「网络」三段。"""
+    deadline = time.monotonic() + _BUDGET
+    tried = []            # (通道, 类别, 那一行)；类别 import / net / block / http
+    dead = set()          # 导入失败的通道，本次不再排
+    sent = {}             # 每条通道真发出去几发：#n 与报错里的发数都用它
+    out_of_time = False
+
+    for rnd in range(_TRIES):
+        if rnd:
+            time.sleep(max(0.0, min(5 * rnd, deadline - time.monotonic())))
+        for name, fn in _CHANNELS:
+            if name in dead:
+                continue
+            primary = next((n for n, _ in _CHANNELS if n not in dead), None)
+            if name != primary and rnd < _TRIES - 1:
+                continue                      # 兜底只在最后一轮上一发
+            left = deadline - time.monotonic()
+            if left < 3:                      # 剩这点时间一发都不够看
+                out_of_time = True
+                break
+            tag = '%s#%d' % (name, sent.get(name, 0) + 1)
+            t0 = time.monotonic()
+            try:
+                status, body = fn(url, min(_TIMEOUT, left))
+            except ImportError as e:
+                dead.add(name)
+                tried.append((name, 'import', '%s: 导入失败、一发都没发出去（%s: %s），修：%s -m pip '
+                              'install curl_cffi==0.16.0' % (name, type(e).__name__, e, sys.executable)))
+                continue
+            except Exception as e:            # noqa: BLE001 —— 超时 / 连接重置 / TLS / DNS：按排班继续
+                sent[name] = sent.get(name, 0) + 1
+                tried.append((name, 'net', '%s: %s: %s（%.1f s）'
+                              % (tag, type(e).__name__, e, time.monotonic() - t0)))
+                continue
+            sent[name] = sent.get(name, 0) + 1
+            line = '%s: HTTP %d，%d B，%.1f s' % (tag, status, len(body), time.monotonic() - t0)
+            if 200 <= status < 300:
+                if tried:
+                    how = ('主通道 curl_cffi 没成，降级到 urllib 才取到' if name == 'urllib'
+                           else '%s 第 %d 发才取到' % (name, sent[name]))
+                    print('[lpla] ⚠ %s %s（%s）；前序：%s'
+                          % (url, how, line.split(': ', 1)[1], '；'.join(t[2] for t in tried)))
+                return body
+            if status in _GONE:
+                raise SourceError(
+                    '下载失败 %s：HTTP %d 是确定性错误，不重试、不换通道 —— 多半是 static-files 的 uuid 撤了'
+                    ' / 页面下线 / 路径改了；若浏览器同一时刻打开是好的，才是墙拿 %d 当拒绝码'
+                    '（见 _get 上方「每一发怎么判」）。按顺序：%s'
+                    % (url, status, status, '；'.join([t[2] for t in tried] + [line])))
+            tried.append((name, 'block' if status in (403, 429) else 'http', line))
+        if out_of_time:
+            break
+
+    kinds = {k for n, k, _ in tried if n == 'curl_cffi'}
+    if 'import' in kinds:
+        why = ('curl_cffi 导入失败、只剩 urllib —— 先修 curl_cffi（命令见下），'
+               '2026-09-12 实测 urllib 在本站每发读超时')
+    elif 'block' in kinds:
+        why = 'curl_cffi 拿到了 HTTP 响应却被拦（403 / 429）—— 多半是 Akamai 又收紧了，见 _get 上方「两条通道」'
+    elif 'http' in kinds:
+        why = 'curl_cffi 拿到的是 5xx / 意外状态码，不像被拦 —— 先当源站出错，隔几小时重跑再说'
+    else:
+        why = ('curl_cffi 每发都是网络错误 / 超时、一个 HTTP 响应都没拿到 —— 先查本机网络 / DNS / 代理；'
+               '耗时顶到 %d s 的 Timeout 也可能只是源站慢（索引页实测过 15 s 一发）' % _TIMEOUT)
+    if out_of_time:
+        why = '到了总时限 _BUDGET=%d s；%s' % (_BUDGET, why)
+    spread = '、'.join('%s %d 发' % kv for kv in sent.items()) or '一发都没发出去'
+    raise SourceError('下载失败 %s：%s全部没取到（%s）。按顺序：%s'
+                      % (url, spread, why, '；'.join(t[2] for t in tried)))
 
 
 #: 索引页上一条链接文字的可分辨形态。
