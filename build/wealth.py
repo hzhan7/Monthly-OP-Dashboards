@@ -24,7 +24,9 @@
 入图（口径确实可比）：
   · 客户资产 —— HOOD total platform assets ⇄ SCHW/LPL total client assets ⇄ IBKR client equity
   · 净流入   —— HOOD net deposits ⇄ SCHW core NNA ⇄ LPL organic NNA（都是客户净转入，
-                都按「当月流量 x 12 / 上月末资产」年化，HOOD 自家披露口径也是这个）
+                都按「当月流量 x 12 / 上月末资产」年化，HOOD 自家披露口径也是这个；
+                ⚠ HOOD 自 2026-07 起还含 Trump Account 的财政部种子资金，那部分不是
+                客户转入，词条里已点破，见 _FLOW_CLAUSE）
   · 日均交易 —— HOOD DATs（股票+期权+加密之和）⇄ SCHW DATs ⇄ IBKR total client DARTs
                 （IBKR 披露的总量口径，含未在 IBKR 清算的客户 —— 与另两家的客户总成交
                 笔数可比；IBKR 单页那条 implied cleared DARTs 是另一个更窄的推导口径）
@@ -181,8 +183,11 @@ HOOD_ND_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
                (pd.Period('2026-03', 'M'), 'HOOD TradePMR'),
                (pd.Period('2026-06', 'M'), 'HOOD WonderFi'),
                (pd.Period('2026-07', 'M'), 'HOOD Trump')]
-# ⚠ Trump Account 只进 ND 与 TPA 两族，**不进 CUST** —— 官方 7 月 Excel 脚注明写
-#   "Funded Customers do not include Trump Accounts."（同 build/hood.py 的 BK_CUST 注释）。
+# ⚠ Trump Account 只进 ND 与 TPA 两族，**不进 CUST** —— 官方 7 月、8 月 Excel 的脚注 1
+#   同文明写 "Funded Customers do not include Trump Accounts."（同 build/hood.py 的 BK_CUST 注释）。
+#   ND 这一族的图注按 8 月定义页写全：缴款**与财政部种子资金**（"contributions and seed
+#   funding from Treasury"；7 月定义与两个月的脚注 3 都只写 contributions）。为什么以定义页
+#   为准、7 月那期是否已含种子资金，证据都在 build/hood.py 的 BRK_TRUMP 注释里，不另抄一份。
 HOOD_CUST_BRK = [(pd.Period('2025-06', 'M'), 'HOOD Bitstamp'),
                  (pd.Period('2026-06', 'M'), 'HOOD WonderFi')]
 HOOD_TPA_BRK = [(pd.Period('2026-06', 'M'), 'HOOD WonderFi'),
@@ -213,7 +218,7 @@ BRK_TXT = {
     pd.Period('2026-03', 'M'): 'Robinhood 2026-03 起把 TradePMR 顾问资产的流量并入净流入',
     pd.Period('2026-06', 'M'): 'Robinhood 2026-06 并入 WonderFi（带进约 30 万 funded customers）',
     pd.Period('2026-07', 'M'): 'Robinhood 2026-07 起把 Trump Account 并入总平台资产'
-                               '（仅 Robinhood 托管部分）与净流入（缴款）；'
+                               '（仅 Robinhood 托管部分）与净流入（缴款与美国财政部种子资金）；'
                                'funded customers 不含 Trump Accounts，故客户数那族图不画此线',
 }
 
@@ -2624,7 +2629,9 @@ notes = [
     'LPL 自己改定义的<b>两条口径断点</b>（2019-05 起 Total NNA 改为「净流入 + 股息利息 − 投顾费」，'
     '2019-04 起客户现金从 Total Cash Sweep Balances 改成含货基的 Total Client Cash Balances）、'
     'Schwab 2025-01 起把单一客户流入的剔除门槛从 $10bn '
-    '提到 $25bn、Robinhood 的 Bitstamp（2025-06 起并入净流入与客户数）与 TradePMR / WonderFi。'
+    '提到 $25bn、Robinhood 的 Bitstamp（2025-06 起并入净流入与客户数）、TradePMR / WonderFi'
+    ' 与 Trump Account（2026-07 起并入总平台资产，净流入含其缴款与美国财政部种子资金，'
+    '不计入客户数）。'
     '<b>其中前两组是本轮窗口放宽之后才第一次进到本页图里的</b>：'
     'NPH / Waddell & Reed 与那两条口径断点在 <code>build/lpla.py</code> 里早有登记，'
     '本页此前的 25 个月窗口够不到，于是两页对同一条 LPL as-reported 序列给出了不同的'
@@ -3162,7 +3169,12 @@ _FLOW_CLAUSE = {
     'lpla': ('LPL 本页画的是<b>有机口径</b>，由官方 <code>Total NNA</code> 逐月减去官方同页'
              '披露的 <code>Acquired NNA</code> 得到（两个分量都是官方数，'
              '<b>相减这一步是本页做的</b>）'),
-    'hood': 'Robinhood 是 <code>net deposits</code>（含现金与证券转入）',
+    # Trump Account 的种子资金是财政部拨入、不是客户转入，与本词条开头「客户净转入」的
+    # 定义正面冲突，所以要在这里点破（出处与取舍见 build/hood.py 的 BRK_TRUMP 注释）。
+    # 月份从 HOOD_ND_BRK 现读、不另写一个 Period —— 同上面 Schwab 那条引 SCHW_NNA_BRK。
+    'hood': ('Robinhood 是 <code>net deposits</code>（含现金与证券转入；'
+             f'自 {next(p for p, l in HOOD_ND_BRK if l == "HOOD Trump")} 起还含 Trump Account '
+             '的缴款与美国财政部种子资金，后者不是客户转入）'),
 }
 
 
