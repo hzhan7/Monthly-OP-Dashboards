@@ -471,6 +471,14 @@ class TestRealRemarks(unittest.TestCase):
 # stale() 逐行移植成 Python，与 monthly_run.audit_overdue_headline 用的那条算术
 # 在 28 家 × 6 个 data_through × 730 天上逐组对拍。
 #
+# **本组只守「判据与红点等价」，不守「今天该不该响」。** 2026-09 删掉了原先的
+# test_no_false_alarm_today：它断言 `audit_overdue_headline() == []`，读的是 data/*.js 的活状态，
+# 而本文件是 preflight 硬闸（main() 里 test_guards 非 0 就 sys.exit(1)，排在按家循环之前）——
+# 任何一家头条过了红点线的那天起整轮一家都不抓，逾期那家永远追不上，天天 FAILED。
+# 逾期信号并没有丢：main() 在按家循环与 roster() 之后 `fails += audit_overdue_headline()`，
+# 逾期家计入末行失败清单（PARTIAL 或「FAILED 无更新且 N 家失败」），不 exit、不拦其余各家发布。
+# 以后加的测试同样不许断言活状态（见 M 组组头第三条规矩）。
+#
 # ⚠ 移植时两处最容易写错，都在下面 _js_stale 里标了：
 #   · end.getMonth() 是 **0-indexed**，JS 里 `mo = getMonth()===0 ? 12 : getMonth()`
 #     算的是「end 的前一个月」= 候选月；
@@ -543,11 +551,6 @@ class TestOverdueMatchesRedDot(unittest.TestCase):
                 self.assertNotEqual(
                     self._disagreements(bump), [],
                     f'偏移 lag+GRACE+{bump} 竟无分歧 —— 对拍失去意义，先查 _js_stale')
-
-    def test_no_false_alarm_today(self):
-        """今天真跑一遍：仓库当前状态下不该有任何一家逾期（有就是真出事了）。"""
-        mr, _ = _load_once()
-        self.assertEqual(mr.audit_overdue_headline(), [])
 
 
 
@@ -2606,8 +2609,8 @@ class TestSgxOwnerLayout(unittest.TestCase):
 #     只调 check_specs / test_guards / verify_pages / check_yoy_caliber），写在那儿只能靠人手敲。
 #   · **全部是注入**：注入日期、临时目录、合成夹具。不联网，不读 cache/，不读 series/ 或 data/
 #     的现值 —— 上游今天是什么状态，都卡不死整轮（本文件在硬闸里，红一条 = 28 家当天都不发）。
-#   · **禁止「今天不该报警」这类断言**，反例就是 E 组的 test_no_false_alarm_today：它读活状态，
-#     任何一家头条过了红点线的那天起 preflight 天天红，逾期那家永远追不上。
+#   · **禁止「今天不该报警」这类断言**，反例就是 2026-09 已删除的 test_no_false_alarm_today（原在 E 组）：
+#     它读活状态，任何一家头条过了红点线的那天起 preflight 天天红，逾期那家永远追不上（删除理由见 E 组组头）。
 #     「_overdue_missing 对真 cache 为 []」「slow_pending('lseg') 读真 series 为 False」都不许加。
 #   · **lseg 是可删的交易所**（docs/CRON_WIRING.md §4）：依赖 fetch/lseg*.py 的类按文件在不在
 #     skip，删了不能把 preflight 打挂。只测 monthly_run 通用协议的 M10 不依赖 lseg，不 skip。
