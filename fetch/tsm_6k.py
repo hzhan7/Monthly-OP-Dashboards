@@ -60,6 +60,9 @@ r"""台积电（2330.TW / NYSE: TSM）月报 6-K 第 3/4 项 —— 背書保證
 · open_notional_ntd_k   = 第 4 项里 entity=='TSMC' 且 instrument=='Forward' 的**全部**块的
                           Outstanding Notional Amount 之和，落 '%d'。
                           (1) not applying / (2) applying hedge accounting 两节合计；不含子公司块。
+                          **块主体按清单认**（口径坑 k）：主体恰好是 'TSMC' 才计入；SUBSIDIARY_ENTITIES
+                          里的已知子公司块不计入、打一行；不在清单里、名字（大小写不敏感）含 tsmc 或
+                          taiwan semiconductor 的主体一律抛，交人判定；其余清单外主体不计入、打一行 ⚠。
 · open_fair_value_ntd_k = 同一批块的 Mark to Market of Outstanding Contracts 之和，
                           括号为负、'-' 为 0，落 '%.1f'。
 · approved_total_k      = 第 3 项 guarantor=='TSMC' 各行 Amount approved by the Board of Directors
@@ -70,7 +73,7 @@ r"""台积电（2330.TW / NYSE: TSM）月报 6-K 第 3/4 项 —— 背書保證
 解析是**严格语法**：第 3、4 项从标题到结尾逐段消费，剩下任何一个认不出的字都抛。
 唯一的预处理是把「数字 + 空格 + ,三位数字」并回一个数：2025-09 那份（filed 2025-10-09）
 把 TSMC Nanjing 的名目印成 "8 ,463,834"（HTML 把一个数拆进两段文本）。
-这是刻意的「宁可不发」—— TSMC 在这两项里加任何新句式（新工具、新担保人命名、新脚注写法），
+这是刻意的「宁可不发」—— TSMC 在这两项里加任何新句式（新工具、新担保人命名、新的 TSMC 命名块主体、新脚注写法），
 整月每轮 FAIL，直到有人判定口径、改解析器；而不是悄悄少算一块、多算一行。
 
 ────────────────────────────────────────────────────────────────────────
@@ -103,12 +106,28 @@ g. **第 3 项为「None.」抛异常。** 早年担保余额为零时 6-K 就�
 h. **2023-03 之前的版式没有核准栏，拒绝解析。** 2021-08、2022-02 的表头是
    "Guarantor Limit of guarantee Amount Bal. as of period end"，第 4 项的栏名也不同。
    那一段的核准数只来自 MOPS，库内早已录好，本模块不回补。
-i. **6-K/A 与重述。** 近 1000 份申报里 6-K/A 只有 6 份，没有一份是月报。同一个月找到多份月报时
-   取 6-K/A、再取 filingDate 最新的。每次 update() 都拿最近 DRIFT_BACK 个月的月报与库内逐格比，
-   不一致就抛、列出 月/列/库内/官方/accession，不改写（同 fetch/umc.py 口径坑 7）。
+i. **6-K/A 与重述。** submissions 近 1000 份申报里 6-K/A 只有 6 份，但**月报被 6-K/A 更正过**：前例是
+   2020-04-14 的 0001564590-20-016539 —— 文前的 Amendment 说明写明更正的是 4/10 那份月报 6-K
+   （0001564590-20-016193）里 TSMC Global 已沖銷契約（Expired Contracts）的名目，其余数字不变；
+   reportDate 沿用原件（两份都是 2020-04-10）。那份压平后更正格是并排两个数 "9,957,703 9,755,101"，
+   同样的印法落在现行版式里会被严格语法拒绝（抛，交人）。
+   照此前例，今天的更正件 reportDate 会是数据月月末、落在候选第一段：已认到原件之后 _scan 仍下载未缓存的
+   6-K/A；reportDate 没沿用原件的落在第二段，已认到原件时第二段也只再看 6-K/A（2026-09-14 实拉 submissions：
+   2026-05..08 的候选窗口里没有 6-K/A，常规月份不多一个请求）。同一个月找到多份月报时取 6-K/A、
+   再取 filingDate 最新的。每次 update() 都拿最近 DRIFT_BACK 个月的月报与库内逐格比，不一致就抛、
+   列出 月/列/库内/官方/accession，不改写（同 fetch/umc.py 口径坑 7）；更正的若只是 6 格之外的数
+   （如 2020 那次的子公司已沖銷名目），体检照常通过。
 j. **本文件与 fetch/test_tsm_6k.py 里不许出现带引号的重述台账文件名字面量**（以 restatements
    结尾的 CSV 名）：monthly_run.check_restatement_logs() 用 RESTATE_LOG 扫整个 fetch/*.py 的源码，
    写一个就会凭空登记出一个写入方。本模块本来也不写重述台账 —— 重述一律抛异常。
+k. **第 4 项块主体按清单认，不是「非 'TSMC' 即子公司」。** 旧写法把 entity != 'TSMC' 的块一律当子公司
+   静默不计入 —— 母公司块只要换个印法（例如 (2) 节印成 'TSMC Ltd.'），名目就少算一块、照样入库。
+   2026-09-14 对 cache/tsm_6k 里 2023-03..2026-08 共 42 份月报真件重跑普查，块主体恰好 5 个：
+   TSMC（57 块，(1)(2) 两节，全是 Forward）、TSMC China 与 TSMC Nanjing（各 42 块，(1) 节 Forward）、
+   TSMC Global（42 块，(2) 节 Future）、Japan Advanced Semiconductor Mfg., Inc.（JASM，33 块，2023-12 起）。
+   后 4 个就是 SUBSIDIARY_ENTITIES。清单外的主体：名字含 tsmc / taiwan semiconductor（大小写不敏感）→ 抛
+   （分不清是母公司改了印法还是新的 TSMC 子公司，交人）；其它名字 → 不计入、打一行 ⚠（新的非 TSMC 命名
+   子公司不至于每月 FAIL，但日志里看得见；确认是子公司后加进清单）。
 
 ────────────────────────────────────────────────────────────────────────
 6) 对账记录与重放命令
@@ -373,6 +392,16 @@ _INSTR_WORD = re.compile(
     r'(?i)\b(?:forwards?|futures?|swaps?|options?|rates?|currency|currencies|interest|cross|'
     r'exchange|contracts?|commodity|commodities|collars?|fx|hedges?|hedging|derivatives?)\b')
 
+# 第 4 项已知的子公司块主体（口径坑 k：2023-03..2026-08 共 42 份月报真件普查）—— 不计入、打一行。
+SUBSIDIARY_ENTITIES = frozenset({
+    'TSMC China',
+    'TSMC Nanjing',
+    'TSMC Global',
+    'Japan Advanced Semiconductor Mfg., Inc.',      # JASM，2023-12 起
+})
+# 清单外的主体名字里有这些就抛：可能是母公司块换了印法，按子公司静默不计入会少算名目。
+_TSMC_LIKE = re.compile(r'(?i)tsmc|taiwan\s*semiconductor')
+
 
 def num(s):
     """'(7,563,234)' → -7563234；'-' → 0；千分位格式不对就抛。"""
@@ -508,6 +537,8 @@ def _parse_s3(month, s3, verbose=True):
 
 
 def _blocks(s4, pos, month, section):
+    """逐块消费第 4 项的一节。每块带 kind（口径坑 k）：
+    parent = 主体恰好是 'TSMC'（计入）；known = SUBSIDIARY_ENTITIES；unlisted = 清单外且名字不像 TSMC。"""
     out = []
     while True:
         m = _BLK.match(s4, pos)
@@ -519,16 +550,27 @@ def _blocks(s4, pos, month, section):
         if _INSTR_WORD.search(entity):
             raise Tsm6kError(f'{month} 第 4 项块标题 {m["head"]!r} 的主体里混着工具类词汇 —— '
                              '疑似多词工具名，TSMC 的块可能被误判成子公司块；交人判定口径')
-        if entity == 'TSMC' and instrument != 'Forward':
-            raise Tsm6kError(f'{month} 第 4 项出现 TSMC 的 {instrument} 块 —— 57/57 块实测都是 Forward，'
-                             '新工具进不进名目是口径决定，交人')
+        if entity == 'TSMC':
+            if instrument != 'Forward':
+                raise Tsm6kError(f'{month} 第 4 项出现 TSMC 的 {instrument} 块 —— 57/57 块实测都是 Forward，'
+                                 '新工具进不进名目是口径决定，交人')
+            kind = 'parent'
+        elif entity in SUBSIDIARY_ENTITIES:
+            kind = 'known'
+        elif _TSMC_LIKE.search(entity):
+            raise Tsm6kError(
+                f'{month} 第 4 项 ({section}) 节块标题 {m["head"]!r} 的主体 {entity!r} 不在子公司清单里，'
+                '名字却含 TSMC / Taiwan Semiconductor —— 可能是母公司块换了印法（按子公司静默不计入就会少算名目），'
+                '也可能是新的 TSMC 子公司；交人判定口径（口径坑 k），本次不写入')
+        else:
+            kind = 'unlisted'
         out.append(dict(section=section, entity=entity, instrument=instrument,
                         notional=num(m['notional']), mtm=num(m['mtm']),
-                        counted=entity == 'TSMC' and instrument == 'Forward'))
+                        kind=kind, counted=kind == 'parent'))
         pos = m.end()
 
 
-def _parse_s4(month, s4):
+def _parse_s4(month, s4, verbose=True):
     pos = _eat(s4, 0, _UNIT + ' ', month, '第 4 项标题之后')
     pos = _eat(s4, pos, _S4_H1 + ' ', month, '第 4 项 (1) 节标题')
     b1, pos = _blocks(s4, pos, month, 1)
@@ -543,6 +585,15 @@ def _parse_s4(month, s4):
         raise Tsm6kError(
             f'{month} 第 4 项 TSMC Forward 名目合计为 0（{len(fwd)} 块）—— 历史上远期为 0 的月份缺行、'
             '不写 0，写不写交人判定（口径坑 f），本次不写入')
+    known = [b for b in blocks if b['kind'] == 'known']
+    if verbose and known:
+        print(f'[tsm_6k] {month} 第 4 项子公司块按清单不计入（口径坑 k）：'
+              + '、'.join(f'({b["section"]}) {b["entity"]} {b["instrument"]}' for b in known))
+    for b in blocks:                        # 清单外：不看 verbose，重述体检 / audit 里也要看得见
+        if b['kind'] == 'unlisted':
+            print(f'[tsm_6k][warn] ⚠ {month} 第 4 项 ({b["section"]}) 节有清单外的块主体 {b["entity"]!r}'
+                  f'（{b["instrument"]}，名目 {b["notional"]:,}）—— 名字不含 TSMC，按子公司不计入；'
+                  '确认是子公司后加进 SUBSIDIARY_ENTITIES（口径坑 k）')
     return dict(open_notional_ntd_k=notional,
                 open_fair_value_ntd_k=sum(b['mtm'] for b in fwd),
                 blocks=blocks)
@@ -564,7 +615,7 @@ def parse(fl, verbose=True):
     i4 = _once(fl, _S4_TITLE, i3, month)
     s3 = _SPLIT_THOUSANDS.sub(r'\1\2', fl[i3 + len(_S3_TITLE):i4].strip()) + ' '
     s4 = _SPLIT_THOUSANDS.sub(r'\1\2', fl[i4 + len(_S4_TITLE):].strip()) + ' '
-    return dict(month=month, guar=_parse_s3(month, s3, verbose), deriv=_parse_s4(month, s4))
+    return dict(month=month, guar=_parse_s3(month, s3, verbose), deriv=_parse_s4(month, s4, verbose))
 
 
 def _cells(p):
@@ -617,14 +668,15 @@ def _scan(month, cache_dir, today=None, opener=None, subs=None, verbose=True):
 
     · 第一段逐份读；一旦认到 M 的月报，余下未缓存件只有 6-K/A 才下载（普通件跳过）——
       这样已缓存的月份重放是零请求（月末 6-K 这类同 reportDate 的无关件不必下）。
-    · 第二段只在第一段一份都没认到时才看，且每次最多下载 WIDEN_MAX_DOCS 份未缓存件。
+    · 第二段：第一段一份都没认到时整段看；已认到时只再看其中的 6-K/A（reportDate 没沿用原件的更正件，
+      口径坑 i）—— 普通件照旧不碰，常规月份不多一个请求。第二段每次最多下载 WIDEN_MAX_DOCS 份未缓存件。
     · marker 缺失的无关件照常跳过、不抛；marker 月份不是 M 的也跳过。
     """
     subs = submissions(opener) if subs is None else subs
     hits, checked, skipped, widened = [], 0, 0, 0
     for r in candidates(month, subs, today):
-        if r['seg'] == 2 and hits:
-            break
+        if r['seg'] == 2 and hits and r['form'] != '6-K/A':
+            continue                       # 已认到月报：第二段只再看 6-K/A
         if not os.path.exists(_cache_path(cache_dir, r)):
             if hits and r['form'] != '6-K/A':
                 skipped += 1

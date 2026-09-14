@@ -6,16 +6,21 @@
 
 ━━ 守的是哪几件事 ━━
 1. 口径：TSMC 的 Forward 块跨 (1)(2) 两节求和；只加 guarantor=TSMC 的行；亚利桑那按脚注认行。
-2. 严格语法：第 3/4 项多一句、换一个工具、换一个担保人名，都必须抛，而不是悄悄少算。
-3. 写入：只追加、照抄行尾、幂等、失步自愈、重述抛异常且零字节写。
+2. 严格语法：第 3/4 项多一句、换一个工具、换一个担保人名、核准<在外、限额<核准和、两行亚利桑那，
+   都必须抛，而不是悄悄少算。第 4 项块主体按清单认（口径坑 k）：清单外而名字像 TSMC 的抛，
+   其它清单外主体不计入但打 ⚠。
+3. 写入：只追加、照抄行尾、幂等、失步自愈、重述抛异常且零字节写；表头调换 / 断月 / 已有行不同 /
+   读后被改都抛；last_month 取两表较小值、fingerprint 随字节变；tmp 只落 cache/tsm_6k/。
 4. 候选定位：第 13 天前只看 reportDate 等于月末的件；第 14 天起放宽且限量；
-   已认到月报时不为无关件多打一个请求。
-5. 护栏：SEC 封禁页 / 短页 / 缺 "filings" 必抛；MOPS 取不到只告警，对不上才抛。
+   已认到月报时不为无关件多打一个请求，但 6-K/A 照下（2020-04-14 前例），同月取 6-K/A。
+5. 护栏：SEC 封禁页 / 短页 / 缺 "filings" 必抛；MOPS 取不到只告警，核准 / 限额对不上、
+   版式认不出、页内不自洽才抛。
 6. TestReplayCached：真缓存里 ≥2023-03 的月报逐月严格解析，与仓库两张表逐格相等。
 
 ━━ 夹具 ━━
 2026-08（0001046179-26-000658）、2024-08、2023-03、2021-08 的第 3/4 项是从真件压平后摘下的片段；
 重述体检用的 2026-05..07 三份是按同一版式合成的（数值取自 series 里的真行）。
+6-K/A 用例照 2020-04-14 前例（0001564590-20-016539，reportDate 沿用原件）按同一版式合成。
 MOPS 页是 115/08 实拉页的表格部分。
 """
 
@@ -31,6 +36,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -305,7 +311,7 @@ TODAY = datetime.date(2026, 9, 14)
 # ══════════════════════════════════════════════════════════════════════════
 class TestParse2026_08(Base):
     def test_six_cells_and_lines(self):
-        p = T.parse(DOC_2026_08)
+        p = quiet(T.parse, DOC_2026_08)[0]
         g, d = p['guar'], p['deriv']
         self.assertEqual(p['month'], '2026-08')
         self.assertEqual((g['approved_total_k'], g['outstanding_total_k']), (657356394, 520453981))
@@ -315,8 +321,9 @@ class TestParse2026_08(Base):
         self.assertEqual(T.rows_for(p), (LINE_DER_08, LINE_GUA_08))
 
     def test_subsidiary_and_future_blocks_not_counted(self):
-        blocks = T.parse(DOC_2026_08)['deriv']['blocks']
+        blocks = quiet(T.parse, DOC_2026_08)[0]['deriv']['blocks']
         self.assertEqual([(b['entity'], b['instrument']) for b in blocks if b['counted']], [('TSMC', 'Forward')])
+        self.assertEqual({b['kind'] for b in blocks if not b['counted']}, {'known'})
         self.assertEqual({(b['entity'], b['instrument']) for b in blocks if not b['counted']},
                          {('TSMC China', 'Forward'), ('TSMC Nanjing', 'Forward'),
                           ('Japan Advanced Semiconductor Mfg., Inc.', 'Forward'), ('TSMC Global', 'Future')})
@@ -346,7 +353,7 @@ class TestArizonaByFootnote(Base):
               '* The guarantee was provided to TSMC North America, a wholly-owned subsidiary of TSMC. '
               '** The guarantee was provided to TSMC Arizona, a wholly-owned subsidiary of TSMC. '
               '*** The guarantee was provided to TSMC Global, a wholly-owned subsidiary of TSMC. ')
-        g = T.parse(pre('August', 2026) + s3 + S4_2026_08)['guar']
+        g = quiet(T.parse, pre('August', 2026) + s3 + S4_2026_08)[0]['guar']
         self.assertEqual((g['arizona_approved_k'], g['arizona_outstanding_k']), (483851076, 346948663))
         self.assertEqual(g['approved_total_k'], 657356394)
 
@@ -377,7 +384,7 @@ class TestStrictGrammar(Base):
 
     def test_none(self):
         self.bad(pre('August', 2026) + '3. Endorsements and guarantees (in NT$ thousands) None. ' + S4_2026_08,
-                 'None')
+                 '口径坑 g')
 
     def test_forward_notional_all_dash(self):
         s4 = S4_2026_08.replace('Outstanding Notional Amount 192,798,341', 'Outstanding Notional Amount -')
@@ -387,6 +394,72 @@ class TestStrictGrammar(Base):
         s3 = S3_2026_08.replace('*** The guarantee was provided to TSMC Arizona, a wholly-owned subsidiary of TSMC. ',
                                 '')
         self.bad(pre('August', 2026) + s3 + S4_2026_08, '对不上')
+
+    def test_approved_below_outstanding(self):
+        s3 = S3_2026_08.replace('TSMC** 170,872,200 170,872,200', 'TSMC** 170,872,200 170,872,201')
+        self.assertNotEqual(s3, S3_2026_08)
+        self.bad(pre('August', 2026) + s3 + S4_2026_08, '核准 ≥ 在外')
+
+    def test_limit_below_approved_sum(self):
+        s3 = S3_2026_08.replace('TSMC* 2,573,007,334 ', 'TSMC* 657,356,393 ')        # 核准和 657,356,394
+        self.assertNotEqual(s3, S3_2026_08)
+        self.bad(pre('August', 2026) + s3 + S4_2026_08, '首行限额')
+
+    def test_two_arizona_rows(self):
+        s3 = S3_2026_08.replace('** The guarantee was provided to TSMC Global,',
+                                '** The guarantee was provided to TSMC Arizona,')
+        self.assertNotEqual(s3, S3_2026_08)
+        self.bad(pre('August', 2026) + s3 + S4_2026_08, '有 2 行')
+
+
+class TestBlockEntityList(Base):
+    """口径坑 k：第 4 项块主体按清单认 —— 'TSMC' 计入；清单内不计入；清单外像 TSMC 的抛；其它打 ⚠。"""
+    H2 = '(2) Derivatives applying hedge accounting. '
+
+    def ren2(self, new):
+        """2023-03 的 (2) 节那块 TSMC Forward 改印主体名（旧写法会按子公司静默不计入）。"""
+        old = self.H2 + '‧TSMC Forward '
+        self.assertEqual(DOC_2023_03.count(old), 1)
+        return DOC_2023_03.replace(old, self.H2 + f'‧{new} Forward ')
+
+    def raises(self, doc, needle):
+        with self.assertRaises(T.Tsm6kError) as cm:
+            quiet(T.parse, doc)
+        self.assertIn(needle, str(cm.exception))
+        self.assertIn('口径坑 k', str(cm.exception))
+
+    def test_parent_block_renamed_in_section_2(self):
+        # 旧写法：名目 114,372,932（少 230,810）照样入库
+        self.raises(self.ren2('TSMC Ltd.'), "'TSMC Ltd.'")
+
+    def test_tsmc_arizona_forward(self):
+        s4 = S4_2026_08 + ' ' + blk('TSMC Arizona Forward', '1,000', '10').strip()
+        self.raises(pre('August', 2026) + S3_2026_08 + s4, "'TSMC Arizona'")
+
+    def test_tsmc_like_names_case_insensitive(self):
+        for name in ('tsmc', 'Taiwan Semiconductor Manufacturing Co., Ltd.', 'TAIWAN SEMICONDUCTOR MFG. CO.'):
+            with self.subTest(name=name):
+                self.raises(self.ren2(name), repr(name))
+
+    def test_unlisted_other_name_warns_not_counted(self):
+        s4 = S4_2026_08 + ' ' + blk('WaferTech Forward', '1,000', '10').strip()
+        p, out = quiet(T.parse, pre('August', 2026) + S3_2026_08 + s4, verbose=False)
+        d = p['deriv']
+        self.assertEqual(d['open_notional_ntd_k'], 192798341)
+        self.assertEqual([(b['kind'], b['counted']) for b in d['blocks'] if b['entity'] == 'WaferTech'],
+                         [('unlisted', False)])
+        warns = [ln for ln in out.splitlines() if '⚠' in ln]
+        self.assertEqual(len(warns), 1, 'verbose=False（重述体检 / audit）也必须看得见')
+        self.assertIn("'WaferTech'", warns[0])
+
+    def test_known_subsidiaries_one_info_line(self):
+        out = quiet(T.parse, DOC_2026_08)[1]
+        lines = [ln for ln in out.splitlines() if '按清单不计入' in ln]
+        self.assertEqual(len(lines), 1)
+        for e in ('TSMC China', 'TSMC Nanjing', 'Japan Advanced Semiconductor Mfg., Inc.', 'TSMC Global'):
+            self.assertIn(e, lines[0])
+        self.assertNotIn('⚠', out)
+        self.assertEqual(quiet(T.parse, DOC_2026_08, verbose=False)[1], '')
 
 
 class TestOldFormatRejected(Base):
@@ -406,7 +479,7 @@ class TestNumbers(Base):
 
     def test_split_thousands_repaired(self):
         s4 = S4_2026_08.replace('Amount 2,265,965 ', 'Amount 2 ,265,965 ')       # 2025-09 真件的形状
-        d = T.parse(pre('August', 2026) + S3_2026_08 + s4)['deriv']
+        d = quiet(T.parse, pre('August', 2026) + S3_2026_08 + s4)[0]['deriv']
         self.assertIn(2265965, [b['notional'] for b in d['blocks']])
 
 
@@ -450,14 +523,39 @@ class TestCandidates(Base):
         bad_rd = dict(REV['2026-08'], rd='2026-09-10')
         st = Stub({url_of(bad_rd): html(DOC_2026_08)})
         self.assertIsNone(T.find('2026-08', self.env.cache, datetime.date(2026, 9, 13), st, subs=[bad_rd]))
-        r, p = T.find('2026-08', self.env.cache, TODAY, st, subs=[bad_rd])
+        r, p = quiet(T.find, '2026-08', self.env.cache, TODAY, st, subs=[bad_rd])[0]
         self.assertEqual((r['acc'], p['month']), (bad_rd['acc'], '2026-08'))
 
     def test_cached_month_is_zero_request(self):
         st = Stub()
-        r, p = T.find('2026-07', self.env.cache, TODAY, st, subs=[REV['2026-07'], MONTHEND_07])
+        r, p = quiet(T.find, '2026-07', self.env.cache, TODAY, st, subs=[REV['2026-07'], MONTHEND_07])[0]
         self.assertEqual(r['acc'], REV['2026-07']['acc'])
         self.assertEqual(st.asked, [], '已认到月报时不该为同 reportDate 的无关件多打请求')
+
+    def test_same_month_6ka_preferred(self):
+        amended = synth('2026-08,192798000,1582051.0', LINE_GUA_08)
+        # 同一天且 accession 更小（只按 filingDate / accession 取就会选错）；以及晚两天的 6-K/A
+        for ka in (dict(REV['2026-08'], acc='0001046179-26-000657', doc='tsm-20260910x6ka.htm', form='6-K/A'),
+                   dict(REV['2026-08'], acc='0001046179-26-000660', doc='tsm-20260912x6ka.htm', fd='2026-09-12',
+                        form='6-K/A')):
+            with self.subTest(acc=ka['acc']):
+                st = Stub({url_of(REV['2026-08']): html(DOC_2026_08), url_of(ka): html(amended)})
+                (r, p), out = quiet(T.find, '2026-08', self.env.cache, TODAY, st, subs=[REV['2026-08'], ka])
+                self.assertEqual((r['form'], r['acc']), ('6-K/A', ka['acc']))
+                self.assertEqual(p['deriv']['open_notional_ntd_k'], 192798000)
+                self.assertIn('6-K/A 优先', out)
+
+    def test_widened_6ka_still_read_after_hit(self):
+        # reportDate 没沿用原件的更正件落在第二段：已认到原件也要读它；普通件（两段都有）照旧不下
+        ka = row('2026-08-20', '0001046179-26-000540', 'tsm-20260820x6ka.htm', 101000, '2026-08-20', form='6-K/A')
+        plain = row('2026-08-21', '0001046179-26-000542', 'tsm-misc20260821.htm', 30000, '2026-08-21')
+        st = Stub({url_of(ka): html(synth('2026-07,230720000,-2645507.0', GUA_ROWS[2])),
+                   url_of(plain): filler(30000)})
+        (r, p), _ = quiet(T.find, '2026-07', self.env.cache, TODAY, st,
+                          subs=[REV['2026-07'], MONTHEND_07, ka, plain])
+        self.assertEqual((r['form'], r['acc']), ('6-K/A', ka['acc']))
+        self.assertEqual(p['deriv']['open_notional_ntd_k'], 230720000)
+        self.assertEqual(st.asked, [url_of(ka)])
 
 
 class TestHttpGuards(Base):
@@ -481,7 +579,7 @@ class TestHttpGuards(Base):
 class TestMopsCrosscheck(Base):
     def setUp(self):
         super().setUp()
-        self.p = T.parse(DOC_2026_08)
+        self.p = quiet(T.parse, DOC_2026_08)[0]
 
     def test_pass(self):
         ok, out = quiet(T.mops_crosscheck, '2026-08', self.p, Stub({T.MOPS_T05ST11: MOPS_115_08}))
@@ -493,6 +591,30 @@ class TestMopsCrosscheck(Base):
         with self.assertRaises(T.Tsm6kError) as cm:
             T.mops_crosscheck('2026-08', self.p, Stub({T.MOPS_T05ST11: MOPS_115_08}))
         self.assertIn('657,356,394', str(cm.exception))
+
+    def test_limit_mismatch_raises(self):
+        self.p['guar']['limit_k'] += 1
+        with self.assertRaises(T.Tsm6kError) as cm:
+            T.mops_crosscheck('2026-08', self.p, Stub({T.MOPS_T05ST11: MOPS_115_08}))
+        self.assertIn('最高額度 2,573,007,334', str(cm.exception))
+
+    def test_layout_unrecognised_raises(self):
+        pages = {'页上是别的月份': MOPS_115_08.replace('民國115年08月'.encode(), '民國115年07月'.encode()),
+                 '认不出本公司那一行': MOPS_115_08.replace('至本月份累計餘額'.encode(), '累計餘額'.encode())}
+        for why, page in pages.items():
+            with self.subTest(why=why):
+                self.assertNotEqual(page, MOPS_115_08)
+                with self.assertRaises(T.Tsm6kError) as cm:
+                    quiet(T.mops_crosscheck, '2026-08', self.p, Stub({T.MOPS_T05ST11: page}))
+                self.assertIn('版式变了', str(cm.exception))
+
+    def test_internally_inconsistent_raises(self):
+        page = MOPS_115_08.replace('本公司對子公司背書保證累計餘額</TD>\n<TD>&nbsp;    657,356,394'.encode(),
+                                   '本公司對子公司背書保證累計餘額</TD>\n<TD>&nbsp;    657,356,395'.encode())
+        self.assertNotEqual(page, MOPS_115_08)
+        with self.assertRaises(T.Tsm6kError) as cm:
+            T.mops_crosscheck('2026-08', self.p, Stub({T.MOPS_T05ST11: page}))
+        self.assertIn('内部不自洽', str(cm.exception))
 
     def test_none_page_only_warns(self):
         ok, out = quiet(T.mops_crosscheck, '2026-08', self.p, Stub({T.MOPS_T05ST11: MOPS_NONE}))
@@ -568,6 +690,101 @@ class TestAppendIdempotent(Base):
         self.assertIn('尚未出现', out)
 
 
+class TestWriteGuards(Base):
+    """读表 / 写盘护栏的最小反例：该抛的抛，且 series 一个字节不动。"""
+
+    def setUp(self):
+        super().setUp()
+        self.env = None
+
+    def tearDown(self):
+        if self.env:
+            self.env.close()
+        super().tearDown()
+
+    def rewrite(self, name, old, new):
+        p = os.path.join(self.env.series, name)
+        with open(p, 'rb') as f:
+            raw = f.read()
+        self.assertEqual(raw.count(old), 1)
+        with open(p, 'wb') as f:
+            f.write(raw.replace(old, new))
+
+    def refused(self, needle):
+        e = self.env
+        before, st = e.raw(), e.stub()
+        with self.assertRaises(T.Tsm6kError) as cm:
+            quiet(T.update, e.series, e.cache, '2026-08', TODAY, st)
+        self.assertIn(needle, str(cm.exception))
+        self.assertEqual(e.raw(), before)
+        self.assertEqual(e.tmp_files(), [])
+        return st
+
+    def test_last_month_is_min_of_two_tables(self):
+        for der, gua in ((DER_ROWS + [LINE_DER_08], GUA_ROWS), (DER_ROWS, GUA_ROWS + [LINE_GUA_08])):
+            e = Env(der=der, gua=gua)
+            try:
+                self.assertEqual(T.last_month(e.series), '2026-07')
+            finally:
+                e.close()
+
+    def test_fingerprint_follows_content(self):
+        self.env = Env()
+        fp0 = T.fingerprint(self.env.series)
+        self.rewrite(T.GUA_CSV, b'355994349.0', b'355994348.0')          # 同长度改一位
+        fp1 = T.fingerprint(self.env.series)
+        self.rewrite(T.DER_CSV, b'230720646', b'230720647')
+        self.assertEqual(len({fp0, fp1, T.fingerprint(self.env.series)}), 3)
+
+    def test_header_columns_swapped(self):
+        self.env = Env()
+        self.rewrite(T.DER_CSV, b'open_notional_ntd_k,open_fair_value_ntd_k',
+                     b'open_fair_value_ntd_k,open_notional_ntd_k')
+        self.assertEqual(self.refused('表头不对').asked, [])
+
+    def test_gap_month(self):
+        self.env = Env(gua=[GUA_ROWS[0], GUA_ROWS[2]])
+        self.assertEqual(self.refused('断月').asked, [])
+
+    def test_existing_row_differs_from_6k(self):
+        self.env = Env(der=DER_ROWS + ['2026-08,192798341,1582050.0'])   # der 已有 2026-08 但 MtM 差 1，gua 落后
+        self.refused('已有 2026-08 行')
+
+    def test_table_changed_after_read_not_overwritten(self):
+        e = self.env = Env()
+        der_path = os.path.join(e.series, T.DER_CSV)
+        base = e.stub()
+
+        def opener(url, data, headers):                  # MOPS 对账那一刻，别人往 der 表里写了一行
+            if url == T.MOPS_T05ST11:
+                with open(der_path, 'ab') as f:
+                    f.write(b'2026-08,1,1.0\n')
+            return base(url, data, headers)
+
+        before = e.raw()
+        with self.assertRaises(T.Tsm6kError) as cm:
+            quiet(T.update, e.series, e.cache, '2026-08', TODAY, opener)
+        self.assertIn('被改动过', str(cm.exception))
+        self.assertEqual(e.raw(), (before[0] + b'2026-08,1,1.0\n', before[1]))   # 别人那行原样在，两表都没追加
+        self.assertEqual(e.tmp_files(), [])
+
+    def test_tmp_files_live_under_cache_tsm_6k(self):
+        e = self.env = Env()
+        moves, real = [], os.replace
+
+        def spy(src, dst):
+            moves.append((src, dst))
+            return real(src, dst)
+
+        with mock.patch.object(T.os, 'replace', spy):
+            added = quiet(T.update, e.series, e.cache, '2026-08', TODAY, e.stub())[0]
+        self.assertEqual(added, ['2026-08'])
+        tmp_dir = os.path.join(e.cache, T.CACHE_SUB)
+        into_series = sorted((os.path.basename(d), os.path.dirname(s), s.endswith('.tmp'))
+                             for s, d in moves if os.path.dirname(d) == e.series)
+        self.assertEqual(into_series, [(T.DER_CSV, tmp_dir, True), (T.GUA_CSV, tmp_dir, True)])
+
+
 class TestDriftRaises(Base):
     def test_fair_value_off_by_one(self):
         rows = DER_ROWS[:2] + ['2026-07,230720646,-2645506.0']
@@ -581,6 +798,56 @@ class TestDriftRaises(Base):
             self.assertEqual(e.tmp_files(), [])
         finally:
             e.close()
+
+
+class TestAmendment2020Precedent(Base):
+    """口径坑 i：2020-04-14 的 0001564590-20-016539 是月报 6-K/A，reportDate 沿用原件。照此前例，
+    今天的更正件 reportDate = 月末、未缓存：原件已缓存且先认到，也必须下载它、让它胜出。"""
+
+    A07 = row('2026-08-20', '0001046179-26-000540', 'tsm-20260820x6ka.htm', 101000, '2026-07-31', form='6-K/A')
+    ROWS = [REV['2026-05'], REV['2026-06'], MONTHEND_07, REV['2026-07'], A07, DIVIDEND, REV['2026-08']]
+
+    def setUp(self):
+        super().setUp()
+        self.env = Env()
+
+    def tearDown(self):
+        self.env.close()
+        super().tearDown()
+
+    def test_amended_cell_downloaded_wins_drift_raises_zero_write(self):
+        e = self.env
+        st = e.stub(rows=self.ROWS)
+        st.routes[url_of(self.A07)] = html(synth('2026-07,230720000,-2645507.0', GUA_ROWS[2]))
+        before = e.raw()
+        with self.assertRaises(T.Tsm6kError) as cm:
+            quiet(T.update, e.series, e.cache, '2026-08', TODAY, st)
+        msg = str(cm.exception)
+        self.assertIn(url_of(self.A07), st.asked)                                        # 被下载
+        self.assertIn("2026-07 open_notional_ntd_k: 库内 '230720646' vs 官方 230720000", msg)  # 胜出
+        self.assertIn(self.A07['acc'], msg)
+        self.assertEqual(e.raw(), before)                                                # 零写入
+        self.assertEqual(e.tmp_files(), [])
+        self.assertNotIn(url_of(REV['2026-08']), st.asked)
+
+    def test_amendment_outside_six_cells_passes(self):
+        # 2020 那次更正的是 TSMC Global 已沖銷名目 —— 6 格之外：6-K/A 照样胜出，体检通过，新月份照常追加
+        e = self.env
+        doc = synth(DER_ROWS[2], GUA_ROWS[2])
+        g_old = blk('TSMC Global Future', '253,144', '1,467')
+        self.assertEqual(doc.count(g_old), 1)
+        doc = doc.replace(g_old, g_old.replace('Expired Contracts Cumulative Notional Amount -',
+                                               'Expired Contracts Cumulative Notional Amount 9,755,101'))
+        st = e.stub(rows=self.ROWS)
+        st.routes[url_of(self.A07)] = html('Amendment: correction of the Notional Amount of TSMC Global Expired '
+                                           'Contracts; all other numbers remain unchanged. ' + doc)
+        added, out = quiet(T.update, e.series, e.cache, '2026-08', TODAY, st)
+        self.assertEqual(added, ['2026-08'])
+        self.assertIn(url_of(self.A07), st.asked)
+        self.assertIn(f'取 {self.A07["acc"]}', out)
+        der, gua = e.raw()
+        self.assertTrue(der.endswith((LINE_DER_08 + '\n').encode()))
+        self.assertTrue(gua.endswith((LINE_GUA_08 + '\n').encode()))
 
 
 class TestBackfillCap(Base):
@@ -605,12 +872,13 @@ class TestBackfillCap(Base):
 class TestReplayCached(Base):
     def test_all_cached_reports_equal_series(self):
         series = os.path.join(ROOT, 'series')
-        res = T._replay(series, REAL_CACHE)
+        res, out = quiet(T._replay, series, REAL_CACHE)
         errors = [(r['month'], r['file'], r['error']) for r in res if r['error']]
         self.assertEqual(errors, [])
         cmp_ = [r for r in res if not r['pending']]
         diffs = [(r['month'], r['diffs']) for r in cmp_ if r['diffs']]
         self.assertEqual(diffs, [])
+        self.assertNotIn('⚠', out, '真件里出现了清单外的块主体（口径坑 k）')
         self.assertGreaterEqual(len(cmp_), 41)
         self.assertEqual(min(r['month'] for r in cmp_), T.FORMAT_FROM)
         last = T.last_month(series)
