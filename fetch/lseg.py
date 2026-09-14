@@ -57,6 +57,9 @@
     ⚠ 由此推出：`monthly_run` 的 `EARLY_BY['lseg']` / roster 的 `LAG['lseg']`
     取决于**哪条腿决定这一页的 data_through**，而那是 build 侧的决定。本模块
     不改 `monthly_run.py`，也不替它拍板；只把四路各自的实测节奏摆在这里。
+    （2026-09 补记）订单簿与一级市场两条腿已登记进 `monthly_run.SLOW_LEGS['lseg']`：
+    头条追平后，只要任一登记列欠货，闸门就保持开着 —— 慢腿当月晚几天发的数据
+    不必等到下个月 1 号闸门重开才顺带回补。
 
 口径坑 C：`repoclear_*_cleared_trade_sides_count` 会被 `build/yoy.py` 的
     `classify()` 误判成 STOCK（它的 `_FLOW_PAT` 认词根 `trades`，而官方术语是
@@ -75,6 +78,8 @@
 ════════════════════════════════════════════════════════════════════════════
     latest_month(cache_dir) -> 'YYYY-MM'        四路都已发布的最新月；抓不到抛异常
     update(series_dir, cache_dir) -> [months]   刷新四路 + 合流，返回新增月份（升序）
+    DEGRADED -> {leg: 'Exc: msg'}               本轮 update 之后有效：降级或报警的路
+                                                （monthly_run 读它，见「降级策略」）
 
 附带的诊断接口（不参与 monthly_run，供人工与将来的 build 接线用）：
     latest_months(cache_dir) -> {leg: 'YYYY-MM' | LsegFetchError}
@@ -102,6 +107,14 @@ primary 能逐月给（xlsx `docProps/core.xml` 的 `dcterms:created`），lch �
         WARN，`update()` 的返回值里照样有其余三路带来的新月份。
       → 四路**全挂**才抛异常。否则 monthly_run 会看到 added=[] 报 NOCHANGE，
         把一次全站故障伪装成「本月没有新数据」。
+      → 降级不牵连其余三路，但**必须计入末行**：`_update()` 把这一路记进模块级
+        `DEGRADED`，monthly_run 按通用协议读它（`monthly_run.LEG_ALERTS`），把 lseg
+        并入末行失败清单。理由：2026-09-05 Tradeweb 改版那次，这里只打了一行 WARN，
+        lseg 被判 NOCHANGE、末行不含 lseg，这条故障在状态字里完全不可见。
+        带 `written = True` 的异常（例如一级市场逾期 `LsegPrimaryOverdueError`）是
+        **报警不是失败**：抛之前 part CSV 已经写完，所以照成功那一支算新增月份、印
+        `ok … （已写入）⚠ 报警`，也记进 `DEGRADED`，但**不算「这一路失败」**，
+        不计入上面的「四路全挂」。
 
   · **结构缺席**（part 模块文件不见了 / part CSV 的表头与该模块的 COLUMNS 对不上）
       → 立刻抛 LsegFetchError，不降级。理由：这两种情况下宽表会**静默少一整列**
@@ -271,7 +284,9 @@ def _refresh_orderbook(mod, series_dir, cache_dir):
 
 
 def _refresh_primary(mod, series_dir, cache_dir):
-    mod.write_csv(series_dir, mod.fetch_rows(cache_dir))
+    # refresh() = fetch_rows → write_csv → 逾期护栏。逾期时它**先写完 part CSV** 再抛
+    # LsegPrimaryOverdueError（written=True），_update 见 written 就按「已写入 + 报警」处理。
+    mod.refresh(series_dir, cache_dir)
 
 
 def _refresh_tradeweb(mod, series_dir, cache_dir):
@@ -288,6 +303,14 @@ _REFRESH = {
     'tradeweb': _refresh_tradeweb,
     'lch': _refresh_lch,
 }
+
+# 本轮降级或报警的路：{leg: 'ExcType: msg'}。每次 `_update()` 开头清空（refresh=False
+# 也清），所以只在本轮 update 之后有效。monthly_run 按通用协议读取（任何 fetch 模块都
+# 可以暴露 `DEGRADED: dict`，见 monthly_run.LEG_ALERTS），把这一家并入末行失败清单 ——
+# 否则单腿故障只是日志中段的一行 ⚠，末行看不见（2026-09-05 Tradeweb 实例）。
+# 带 `written = True` 的报警（一级市场逾期）也记在这里，但不算「这一路失败」。
+# 四路真失败仍然直接 raise LsegFetchError，不靠这张表。
+DEGRADED = {}
 
 
 def _part_path(series_dir, leg):
@@ -485,11 +508,17 @@ def update(series_dir, cache_dir):
     幂等不受影响：格子填过一次就不再是空的，下一轮同样的输入返回 []。
 
     `refresh=False` 只做 b（不联网）。给排障与本模块自己的幂等测试用。
+
+    本轮降级或报警的路记进模块级 `DEGRADED`（每轮开头清空），monthly_run 读它把 lseg
+    并入末行失败清单；带 `written = True` 的报警照成功那一支算新增，不计入「四路全挂」。
     """
     return _update(series_dir, cache_dir, refresh=True)
 
 
 def _update(series_dir, cache_dir, refresh=True):
+    # 无条件先清：DEGRADED 只描述「本轮」。refresh=False 也清，免得上一轮的报警
+    # 被一次只合流的调用原样带给 monthly_run。
+    DEGRADED.clear()
     os.makedirs(series_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -501,6 +530,18 @@ def _update(series_dir, cache_dir, refresh=True):
             try:
                 _REFRESH[leg](_mod(leg), series_dir, cache_dir)
             except Exception as e:                    # noqa: BLE001
+                # 不论哪种，先登记：降级与报警都要计入末行（monthly_run.LEG_ALERTS）。
+                DEGRADED[leg] = '%s: %s' % (type(e).__name__, e)
+                if getattr(e, 'written', False):
+                    # 报警不是失败：抛之前 part CSV 已经写完（例如一级市场逾期），
+                    # 照成功那一支算新增，不进 failed，不计入「四路全挂」。
+                    # 这里只印异常类型名，全文由 monthly_run 在末行前印。
+                    after = set(_read_part(series_dir, leg))
+                    new = sorted(after - before)
+                    print('[lseg] %-9s ok  %d 个月%s（已写入）⚠ 报警：%s'
+                          % (leg, len(after), ('，新增 ' + ','.join(new)) if new else '',
+                             type(e).__name__))
+                    continue
                 # 源头缺席 → 降级。这一路本轮不前进，但它已落库的 part CSV 照常合流。
                 failed[leg] = e
                 print('[lseg] ⚠ %s 这一路本轮失败（其余各路照跑）：%s: %s'
@@ -569,7 +610,7 @@ def _update(series_dir, cache_dir, refresh=True):
     print('[lseg] series/%s：%d 行 %s..%s，%d/%d 列有值%s'
           % (CSV_NAME, len(body), body[0][idx['month']], body[-1][idx['month']],
              len(filled), len(COLUMNS) - 1,
-             ('；本轮降级的路：' + ','.join(sorted(failed))) if failed else ''))
+             ('；本轮降级/报警的路：' + ','.join(sorted(DEGRADED))) if DEGRADED else ''))
     if backfilled:
         print('[lseg] 回补既有行的空格：%s（计入返回值，好让 monthly_run 重生成页面）'
               % ','.join(backfilled))

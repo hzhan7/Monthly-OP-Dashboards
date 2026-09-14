@@ -201,7 +201,7 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 
 > **它连续失败十天，和成功十天，在日志里长得一样吗？** 一样，就缺一道护栏。
 
-本仓踩过的四处。机制都写在代码现场，这里只留指路：
+本仓踩过的五处。机制都写在代码现场，这里只留指路：
 
 | 安静失败的地方 | 为什么看不出来 | 现在靠什么拦 |
 |---|---|---|
@@ -209,8 +209,9 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 | 跑在非 main 分支上 | 裸 `git push` 推的是**当前分支** → 数据进了别处 → 而 Pages 从 main 根目录发 → 站点静默停更 | 同上 |
 | 解析器认不出某行/某列 | 该行被静默丢弃，`latest_month` 停在上个月，fetch 干干净净报 `NOCHANGE`，红点与断档检查全都抓不到。**这一条 2026-08-19 一天之内独立复发三次**：MSCI 把脚注写成裸文本、cboe/ice 手里有自报月却没拿来对账、AXP 的 `Certificates` 被申报方手误写成单数（2021-02 那期，少算一家）—— 三次的形状都是**读不到不抛错** | 用**独立于解析器的外部判据**对账：`fetch/cboe.py` 的 `_crosscheck_report_month`、`fetch/ice.py` 的 `_crosscheck_workbook_month`；词形容错见 `fetch/axp.py` 里 `_series_excess_spread` 的 docstring |
 | 合并冲突时选「保留我的」 | 机械改写行（import 块、月份标签定义）两边都像对的：改动数不变、测试照样绿，于是重构被静默回退 | 验收方式改成**重跑原判据**（如死 import 扫描），而不是读 diff |
+| 多腿源的一条腿降级或晚发 | `fetch/lseg.py` 逐路 catch 之后只打一行 ⚠，这一家仍是 `NOCHANGE`、末行不含它，调度任务 tail -60 看不到（2026-09-05 Tradeweb 实例）；一级市场 factsheet 晚到时，头条追平后闸门不再去取，模块也没有逾期判据 | fetch 模块的 `DEGRADED` → `monthly_run.LEG_ALERTS` → 末行失败清单 + `report_leg_alerts()`；一级市场腿的 `_MAX_PUBLISH_LAG_DAYS` 逾期护栏 + `SLOW_LEGS['lseg']` 登记 |
 
-这四条的共同点：**代价不在「出错」，在出错不会被计入**。
+这五条的共同点：**代价不在「出错」，在出错不会被计入**。
 
 **而且自检要跑在自己身上，不只跑在别人的分支上。** 「引用的符号是否真有定义」
 这道检查最初是为了审一个旧分支的 README 才写的（那里有 4 行指向不存在的文件），
@@ -272,7 +273,7 @@ commit，也不会把页面的新鲜度信号刷成当天。**构建日期不进
 |---|---|---|---|
 | 不可重下 | `basefill/` | 245 MB | **永不清理**，且是唯一需要异地备份的部分 |
 | 热工作集 | `axp/`、`*_rates/` | 172 MB | 永不清理：`fetch/rates_*.py` 的 `rows()` 每次全量重放做重述对账，删了每月重打几百个 SEC 请求 |
-| 删了会回来 | `lseg_primary_*.xlsx` | 38 MB | 不清理：`fetch/lseg_primary.py:843` 每次跑全月份区间，本地没有就重下 |
+| 删了会回来 | `lseg_primary_*.xlsx` | 38 MB | 不清理：`fetch/lseg_primary.py` 的 `fetch_rows()` 每次跑全月份区间，本地没有就重下 |
 | 冷档 | `POLICY` 表登记的族 | 139 MB | 按期次保留最近 N 期 |
 
 `basefill/` 里有三类无人值守拿不回来的东西：只存在于 archive.org 的 CME 规则手册、

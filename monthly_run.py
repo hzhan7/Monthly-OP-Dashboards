@@ -31,6 +31,10 @@
     NOCHANGE        官方还没发新数据，或数据与线上一致
     FAIL <原因>     抓取或解析失败；该家保持线上旧数据不动
 
+多腿源（目前只有 lseg）某一条腿降级或报警时，状态字仍按本轮结果写（NEW / REBUILT / NOCHANGE），
+但这一家同时计入末行失败清单 —— 末行可能是 PARTIAL（ok 与 fail 两边都有它）或「FAILED 无更新」；
+明细在末行前的「腿级降级/报警」块，协议见 LEG_ALERTS。
+
 ## 为什么一家失败不中止全局
 
 单公司仓库的老脚本是「一有问题就整体退出」，那时候只有一家，退出=什么都不做，代价为零。
@@ -70,6 +74,7 @@ preflight（跑在下载之前，查的都是**配置与代码**，与本轮数�
 护栏保持不变，且仍然是「宁可不发也不发错」:
   · 提交范围只有 `data/` 与 `series/`；这两个目录以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
   · 任何一家的 fetch 解析出缺列 / 月份对不上，由该家的 fetch 模块抛异常 → 记 FAIL，不写数据
+    （多腿源的单腿异常例外：降级 + 计入末行，见 LEG_ALERTS）
   · 页面的新鲜度只绑 payload 的 data_through（构建日期只写 data/*.js 首行注释，不进 payload）。
     抓取失败那家不写 series、不重生成，data_through 原地不动，首页按 roster 的 LAG + GRACE
     给它打红点 —— 旧数据看得出是旧的，不会被当成新的
@@ -195,7 +200,8 @@ EARLY_BY = {
     # （2023-01 数据 → 2023-02-02）。默认闸门 = 8−5 = 第 3 天，正踩在最密的那一档上
     # 零余量，且必然漏掉第 2 天那一次。8−7 = 第 1 天开闸，比实测最早再早一天。
     # 另三条腿（LSE 订单簿约 +21 天、Main Market/AIM +1~9、LCH +3~4）填的不是头条列，
-    # 不推进 data_through，靠下一轮回补 —— 它们的滞后不进这里，也不进 LAG。
+    # 不推进 data_through，靠下一轮回补 —— 它们的滞后不进这里，也不进 LAG；
+    # 其中订单簿与一级市场两条腿登记在 SLOW_LEGS['lseg']，LCH 未登记。
     'lseg': (7, 7),
 
     # Nasdaq：**两条腿差一个多星期**，闸门与红点必须各跟各的腿。
@@ -327,12 +333,12 @@ FACT_GATE = {
 #
 # ⚠ 开闸日不必取该腿实测的**最早**到货日。慢腿闸门要防的是「拖到下月」这种整月丢
 #   失，只要闸门在当月内开，那个月的数据当月就能进来。lseg 订单簿近 30 期跨度是
-#   +2~+24 天，按 +2 开闸等于每月多 20 天下载，而它每轮要打 67 次检索 API
-#   （fetch/lseg_orderbook.py 的逐月 _search，各 sleep 0.25s）—— 取中段即可。
+#   +2~+24 天，按 +2 开闸等于每月多 20 天下载（稳态下 fetch/lseg.py 传 skip，每轮只检索
+#   缺的那几个月，但 update() 每次都是四路整趟跑一遍）—— 取中段即可。
 #
 # ⚠ **不要为「永久停发」的列建登记**：它们永远追不平，闸门会被顶成天天下载。
-#   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年）、lseg 的 6 条
-#   repoclear_* 停在 2026-05（另一条更慢的腿，节奏未实测）。两者都**不**登记。
+#   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年），不登记。
+#   lseg 的 6 条 repoclear_* 是另一条更慢的腿，节奏未实测、不登记（2026-09-02 那轮起已到 2026-07）。
 #
 # ⚠ 不要登记按设计滞后一整期的列（例：miax/cboe 的滚动三月 RPC、miax 的 capture）。
 #   本期报表只给上一期，last < due 恒真，效果等同永久停发，闸门会被顶成天天下载。
@@ -356,12 +362,32 @@ SLOW_LEGS = {
               'turnover_cash_total_eurbn', 'aum_stoxx_dax_etf_eurbn',
               'vol_licensed_index_contracts'), (8, 8)),
 
-    # LSE 订单簿月报：近 30 期 +2~+24 天，2026 中位 +21
-    # （fetch/lseg_orderbook.py:76-86，节奏 2024 年起明显变慢）。
-    # 取第 12 天是成本折中：比中位早 9 天，又不至于把 67 次/轮的检索 API 打 20 天。
+    # lseg 这一条跨两份上游文件，共用一个开闸日（slow_pending 取所有登记列里最落后的那份）。
+    #
+    # ① LSE 订单簿月报（lse_* / turquoise_* / gbp_eur_rate 八个前缀）：近 30 期（2024-01 起）
+    #    +2~+24 天，2026 年 7 期中位 +19（fetch/lseg_orderbook.py 的「实测发布节奏」节；节奏
+    #    2024 年起明显变慢）。取第 12 天是成本折中：比 2026 中位早一周，又不必从 +2 起天天整趟抓。
+    #
+    # ② LSE 一级市场 factsheet（mm_ / aim_，2026-09 追加）：197 期 created 中位 +2、最晚 +27，
+    #    Main Market 与 AIM 不是每月同步发（fetch/lseg_primary.py 的「发布节奏」节）。
+    #    与订单簿共用 (12, 12)、不单设开闸日，理由三条：
+    #    · 本块第一条 ⚠：慢腿闸门只防整月丢失，不必取实测最早到货日；
+    #    · 不登记时的失效形状：订单簿先到 → 次日 slow_pending 只看订单簿列、判「已追平」→
+    #      闸门关死，一级市场当月晚几天挂出的那期，要等下月 1 号头条闸门重开才顺带回补；
+    #    · 【粗算，设计期回放】2021-01 起两个市场与订单簿都有实测节奏的 66 个月里，旧登记下
+    #      一级市场整月丢失 7-12 次，登记后 0 次；残余是最多晚 7 天（第 3-11 天挂出的那期
+    #      要等到第 12 天）。
+    #
+    # 这条登记的第二个作用：一级市场欠货时 lseg 每天真抓，fetch/lseg_primary.py 的模块内逾期
+    # 护栏（_MAX_PUBLISH_LAG_DAYS）因此每天执行，警报是黏的（经 fetch/lseg.py 的 DEGRADED →
+    # LEG_ALERTS 计入末行）。某个市场**永久停发**时的处置顺序：先由人写下停发结论、处理
+    # KNOWN_SOURCE_GAPS / MARKET_END（后者目前不存在，届时另议），再从这里摘掉 'mm_' / 'aim_'
+    # —— 不摘就撞上面第二条 ⚠（天天下载）；**不调阈值**。
+    # mm_ / aim_ 恰好命中 fetch/lseg.py COLUMN_LEG 里 primary 的全部列，不误收 tradeweb / lch 列
+    # （build/test_guards.py 的 M 组机检）；LCH（含 6 条 repoclear_*）不登记。
     'lseg': (('lse_orderbook_', 'lse_trading_days_', 'lse_lit_uk_share_',
               'turquoise_integrated_', 'turquoise_dark_', 'turquoise_paneuropean_',
-              'turquoise_trading_days_', 'gbp_eur_rate'), (12, 12)),
+              'turquoise_trading_days_', 'gbp_eur_rate', 'mm_', 'aim_'), (12, 12)),
 
     # 资金調達額 historical-sikin.xls：这条腿只填 2 列，比头条腿（次月第 7 天）
     # 晚半个月。实测到货日两点 —— 2026-06 期 07-17、2026-07 期 08-19（后者由
@@ -1026,7 +1052,7 @@ def slow_pending(t, today=None):
             print(f'  ⚠ {t}: 慢腿登记的列前缀在 series/{t}.csv 里一列都没匹配上 —— '
                   f'多半是上游改了列名，登记就此静默失效。按欠货处理（照常下载）。')
             return True
-        # 一条登记可以跨同一家的几份上游文件（miax：IR 报表 + 历史档案 PDF）。
+        # 一条登记可以跨同一家的几份上游文件（miax：IR 报表 + 历史档案 PDF；lseg：LSE 订单簿 + 一级市场 factsheet）。
         # 取最小 = 最落后那份的进度，任一份没到都算欠货。
         last = min((max((r[0] for r in rows[1:]
                          if i < len(r) and r[i].strip()), default='')
@@ -1347,6 +1373,40 @@ def report_restatement_logs(since):
         print(f'  ⚠ 重述台账体检自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
 
 
+def report_leg_alerts():
+    """把本轮 LEG_ALERTS 印成末行前的一块。只打印：不 exit、不改 fails（计入末行在 main() 里做）。
+
+    **LEG_ALERTS 为空时一个字都不印** —— 每天多占的每一行都在挤调度任务 tail -60 的窗口。
+    位置按「谁读得到」摆，与 report_restatement_logs 同一条理由：会话里看的是 tail -60，
+    而两道收尾闸门的转印占了日志大半，fetch 模块自己那行 ⚠ 落在窗外。它解释的正是末行
+    失败清单里那一家「为什么同时在 ok 与 fail 两边」，所以排在收尾体检的最后、离末行最近。
+
+    每条按腿一行、**不截断**（空白与换行压成单个空格）：逾期类异常把逾期清单排在消息最前面，
+    一项几十字，截到固定字数会在清单变长时正好截掉后面的月份；全文另在本轮日志里该路的 ⚠ 行。
+    整个函数体裹在 except 里，与 audit_stale_cols() 同规矩；单条转不成文本也只影响那一条。
+    """
+    try:
+        if not LEG_ALERTS:
+            return
+
+        def text(v):
+            try:
+                return ' '.join(str(v).split())
+            except Exception as e:            # noqa: BLE001
+                return f'（这一条转不成文本：{type(e).__name__}）'
+
+        print(f'  🔴 腿级降级/报警 {len(LEG_ALERTS)} 家（该家其余腿照常发布，已计入末行失败清单）：')
+        for t in sorted(LEG_ALERTS, key=str):
+            legs = LEG_ALERTS[t]
+            pairs = (sorted(legs.items(), key=lambda kv: str(kv[0])) if isinstance(legs, dict)
+                     else [('?', legs)])
+            for leg, why in pairs:
+                print(f'     {text(t):<6} {text(leg)} → {text(why)}')
+        print('     处置：逾期类看该 part 模块 docstring「护栏」节；普通异常看本轮日志里该路的 ⚠ 行')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 腿级降级/报警汇总自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+
+
 def builder(t):
     """→ 重新生成 `data/<t>.js` 的命令行；三种写法都找不到时返回 None。
 
@@ -1403,6 +1463,45 @@ def series_fingerprint(t):
     return h.hexdigest()
 
 
+# ── 腿级降级 / 报警 ──────────────────────────────────────────────────────────
+# 多腿源（一家的数据来自几份互相独立的上游文件，目前只有 lseg 的四路）有一种故障，
+# one() 的状态字表达不了：**一条腿坏了，其余腿照常有新数据**。
+#
+# 协议：任何 fetch 模块都可以暴露模块级 `DEGRADED: dict`（{腿名: '异常类型: 消息'}，每轮
+# update() 开头清空、填入本轮降级或报警的腿）。one() 在 update() 返回之后读它，非空就记进
+# LEG_ALERTS[t]；main() 把这些家并入末行失败清单，report_leg_alerts() 在末行前印明细。
+# 本文件**不认得任何一家的名字**，只问「这个模块有没有这个属性」—— 与 builder() 同一条
+# 「删一家不留残渣」的规矩。
+#
+# 腿级报警**不改这一家的状态字**（NEW / REBUILT / NOCHANGE 照旧），但**计入末行**：
+#   · 不走 FAIL：one() 记 FAIL 时在 build 之前就 return，其余腿本轮的新数据跟着不重建页面 ——
+#     一条腿坏了去惩罚同一家的另外几条，正是「一家失败不中止全局」要避免的形状（缩小一号）；
+#   · 不能只打 WARN：fetch 模块自己那行 ⚠ 落在日志中段，调度任务只读 tail -60。
+#     2026-09-05 Tradeweb 改版那次就是这样：lseg 被判 NOCHANGE、末行不含 lseg，
+#     这条故障在状态字里完全不可见。
+# 代价：该家可能同时出现在末行的 ok 与 fail 两边（PARTIAL），读末行的人要去看「腿级降级/报警」块。
+LEG_ALERTS = {}
+
+
+def _leg_alerts(mod):
+    """读 fetch 模块的 `DEGRADED` → {腿名: 说明}；没有可报的返回 {}。**绝不抛。**
+
+    属性缺失 / 为 None / 为空 → {}（单腿源本来就没有这个属性）。
+    是 dict → {str(k): str(v)}。其他类型 → {'?': repr(v)}：协议写坏了，宁可吵。
+    整个函数体裹在 except 里（读出错也返回一条 '?'）：它跑在 one() 的 try 之外，
+    这里一抛就是整轮 28 家一起崩。
+    """
+    try:
+        v = getattr(mod, 'DEGRADED', None)
+        if not v:
+            return {}
+        if isinstance(v, dict):
+            return {str(k): str(x) for k, x in v.items()}
+        return {'?': repr(v)}
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        return {'?': f'读取 DEGRADED 出错: {type(e).__name__}: {e}'}
+
+
 def one(t, force):
     """跑一家：抓取 → series 内容变了（或 --force）就重生成 data/<t>.js。
 
@@ -1428,6 +1527,14 @@ def one(t, force):
     解决的；放在这里是同一个修法的模块无关版本，一次覆盖 ndaq、db1 与以后任何双腿源。
 
     代价：多算一次全文件 hash（series 里最大的一家几百 KB，可忽略）。
+
+    ## 腿级降级：不改状态字，但计入末行（2026-09 加）
+
+    多腿源的 fetch 模块可以暴露 `DEGRADED`（协议，以及「为什么不走 FAIL、也不能只打 WARN」，
+    见 LEG_ALERTS 上方那段）。这里在 `update()` 返回之后、NOCHANGE 提前返回**之前**读它：
+    挪到后面的话，「一条腿坏了、其余腿也没新数据」那一天恰好走 NOCHANGE 分支，报警就被
+    那个 return 吞掉 —— 而那正是 2026-09-05 lseg 的形状。`update()` 抛异常时照旧 FAIL、
+    不读它（整家都挂了，用不着腿级明细）。返回值 (状态, 说明) 的契约不变，计入末行在 main() 里做。
     """
     if not force and not_due(t):
         # 这两种情况以前共用一句「未到披露期，跳过下载」，而 2026-08-17 实测那天被
@@ -1447,11 +1554,16 @@ def one(t, force):
     added = []
     if os.path.exists(fp):
         try:
-            added = load(fp, f'fetch_{t}').update(SERIES, CACHE) or []
+            mod = load(fp, f'fetch_{t}')
+            added = mod.update(SERIES, CACHE) or []
         except Exception as e:
             return 'FAIL', f'{type(e).__name__}: {e}'
     else:
         return 'FAIL', f'缺 fetch/{t}.py（无法自动更新，需人工补数据）'
+    # 腿级降级/报警（协议见 LEG_ALERTS）：必须在下面 NOCHANGE 提前返回之前读，理由见 docstring 末节。
+    a = _leg_alerts(mod)
+    if a:
+        LEG_ALERTS[t] = a
     touched = series_fingerprint(t) != before
 
     if not added and not touched and not force:
@@ -1981,6 +2093,8 @@ def main():
     for t in todo:
         st, msg = one(t, a.force)
         print(f'{t:<10} {st:<8} {msg}')
+        if t in LEG_ALERTS:               # 状态字不变，但这一家记下了腿级报警（协议见 LEG_ALERTS）
+            print(f'{"":<10} ⚠ 腿级报警：{",".join(sorted(LEG_ALERTS[t]))}（明细见文末「腿级降级/报警」）')
         if st == 'FAIL':
             fails.append(t)
         elif st in ('NEW', 'REBUILT'):
@@ -2031,6 +2145,12 @@ def main():
     # 去重是必须的 —— 一家今天 fetch 失败会先进 fails，它同时逾期就会被记两次，
     # 末行的 `len(fails)` 与逗号串都会翻倍，读日志的人会以为出了两件事。
     fails += [t for t in audit_overdue_headline() if t not in fails]
+    # 腿级报警并入失败清单（协议见 LEG_ALERTS 上方那段）：该家其余腿本轮照常发布，所以它可能
+    # 同时出现在 ok 与 fails 两边，末行因此可能是 PARTIAL；明细由 report_leg_alerts() 在末行前印。
+    # ⚠ 必须排在 taiwan_fx_rebuild(fx_added, set(ok) | set(fails)) **之后**：那一步把 set(ok) | set(fails)
+    #   当成「循环里已建过」而跳过汇率补重建 —— 一家只有腿级报警、本轮没 build 的台湾家若先进了
+    #   fails，就会被误跳过。去重理由同上一行。
+    fails += [t for t in LEG_ALERTS if t not in fails]
 
     # ── 收尾闸门：产物体检（34 页全部生成完之后、commit 之前）─────────────────
     # 这两道与 preflight 那两道的分界线是「查配置/代码」还是「查产物」：
@@ -2085,6 +2205,9 @@ def main():
     # 更早退出的那几条（脏树 / preflight / 未知 ticker）本轮一家都没抓，不会有新台账，下一轮照报。
     # 不看 --only：台账可能是上一轮留下的，今天只跑 cme 也照报 enx 那份。
     report_restatement_logs(t_run)
+    # 腿级降级/报警明细（定案见 report_leg_alerts 的 docstring）：只打印，LEG_ALERTS 为空时不印。
+    # 排在收尾体检的最后 = 离末行最近 —— 它解释的正是末行失败清单里那一家。
+    report_leg_alerts()
     # 两道都跑完再判，不在第一道失败时短路：一次跑出全部问题，人只需要修一遍、重跑一次。
     if gate_fail:
         print(f'FAILED 产物闸门未通过（{"、".join(gate_fail)}；逐条见上），'

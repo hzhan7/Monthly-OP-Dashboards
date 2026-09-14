@@ -92,6 +92,8 @@ AIM 最晚 +27（2026-04 那期），Main Market 最晚 +22（2026-04 那期）�
 剩下那 10% 长尾（+13 ~ +27）没有任何规律：既不集中在季末月，也不集中在某一年
 （2023-03/05/08、2024-02/05/06/07、2026-03/04/05 都在里面），
 抬闸门只会让所有月份陪最差的那一期等，性价比为负。
+本建议没有进 LAG。本腿实际由 monthly_run.SLOW_LEGS['lseg'] 与订单簿共用的开闸日驱动，
+理由写在该处注释。
 
 ⚠ **`dcterms:created` 是文件生成时刻，不等于首次发布时刻。**
 同一份文件被重新生成过，created 就会跟着跳到重生成那天 —— 与 fetch/db1.py 里
@@ -100,6 +102,46 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
 · **绝不给回补的历史月份补记发布日**。
 另有 HTTP `Last-Modified` 头可用，但它是 CDN 上的文件 mtime，被重传污染得更狠
 （AIM 103 期里 58 期与 created 不同，最大滞后 751 天），只能当旁证，不能当判据。
+
+━━ 护栏：晚发 / 停发必须出声 ━━
+
+（2026-09-14 立。在这之前，一个市场的 factsheet 晚到或停发时，缺月只进
+`fetch_rows.skipped`，模块里没有任何逾期判据；头条腿一追平，闸门也不再去取 ——
+「连续缺十天」和「正常十天」在日志里长得一模一样。）
+
+a. **判据**：官方索引里「有文件」的月份，对照日历。「有文件」与 `fetch_rows` 取链接
+   用的是同一份规则（`_url_for`）：xlsx 一律认；.xls 只在 `month <= LEGACY_LAST[tag]`
+   时认（目前只有 AIM 2016-12 及更早；Main Market 的 .xls 一律不认，口径坑 11）。
+   扫描区间是 `MARKET_START[tag]` 到**今天的上个月**，跳过 `KNOWN_SOURCE_GAPS`。
+   某月满足 `(today − _month_end(m)).days > _MAX_PUBLISH_LAG_DAYS`（**严格大于**，
+   与 fetch/lseg_orderbook.py 的 `_guard_overdue_missing` 同一个比较方向）就判逾期；
+   没超过的只算「还没发」，每轮无条件打印一行 `[lseg_primary] 索引里还没有：…`。
+   阈值怎么来的写在常量 `_MAX_PUBLISH_LAG_DAYS` 的注释里。
+b. **为什么看索引、不看解析结果**：`_month_index` 在 label 写法、扩展名或 ctaTitle
+   前缀漂移时会**静默丢月**（对不上的条目只 `continue`，不抛）；`fetch_rows` 对缺月
+   也只记进 `skipped` 就往下走。这两处正是「读不到」唯一不出声的地方。解析层面的
+   问题（空格、标题月错位、闭合失败、下载失败）本来就会抛，经 fetch/lseg.py 的
+   `DEGRADED` 出声，护栏不重复管。
+c. **为什么先写后抛**：两个市场不是每月同步发（98 个共有月里只有 68 个 created
+   同日，见上面「发布节奏」），一个市场或一个月晚了，不能拖住另一个市场和其余月份
+   入库。所以 `refresh()` 先 `write_csv`、再判逾期；抛的是 `LsegPrimaryOverdueError`
+   （`written = True`）。合流层见 `written` 就按「已写入 + 报警」处理：照常合流、
+   不计入「四路全挂」，但照样记进 `DEGRADED`。
+d. **证词只写进报错消息，不决定抛不抛**：`_witness` 在该 tab 报告清单的原文里搜
+   「完整月名 年份」/「三字母缩写 年份」。命中 = 索引里有这个月、是 `_month_index`
+   没认出来；没命中 = 更像官方晚发或停发。证词只帮人决定先查哪边，触发只看日历。
+e. **处置**（响了以后）：
+   · label / 扩展名 / ctaTitle 前缀变了（证词多半是「没认出来」）→ 改 `_month_index`；
+   · 官方确认缺某一期 → 把 (市场, 月) 登记进 `KNOWN_SOURCE_GAPS` 并注明出处；
+   · 整段停发 → 由人写下停发结论并另议 `MARKET_END`（本模块目前没有这个常量；
+     `KNOWN_SOURCE_GAPS` 是逐月登记，不适合整段），再从
+     `monthly_run.SLOW_LEGS['lseg']` 摘掉 `mm_` / `aim_` 前缀；
+   · **不许调阈值**。调阈值只是把哨兵关掉。
+f. **响的路径**：`refresh()` 抛 → fetch/lseg.py 记进 `DEGRADED['primary']` →
+   `monthly_run.LEG_ALERTS` → 末行失败清单，外加末行前的「腿级降级/报警」块。
+   ⚠ 护栏只在 lseg 真去抓的那天执行。尾部欠货（最新一期没到）时，
+   `monthly_run.SLOW_LEGS['lseg']` 的登记保证 lseg 每天都抓，警报是黏的；历史中段
+   某月从索引里消失、之后的月份都在时，只在 lseg 被抓的日子响，会断续。
 
 ════════════════════════════════════════════════════════════════════════════
 口径坑（按踩坑概率排序）
@@ -339,6 +381,10 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
 两个版式共用：
 · **出场的那个市场**，它那一段列每一格都非空，否则 raise
   （某个市场整段缺席是允许的 —— 起点没到 / 官方的洞；半段缺席不允许）
+写完 part CSV 之后（`refresh()`）：
+· **逾期核对**（见「护栏：晚发 / 停发必须出声」节）：官方索引里某月过了
+  `_MAX_PUBLISH_LAG_DAYS` 还没有文件 → 抛 `LsegPrimaryOverdueError`。它不挡本轮入库
+  （抛的时候 part CSV 已经写完），只让「该到没到」计入末行
 另外三条是**跑完之后的事后核对**，不在模块里断言，记在这里备查
 （2026-08-19 对 127 行重做过，零违例）：
 · UK + International == Total（家数两组 + 主板市值一组 + 新上市家数两组）
@@ -354,6 +400,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -394,10 +441,33 @@ START = min(MARKET_START.values())
 # 都好端端地在），按月整行跳过等于替官方多挖一个洞。缺的那一侧整段列留空，
 # 另一侧照写 —— 宽表本来就允许列各自起点不同、各自留洞。
 # 白名单之外的任何空格仍然直接 raise，别往这里加东西来「让它跑过去」。
+# 逾期护栏 _overdue_missing 也读这张表，登记即豁免（官方确认缺的那一期不再报逾期）。
 KNOWN_SOURCE_GAPS = {
     ('MM', '2022-12'): 'Main Market factsheet 这一期在官方索引里不存在（2022 年组只到 11 月）',
     ('AIM', '2019-09'): 'AIM factsheet 这一期的年度块 Market Value 格是空的，官方留白',
 }
+
+#: 逾期阈值（docstring「护栏：晚发 / 停发必须出声」a）：某个月的 factsheet 离**数据月
+#: 月末**超过这么多天还不在官方索引里，就不再当「官方还没发」，而当「晚发 / 停发 /
+#: 我们认不出」抛出来（`refresh()` 先写 part CSV，再抛 LsegPrimaryOverdueError）。
+#:
+#: 取值只能从本模块自己量过的节奏来（docstring「发布节奏」），不许拍脑袋
+#: （2026-09-14 从 cache/lseg_primary_*.xlsx 与 .lm 逐份重算）：
+#:     · 2018-05 起两个市场共 197 期 `dcterms:created`：最晚 +27，**大于 27 天的 0 期**；
+#:     · 其中 138 期的 HTTP Last-Modified 未被重传污染（与 created 相差 0-10 天）：
+#:       最晚 +28（AIM 2023-05）。cron 07:56 SGT 跑，当天挂出的文件次日才取得到，
+#:       再 +1 ⇒ 历史上最坏的一期到我们手里是 +29；
+#:     · 取 35 只剩约 6 天余量，而 2026 年节奏在变慢：2026-03 / 04 / 05 两个市场里
+#:       较慢那侧已到 +21 / +27 / +17；
+#:     · 取 90（订单簿那条腿的阈值）会与陈旧列审计几乎同时响 —— 停在上个月的列，
+#:       陈旧列审计首报日约为月末后 +99 —— 那这道护栏就白设了。
+#: 45 = 最坏 +29 之上再留 16 天；+46 首报，比陈旧列审计早约 53 天。
+#:
+#: ⚠ **它哪天响了，不要往上调它。** 官方确认缺某一期，照 docstring 护栏 e 登记
+#: KNOWN_SOURCE_GAPS；整段停发，写下停发结论、另议 MARKET_END，再从
+#: monthly_run.SLOW_LEGS['lseg'] 摘前缀。调阈值只是把哨兵关掉，而关掉之后这一路又回到
+#: 「缺月只进 skipped、日志里一声不吭」那个状态。
+_MAX_PUBLISH_LAG_DAYS = 45
 
 MONTHS = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY',
           'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER']
@@ -411,6 +481,17 @@ MONEY_TOL = 1e-6
 
 class LsegPrimaryFetchError(RuntimeError):
     """源站结构变化 / 下载失败 / 解析结果不完整。一律炸掉，绝不静默写空列或 NaN。"""
+
+
+class LsegPrimaryOverdueError(LsegPrimaryFetchError):
+    """官方索引里某月逾期未见（超过 `_MAX_PUBLISH_LAG_DAYS`）—— 只由 `refresh()` 抛。
+
+    抛它时 part CSV **已经写完**，本轮一行都没少写：已到的月份、另一个市场都照常入库。
+    它只用来让「该到没到」计入末行：fetch/lseg.py 见 `written` 就不把这一路算作失败
+    （不计入「四路全挂」），但照样记进 `DEGRADED`，monthly_run 经 LEG_ALERTS 把 lseg
+    并入末行失败清单。见 docstring「护栏：晚发 / 停发必须出声」。
+    """
+    written = True
 
 
 # ── 列定义 ──────────────────────────────────────────────────────────────────
@@ -1371,6 +1452,61 @@ def _parse_factsheet(path, month, summary_needle):
     return rec
 
 
+# ── 逾期护栏（docstring「护栏：晚发 / 停发必须出声」）──────────────────────
+def _url_for(index, index_legacy, tag, month):
+    """该市场该月在官方索引里的直链；没有返回 None。`fetch_rows` 取链与逾期护栏共用这一份。
+
+    规则原样取自 `fetch_rows`：xlsx 优先；只有 `month <= LEGACY_LAST.get(tag, '')`
+    （老版式段）才认 .xls 那份索引 —— Main Market 不在 LEGACY_LAST 里，它的 .xls
+    一律不认（口径坑 11）。两处要是各写一份，护栏认的「有文件」就可能和真正去下载的
+    对不上：要么把读不了的 .xls 当成「到了」而漏报，要么把没去下的月份报成逾期。
+    `index` / `index_legacy` 是 {tag: {'YYYY-MM': 直链}}（`_month_index` 的产物）。
+    """
+    legacy = month <= LEGACY_LAST.get(tag, '')
+    return ((index.get(tag) or {}).get(month)
+            or ((index_legacy.get(tag) or {}).get(month) if legacy else None))
+
+
+def _overdue_missing(present, today=None):
+    """官方索引缺月 → (overdue, pending)，两者都是 [(tag, month, 月末后天数)]。
+
+    `present` = {tag: 该市场索引里「有文件」的月份集合}（即 `fetch_rows.present`，
+    规则同 `_url_for`）。逐市场扫 `MARKET_START[tag]` 到 today 的上个月
+    （= `today.replace(day=1)` 前一天所在的月），跳过 `present` 里有的和
+    `KNOWN_SOURCE_GAPS` 登记的；天数 = (today − `_month_end(月)`).days，
+    **严格大于** `_MAX_PUBLISH_LAG_DAYS` 进 overdue，否则进 pending。
+    按 MARKETS 顺序、月份升序。纯函数：不联网、不读文件，`today` 可注入。
+    """
+    today = today or datetime.date.today()
+    prev = today.replace(day=1) - datetime.timedelta(days=1)
+    last = '%04d-%02d' % (prev.year, prev.month)
+    overdue, pending = [], []
+    for tag, _p, _l, _c, _n in MARKETS:
+        have = (present or {}).get(tag) or ()
+        for month in _months_between(MARKET_START[tag], last):
+            if month in have or (tag, month) in KNOWN_SOURCE_GAPS:
+                continue
+            days = (today - _month_end(month)).days
+            (overdue if days > _MAX_PUBLISH_LAG_DAYS else pending).append((tag, month, days))
+    return overdue, pending
+
+
+def _witness(tag, month, text):
+    """证词：该 tab 报告清单原文里有没有这个月的字样。**只写进报错消息，不决定抛不抛。**
+
+    `text` 是 `fetch_rows.index_text[tag]`（报告清单 JSON 的文本）。先 URL 解码（直链里
+    的空格是 %20），再不分大小写搜「完整月名 年份」或「三字母缩写 年份」
+    （'August 2026' / 'Aug 2026'；月名与年份之间容许空白、下划线或连字符）。
+    命中 = 索引里有、是 `_month_index` 没认出来；没命中 = 更像官方晚发或停发。
+    `tag` 不参与匹配：清单本来就是按市场分 tab 取的，传进来的 text 已经只属于这个市场。
+    """
+    full = MONTHS[int(month[5:7]) - 1].lower()
+    s = urllib.parse.unquote(text or '').lower()
+    if re.search(r'(?<![a-z])(?:%s|%s)[\s_\-]*%s(?!\d)' % (full, full[:3], month[:4]), s):
+        return '索引里有这个月的字样，但 _month_index 没认出来（label / 扩展名 / ctaTitle 前缀变了）'
+    return '索引里连这个月的字样都没有 —— 更像官方晚发或停发'
+
+
 # ── 对外接口 ────────────────────────────────────────────────────────────────
 def latest_month(cache_dir):
     """两个市场都已发布 factsheet 的最新月 'YYYY-MM'。
@@ -1404,6 +1540,12 @@ def fetch_rows(cache_dir=None, start=None, end=None):
 
     `start` 缺省 None = 每个市场用自己的 `MARKET_START`；给了值就当**下限**
     压在两个市场上（排障用，例如只重跑最近半年）。
+
+    返回前在函数对象上挂几个属性供调用方读：`skipped`（[(月, 市场, 原因)]）、
+    `latest_month` / `market_latest`，以及逾期护栏的两个输入 —— `present`
+    （{tag: 索引里按 `_url_for` 规则有链接的月份集合}）与 `index_text`
+    （{tag: 报告清单 JSON 文本}，只给 `_witness` 作证）。本函数自己**不判逾期、
+    不因缺月抛**：那一步在 `refresh()` 里，写完 part CSV 之后。
     """
     if cache_dir is None:
         cache_dir = os.path.join(
@@ -1411,13 +1553,15 @@ def fetch_rows(cache_dir=None, start=None, end=None):
     os.makedirs(cache_dir, exist_ok=True)
 
     tabs = _discover_tabs(cache_dir)
-    index, index_legacy, newest = {}, {}, {}
+    index, index_legacy, newest, index_text = {}, {}, {}, {}
     for tag, _pfx, label, cta, _needle in MARKETS:
         if label not in tabs:
             raise LsegPrimaryFetchError(
                 'reports 索引里没有 %r 这个 subFilter，实有 %s' % (label, sorted(tabs)))
         slug, tab_id, comp_id = tabs[label]
         doc = _tab_reports(slug, tab_id, comp_id, cache_dir, tag)
+        # 报告清单原文留给逾期护栏作证（`_witness`），不参与建行。
+        index_text[tag] = json.dumps(doc, ensure_ascii=False)
         index[tag] = _month_index(doc, cta, tag)
         # 老版式月份的源可能是 .xls，也可能是 .xlsx（AIM 2016-11/12）。两份索引都建，
         # 取的时候 xlsx 优先 —— 同一期两种格式都在时，xlsx 是官方后来重新导出的那份。
@@ -1442,7 +1586,7 @@ def fetch_rows(cache_dir=None, start=None, end=None):
                 continue            # 这个市场的归档还没到这里 —— 不是洞，不记 skipped
             legacy = month <= LEGACY_LAST.get(tag, '')
             why = KNOWN_SOURCE_GAPS.get((tag, month))
-            url = index[tag].get(month) or (index_legacy[tag].get(month) if legacy else None)
+            url = _url_for(index, index_legacy, tag, month)      # 与逾期护栏共用同一条取链规则
             if why is None and url is None:
                 why = ('官方索引里没有 %s 的 xlsx/xls' % tag) if legacy \
                     else ('官方索引里没有 %s 的 xlsx' % tag)
@@ -1479,6 +1623,13 @@ def fetch_rows(cache_dir=None, start=None, end=None):
     fetch_rows.skipped = skipped
     fetch_rows.latest_month = common_latest
     fetch_rows.market_latest = dict(newest)
+    # 逾期护栏的两个输入（`refresh()` 读，见 docstring「护栏」节）。present 与上面循环
+    # 取链接用同一条规则（`_url_for`），index_text 只给 `_witness` 作证。
+    fetch_rows.present = dict(
+        (tag, set(m for m in set(index[tag]) | set(index_legacy[tag])
+                  if _url_for(index, index_legacy, tag, m)))
+        for tag, _p, _l, _c, _n in MARKETS)
+    fetch_rows.index_text = index_text
     return rows
 
 
@@ -1520,6 +1671,50 @@ def write_csv(series_dir, rows):
     return path
 
 
+def refresh(series_dir, cache_dir=None, today=None):
+    """合流层（fetch/lseg.py 的 `_refresh_primary`）调的入口：抓 → 写 part CSV → 判逾期。
+
+    顺序是护栏的一部分（docstring「护栏」c）：**先写后判**。逾期只抛
+    `LsegPrimaryOverdueError`（`written = True`），抛的时候 part CSV 已经写完。
+    还没超阈值的缺月（pending）无条件打印一行 —— 照 fetch/lseg_orderbook.py
+    「missing 无条件先打印」的规矩，免得「还没发」要到超期那天才第一次出现在日志里。
+    超期的另印一行带证词的 ⚠，再抛；异常全文由 monthly_run 在末行前转印。
+
+    `today` 可注入（测试用）。`present` / `index_text` 从**本次调用的那个** `fetch_rows`
+    上取（按模块全局名现查），测试替换 `fetch_rows` 时护栏读的就是替身挂的属性。
+    返回 part CSV 路径。
+    """
+    fn = fetch_rows
+    rows = fn(cache_dir)
+    path = write_csv(series_dir, rows)
+    present = getattr(fn, 'present', None)
+    if present is None:
+        raise LsegPrimaryFetchError(
+            'fetch_rows 没挂 present 属性，逾期护栏无从判起 —— part CSV 已写入，'
+            '但这是代码坏了，不是报警')
+    overdue, pending = _overdue_missing(present, today)
+    if pending:
+        print('[lseg_primary] 索引里还没有：%s—— 仍在 %d 天正常晚发窗口内'
+              % ('、'.join('%s %s（月末后 %d 天）' % p for p in pending),
+                 _MAX_PUBLISH_LAG_DAYS))
+    if not overdue:
+        return path
+    texts = getattr(fn, 'index_text', None) or {}
+    items = ['%s %s（月末后 %d 天；证词：%s）'
+             % (tag, month, days, _witness(tag, month, texts.get(tag, '')))
+             for tag, month, days in overdue]
+    print('[lseg_primary] ⚠ 索引里逾期未见：%s —— 超过 %d 天阈值；part CSV 已写入，'
+          '随即抛 LsegPrimaryOverdueError' % ('；'.join(items), _MAX_PUBLISH_LAG_DAYS))
+    raise LsegPrimaryOverdueError(
+        'LSE 一级市场 factsheet 逾期未见（阈值 %d 天，模块实测 197 期最晚 +27）：%s。'
+        'part CSV 已写入（本轮一行没少写，本异常只让「该到没到」计入末行）。'
+        '处置（本模块 docstring「护栏：晚发 / 停发必须出声」e）：label / 扩展名 / '
+        'ctaTitle 前缀变了就改 _month_index；官方确认缺这一期就把 (市场, 月) 登记进 '
+        'KNOWN_SOURCE_GAPS 并注明出处；整段停发由人写下结论、另议 MARKET_END，'
+        "再从 monthly_run.SLOW_LEGS['lseg'] 摘掉前缀；**不要调 _MAX_PUBLISH_LAG_DAYS**。"
+        % (_MAX_PUBLISH_LAG_DAYS, '；'.join(items)))
+
+
 def publish_lags(cache_dir=None, start=START, end=None):
     """已下载的 factsheet → [(market, month, created_lag_days, lastmod_lag_days)]。
 
@@ -1553,7 +1748,9 @@ def publish_lags(cache_dir=None, start=START, end=None):
 
 if __name__ == '__main__':
     _here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _rows = fetch_rows(os.path.join(_here, 'cache'))
-    print('rows  :', len(_rows), _rows[0]['month'], '->', _rows[-1]['month'])
-    print('skip  :', getattr(fetch_rows, 'skipped', []))
-    print('csv   :', write_csv(os.path.join(_here, 'series'), _rows))
+    # 与合流层同一条路径：抓 → 写 part CSV → 逾期护栏。逾期时 part CSV 已写入，
+    # 再以 LsegPrimaryOverdueError 退出（下面三行不再打印）。
+    _path = refresh(os.path.join(_here, 'series'), os.path.join(_here, 'cache'))
+    print('skip   :', getattr(fetch_rows, 'skipped', []))
+    print('pending:', _overdue_missing(fetch_rows.present)[1])
+    print('csv    :', _path)

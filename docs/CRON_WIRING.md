@@ -21,6 +21,7 @@ taiwan_fx()            台湾六页共用的 NTD/USD 底座（series/tsm_fx.csv�
                        ↓
 for t in TICKERS:      28 家，逐家隔离：not_due? → fetch → build
     one(t)             一家失败只让这一家 FAIL，其余照常发布
+                       多腿源的 DEGRADED → LEG_ALERTS：该家照常发布，但计入末行失败清单（接口见 §5）
                        ↓
 taiwan_fx_rebuild()    汇率有新月份时补重建那六页里**循环没碰过**的几张
                        ↓
@@ -33,10 +34,15 @@ fx()                   月度汇率表（横截面页共用）    → 不重跑�
                        ↓
 build_cross()          6 张横截面页，**无条件全跑**（它们没有闸门）
 roster()               重建 data/roster.js（首页与导航目录）
+audit_stale_cols()     陈旧列审计 → 只打印
+audit_overdue_headline()  头条逾期（= 首页红点线）→ 计入失败清单（去重）
+fails += LEG_ALERTS    腿级报警并入失败清单（去重）；必须排在 taiwan_fx_rebuild() 之后
                        ↓
+verify_pages / check_yoy_caliber   收尾产物闸门 → 不过就 FAILED、不提交（两道都跑完、下面几块印完才判）
 report_restatement_logs()
                        cache/ 里各 fetcher 的重述台账（行数 + mtime）→ 只告警，不改末行、不看 --only；
                        印在收尾闸门之后、末行之前，读日志尾部的人才看得见（理由见它定义上方与调用处的注释）
+report_leg_alerts()    腿级降级/报警明细 → 只打印，LEG_ALERTS 为空时一个字不印；贴近末行，理由同上
                        ↓
 data_changed()?        忽略首行构建日期的正文比较 → 有变化才 commit + push
 ```
@@ -158,11 +164,16 @@ LSEG 是反方向的同一条规则：它的头条在**快腿**（Tradeweb）上
   `EARLY_BY=(7,7)` 不能省：默认闸门 = 8−5 = 第 3 天，而**第 3 天正是分布最密的一档
   （88 期里出现 17 次）**，零余量；而且实测最早的一次是第 2 天（2023-01 数据 →
   2023-02-02），默认闸门必然漏掉它。8−7 = 第 1 天开闸，比实测最早再早一天。
-  ⚠ **另外三条腿的滞后既不进 LAG 也不进 `EARLY_BY`。** LSE 订单簿近两年中位第 21 天、
-  近 30 期最晚 +24 天；一级市场 factsheet 中位 +2、约 90% 落在 +9 内、最晚 +27；LCH 两条快腿第 3-4 天
-  （RepoClear 自己还要再滞后约两个月）。它们填的不是头条列，全在 `slow_cols` 里，
-  靠「只填空不覆盖」在后续轮次回补。拿订单簿的 +21 当 LAG 会让整页每月晚 18 天上线，
-  且今天的 `data_through` 立刻从 2026-07 退回 2026-06 —— 那是拿头条的新鲜度换慢腿的完整度。
+  ⚠ **另外三条腿的滞后既不进 LAG 也不进 `EARLY_BY`。** LSE 订单簿的节奏见 `fetch/lseg_orderbook.py`
+  的「实测发布节奏」节（2024 年起明显变慢）；一级市场 factsheet 中位 +2、约 90% 落在 +9 内、最晚 +27；
+  LCH 两条快腿第 3-4 天（RepoClear 自己还要再滞后约两个月）。它们填的不是头条列，全在 `slow_cols` 里，
+  靠「只填空不覆盖」在后续轮次回补。拿订单簿的节奏当 LAG，整页就得陪最慢那条腿一起晚上线 ——
+  那是拿头条的新鲜度换慢腿的完整度。
+  订单簿与一级市场两条腿登记在 `monthly_run.SLOW_LEGS['lseg']`（共用开闸日，数值见代码）：
+  头条追平后，只要任一登记列欠货，闸门就保持开着。一级市场腿另有模块内逾期护栏
+  （`fetch/lseg_primary.py` 的 `_MAX_PUBLISH_LAG_DAYS`），经 `fetch/lseg.py` 的 `DEGRADED`
+  → `monthly_run.LEG_ALERTS` 计入末行失败清单；其余三条腿的普通抓取失败也走同一条路。
+  LCH 那一路不登记（含 RepoClear 那条慢腿）。
 - **`ndaq` 的两条腿差一个多星期，闸门与红点各跟各的腿。**
   `build/specs/ndaq.py` 的 headline 是 `share_us_cash_matched_*`，来自
   **Monthly Market Activity（慢腿）**，官方自述次月第 10 个工作日、实测 2026-06 数据 →
@@ -395,6 +406,8 @@ rm -rf sgx/                    # 页面壳
 #   build/roster.py  LAG 里的        'sgx':  这一行
 #   build/roster.py  META 里的       'sgx':  这一行
 #   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq / umc / ase 七家，交易所是中间四家）
+#   （另：若该家在 monthly_run.py 的 SLOW_LEGS 里有登记，那一段一并删 —— 留着不影响 cron，one() 不再调它，
+#    但手工跑的 test_slow_legs.py 不变式会红；build/test_guards.py 里按 fetch 文件是否存在 skip 的组不用改）
 
 # ③ 抓取侧（可留可删；留着不会被任何东西调用）
 rm fetch/sgx.py series/sgx.csv  # 想彻底清掉历史数据时才删
@@ -466,6 +479,10 @@ CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.p
 1. `fetch/<t>.py` —— `update(series_dir, cache_dir)` 返回新增月份列表，幂等、只填空不覆盖。
    docstring 里必须写「发布节奏」的**实测统计**（几期样本、日分布、最早/最晚），
    §2 的两个数就是从那里抄的。
+   多腿源（一家的数据来自几份互相独立的上游文件）可选再暴露模块级 `DEGRADED: dict`
+   （{腿名: '异常类型: 消息'}，每轮 `update()` 开头清空，填入本轮降级或报警的腿）：
+   `monthly_run.one()` 读到非空就记进 `LEG_ALERTS`，该家照常发布、但计入末行失败清单，
+   明细由 `report_leg_alerts()` 在末行前印。现成的写法见 `fetch/lseg.py`。
 2. `build/specs/<t>.py` —— 见 `docs/SINGLE_SPEC.md`。**注意 headline 选哪条腿**：
    它决定 `data_through`，也就决定 §2 的 LAG 该跟哪条腿。
 3. `python3 build/make_shells12.py` —— 壳自动生成（它扫 `build/specs/`，不需要登记）。
