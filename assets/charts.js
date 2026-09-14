@@ -180,6 +180,17 @@
     p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     return (v < 0 ? '-' : '') + p.join('.');
   }
+  /* 美元：负号在币符**之前**，印成「−$2.0」而不是「$-2.0」。
+     原来是 `'$' + v.toFixed(d)`，负号被夹进币符与数字之间 —— 柱值标签、表格视图、tooltip、
+     以及双轴对齐扩出来的负区刻度都印过「$-100」这种串。
+     负号取 U+2212，与本仓图注里手拼的负号是同一个字符。其余格式器（f* / pct* / f0c）仍是
+     ASCII 连字符，没有一起改：那会让全站每一张有负值的图都变，不是这一处的事。
+     舍入后为 0 的负数不带号（与 pct0z 消灭「-0%」同理：「−$0.00」不是一个数）。
+     tools/visual_qa.py 的 parseTick() 先把 U+2212 换回 '-' 再剥 '$'，刻度判据照常工作。 */
+  function usdFmt(v, d) {
+    var s = Math.abs(v).toFixed(d);
+    return (v < 0 && +s !== 0 ? '−' : '') + '$' + s;
+  }
   var FMT = {
     f1:    function (v) { return v.toFixed(1); },
     f0:    function (v) { return v.toFixed(0); },
@@ -191,17 +202,17 @@
     pp0:   function (v) { return (v >= 0 ? '+' : '') + v.toFixed(0) + 'pp'; },
     pp1:   function (v) { return (v >= 0 ? '+' : '') + v.toFixed(1) + 'pp'; },
     x0:    function (v) { return v.toFixed(0) + 'X'; },
-    usd0:  function (v) { return '$' + v.toFixed(0); },
-    usd1:  function (v) { return '$' + v.toFixed(1); },
-    usd2:  function (v) { return '$' + v.toFixed(2); },
+    usd0:  function (v) { return usdFmt(v, 0); },
+    usd1:  function (v) { return usdFmt(v, 1); },
+    usd2:  function (v) { return usdFmt(v, 2); },
     /* 高精度档。缺这几个的时候 fmtOf 会**静默**退回 f1，于是 $0.0719 的合约单价被印成
        $0.1、3 位小数的 RPC 掉到 1 位有效数字 —— 图还是画出来了，只是数字没了意义。
        补齐比让每个生成器各自换单位绕过去更稳妥。 */
     f2:    function (v) { return v.toFixed(2); },
     f3:    function (v) { return v.toFixed(3); },
     pct2:  function (v) { return v.toFixed(2) + '%'; },
-    usd3:  function (v) { return '$' + v.toFixed(3); },
-    usd4:  function (v) { return '$' + v.toFixed(4); },
+    usd3:  function (v) { return usdFmt(v, 3); },
+    usd4:  function (v) { return usdFmt(v, 4); },
   };
   var fmtOf = function (k) { return FMT[k] || FMT.f1; };
 
@@ -313,7 +324,11 @@
      33% 与 40% 之间是空的，阈值放在这段空档里对数据抖动最不敏感；
      取 0.38 而不是 0.40，是因为 schw Ex11（本规矩的起因，柱全为正却把左轴拉到 −144）
      恰好压在 40.0% 上，写成 `> 0.40` 会把起因本身漏掉。
-     语义上就是任务说的「某一轴超过 40% 的量程落在无数据区」。 */
+     语义上就是任务说的「某一轴超过 40% 的量程落在无数据区」。
+
+     没超阈值、照常对齐时，那一截无数据区仍在画布上（柱全为正、线跌破 0 那一型最常见）。
+     2026-09-14 起引擎不在那一截画左轴刻度与网格线（判据见 draw() 里画左刻度那段的
+     leftFloor0）—— 只改「画不画」，不改本阈值、浪费率与任何量程。 */
   var ALIGN_WASTE_MAX = 0.38;
 
   /* Catmull-Rom 平滑，端点外推方式与 build_report.py 的 smooth() 相同。
@@ -975,6 +990,7 @@
     /* 截轴（规矩 7）：离群值只截轴、不删点，超界的柱/点后面单独标真值。 */
     if (ex.ycap != null) y1 = ex.ycap;
     if (ex.yfloor != null) y0 = ex.yfloor;
+    var y0Pre = y0;          // 零点对齐之前的左轴下界：判「负区是不是对齐扩出来的」要用，见画左刻度处
 
     var Y = function (v) { return M.t + ph - ((v - y0) / (y1 - y0)) * ph; };
 
@@ -1038,9 +1054,22 @@
     var yfKey = ex.yfmt || (ex.bar && ex.bar.yfmt);          // 双轴图的左轴格式在 bar 上
     var yf = yfKey ? fmtOf(yfKey) : plainAxis(tstep, kind === 'stacked_dual');
 
+    /* 零线以下不画左刻度（数字与网格线都不画），三条同时成立才生效：
+       ① y0Pre ≥ 0 —— 零点对齐之前，左轴本来从 0（或 0 以上）起；
+       ② y0 < 0    —— 对齐（没走 ALIGN_WASTE_MAX 兜底）把它扩进了负区；
+       ③ 左轴参与量程的值全都 ≥ 0 —— 负区里一个左轴数据都没有。
+       那一截负区是替右轴的负值（y/y 跌破 0）腾出来的。原来照常印刻度：柱全为正的图上印着
+       「−100」、美元轴印成「$-100」，等于给一个不存在的左轴读数立标尺；那几条网格线又与右轴
+       刻度不在同一高度，顺着线去找右轴读数会读偏 —— 所以数字与网格线一起不画。
+       量程、零点高度、浪费率、兜底阈值一个都不动：零线（下面那条 C.AXIS）照画、右轴刻度照印，
+       所以 build/axisfmt.py 与 build/mrbase.py 的 align_sim 两份量程副本不受影响；
+       tools/align_replica.py 用同一条判据给出 left_ticks_labeled。
+       只管左轴：左轴有负段、右轴线全 ≥ 0 被拉进负区（stacked_dual 负段 + line）那一型不在此列。 */
+    var leftFloor0 = y0Pre >= 0 && y0 < 0 && Math.min.apply(null, clean) >= 0;
     var tickW = 0;
     for (i = 0; i < tk.length; i++) {
       if (tk[i] < y0 - 1e-9 || tk[i] > y1 + 1e-9) continue;
+      if (leftFloor0 && tk[i] < 0) continue;
       el('line', { x1: M.l, x2: M.l + pw, y1: Y(tk[i]), y2: Y(tk[i]), stroke: C.GRID, 'stroke-width': 1 }, svg);
       var tkn = txt(svg, M.l - fscale(6), Y(tk[i]) + fscale(3.2), yf(tk[i]), { size: 9, anchor: 'end' });
       /* 打个标记给 tools/visual_qa.py 认轴刻度。原先它靠「font-size == 9」筛，

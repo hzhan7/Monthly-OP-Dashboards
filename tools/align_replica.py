@@ -29,6 +29,12 @@
    核对基准永远是 charts.js，不是这里。
    同一份量程逻辑在仓里另有两份副本（build/axisfmt.py 的 fix_all、build/mrbase.py 的
    align_sim，见 charts.js:991-993 的警告），改的时候三处加这里一共四处要一起看。
+   2026-09-14 引擎多了一条**画不画**左刻度的判据，量程 / 刻度值 / 对齐一位没动：对齐把左轴
+   拉进负区、而左轴自己的值全 ≥ 0 时，零线以下的左刻度（数字与网格线）不画。这里跟着多出
+   `left_floor0` / `left_ticks_labeled` 两个字段，CLI 印的左刻度改成 labeled。
+   axisfmt 与 align_sim 只管量程与小数位、不管画不画，不用跟改：藏掉的负档与留下的正档
+   是同一步长的整数倍，而留下的正档里必有「1 个步长」那一档（对齐后正区至少占 62%），
+   `_need_dec` 的结论不会因此变。
 
 用法：
     python3 tools/align_replica.py data/schw.js            # 全部 exhibit
@@ -341,6 +347,8 @@ def compute_axes(left_series, right_series, opts):
         y0 = float(opts['yfloor'])
         notes.append('yfloor=%g 覆写下界（对齐之前）' % y0)
 
+    y0_pre = y0                           # 对齐之前的左轴下界（charts.js 的 y0Pre）
+
     # ── charts.js:977-1028：右轴 + 零点对齐 ───────────────────────────────
     rv = _fin(right_series)
     dual = bool(rv)                       # 调用方负责只在 dual 图型上传 right_series
@@ -399,6 +407,11 @@ def compute_axes(left_series, right_series, opts):
         # charts.js:1039 / :1086 —— 落在轴外的刻度不画
         return [v for v in (seq or []) if not (v < lo - 1e-9 or v > hi + 1e-9)]
 
+    # 2026-09-14 起：对齐把左轴拉进负区（对齐前下界 ≥ 0、对齐后 < 0）而左轴自己的值
+    # 全都 ≥ 0 时，引擎不画零线以下的左刻度（数字与网格线都不画）。与 charts.js 画左刻度
+    # 那段的 leftFloor0 是同一条判据；它只决定「印出来的是哪几档」，量程与对齐一位不变。
+    left_floor0 = y0_pre >= 0 and y0 < 0 and min(clean) >= 0
+
     # charts.js:1854-1856
     draws_label = misalign
     # qtr_bar / grouped_bars / gs_bar 的右轴零虚线由各自的绘制分支画
@@ -420,7 +433,11 @@ def compute_axes(left_series, right_series, opts):
         'f': f,
         'left_ticks': tk,
         'right_ticks': rtk,
+        # visible = 落在量程内的档；labeled = 图上真的画出来的档（visible 减掉 left_floor0
+        # 藏起来的负档）。写图注引「可见刻度」时用 labeled。
         'left_ticks_visible': _vis(tk, y0, y1),
+        'left_ticks_labeled': [v for v in _vis(tk, y0, y1) if not (left_floor0 and v < 0)],
+        'left_floor0': left_floor0,
         'right_ticks_visible': _vis(rtk, r0, r1) if dual else None,
         'draws_right_zero_dashline': draws_right_zero,
         'notes': notes,
@@ -492,7 +509,9 @@ def _report(path, wanted=None):
                  r['left_min'], r['left_max'], r['right_min'], r['right_max'],
                  'Y' if r['draws_zero_mismatch_label'] else 'n',
                  'Y' if r['draws_right_zero_dashline'] else 'n'))
-        print('        Lticks=%s' % [round(v, 6) for v in r['left_ticks_visible']])
+        _hid = len(r['left_ticks_visible']) - len(r['left_ticks_labeled'])
+        print('        Lticks=%s%s' % ([round(v, 6) for v in r['left_ticks_labeled']],
+                                      '  （零线以下 %d 档不画）' % _hid if _hid else ''))
         print('        Rticks=%s' % [round(v, 6) for v in r['right_ticks_visible']])
 
 
@@ -523,7 +542,8 @@ def _note_numbers(path, n):
                                           '（与柱基线重合）' if r['zero_aligned'] and
                                           r['draws_right_zero_dashline'] else ''))
     print('  左轴是否自 0 起   : %s' % (abs(r['left_min']) < 1e-9))
-    print('  可见左刻度        : %s' % [round(v, 6) for v in r['left_ticks_visible']])
+    print('  可见左刻度        : %s' % [round(v, 6) for v in r['left_ticks_labeled']])
+    print('  零线以下不画左刻度: %s' % r['left_floor0'])
 
 
 def main(argv):
