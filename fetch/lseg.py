@@ -111,7 +111,8 @@ primary 能逐月给（xlsx `docProps/core.xml` 的 `dcterms:created`），lch �
         `DEGRADED`，monthly_run 按通用协议读它（`monthly_run.LEG_ALERTS`），把 lseg
         并入末行失败清单。理由：2026-09-05 Tradeweb 改版那次，这里只打了一行 WARN，
         lseg 被判 NOCHANGE、末行不含 lseg，这条故障在状态字里完全不可见。
-        带 `written = True` 的异常（例如一级市场逾期 `LsegPrimaryOverdueError`）是
+        带 `written = True` 的异常（例如一级市场逾期 `LsegPrimaryOverdueError`，或白名单反查
+        `LsegPrimaryGapRepublishedError`（written=True，fetch/lseg_primary.py 护栏 g））是
         **报警不是失败**：抛之前 part CSV 已经写完，所以照成功那一支算新增月份、印
         `ok … （已写入）⚠ 报警`，也记进 `DEGRADED`，但**不算「这一路失败」**，
         不计入上面的「四路全挂」。
@@ -284,8 +285,9 @@ def _refresh_orderbook(mod, series_dir, cache_dir):
 
 
 def _refresh_primary(mod, series_dir, cache_dir):
-    # refresh() = fetch_rows → write_csv → 逾期护栏。逾期时它**先写完 part CSV** 再抛
-    # LsegPrimaryOverdueError（written=True），_update 见 written 就按「已写入 + 报警」处理。
+    # refresh() = fetch_rows → write_csv → 逾期护栏 + 白名单反查。报警时它**先写完 part CSV** 再抛
+    # LsegPrimaryOverdueError（written=True），或白名单反查 LsegPrimaryGapRepublishedError
+    # （written=True，护栏 g）；_update 见 written 就按「已写入 + 报警」处理。
     mod.refresh(series_dir, cache_dir)
 
 
@@ -308,7 +310,8 @@ _REFRESH = {
 # 也清），所以只在本轮 update 之后有效。monthly_run 按通用协议读取（任何 fetch 模块都
 # 可以暴露 `DEGRADED: dict`，见 monthly_run.LEG_ALERTS），把这一家并入末行失败清单 ——
 # 否则单腿故障只是日志中段的一行 ⚠，末行看不见（2026-09-05 Tradeweb 实例）。
-# 带 `written = True` 的报警（一级市场逾期）也记在这里，但不算「这一路失败」。
+# 带 `written = True` 的报警（一级市场逾期，或白名单反查 LsegPrimaryGapRepublishedError，护栏 g）
+# 也记在这里，但不算「这一路失败」。
 # 四路真失败仍然直接 raise LsegFetchError，不靠这张表。
 DEGRADED = {}
 

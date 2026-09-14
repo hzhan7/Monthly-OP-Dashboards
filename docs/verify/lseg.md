@@ -344,7 +344,9 @@ Open Interest **绝不能相加**，只取月末最后一个交易日那一格�
 头条追平后只要一级市场列欠货，lseg 每天照抓。模块内另设 45 天逾期护栏：官方索引里某月过了
 月末后 45 天还没有文件，`refresh()` 先写完 part CSV 再抛 `LsegPrimaryOverdueError`（推导见
 `fetch/lseg_primary.py` 的 `_MAX_PUBLISH_LAG_DAYS` 注释：197 期 created 最晚 +27、未被重传
-污染的 Last-Modified 最晚 +28），经 `fetch/lseg.py` 的 `DEGRADED` 计入末行。
+污染的 Last-Modified 最晚 +28），或白名单反查 `LsegPrimaryGapRepublishedError`（written=True，
+`fetch/lseg_primary.py` 护栏 g：`KNOWN_SOURCE_GAPS` 登记为 `'absent'` 的月份出现在了索引里），
+两者都是先写后抛，经 `fetch/lseg.py` 的 `DEGRADED` 计入末行。
 
 ### `orderbook`（**曾是**最慢的一条腿；2026-08-19 已不是，慢腿现在是 LCH RepoClear）
 

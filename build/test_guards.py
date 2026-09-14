@@ -2694,7 +2694,7 @@ def _m_seal_registries(tc, mod, name):
 
 @unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
 class TestLsegPrimaryOverdue(unittest.TestCase):
-    """M1–M8：fetch/lseg_primary.py 的逾期护栏；M13–M15：白名单的类型、反查与形状校验。
+    """M1–M8：fetch/lseg_primary.py 的逾期护栏；M13–M16：白名单的类型、反查、形状校验与「'blank' 不豁免逾期」。
     present / today / fetch_rows 全部注入；KNOWN_SOURCE_GAPS 在 setUp 里换成夹具（组头第五条）。"""
 
     def setUp(self):
@@ -2702,10 +2702,12 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
         _m_seal_registries(self, self.P, 'lseg_primary')
 
     def _full(self, upto):
-        """两个市场各自 MARKET_START..upto 的全集减去 KNOWN_SOURCE_GAPS（夹具）=「该有的都有」。"""
+        """两个市场各自 MARKET_START..upto 的全集减去 KNOWN_SOURCE_GAPS（夹具）里 'absent' 类的月份 =「该有的都有」。
+        'blank' 类（夹具 AIM 2020-02）**留在** present 里：真 blank 的文件本来就在索引里，逾期护栏靠「在索引里」
+        跳过它，不靠登记豁免（fetch/lseg_primary.py 护栏 g；反过来的情形见 M16）。"""
         P = self.P
         return {tag: {m for m in P._months_between(P.MARKET_START[tag], upto)
-                      if (tag, m) not in P.KNOWN_SOURCE_GAPS}
+                      if (P.KNOWN_SOURCE_GAPS.get((tag, m)) or ('',))[0] != 'absent'}
                 for tag, *_ in P.MARKETS}
 
     def _run_refresh(self, index_text, today=datetime.date(2026, 10, 16), extra=()):
@@ -2758,7 +2760,7 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
                          [('AIM', '2026-08', 46)])
 
     def test_start_and_known_gaps_not_flagged(self):
-        """M4：起点之前与 KNOWN_SOURCE_GAPS 不报（白名单取自夹具 _M_REGISTRY_FIXTURES，'absent' / 'blank' 都豁免）；
+        """M4：起点之前与 KNOWN_SOURCE_GAPS 不报（白名单取自夹具 _M_REGISTRY_FIXTURES：'absent' 靠登记豁免，'blank' 的文件在索引里）；
         白名单之外的中段洞必须报。"""
         P, today = self.P, datetime.date(2026, 10, 16)
         overdue, pending = P._overdue_missing(self._full('2026-07'), today)
@@ -2859,7 +2861,7 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
             present[tag].add(month)
         self.assertEqual(sorted(P._republished_gaps(present)),
                          sorted((t, m, P.KNOWN_SOURCE_GAPS[(t, m)][1]) for t, m in absent))
-        # 反查不改逾期豁免：登记过的月份在不在索引里，都不进 overdue / pending
+        # 反查不改逾期判定：此时两类登记的月份都在索引里，都不进 overdue / pending（'blank' 不在索引里照报，见 M16）
         overdue, pending = P._overdue_missing(present, datetime.date(2026, 10, 16))
         self.assertEqual({(t, m) for t, m, _d in overdue + pending} & set(P.KNOWN_SOURCE_GAPS), set())
 
@@ -2919,6 +2921,45 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
                 self.assertFalse(getattr(err, 'written', False), '登记写坏是普通失败，不是「已写入 + 报警」')
                 self.assertFalse(os.path.exists(os.path.join(series, 'lseg_part_primary.csv')),
                                  '登记写坏时不许先写 part CSV')
+
+    def test_blank_registration_does_not_exempt_overdue(self):
+        """M16：'blank' 登记不豁免逾期（fetch/lseg_primary.py 护栏 g）。'blank' 只说「文件在索引里、格子空」，
+        真 blank 的月份靠「在索引里」跳过；登记成 'blank' 而索引里没有文件，就与没登记一样报 ——
+        阈值内进 pending，+46 进 overdue，经 refresh() 先写 part CSV 再以 written=True 抛 LsegPrimaryOverdueError。
+        对照：同一期按 'absent' 登记则豁免。反例是 2026-09-14 复核的 S7b / C3：两类都豁免时，照逾期报错把
+        AIM 2026-08 登记成 'blank'，报警一声不响地没了。表一律取自 setUp 换进来的夹具（加条目也在副本上），不读真表。"""
+        P = self.P
+        # (a) 夹具里的 'blank' 月份不在索引里 → 照报，不因登记跳过
+        tag, month = sorted(k for k, (kind, _w) in P.KNOWN_SOURCE_GAPS.items() if kind == 'blank')[0]
+        present = self._full('2026-07')
+        self.assertIn(month, present[tag], "_full 须把 'blank' 夹具月留在 present 里")
+        present[tag].discard(month)
+        self.assertIn((tag, month),
+                      {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 10, 16))[0]})
+        # (b) 照逾期报错把 AIM 2026-08 登记成 'blank' / 'absent'（夹具副本上加一条；自带还原，不靠 setUp 那一条）
+        self.addCleanup(setattr, P, 'KNOWN_SOURCE_GAPS', P.KNOWN_SOURCE_GAPS)
+        base, key = dict(P.KNOWN_SOURCE_GAPS), ('AIM', '2026-08')
+        for kind in ('blank', 'absent'):
+            with self.subTest(kind=kind):
+                table = dict(base)
+                table[key] = (kind, '夹具：照逾期报错登记')
+                P.KNOWN_SOURCE_GAPS = table
+                present = self._full('2026-07')
+                pending = {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 9, 14))[1]}
+                overdue = {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 10, 16))[0]}
+                err, series, out = self._run_refresh({})
+                if kind == 'blank':
+                    self.assertIn(key, pending, "'blank' 登记把阈值内的缺月从 pending 里吞掉了")
+                    self.assertIn(key, overdue, "'blank' 登记压掉了逾期")
+                    self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+                    self.assertIs(getattr(err, 'written', None), True)
+                    self.assertIn('AIM 2026-08', str(err))
+                    self.assertIn('AIM 2026-08', out, '逾期没打印 ⚠ 行')
+                    self.assertTrue(os.path.exists(os.path.join(series, 'lseg_part_primary.csv')),
+                                    '抛之前没写 part CSV')
+                else:
+                    self.assertNotIn(key, pending | overdue)
+                    self.assertIsNone(err, "对照：'absent' 登记豁免逾期，这一期不在索引里时一声不响")
 
 
 @unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)

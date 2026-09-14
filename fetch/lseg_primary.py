@@ -112,7 +112,8 @@ Eurex Cover「Created on」踩的是同一个坑。本模块因此：
 a. **判据**：官方索引里「有文件」的月份，对照日历。「有文件」与 `fetch_rows` 取链接
    用的是同一份规则（`_url_for`）：xlsx 一律认；.xls 只在 `month <= LEGACY_LAST[tag]`
    时认（目前只有 AIM 2016-12 及更早；Main Market 的 .xls 一律不认，口径坑 11）。
-   扫描区间是 `MARKET_START[tag]` 到**今天的上个月**，跳过 `KNOWN_SOURCE_GAPS`。
+   扫描区间是 `MARKET_START[tag]` 到**今天的上个月**，跳过 `KNOWN_SOURCE_GAPS` 里 `'absent'` 类登记
+   （`'blank'` 类不豁免，见 g）。
    某月满足 `(today − _month_end(m)).days > _MAX_PUBLISH_LAG_DAYS`（**严格大于**，
    与 fetch/lseg_orderbook.py 的 `_guard_overdue_missing` 同一个比较方向）就判逾期；
    没超过的只算「还没发」，每轮无条件打印一行 `[lseg_primary] 索引里还没有：…`。
@@ -134,7 +135,8 @@ e. **处置**（响了以后）：
    · label / 扩展名 / ctaTitle 前缀变了（证词多半是「没认出来」）→ 改 `_month_index`；
    · **只在官方书面确认这一期不补发时**，才把 (市场, 月) 按 `'absent'` 登记进
      `KNOWN_SOURCE_GAPS`，出处写那份书面确认。「官网上没找到」不算确认 —— 登记即豁免，
-     登记过的月份 `fetch_rows` 连下载都不试；官方晚几天补挂的话，这一期只能靠 g 的反查报出来；
+     登记过的月份 `fetch_rows` 连下载都不试；官方晚几天补挂的话，这一期只能靠 g 的反查报出来。
+     没发的月份不许登记成 `'blank'`（那是「文件在索引里、格子空」）：`'blank'` 不豁免逾期，照报不误，见 g；
    · 整段停发 → 由人写下停发结论并另议 `MARKET_END`（本模块目前没有这个常量；
      `KNOWN_SOURCE_GAPS` 是逐月登记，不适合整段），再从
      `monthly_run.SLOW_LEGS['lseg']` 摘掉 `mm_` / `aim_` 前缀。这一步是**代码改动**，
@@ -160,6 +162,12 @@ g. **白名单反查**（2026-09-14 立）：`KNOWN_SOURCE_GAPS` 里 `'absent'` 
    只查 `'absent'`：`'blank'`（文件在、格子空，如 AIM 2019-09）的文件本来就在索引里，
    反查查不出任何东西；它的格子日后若被官方补上，本模块不会自己发现（登记的月份不重下）。
    反查与逾期一样，只在 lseg 被抓的日子执行。
+   **`'blank'` 只用于「文件在索引里、格子空」，不豁免逾期**（2026-09-14 立）：a 只跳过 `'absent'`
+   类登记。真 blank 的月份本来就在 `present` 里，照 a 早已跳过；登记成 `'blank'` 而索引里没有文件
+   （例如照逾期报错把没发的月份填成 `'blank'`），阈值内照印「索引里还没有」、过了阈值照抛
+   `LsegPrimaryOverdueError`，与没登记一样。两类都豁免时，一条 `'blank'` 登记就能压掉逾期、官方补发后
+   又不下载，全程无声（2026-09-14 复核 S7b / C3 实测）。残余：文件日后出现在索引里时，这条登记与
+   真 blank 无从区分（不下载就看不到格子），报警随之停、这一期仍不入库 —— 登记类型由人按 e 核对。
 
 ════════════════════════════════════════════════════════════════════════════
 口径坑（按踩坑概率排序）
@@ -465,12 +473,13 @@ START = min(MARKET_START.values())
 # 都好端端地在），按月整行跳过等于替官方多挖一个洞。缺的那一侧整段列留空，
 # 另一侧照写 —— 宽表本来就允许列各自起点不同、各自留洞。
 # 白名单之外的任何空格仍然直接 raise，别往这里加东西来「让它跑过去」。
-# 逾期护栏 _overdue_missing 也读这张表，登记即豁免（登记过的那一期不再报逾期）。
+# 逾期护栏 _overdue_missing 也读这张表：只有 'absent' 类登记豁免逾期，'blank' 类不豁免（docstring 护栏 g）。
 #
 # 值是 **(类型, 出处)**，类型只有两种（docstring 护栏 g）：
 #   'absent' = 官方索引里根本没有这一期。反查：它哪天出现在 fetch_rows.present 里，
 #              refresh() 先写 part CSV、再抛 LsegPrimaryGapRepublishedError（written=True）进末行；
-#   'blank'  = 文件在索引里，只是格子空着。不反查（文件本来就在，查不出东西）。
+#   'blank'  = 文件在索引里，只是格子空着。不反查（文件本来就在，查不出东西），也不豁免逾期：
+#              登记成 'blank' 而索引里没有文件，照样报逾期。只用于「文件在、格子空」。
 # 形状写坏（值写成裸字符串、类型拼错、市场 tag 不认识）→ _gap_table() 在抓取之前就抛。
 #
 # ⚠ **只在官方书面确认这一期不补发时才登记**，出处写那份确认。「官网上没找到」不算：
@@ -1524,18 +1533,23 @@ def _overdue_missing(present, today=None):
     `present` = {tag: 该市场索引里「有文件」的月份集合}（即 `fetch_rows.present`，
     规则同 `_url_for`）。逐市场扫 `MARKET_START[tag]` 到 today 的上个月
     （= `today.replace(day=1)` 前一天所在的月），跳过 `present` 里有的和
-    `KNOWN_SOURCE_GAPS` 登记的；天数 = (today − `_month_end(月)`).days，
+    `KNOWN_SOURCE_GAPS` 里登记为 **'absent'** 的；天数 = (today − `_month_end(月)`).days，
     **严格大于** `_MAX_PUBLISH_LAG_DAYS` 进 overdue，否则进 pending。
+    'blank' 类登记**不豁免**（docstring 护栏 g）：真 blank 的文件在 `present` 里，按上一条已经跳过；
+    登记成 'blank' 却不在索引里的月份照常进 overdue / pending。值形状不对的登记同样不豁免
+    （宁可多报；形状由 `refresh()` 开头的 `_gap_table()` 校验）。
     按 MARKETS 顺序、月份升序。纯函数：不联网、不读文件，`today` 可注入。
     """
     today = today or datetime.date.today()
     prev = today.replace(day=1) - datetime.timedelta(days=1)
     last = '%04d-%02d' % (prev.year, prev.month)
+    exempt = set(key for key, val in KNOWN_SOURCE_GAPS.items()
+                 if isinstance(val, tuple) and val[:1] == ('absent',))
     overdue, pending = [], []
     for tag, _p, _l, _c, _n in MARKETS:
         have = (present or {}).get(tag) or ()
         for month in _months_between(MARKET_START[tag], last):
-            if month in have or (tag, month) in KNOWN_SOURCE_GAPS:
+            if month in have or (tag, month) in exempt:
                 continue
             days = (today - _month_end(month)).days
             (overdue if days > _MAX_PUBLISH_LAG_DAYS else pending).append((tag, month, days))
