@@ -83,7 +83,8 @@ W_CARD, W_FULL = 571.0, 1172.0
 # Helvetica 族的字宽（每 1000 单位 em）。只列标签里真会出现的字符，其余按数字宽算。
 # 校准过：db1 Ex14「76,941,267」按此算 40.0px，qa_geom 实测的重叠 4.8px 与
 # (40.0 − band 18.4 − 12) / 2 = 4.8px 逐位吻合。
-_ADV = {',': 278, '.': 278, '-': 333, '%': 889, '$': 556, '+': 584}
+# U+2212（−）是 usd* 负数标签的符号位（引擎印 `−$100`，见 `_efmt`）：Helvetica 的 minus 与 plus 同宽。
+_ADV = {',': 278, '.': 278, '-': 333, '%': 889, '$': 556, '+': 584, '−': 584}
 
 
 def _label_px(s, size):
@@ -333,15 +334,18 @@ def _efmt(v, name):
 
     不能借用 `single.fmt_val()`：那一份一律带千分位（HTML 表格里五位数不带逗号读不动），
     拿它量标签宽会把「14640」量成「14,640」，多出 2.2px。
+
+    usd* 跟引擎的 `usdFmt` 走（docs/CHART_KINDS.md §2）：符号在 `$` 之前、用 U+2212
+    （`−$100`）；印出来的量级是 0 就不带符号（`$0.00`，不是 `−$0.00`）。
     """
     d = _DEC.get(name, 1)
     s = f'{abs(float(v)):.{d}f}'
+    if name.startswith('usd'):
+        return ('−' if float(v) < 0 and float(s) != 0 else '') + '$' + s
     if name in ('f0c', 'int'):
         a, _, b = s.partition('.')
         s = '{:,}'.format(int(a)) + (('.' + b) if b else '')
     s = ('-' if float(v) < 0 else '') + s
-    if name.startswith('usd'):
-        s = '$' + s.lstrip('-') if float(v) >= 0 else '-$' + s.lstrip('-')
     if name.startswith('pct'):
         s += '%'
     if name.startswith('pp'):

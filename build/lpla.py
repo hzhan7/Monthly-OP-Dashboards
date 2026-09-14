@@ -399,6 +399,13 @@ def num(v, dec=1, money='', pct=False):
     return f'{money}{_nz(v, dec):,.{dec}f}' + ('%' if pct else '')
 
 
+def usd_txt(v, dec=0):
+    """美元金额（单位词由调用处接）。负号放在 `$` 之前、用 U+2212（`−$5`），与引擎 usd*
+    格式器同规（docs/CHART_KINDS.md §2）；按 dec 位印出来是 0 的不带符号。"""
+    z = _nz(v, dec)
+    return ('−' if z < 0 else '') + f'${abs(z):,.{dec}f}'
+
+
 def L(a):
     """序列 → JSON 数组，非有限值写 None（页面自动断开，不画假线）。"""
     return [None if (v is None or not np.isfinite(float(v)))
@@ -1502,7 +1509,7 @@ def main():
     #     而且「截轴不删点、真值竖排标出」这条规矩当场变成标了个四舍五入值。不换。
     ex7_v = list(W25['nna_advisory_usdbn'].values) + list(W25['nna_brokerage_usdbn'].values)
     ex7_lo, ex7_hi = cap_bounds(ex7_v)
-    CAP7, _ = cap_pack(7, f'渠道 NNA，截 ${ex7_lo:.0f} ~ ${ex7_hi:.0f}bn' if ex7_hi else '', ex7_v,
+    CAP7, _ = cap_pack(7, f'渠道 NNA，截 {usd_txt(ex7_lo)} ~ {usd_txt(ex7_hi)}bn' if ex7_hi else '', ex7_v,
                         hi=ex7_hi, lo=ex7_lo,
                         cap_note='axis capped — true values shown in red')
     ex7_out = sorted(
@@ -1511,7 +1518,7 @@ def main():
          for p, v in W25[c].items()
          if ex7_hi is not None and v is not None and v > ex7_hi],
         key=lambda t: (t[0], t[1]))
-    ex7_top = '、'.join(f'{mlab(p)} 的 {lab} NNA ${v:,.1f}bn' for p, lab, v in ex7_out)
+    ex7_top = '、'.join(f'{mlab(p)} 的 {lab} NNA {usd_txt(v, 1)}bn' for p, lab, v in ex7_out)
     # 「不截轴会怎样」也现算：拿窗口里两条线的**全段极差**跟**界内极差**比，
     # 不去复刻引擎的留白算式（那份算式在 charts.js 里，抄一遍就是第二份实现）。
     ex7_fin = [float(v) for v in ex7_v if v is not None and np.isfinite(float(v))]
@@ -1529,11 +1536,11 @@ def main():
         **CAP7,
         'note': 'Brokerage NNA has been persistently negative — the advisory conversion is '
                 'visible as a mirror image。'
-                + (f'纵轴截在 ${ex7_lo:.0f}bn ~ ${ex7_hi:.0f}bn：并表月把线顶出量程'
+                + (f'纵轴截在 {usd_txt(ex7_lo)}bn ~ {usd_txt(ex7_hi)}bn：并表月把线顶出量程'
                    f'（{ex7_top}）。这两个界不是手挑的，是按窗口里两条线的 '
                    f'Tukey 极端离群栅栏（Q3 ± {CAP_K:g}×IQR）现算 —— 栅栏之外的 '
                    f'{len(ex7_out)} 个点算离群，界内 '
-                   f'${min(ex7_inb):,.1f} ~ ${max(ex7_inb):,.1f}bn 的日常起伏只有全段极差 '
+                   f'{usd_txt(min(ex7_inb), 1)} ~ {usd_txt(max(ex7_inb), 1)}bn 的日常起伏只有全段极差 '
                    f'${max(ex7_fin) - min(ex7_fin):,.1f}bn 的 {ex7_shr * 100:.0f}%，'
                    '不截轴就全部压成贴零的平线。'
                    '<b>截轴不删点</b> —— 超界的点画成空心红圈，真值竖排标在图上，'
@@ -2046,8 +2053,8 @@ def main():
     _hl_m3 = _lastf(_mo3)
     headline = (f"客户资产 ${float(latest['total_assets_usdbn']):,.1f}bn"
                 f"（{pm(y_tot, 1, '%')} y/y·单月{acq_txt}）"
-                f" · 总 NNA ${float(latest['nna_total_usdbn']):,.1f}bn，"
-                f"有机 ${float(latest['nna_ex']):,.1f}bn"
+                f" · 总 NNA {usd_txt(float(latest['nna_total_usdbn']), 1)}bn，"
+                f"有机 {usd_txt(float(latest['nna_ex']), 1)}bn"
                 + (f"（{pm(_hl_m3, 1, '%')} y/y·单月，"
                    f"年化有机增速 {og_now:.1f}%，前 12 个月均值 {og_avg:.1f}%）"
                    if _hl_m3 is not None else

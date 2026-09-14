@@ -245,8 +245,13 @@ def comma(v, d=0):
 
 
 def money(v, d=0):
-    """与 gsx._fmt(money='$') 一致：符号前缀直接拼在数字前（负数印成 $-113）。"""
-    return '$' + comma(v, d)
+    """美元金额。负号放在 `$` 之前、用 U+2212（`−$113`），与引擎 usd* 格式器同规
+    （docs/CHART_KINDS.md §2）；按 d 位小数印出来是 0 的不带符号（`$0`，不是 `−$0`）。
+
+    PDF 版走 `gsx._fmt(money='$')`，那边没跟着改，负数仍印成 `$-113`。
+    """
+    t = comma(abs(v), d)
+    return ('−' if v < 0 and float(t.replace(',', '')) != 0 else '') + '$' + t
 
 
 def signed(v, d=0, unit='', sep=False):
@@ -626,7 +631,10 @@ def chg(a, b, mode, d, kind):
         txt = signed(v * 100, 0, 'bp') if abs(v) < 1 else signed(v, 2, 'pp')
     elif mode == 'abs':
         v = a - b
-        txt = ('$' if kind == '$' else '') + signed(v, max(0, d), sep=True)
+        txt = signed(v, max(0, d), sep=True)
+        if kind == '$':          # 负号挪到 $ 之前并换成 U+2212（−$260），同 money()
+            mag = txt.lstrip('-')                  # signed(-0.0) 给 '-0'：量级为 0 就不带符号
+            txt = ('−$' if txt != mag and float(mag.replace(',', '')) != 0 else '$') + mag
     else:
         if b == 0 or a * b < 0:
             return {'v': ''}
