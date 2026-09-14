@@ -101,7 +101,12 @@ Ex8 画的是**汇率本身**（`ds.fx`）—— 一条宏观序列，挂了同�
 不是随口选的：
 
   · `gs_line` / `lines_endlabels` 走 Catmull-Rom 平滑，`null` 会被 JS 当 0，
-    画出一条**塌到零的假线**，首尾为 null 还直接抛 TypeError 让整页后续图全丢。
+    画出一条**塌到零的假线**。标数值碰上 null 之后抛不抛看格式器（§1.2）：
+    本文件的 `mom`（`gs_line` + `pct1`，逐点标）与 `fx_lines`（`lines_endlabels` + `pct0`，
+    只标首尾）都直接 `toFixed`，前导 null 会抛 TypeError 让整页后续图全丢；换成先取
+    `Math.abs` 的格式器（名单见 §1.2）就不抛、改印一个假的 0。页面上凡是说这两张
+    「还会抛 TypeError」的（`_window_note()`、`_boundary_note()`），靠的都是现在这两个 fmt，
+    改 fmt 时一起改。
     ⇒ 这两种图型（Ex4 / Ex5）**显式截断**到首个有值点，窗口比 x_from 短多少写进图注。
   · `gs_bar.yoy` / `qtr_bar.line` / `grouped_bars.line` 走非平滑 polyline，
     前导 null 只是「笔还没落下」，不画假值。

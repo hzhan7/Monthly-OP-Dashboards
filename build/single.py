@@ -3806,8 +3806,9 @@ class Page:
         allv = np.concatenate(vs)
         zero_ok = bool(np.nanmin(allv) >= 0)
         # lines_endlabels 平滑（Catmull-Rom）且首尾必须有值：序列里有 null 会被 JS 当 0，
-        # 画出一条塌到零的假线，首尾为 null 还会 null.toFixed() 抛 TypeError、
-        # 该卡片之后的 exhibit 全不渲染（docs/CHART_KINDS.md §1.2）。所以有缺口就换 lines。
+        # 画出一条塌到零的假线；首尾为 null 时标端点数值那一步还会按 fmt（取本桶首列的，
+        # 各桶不同）要么 null.toFixed() 抛 TypeError、该卡片之后的 exhibit 全不渲染，
+        # 要么印出一个假的 0（docs/CHART_KINDS.md §1.2）。所以有缺口就换 lines。
         kind = 'lines_endlabels' if dense else 'lines'
         self.saw_group_lines = True     # 页尾「图型选择规则」按真画出来的图措辞
         names = ' / '.join(c['zh'] for c in cols)

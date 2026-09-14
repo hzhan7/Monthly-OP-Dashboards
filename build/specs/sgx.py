@@ -42,8 +42,9 @@ SGX 衍生品的头部产品全部是**离岸挂牌的他国标的**，与 JPX /
 2026-08 给 fetch/sgx.py 加了 p8 兜底后回补 38 个月，这一列与主体同起点 ——
 两处来源逐格等价、接缝不产生断点，证据见 fetch/sgx.py 口径坑 18。）
 同组混起点会逼底座二选一：砍成最短窗口，或给平滑类图型喂 null
-（gs_line 会 null.toFixed() 抛 TypeError，整张卡片之后的 exhibit 全不渲染，
-见 docs/CHART_KINDS.md §1.2）。所以起点不同的列一律各成一组。
+（null 被当成 0、把线拽到零；标数值碰上 null 时按 fmt 要么 null.toFixed() 抛 TypeError、
+整张卡片之后的 exhibit 全不渲染，要么印出一个假的 0，见 docs/CHART_KINDS.md §1.2）。
+所以起点不同的列一律各成一组。
 
 ━━ 量价分解的口径核查（2026-08-07，结论：✅ 同口径，可分解）━━
 恒等式 `成交额 ≡ 成交股数 × 加权平均成交价`，均价 = sec_turnover_sgdmn ÷ sec_turnover_mnshares。

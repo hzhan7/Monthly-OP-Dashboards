@@ -36,8 +36,9 @@ JPX 自己的 IR 脚注也写明 "figures ... are calculated using factors of 1/
 ━━ 为什么按「共同起点」分组 ━━
 本页三档起点：2014-12（绝大多数列）、2023-05（マイクロ与ミニオプション上线）。
 同一个 group 里混起点，底座若取共同窗口就会把长历史砍成 38 个月，
-若不取就会给平滑类图型喂 null（gs_line 会 null.toFixed() 抛 TypeError，
-整张卡片之后的 exhibit 全不渲染，见 docs/CHART_KINDS.md §1.2）。
+若不取就会给平滑类图型喂 null（null 被当成 0、把线拽到零；标数值碰上 null 时按 fmt 要么
+null.toFixed() 抛 TypeError、整张卡片之后的 exhibit 全不渲染，要么印出一个假的 0，
+见 docs/CHART_KINDS.md §1.2）。
 所以起点不同的列一律各成一组。
 
 ━━ 有意不上页面的列，以及理由 ━━

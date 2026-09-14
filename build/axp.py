@@ -547,8 +547,9 @@ def multi_line_ex(n, ttl, df, cols, colors, names, *, win, src_extra=None, note=
     """gsx.multi_line → 网页 lines_endlabels（多条平滑线，仅两端标数值）。
 
     ⚠️ `lines_endlabels` 属 `mrwin.DENSE`：引擎把整条 values 交给 Catmull-Rom 平滑，
-    null 参与插值就是 NaN，而且它要逐点 `fv(vv)` 标数值 —— 数组里出现一个 null
-    就会抛 TypeError，**该卡片以下的 exhibit 全不渲染**。
+    null 在插值里被当成 0，画出一条塌到零的假线（不报错）。它只标首尾两端的数值：
+    端点为 null 时，本函数写死的 `pct1` 直接 `toFixed`，抛 TypeError，
+    **该卡片以下的 exhibit 全不渲染**；中段的 null 碰不上格式器，不抛、只是画错。
 
     窗口从 25 期放到 127 期之后这件事第一次变得可见：本页 Exhibit 10 / 11 把
     trust 的比率（2016-01 起）和 8-K Consumer 的同名比率（新口径，2024-05 起）画在

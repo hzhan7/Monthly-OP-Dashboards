@@ -1388,8 +1388,11 @@ lvl(18, df['margin_book_usdbn'], 'Margin book', win=len(W25), fmt='usd1', ylab='
          'TradePMR platform.')
 
 # ⚠ Exhibit 19 / 20 都是 `lines_endlabels`，属 mrwin.DENSE：引擎把整条 values 交给
-# Catmull-Rom 平滑，null 参与插值就是一条塌到零的假线，逐点标数值那步还会抛 TypeError
-# 把该卡片之后的 exhibit 全打挂（build/verify_pages.py 有专门一条规则拦它）。
+# Catmull-Rom 平滑，null 参与插值就是一条塌到零的假线（不报错）。数值只标首尾两端：
+# 端点为 null 时，要么抛 TypeError 把该卡片之后的 exhibit 全打挂、要么印出一个假的 0 ——
+# 看 fmt 的格式器（docs/CHART_KINDS.md §1.2）。这两张是 usd1 / usd0：2026-09-14 的
+# charts.js 里 usd* 直接 `toFixed`，属抛 TypeError 那一边；usd* 改成先取 `Math.abs`
+# 的写法之后就改印 `$0.0` / `$0`。build/verify_pages.py 有专门一条规则拦它。
 # 序列回填到 2021-01 之后这两张第一次咬人：Cash and Deposits 那一行 2023-01 才进官方表，
 # Securities lending 更晚（Total 2022-05 出借业务上线才有数、Net 那一行 2023-01 才单列）。
 # 左端一律交给 mrwin.resolve() 按「所有线都已经有值」裁 —— **只调用它，不改它**，
