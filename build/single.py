@@ -699,10 +699,16 @@ def fmt_val(v, fmt):
 
     与引擎的同名格式器有一处**有意不同**：这里一律带千分位。引擎的 f0/f1 不带
     （图上标签窄，逗号会挤），而汇总表与核对表是 HTML 文本，五位数不带千分位读不动。
+
+    usd* 的负号与引擎 `usdFmt` 同规（docs/CHART_KINDS.md §2）：放在 `$` 之前、用 U+2212
+    （`−$0.013`，不是 `$-0.013`）；按展示精度印出来是 0 的不带符号（`nz()` 已归零）。
     """
     if v is None or not np.isfinite(v):
         return ''
     dec, pre, suf = FMT_INFO[fmt]
+    if pre == '$':
+        z = nz(v, dec)
+        return ('−' if z < 0 else '') + f'${abs(z):,.{dec}f}{suf}'
     body = f'{nz(v, dec):,.{dec}f}'
     if fmt in ('pp0', 'pp1') and v >= 0:
         body = '+' + body
