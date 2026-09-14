@@ -11,7 +11,11 @@ tsm_6k() 是 fetch/tsm_6k.py 的调用侧。它自己的判断全是「日期 ×
      与 audit_overdue_headline()（= 首页红点）**同一天**开口 —— 早一天是假警报，晚一天是漏报。
   3. 补建戳四个分支：戳相符不建；戳缺失 / 不符就建并写戳（dry-run 不写）；建失败记失败、不写戳；
      本轮 tsm 已在按家循环里 FAIL 时推迟 —— 不建、不写、不另记。
+     三个触发条件（新增月份 / 指纹前后有变 / 戳不符）各有一条只靠它自己才触发的用例。
+     没有新月份而补建成功时紧跟一行 `tsm_6k REBUILT 补建 /tsm/（原因）`；有新月份、建失败、推迟时都不印。
   4. update() / last_month() 抛异常 → 'tsm_6k'，不建。
+  5. 补建失败那行带 build/tsm.py 的 stderr 末行：走真 sh()，命令用生产环境那条 102 字的解释器 + 仓库路径
+     （旧写法 str(e)[:100] 在这个长度下只剩命令路径）。
 audit_manual_series() 只打印：两条阈值各测差一天的边界；无陈旧项时 stdout 一个字都没有；自身出错只印 ⚠。
 另有一条静态核对：main() 里两处调用的先后（与 cost_sec / mops_remarks、report_restatement_logs /
 report_leg_alerts 的相对位置是跨支线定下的，挪了不会有任何别的测试变红）。
@@ -29,7 +33,9 @@ import inspect
 import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -41,10 +47,15 @@ sys.path.insert(0, ROOT)
 
 import monthly_run as M                    # noqa: E402
 
+REAL_SH = M.sh                             # 夹具把 M.sh 换成记账桩；「FAIL 行带 stderr」那条要走真 sh()
 D = datetime.date
 LAG, EARLY, GRACE = (10, 10), 5, 5
 CMD = ['python3', 'build/tsm.py']
 STAMP_REL = os.path.join('tsm_6k', '_last_built.sha256')
+# 生产环境实测的 builder('tsm')：调度跑 `python3 monthly_run.py`，sys.executable 解析到 py312 那一份。
+# 拼起来恰好 102 字 —— 旧写法 str(e)[:100] 在这个长度下只印得出命令路径，一个字的原因都没有。
+PROD_CMD = ['/Users/hainan/.local/share/py312/bin/python3',
+            '/Users/hainan/Projects/monthly-op-dashboards/build/tsm.py']
 
 
 def _quiet(fn, *a, **kw):
@@ -88,8 +99,12 @@ class _Tsm6kCase(unittest.TestCase):
             self.addCleanup(p.stop)
 
     # ── 桩 ──
-    def make_stub(self, have, fp='fp-old', added=(), update_exc=None, last_exc=None):
-        """两表状态只用「末月 + 指纹」两个值表示；update() 返回非空时推进末月并换指纹。"""
+    def make_stub(self, have, fp='fp-old', added=(), update_exc=None, last_exc=None, new_fp='fp-new'):
+        """两表状态只用「末月 + 指纹」两个值表示；update() 返回非空时推进末月并把指纹换成 new_fp。
+
+        new_fp=fp 模拟「指纹没跟着内容变」（fingerprint() 被改坏，例如只哈希文件名）——
+        那时能把新月份送上页的只剩 `added` 这一条触发条件。
+        """
         state = {'have': have, 'fp': fp}
         calls = []
 
@@ -106,7 +121,7 @@ class _Tsm6kCase(unittest.TestCase):
             if update_exc:
                 raise update_exc
             if added:
-                state['have'], state['fp'] = max(added), 'fp-new'
+                state['have'], state['fp'] = max(added), new_fp
             return list(added)
 
         self.stub = types.SimpleNamespace(last_month=last_month, fingerprint=fingerprint, update=update,
@@ -174,8 +189,12 @@ class TestGate(_Tsm6kCase):
         self.assertEqual(self.sh_calls, [])
 
     def test_new_month_rebuilds_and_stamps_even_if_old_stamp_matched(self):
+        # 戳预先写成追加**之后**的指纹 fp-new：跑完 stamped == cur，「戳不符」这一条触发不了。
+        # 原先写 fp-old 时戳不符本身就会触发重建，把条件砍成 (stamped != cur) 这条照样绿（复核 R04）。
+        # 真实形状：页面建成并记下 F(08) 之后，那个数据提交被整体 git revert（series 与 data 都回到 07），
+        # cache 里的戳还是 F(08)；下一轮 update() 追加出逐字节相同的行，指纹又等于戳。
         self.make_stub('2026-07', added=('2026-08',))
-        self.write_stamp('fp-old')
+        self.write_stamp('fp-new')
         got, out = self.run6k(D(2026, 9, 14))
         self.assertEqual(got, [])
         self.assertEqual([c['upto'] for c in self.stub.calls], ['2026-08'])
@@ -183,6 +202,7 @@ class TestGate(_Tsm6kCase):
         self.assertEqual(self.sh_calls, [CMD])
         self.assertEqual(self.read_stamp(), 'fp-new', '建成之后戳必须是追加后的指纹')
         self.assertRegex(out, r'(?m)^tsm_6k\s+NEW\s+2026-08$')
+        self.assertNotIn('REBUILT', out, '有新月份时状态行已是 NEW，不该再补一行 REBUILT')
 
     def test_update_raises_counts_and_does_not_build(self):
         self.make_stub('2026-07', update_exc=RuntimeError('SEC 封禁页'))
@@ -251,25 +271,60 @@ class TestRebuildStamp(_Tsm6kCase):
 
     def test_stamp_missing_rebuilds_and_writes(self):
         self.make_stub('2026-08')
-        got, _ = self.run6k(D(2026, 9, 20))
+        got, out = self.run6k(D(2026, 9, 20))
         self.assertEqual(got, [])
         self.assertEqual(self.stub.calls, [])
         self.assertEqual(self.sh_calls, [CMD])
         self.assertEqual(self.read_stamp(), 'fp-old')
+        # 状态行是 NOCHANGE（零请求），补建必须紧跟着另起一行说出来 —— 否则 data/tsm.js 变了、进了提交，
+        # 日志里却只有一句「已追平」
+        self.assertRegex(out, r'(?m)^tsm_6k\s+NOCHANGE 已追平候选月 2026-08（零请求）\n'
+                              r'tsm_6k\s+REBUILT\s+补建 /tsm/（补建戳缺失或读不出）$')
 
     def test_stamp_with_other_content_rebuilds(self):
         self.make_stub('2026-08')
         self.write_stamp('fp-from-some-earlier-build')
-        self.run6k(D(2026, 9, 20))
+        _, out = self.run6k(D(2026, 9, 20))
         self.assertEqual(self.sh_calls, [CMD])
         self.assertEqual(self.read_stamp(), 'fp-old')
+        self.assertRegex(out, r'(?m)^tsm_6k\s+REBUILT\s+补建 /tsm/（补建戳不符）$')
+
+    def test_fingerprint_changed_without_new_month_says_so(self):
+        # update() 没报新月份、两表内容却变了：照样补建，REBUILT 行说清是这个原因。
+        # 戳预先写成变化**之后**的指纹：added 为空、stamped == cur，只剩「指纹前后有变」这一条能触发。
+        stub = self.make_stub('2026-07')
+        self.write_stamp('fp-rewritten')
+
+        def update(series_dir, cache_dir, upto, today=None, opener=None):
+            stub.calls.append({'upto': upto})
+            stub.state['fp'] = 'fp-rewritten'
+            return []
+
+        stub.update = update
+        got, out = self.run6k(D(2026, 9, 14))
+        self.assertEqual(got, [])
+        self.assertEqual(self.sh_calls, [CMD])
+        self.assertEqual(self.read_stamp(), 'fp-rewritten')
+        self.assertRegex(out, r'(?m)^tsm_6k\s+REBUILT\s+补建 /tsm/（两表内容有变但无新增月份）$')
+
+    def test_added_alone_triggers_rebuild(self):
+        # 指纹没跟着内容变（fingerprint() 被改坏）且戳与之相符：「指纹前后有变」「戳不符」都触发不了，
+        # 新月份能上页全靠 `added` —— 把它从触发条件里删掉，这条变红。
+        self.make_stub('2026-07', added=('2026-08',), new_fp='fp-old')
+        self.write_stamp('fp-old')
+        got, out = self.run6k(D(2026, 9, 14))
+        self.assertEqual(got, [])
+        self.assertEqual(self.sh_calls, [CMD])
+        self.assertRegex(out, r'(?m)^tsm_6k\s+NEW\s+2026-08$')
+        self.assertNotIn('REBUILT', out)
 
     def test_dry_run_rebuilds_but_never_stamps(self):
         self.make_stub('2026-08')
-        got, _ = self.run6k(D(2026, 9, 20), dry_run=True)
+        got, out = self.run6k(D(2026, 9, 20), dry_run=True)
         self.assertEqual(got, [])
         self.assertEqual(self.sh_calls, [CMD])
         self.assertIsNone(self.read_stamp())
+        self.assertRegex(out, r'(?m)^tsm_6k\s+REBUILT\s+补建 /tsm/')         # 试跑也真建了，照样要说
 
     def test_rebuild_failure_counts_and_leaves_stamp_alone(self):
         self.make_stub('2026-08')
@@ -277,7 +332,42 @@ class TestRebuildStamp(_Tsm6kCase):
         got, out = self.run6k(D(2026, 9, 20))
         self.assertEqual(got, ['tsm_6k'])
         self.assertIsNone(self.read_stamp())
-        self.assertRegex(out, r'(?m)^tsm\s+FAIL\s+月报 6-K 腿更新后重建失败（补建戳未更新，下一轮重试）')
+        self.assertRegex(out, r'(?m)^tsm\s+FAIL\s+月报 6-K 腿更新后重建失败（补建戳未更新，下一轮重试）: boom$')
+        self.assertNotIn('REBUILT', out, '建失败时不许印补建成功的那一行')
+
+    def test_rebuild_failure_line_carries_stderr_last_line(self):
+        # 走真 sh()：subprocess.run 换成返回码 1 + 一段真实形状的 traceback，builder 给生产环境那条 102 字的命令。
+        # 旧写法 str(e)[:100] 在这里只印得出 '…/build/tsm.'，一个字的原因都没有。
+        last = ("ValueError: 背書保證在外余额在 2011-07 之后出现空月：['2025-01'] —— "
+                'gs_line 会把缺口静默接成一条直线，请先补数或把 _GUAR_FROM 往后挪，不要让它自己猜')
+        stderr = ('Traceback (most recent call last):\n'
+                  '  File "/Users/hainan/Projects/monthly-op-dashboards/build/tsm.py", line 43, in <module>\n'
+                  '    sys.exit(main())\n'
+                  '             ^^^^^^\n'
+                  '  File "/Users/hainan/Projects/monthly-op-dashboards/build/mrspecs/_tsm_extra.py", '
+                  'line 145, in _load\n'
+                  '    raise ValueError(\n'
+                  + last + '\n')
+        runs = []
+
+        def fake_run(cmd, cwd=None, capture_output=False, text=False, **kw):
+            runs.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, stdout='', stderr=stderr)
+
+        self.assertGreaterEqual(len(' '.join(PROD_CMD)), 100, '这条测试的前提：命令本身就比旧截断长')
+        self.make_stub('2026-08')
+        with mock.patch.object(M, 'sh', REAL_SH), \
+                mock.patch.object(M, 'builder', lambda t: list(PROD_CMD) if t == 'tsm' else None), \
+                mock.patch.object(M.subprocess, 'run', fake_run):
+            got, out = self.run6k(D(2026, 9, 20))
+        self.assertEqual(got, ['tsm_6k'])
+        self.assertEqual(runs, [PROD_CMD])
+        self.assertIsNone(self.read_stamp())
+        fail = [ln for ln in out.splitlines() if re.match(r'tsm\s+FAIL\s', ln)]
+        self.assertEqual(len(fail), 1, out)                      # traceback 折成了一行
+        self.assertTrue(fail[0].endswith(last), fail[0])         # stderr 末行（异常类型 + 消息）完整落在行尾
+        self.assertNotIn(PROD_CMD[0], fail[0])                   # 不再印命令路径
+        self.assertNotIn('^^^', fail[0])                         # traceback 的纯标记行丢掉了
 
     def test_loop_failed_defers_without_building_or_counting(self):
         self.make_stub('2026-08')
@@ -286,6 +376,7 @@ class TestRebuildStamp(_Tsm6kCase):
         self.assertEqual(self.sh_calls, [])
         self.assertIsNone(self.read_stamp())
         self.assertIn('补建推迟到下一轮', out)
+        self.assertNotIn('REBUILT', out)
 
     def test_deferred_new_month_is_rebuilt_next_round(self):
         # 09-14：6-K 到了、两表写成，但 tsm 本轮在循环里 FAIL → 推迟；09-15：闸门已关、update 不再被调，
@@ -300,6 +391,7 @@ class TestRebuildStamp(_Tsm6kCase):
         self.assertEqual(self.sh_calls, [CMD])
         self.assertEqual(self.read_stamp(), 'fp-new')
         self.assertIn('零请求', out)
+        self.assertRegex(out, r'(?m)^tsm_6k\s+REBUILT\s+补建 /tsm/（补建戳不符）$')
 
     def test_page_deleted_skips_rebuild(self):
         self.make_stub('2026-08')

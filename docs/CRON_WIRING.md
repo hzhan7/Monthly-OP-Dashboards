@@ -401,6 +401,8 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 `cache/tsm_6k/_last_built.sha256`（补建戳）；戳与当前指纹不符就再建一次。CSV 写成了而页面没建成时
 （重建失败、进程被杀、本轮 `one('tsm')` 已 FAIL 而推迟），下一轮闸门已关、`update()` 不再被调用 ——
 没有这张戳，页面会一声不响地停在旧图。首轮上线戳不存在，会无条件重建一次 `/tsm/`；`--dry-run` 不写戳。
+没有新月份、只因指纹 / 戳不符而补建成功时，状态行之后另印 `tsm_6k REBUILT 补建 /tsm/（原因）`（只打印，不改末行）；
+补建失败的 `tsm FAIL` 行印的是 `build/tsm.py` stderr 的尾部（折成一行），不是命令路径。
 最近 3 个月的月报每轮与库内逐格比，不一致（6-K/A 重述或解析变形）就抛异常、列出 月/列/库内/官方/accession，
 不改写，也挡住新月份写入（同 `fetch/umc.py` 口径坑 7）。
 
@@ -517,11 +519,19 @@ CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.p
 里任何一处，所以不在上面「5 处注册 + 3 个文件」的清单里，`check_registry()` 也不认识它。删法（先删调用，再删模块）：
 
 ```bash
-#   monthly_run.py   main() 里 `if 'tsm' in todo: fails += tsm_6k(...)` 那两行
-#                    （函数 tsm_6k() 留着不会被调用；想清干净就连它和 test_monthly_run_tsm6k.py 一起删）
+#   monthly_run.py             main() 里 `if 'tsm' in todo: fails += tsm_6k(...)` 那两行
+#                              （函数 tsm_6k() 留着不会被调用；想清干净就连它一起删）
+#   test_monthly_run_tsm6k.py  **必须同时改**，不是可选的清理 —— 见下面第一条 ⚠
 rm fetch/tsm_6k.py fetch/test_tsm_6k.py
 rm -rf cache/tsm_6k          # 月报正文缓存 + 补建戳，可重下
 ```
+
+⚠ **删了 `main()` 那两行，就必须同时处理 `test_monthly_run_tsm6k.py`**：它的 `TestMainWiring.test_call_order`
+按「独占一行的语句」钉 `main()` 里 `tsm_6k` 的调用位置，那两行一删它当场变红（这份测试不在 preflight 里，
+不会拦 cron，但仓库的回归网从此是红的）。最少删掉 `TestMainWiring`，或只删 `test_call_order` 里涉及
+`if 'tsm' in todo:` 与 `tsm_6k(...)` 调用的三条断言；连函数 `tsm_6k()` 一起删时，还要删直接调用它的
+`TestGate` / `TestOverdueBoundary` / `TestRebuildStamp`。同一份文件里的 `TestAuditManualSeries` 与删腿无关
+（`audit_manual_series()` 仍在跑）—— 整份删文件会连它一起丢。
 
 ⚠ **两张 CSV 不删**：`series/tsm_guarantees.csv` 与 `series/tsm_derivatives.csv` 由
 `build/mrspecs/_tsm_extra.py` 的 `_load()` 直接 `pd.read_csv`（Ex12/13/16/17 与汇总表下半张），

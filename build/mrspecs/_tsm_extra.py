@@ -19,7 +19,8 @@
 2. `tsm_derivatives.csv` 遠期外匯未平倉 —— 两段来源、同一口径：
    · 2026-08 起由 `fetch/tsm_6k.py` 从 TSMC 月报 6-K（CIK 0001046179）第 4 项自动追加，
      口径 = entity 为 TSMC 的全部 Forward 块之和（not applying / applying hedge accounting
-     两节合计；不含 Swap 与子公司块）；
+     两节合计；子公司块不计入）。TSMC 名下出现非 Forward 块（如 Swap）时解析器抛异常、交人
+     判定口径，不是静默剔除 —— 那个月两表都不写，页面停在上个月、由 `_lag_note()` 印滞后；
    · 2026-07 及以前的行人工录自 MOPS ajax_t15sf，同口径 = 不符 + 符合避險會計两表的
      遠期契約之和（112/03、113/08 实测）；
    · 远期为 0 的 6 个月（2006-01…2011-06）历史上缺行。
@@ -29,7 +30,8 @@
 3. `tsm_guarantees.csv` 背書保證 ——
    · 2023-03 起核准与在外都取自 6-K 第 3 项 guarantor=TSMC 各行，子公司担保人行
      （如 TSMC Japan Ltd.，23 个月）不计入；核准合计 = MOPS ajax_t05st11「本公司至本月份
-     累計餘額」，写入时逐月对账；
+     累計餘額」，新月份写入时尝试与之对账（MOPS 当轮取不到则只告警、照常写入，不补做；
+     取到了而对不上或认不出版式才抛）—— 线上图注 `_S_GUAR` 同此措辞，别写回「逐月对账」；
    · 2023-03 之前的 6-K 不印核准栏，那段核准只来自 MOPS。
    **核准与在外两者差约 26%，永远不可拼接成一条序列**。
 4. `tsm_bonds_monthly.csv` / `tsm_bonds_tranches.csv` 公司債 —— MOPS ajax_t47sb17 +
@@ -62,6 +64,9 @@
   后两类的陈旧提示见 `monthly_run.audit_manual_series()`（只打印）。
 不管哪一类，月营收往前走而某张表没走时，页面不会静默装作同月：`_lag_note()` 逐图现算
 各自的数据截止月，滞后就在章节标题与图注里印出来。
+反方向（表比营收新）只会出现在 6-K 两表上（营收 xlsx 冻住而 6-K 已到）：`_load()` 把它们截到
+月营收的最新月，领先的月份留在 CSV 里、等营收到了再上页，所以 `_lag_note()` 只需要管滞后。
+董事會核准資本支出允许领先，由 Exhibit 10 的图注自己交代。
 这几条腿都不能挂在现有的 `one('tsm')` 后面搭车：TSM 的 `not_due()` 在营收到手后整月
 返回 NOCHANGE（`one('tsm')` 连 fetch/tsm.py 都不 import），而董事会 6-K 是月中发的。
 """
@@ -84,8 +89,8 @@ _S_DERIV = ('Exhibit source: TSMC 月报 Form 6-K 第 4 项 financial derivative
 _S_BOND = ('Exhibit source: MOPS ajax_t47sb17 公司債月報表 + 逐檔發行辦法登记簿 + '
            'FY2012–FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表（CIK 0001046179）；'
            '年末对账见 build/mrspecs/_tsm_extra.py 文件头第 4 条')
-_S_GUAR = ('Exhibit source: TSMC 月报 Form 6-K 第 3 项（核准数与在外数；2023-03 之前的核准数'
-           '取自 MOPS ajax_t05st11，新月份写入时与之逐月对账）；'
+_S_GUAR = ('Exhibit source: TSMC 月报 Form 6-K 第 3 项（核准数与在外数）；2023-03 之前的核准数'
+           '取自 MOPS ajax_t05st11，新月份写入时尝试与之对账（MOPS 当轮取不到则只告警，不补做）；'
            '美元化用本页汇率图同一条 H.10 月均汇率')
 
 # 在外数窗口的起点。见 _load() 里那段注释：这个数**必须写死**。
@@ -100,11 +105,20 @@ def _read(name):
 
 def _load(ds):
     d = {}
+    # 背書保證 / 衍生性商品两表**截到月营收的最新月**（ds.all[-1]），与汇总表 summary_rows() 的
+    # reindex(ds.all) 同一口径。这两张由 monthly_run.tsm_6k() 自动推进，可以跑到营收前面：营收 xlsx
+    # 冻住而当轮没有报错（one('tsm') 记 NOCHANGE）、6-K 却已到货时，tsm_6k 写入下一个月并重建。
+    # 不截的话 Ex12/13/16/17 横轴画到营收之后一个月，summary_note() 拿两表末行（下个月）的核准与在外
+    # 说话，紧挨着的汇总表却 reindex 在营收月 —— 注文里的月份与数字在表上找不到，两道收尾闸门也都不拦。
+    # 截掉的月份仍在 CSV 里，等营收到了再上页；补建戳算的是 CSV 指纹，不受影响。
+    # 另两张不截：公司債月表人工维护、只会滞后；董事會核准資本支出按董事会场次记，领先营收是常态
+    # （Exhibit 10 的图注自己交代本次领先与否）。
+    cur = ds.all[-1]
     d['cap'] = _read('tsm_capex_approvals.csv')['approved_usd_mn'].astype(float) / 1000.0
-    d['gua'] = _read('tsm_guarantees.csv')
+    d['gua'] = _read('tsm_guarantees.csv').loc[:cur]
     d['bmo'] = _read('tsm_bonds_monthly.csv')
     d['btr'] = pd.read_csv(os.path.join(mrbase.SERIES, 'tsm_bonds_tranches.csv'))
-    d['notional'] = (_read('tsm_derivatives.csv')['open_notional_ntd_k']
+    d['notional'] = (_read('tsm_derivatives.csv').loc[:cur, 'open_notional_ntd_k']
                      .astype(float) / 1e6)                              # NT$bn
 
     # 避险强度 = 名目 ÷ 月均营收（TTM ÷ 12）。分母不用当月营收：当月带农历年与季末

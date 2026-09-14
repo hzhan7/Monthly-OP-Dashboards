@@ -381,9 +381,13 @@ SLOW_LEGS = {
     #      一级市场整月丢失 7-12 次，登记后 0 次；残余是最多晚 7 天（第 3-11 天挂出的那期
     #      要等到第 12 天）。
     #
-    # 这条登记的第二个作用：一级市场欠货时 lseg 每天真抓，fetch/lseg_primary.py 的模块内逾期
-    # 护栏（_MAX_PUBLISH_LAG_DAYS）因此每天执行，警报是黏的（经 fetch/lseg.py 的 DEGRADED →
-    # LEG_ALERTS 计入末行）。某个市场**永久停发**时的处置顺序：先由人写下停发结论、处理
+    # 这条登记的第二个作用：一级市场**尾部欠货**（最新一期没到，mm_ / aim_ 列的末月停住）时 lseg 每天真抓，
+    # fetch/lseg_primary.py 的模块内逾期护栏（_MAX_PUBLISH_LAG_DAYS）因此每天执行，警报是黏的（经
+    # fetch/lseg.py 的 DEGRADED → LEG_ALERTS 计入末行）。**黏只限尾部欠货**：官方跳过中间一期、次月照发
+    # （MM 2022-12 就是这个形状）时，列的末月照样前进，slow_pending 判不欠货，lseg 不再天天被抓 ——
+    # 护栏只在 lseg 被抓的日子执行：首报是过线后 lseg 第一次被抓的那天（可能晚到下月 1 号头条闸门重开），
+    # 之后断续响；陈旧列审计也看不见它（列末月在前进）。细节见 fetch/lseg_primary.py 的逾期护栏说明。
+    # 某个市场**永久停发**时的处置顺序：先由人写下停发结论、处理
     # KNOWN_SOURCE_GAPS / MARKET_END（后者目前不存在，届时另议），再从这里摘掉 'mm_' / 'aim_'
     # —— 不摘就撞上面第二条 ⚠（天天下载）；**不调阈值**。
     # mm_ / aim_ 恰好命中 fetch/lseg.py COLUMN_LEG 里 primary 的全部列，不误收 tradeweb / lch 列
@@ -1877,6 +1881,9 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
       · loop_failed（本轮 tsm 已在按家循环里记了 FAIL）时推迟补建：不建、不写戳、不另记失败。
         那个故障已经在失败清单里；若坏的是生成器，再建一次只会把同一件事以 tsm_6k 的名义再记一遍。
         戳没写，下一轮自动重试。
+      · 没有新月份、只因指纹 / 戳不符而补建成功时，状态行之后另印 `tsm_6k REBUILT 补建 /tsm/（原因）`：
+        那时状态行是 NOCHANGE，不补这一行，data/tsm.js 变了、进了提交，日志里却找不到是谁动的。只打印，不改返回值。
+      · 补建失败那行印 build/tsm.py 的 stderr 尾部（折成一行），不印 sh() 消息开头的命令 —— 生产命令本身就有 102 字。
     戳放 cache/（gitignore）：它不是数据，放进 PUBLISH 的目录会被 `git add` 收进数据提交。
 
     ══ 失败为什么只进失败清单、不阻断 ══
@@ -1942,10 +1949,24 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
             try:
                 sh(cmd)
             except Exception as e:
+                # sh() 的消息是「<完整命令> 失败: <stderr 尾部>」，而生产命令本身就有 102 字（py312 解释器 +
+                # 仓库绝对路径）：截消息头只印得出命令路径、一个字的原因都没有，戳不符又让这一行每轮重复。
+                # 所以只取「 失败: 」之后那段 stderr，折成一行（traceback 里只有 ^~ 的标记行丢掉），印尾部 ——
+                # 异常类型与消息就在最后一行。不是 sh() 抛的（如解释器路径不存在）没有这个分隔符，整条照印尾部。
+                # cost_sec / mops_remarks / taiwan_fx_rebuild 的同款截断是台账已知项，另案处理。
+                why = ' | '.join(ln.strip() for ln in str(e).split(' 失败: ', 1)[-1].splitlines()
+                                 if ln.strip().strip('^~'))
                 print(f'{"tsm":<10} FAIL     月报 6-K 腿更新后重建失败（补建戳未更新，下一轮重试）: '
-                      f'{str(e)[:100]}')
+                      f'{"…" if len(why) > 300 else ""}{why[-300:]}')
                 bad.append('tsm_6k')
             else:
+                if not added:
+                    # 只因指纹 / 补建戳不符而补建：上面的状态行印的是 NOCHANGE（没取到新月份），不补这一行，
+                    # data/tsm.js 变了、进了提交，日志里却找不到是谁、为什么动了这一页（同 one() 的 REBUILT）。
+                    # 只打印：返回值不变，末行与 commit 标题（staged_label 读暂存 diff）都不受影响。
+                    reason = ('两表内容有变但无新增月份' if cur != before
+                              else '补建戳缺失或读不出' if stamped is None else '补建戳不符')
+                    print(f'{"tsm_6k":<10} REBUILT  补建 /tsm/（{reason}）')
                 if not dry_run:
                     try:
                         os.makedirs(os.path.dirname(stamp), exist_ok=True)
