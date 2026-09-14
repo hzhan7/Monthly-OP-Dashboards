@@ -319,6 +319,8 @@ FACT_GATE = {
 #   lseg 17 条订单簿列停 2026-06 / 63 列 2026-07       官方 2026-08-11 就发了
 #   jpx   2 条 IPO 列停 2026-06 / 39 列 2026-07
 # 三家在首页都是**绿点 + 印着 2026-07**，用户看不出慢腿差了一个月。
+# 2026-09 第五个实例：miax 11 条 IR 报表/历史档案列停 2026-07，API 头条腿 09-03 已到 2026-08；
+#   官方报表 09-04 已发，/exchanges-na/ 被钉在 Jul-26 直到回补。
 #
 # 值 = (列名前缀元组, (常规月开闸日, 季末月开闸日))，开闸日单位同 LAG =「该月结束
 # 后第几天」。列名用**前缀**匹配，因为慢腿的列名天然共享前缀；写全名也可以。
@@ -331,6 +333,14 @@ FACT_GATE = {
 # ⚠ **不要为「永久停发」的列建登记**：它们永远追不平，闸门会被顶成天天下载。
 #   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年）、lseg 的 6 条
 #   repoclear_* 停在 2026-05（另一条更慢的腿，节奏未实测）。两者都**不**登记。
+#
+# ⚠ 不要登记按设计滞后一整期的列（例：miax/cboe 的滚动三月 RPC、miax 的 capture）。
+#   本期报表只给上一期，last < due 恒真，效果等同永久停发，闸门会被顶成天天下载。
+#
+# ⚠ 开闸日不许早于本家头条闸门 max(0, LAG − EARLY_BY.get(t,(EARLY,EARLY)))。早于它时
+#   slow_pending 为真，one() 会整份跑 update()，头条腿当天进库，等于偷偷提前了头条闸门；
+#   docs/CRON_WIRING.md §2.2 的闸门格随之失真，而 check_doc_gates 不读本表，报不出来。
+#   现存五条都满足：tmx 2≥1、db1 8≥0、lseg 12≥1、jpx 15≥3、miax 3≥3。
 SLOW_LEGS = {
     # 现货 CTS 新闻稿：数据月结束后第 2–8 天、中位第 5、139 期最坏第 14
     # （fetch/tmx.py:63-65）。该 docstring 自己的结论就是「闸门次月 2 日开」。
@@ -368,6 +378,41 @@ SLOW_LEGS = {
     #   登记它会把闸门顶成天天下载 —— 见上面第二条 ⚠。列名写全名不写前缀，免得将来
     #   新增的 ipo_* 快腿列被前缀误收进来、把闸门钉死在一条本不该等的腿上。
     'jpx':  (('ipo_public_offerings', 'ipo_funds_jpybn'), (15, 15)),
+
+    # MIAX：头条走 indsum API 腿（源 B），IR 报表腿（源 A）与历史档案列（源 C）是慢腿。
+    # 到货实测（数据月结束后第几个日历日）：
+    #   源 B —— getDate 进入次月即可取整月；2026-08 那行 09-03（头条闸门首日）就建出来了。
+    #   源 A「<年份> Historical Volumes RPC File (PDF)」—— 按 PDF 自述 Updated on：
+    #        2025-11 第 5、2026-05 第 3、2026-06 第 7、2026-07 第 5、2026-08 第 4 天
+    #        （2026-08 那期起文件名改为 MIAX_Key_Stats-<Month>_<YYYY>.pdf，链接文字不变，
+    #         fetch/miax.py 按链接文字选链，解析照过）。
+    #   源 C miax_futures_historical_volume.pdf —— Last-Modified 2026-08-06（7 月数据，第 6 天）、
+    #        2026-09-08（8 月数据，第 8 天），比报表晚 1-4 天。
+    # 没登记时的实测代价（2026-09）：API 腿 09-03 落地 → data_through=2026-08 → not_due 判追平，
+    # 09-04 就可取的报表到 09-14 零请求；/exchanges-na/ 期权池的 MIAX 成员取 IR 口径
+    # adv_multilist_options_kcontracts，整页钉在 Jul-26，自动路径最早 10-03。
+    #
+    # 开闸日 (3, 3) = 本家头条闸门（roster LAG 8 − EARLY 5）。头条闸门当天 through < due，
+    # 本来就整份下载；本条只管「头条先落地之后闸门别关」。不许更早 —— 见上方第四条 ⚠。
+    #
+    # ⚠ 11 列写全名，不写前缀：
+    #   · 不收 `_api_` 列 —— 那是头条腿；前缀 'industry_adv_options_' 会同时命中
+    #     industry_adv_options_api_kcontracts。
+    #   · 不收四条 RPC / capture（fetch/miax.py 的 _PDF_LAGGED，口径坑 6：按设计晚一整期）——
+    #     属上方第三条 ⚠；它们随下一期报表回补，而下一期报表正是本条在等的货。
+    #     所以本条与 build/specs/miax.py 的 slow_cols **刻意不相交**：slow_cols 答「页面门槛
+    #     不等谁」，本表答「下载闸门还欠谁的货」—— 别把两张表对齐。
+    #   · adv_futures_fin_contracts（2026-05 上线）哪天停发：_validate_pdf 先抛「缺列」，
+    #     修解析器那一刀同时把它从本条摘掉、写进 DEAD_COLS。
+    # ⚠ vol_futures_ag_contracts 来自源 C，源 C 在 update() 里是软失败（只写 stderr、不记 FAIL）。
+    #   它坏掉时本条会把闸门顶成每轮下载（约 5 个请求 / 0.7 MB）直到修好，audit_stale_cols()
+    #   三个月后点名 —— 这是「宁可多打请求」那一侧的代价。
+    # 登记表不变式由 test_slow_legs.py 机检（手工跑，不进 preflight）。
+    'miax': (('trading_days_options', 'industry_adv_options_kcontracts',
+              'adv_multilist_options_kcontracts', 'share_multilist_options_pct',
+              'industry_adv_equities_mnshares', 'adv_equities_mnshares',
+              'share_equities_pct', 'trading_days_futures', 'adv_futures_ag_contracts',
+              'adv_futures_fin_contracts', 'vol_futures_ag_contracts'), (3, 3)),
 }
 
 
@@ -957,12 +1002,17 @@ def slow_pending(t, today=None):
     **失败一律 fail-open（当成「欠货」→ 去下载）**：这个方向错了只多几个 HTTP
     请求，反方向错了是整月静默丢数据 —— 而后者正是本函数要修的那个 bug。所以整个
     函数体裹在 except 里，异常只打 WARN，绝不让它把整轮 monthly_run 带走。
+    登记本身写坏（不是二元组、前缀元组漏了逗号成了裸字符串）也走这条路。2026-09 之前
+    解包在 try 之外，一条写坏的登记会从 not_due 抛出，而 not_due 在 one() 的 try 之外
+    调用，整轮 28 家一起崩。
     """
     reg = SLOW_LEGS.get(t)
     if not reg:
         return False
-    prefixes, open_days = reg
     try:
+        prefixes, open_days = reg          # 挪进 try：登记写坏不许带崩整轮
+        if isinstance(prefixes, str):
+            raise TypeError(f'列名前缀必须是元组，写成了裸字符串 {prefixes!r}')
         due = _due_month(open_days, today)
         if due is None:                       # 这条腿今天还没开闸 → 不欠
             return False
@@ -976,8 +1026,8 @@ def slow_pending(t, today=None):
             print(f'  ⚠ {t}: 慢腿登记的列前缀在 series/{t}.csv 里一列都没匹配上 —— '
                   f'多半是上游改了列名，登记就此静默失效。按欠货处理（照常下载）。')
             return True
-        # 一条腿 = 同一份上游文件、同一次到货 ⇒ 各列的最后非空月本应相同。
-        # 取最小（最落后的那列）才是这条腿真实的进度。
+        # 一条登记可以跨同一家的几份上游文件（miax：IR 报表 + 历史档案 PDF）。
+        # 取最小 = 最落后那份的进度，任一份没到都算欠货。
         last = min((max((r[0] for r in rows[1:]
                          if i < len(r) and r[i].strip()), default='')
                     for i in idx), default='')

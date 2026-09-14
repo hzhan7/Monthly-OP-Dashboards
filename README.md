@@ -139,12 +139,13 @@ python3 monthly_run.py --dry-run       # 抓取与生成都做，但不 commit/p
 python3 monthly_run.py --force         # 数据没变也重建并推送（改了图表代码后用）
 ```
 
-改过生成器或引擎之后，四条校验各管一层，谁都替代不了谁：
+改过生成器或引擎之后，五条校验各管一层，谁都替代不了谁：
 
 ```bash
 python3 build/verify_pages.py          # 结构层：payload 契约 + 页面引用，0 ERROR 才算过
 python3 tools/check_yoy_caliber.py     # 口径层：同比口径判据（CONTRACT §6 的机检）
 python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据（轴刻度/越界柱/压字）
+python3 test_slow_legs.py              # 闸门层：monthly_run.SLOW_LEGS 登记表不变式 + miax 现场重放（离线、秒级；改 SLOW_LEGS 时必跑）
 python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门表 vs LAG / EARLY_BY / FACT_GATE 真值
 ```
 
