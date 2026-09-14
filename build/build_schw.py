@@ -8,7 +8,7 @@
   · Goldman Sachs「LPLA monthly metrics」Exhibit 1 的口径规矩：**流量类不算环比百分比，
     改用年化有机增长率**（当月净新增 x 12 / 上月末资产），本 PDF Exhibit 3 采用。
   · GS「IBKR Monthly」的成对图法（水平柱 + 12mo 均线 + YoY/MoM 气泡 ⇄ 变化率曲线）。
-数据源：Schwab Monthly Activity Report（次月 12-14 日）；季末月（3/6/9/12）无独立月报，
+数据源：Schwab Monthly Activity Report（次月第 10 个美股交易日，12-17 日）；季末月（3/6/9/12）无独立月报，
         该月数值取自当季季报，故序列连续。
 """
 import os, sys

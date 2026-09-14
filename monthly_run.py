@@ -1364,7 +1364,7 @@ def one(t, force):
     旧写法 `if not added` 有一个不出声的漏洞：**慢腿回补不算「新月份」**。
     两腿源（一腿早、一腿晚，同一行的不同列）在回补那一轮里只是把已存在行的空格填上，
     `update()` 返回空 list，于是这里 return NOCHANGE，页面不重建 —— 而数据已经在
-    series 里了。fetch/ndaq.py:1053 与 fetch/db1.py:1114 都明写「回补不计入返回值」。
+    series 里了。fetch/ndaq.py 与 fetch/db1.py 的 update() docstring 都明写「回补不计入返回值」（刻意不写行号：原先的 :1053 / :1114 早已漂走）。
 
     实测当时的现场（2026-08-08）：series/ndaq.csv 的 2026-07 行已有四个 IR 快腿列
     （402 / 4.1 / 56161 / 88），九个 nasdaqtrader 慢腿列空着，data/ndaq.js 的

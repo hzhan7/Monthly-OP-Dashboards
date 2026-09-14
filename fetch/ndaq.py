@@ -432,10 +432,18 @@ PyMuPDF（读 PDF，需要 `line['dir']`）+ openpyxl（读 xlsx）+ **xlrd ≥ 
 2016-12 及更早那批 .xls；xlrd 2.x 只支持 .xls，正好是我们要它做的事）。
 xlrd 是**延迟 import** 的：只有真的要回补 2017 年以前的月份才会用到，
 装不上也不影响每月的常规更新（那条路只碰 PDF 与 xlsx）。
-**curl_cffi**（同样延迟 import，requirements.txt 锁 0.16.0）：2026-09 起是两道墙的主通道 ——
-B 组 nasdaqtrader（Imperva，09-02 起）与 A/C 组 ir.nasdaq.com（Akamai，09-10 起）。
-没装不会在 import 期崩，各调用点降级到 urllib 并出声；但 09-10..12 实测本模块的 urllib 通道
-在 ir.nasdaq.com 上过不去（读超时、RemoteDisconnected、403 三种脸都见过），所以**眼下「没装」就等于 A 组抓不到**。
+**curl_cffi**（同样延迟 import，requirements.txt 锁 0.16.0）。两道墙都要靠它，但**两条下载链的通道顺序相反**，
+读日志前先分清是哪一条（权威描述在各函数上方的注释，这里只做索引）：
+  · `_http_get`（A 组落地页与 PDF、C 组新闻稿、D 组北欧检索与附件）：**curl_cffi 打头**（共享 Session），
+    urllib 兜底。取到且没有 ⚠ 行 = curl_cffi 取到；出现「⚠ … 主通道 curl_cffi 没成，降级到 urllib 才取到」= 靠兜底。
+    A/C 组所在的 ir.nasdaq.com 09-10 起挂 Akamai，09-10..12 实测本模块的 urllib 在那里过不去
+    （读超时、RemoteDisconnected、403 三种脸都见过），所以**眼下「没装」就等于 A 组抓不到**。
+  · `_fetch_marketshare`（B 组 nasdaqtrader，Imperva，09-02 起）：**urllib 打头**（1 发，墙松的日子直接拿到真件），
+    curl_cffi 排第二（共享 Session + `_MS_RETRY_SLEEPS` 退避，最多 4 发）。取到且没有 ⚠ 行 = **urllib 那一发**
+    就判定了（真件或确证缺年份）；出现「⚠ marketshareYY 主通道 urllib 没成，靠 curl_cffi 第 N 发才取到」= 墙紧的日子。
+    没装时 urllib 照打：成了不出声，没成直接抛 NdaqFetchError（tried 里点名装它），不会出降级行。
+  ⚠ 别把两条链并写成「curl_cffi 是主通道」：2026-09-12 那版这么写过，照它读日志会把 B 组「没有降级行」
+    读成 curl_cffi 一发成功，事实正相反。
 不依赖 pandas，避免 to_csv 重排既有行的格式（幂等要求：没变的行必须字节级不变）。
 """
 
@@ -873,8 +881,8 @@ _MS_SESSION = None
 
 
 def _ms_session():
-    """共享 Session（B 组通道 2 与 `_http_get` 共用）。curl_cffi 是**延迟 import**：
-    没装时这里抛 ImportError，两个调用方各自记下「没装」并走 urllib。"""
+    """共享 Session（B 组通道 2 与 `_http_get` 共用）。curl_cffi 是**延迟 import**：没装时这里抛
+    ImportError —— `_http_get` 记下「没装」再走 urllib 兜底；B 组的 urllib 那一发早已打过，记下就抛。"""
     global _MS_SESSION
     if _MS_SESSION is None:
         from curl_cffi import requests as cr
@@ -910,8 +918,8 @@ def _fetch_marketshare(cache_dir, year):
     url = MS_URL.format(year=year, yy=year % 100)
     tried, last_body = [], b''
 
-    # 通道 1：urllib。实测在墙下必失败，但零依赖、失败也快（403 秒回），
-    # 而且墙哪天撤掉就该走回这条最省事的路，所以留着当第一顺位。
+    # 通道 1：urllib。墙紧时必失败（403 秒回，失败也快）、墙松时直接拿到真件（见上方 (a)），零依赖；
+    # 墙哪天撤掉就该走回这条最省事的路，所以留着当第一顺位 —— B 组的主通道是它，不是 curl_cffi。
     # ⚠ 调的是 `_urllib_get` 不是 `_http_get`：后者 2026-09-12 起 curl_cffi 打头，放在这里会让
     #   下面 tried 里的 'urllib: …' 与降级告警说假话（理由见「网络」那一节最后一个 ⚠）。
     try:
