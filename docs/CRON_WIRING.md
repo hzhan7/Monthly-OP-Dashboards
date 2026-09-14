@@ -27,6 +27,9 @@ taiwan_fx_rebuild()    汇率有新月份时补重建那六页里**循环没碰�
                        ↓
 cost_sec()             /cost/ 的第二个数据源（SEC 申报层，季度/年度）→ 有新申报就重跑 /cost/
                        只在 cost 落在本轮名单里时才跑（**它看 --only，四张公共表都不看**）
+tsm_6k()               /tsm/ 的月报 6-K 腿（背書保證 / 衍生性商品）→ 有新月份就重跑 /tsm/
+                       只在 tsm 落在本轮名单里时才跑（同样看 --only）；日历预闸复用 tsm 的 LAG−EARLY，
+                       追平后零请求；月末后第 16 天起逾期黏警报 → 计入失败清单（见 §2.6）
                        ↓
 mops_remarks()         MOPS 月报備註栏（七家半导体页共用）→ 有新月份就重跑那七页
 fee_rates()            季度费率表（六个单公司页共用）→ 有新季度就重跑那六页
@@ -42,6 +45,7 @@ verify_pages / check_yoy_caliber   收尾产物闸门 → 不过就 FAILED、不
 report_restatement_logs()
                        cache/ 里各 fetcher 的重述台账（行数 + mtime）→ 只告警，不改末行、不看 --only；
                        印在收尾闸门之后、末行之前，读日志尾部的人才看得见（理由见它定义上方与调用处的注释）
+audit_manual_series()  人工维护表（公司債月表 / 董事会核准资本支出）陈旧提示 → 只打印，无陈旧项时一个字不印（见 §2.6）
 report_leg_alerts()    腿级降级/报警明细 → 只打印，LEG_ALERTS 为空时一个字不印；贴近末行，理由同上
                        ↓
 data_changed()?        忽略首行构建日期的正文比较 → 有变化才 commit + push
@@ -295,7 +299,8 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 
 ### 2.5 `/cost/` 的第二个数据源：`cost_sec`（2026-09 接入）
 
-`/cost/` 是全仓**唯一一页有两个数据源**的：
+`/cost/` 与 `/tsm/` 是全仓仅有的两页多源页 —— 按「在 `monthly_run.py` 里各自成一步」数
+（lseg 那种一个 fetch 模块下挂几条腿的不算）；`/tsm/` 见 §2.6。`/cost/` 的两条腿：
 
 | 腿 | 源 | 写什么 | 节奏 | 闸门 |
 |---|---|---|---|---|
@@ -353,6 +358,56 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 `PUBLISH = ['data', 'series']` 覆盖得住，`guard_dirty_tree()` 看不到它。
 唯一的边角：`_write()` 先写 `series/cost_*.csv.tmp` 再 `os.replace`，
 真在这两句之间被杀掉才会留下 `.tmp` —— 那个残留在 `series/` 里，会被 `git add series` 收走。
+
+### 2.6 `/tsm/` 的第二个数据源：`tsm_6k`（2026-09 接入）
+
+`/tsm/`「非营收月度披露」板块里的背書保證与衍生性商品两张表（Ex12/13/16/17 与汇总表下半张），
+从 2026-08 这个数据月起由 SEC 月报 6-K 自动追加；2026-07 及以前的行是人工录的（同口径，
+2023-03 起 41 个月离线重放 6 列逐格相等）。另外两张人工表（公司債、董事会核准资本支出）本轮不接自动写入，见本节末段。
+
+| 腿 | 源 | 写什么 | 节奏 | 闸门 |
+|---|---|---|---|---|
+| 营收腿 | TSMC 官网 IR 月营收 xlsx（`fetch/tsm.py`） | `series/tsm.csv`（另维护六页共用的 `tsm_fx.csv`，见 §1） | 台湾法定次月 10 日前 | 日历闸门，`LAG=(10,10)`、`EARLY` 默认 → 月末后第 5 天（见 §2.3） |
+| 月报 6-K 腿 | EDGAR CIK **0001046179** 月报 6-K 第 3/4 项（`fetch/tsm_6k.py`）+ MOPS `ajax_t05st11` 单格对账 | `series/tsm_guarantees.csv` / `tsm_derivatives.csv` | 与营收新闻稿同一份 6-K；42 期 filingDate 落在月末后第 6–13 天 | 与营收腿同一个开闸日，两表追平后零请求；月末后第 16 天起逾期黏警报 |
+
+失败处理与 `cost_sec` 同档：**计入失败清单（失败名 `tsm_6k`，不是 ticker），不阻断本轮** ——
+同一轮有发布，末行是 `PARTIAL`；没有发布，末行是 `FAILED 无更新且 N 家失败`。
+
+**它为什么不是 `fetch/tsm.py` 里的一条慢腿**（同 §2.5 的三条）：
+
+- `one()` 在 import fetch 模块之前先问 `not_due('tsm')`，读的 `data_through` 由**营收腿独家**推动。
+  营收一入库闸门就关死整月：2026-09-11 07:23 那轮 tsm 2026-08 入库（`4d5c1f4`），此后 `not_due('tsm')`
+  一直为真、`one('tsm')` 连 `fetch/tsm.py` 都不 import。6-K 只要比营收 xlsx 晚到一轮，慢腿写法就要等下个月。
+- `SLOW_LEGS` 顶不上来：`slow_pending()` 只扫 `series/tsm.csv`，这两张表一列都不在里面。
+- 炸的范围反了：严格语法任何一次拒绝都会让 `one('tsm')` 记 FAIL，连当天的营收新月份也一起不发。
+
+**预闸与逾期黏警报**：开闸日 = `_due_month((LAG − EARLY))`，直接复用 tsm 那一格（月末后第 5 天，
+比实测最早的第 6 天早一天），不另立节奏表。两表末月的较小值追平候选月就 `NOCHANGE`、**零请求**；
+没追平时每轮 1 个 submissions JSON（最近 3 个月的重述体检读缓存件），到货那轮多 1 份正文 + 1 个 MOPS POST。
+逾期线 = `_due_month((LAG + GRACE + 1))` = 月末后第 16 天，与首页红点、`audit_overdue_headline()` 同一条算术，
+比实测最晚的第 13 天多留 3 天；过线仍没入库就每轮 `tsm_6k FAIL 逾期…`，**黏到真入库或有人修**。
+它必须自己响：`/tsm/` 的红点跟的是营收腿，6-K 腿冻住时首页照样绿点，页面上只剩 `_lag_note()` 那句滞后说明。
+
+**MOPS `ajax_t05st11` 对账只盖两格**：那一页只有汇总 —— 本公司「至本月份累計餘額」（= `approved_total_k`）
+与「最高額度」（= 6-K 第 3 项 TSMC 首行限额），外加「本公司對子公司背書保證累計餘額」必须等于累計餘額。
+页取到了而对不上、内部不自洽、或页够长却认不出版式 → 抛异常、两表都不写；网络错 / 查無 / Overrun 限流页 /
+落错页 / 短页 → 只打一行 `[tsm_6k][warn] 护栏失效：…`、照常写，事后不补做。
+两张表 6 列里只有核准合计这一列有外部证人；其余五列（衍生品名目与市价、在外合计、亚利桑那核准与在外）
+只靠严格语法、最近 3 个月重放和行级不变量（核准 ≥ 在外 ≥ 0、亚利桑那恰好一行、首行限额 ≥ TSMC 各行核准之和）把关。
+
+**写入、补建戳与重述**：两张表都校验完才写，每张各自写 tmp（落 `cache/tsm_6k/`，不在 `series/` 留 `.tmp`）
+再 `os.replace` —— 不是跨文件原子，进程死在两次替换之间时下一轮只补落后的那张。
+有新月份（或两表指纹变了）它自己重跑 `build/tsm.py`（循环里那次读的还是旧 CSV），建成后把两表指纹写进
+`cache/tsm_6k/_last_built.sha256`（补建戳）；戳与当前指纹不符就再建一次。CSV 写成了而页面没建成时
+（重建失败、进程被杀、本轮 `one('tsm')` 已 FAIL 而推迟），下一轮闸门已关、`update()` 不再被调用 ——
+没有这张戳，页面会一声不响地停在旧图。首轮上线戳不存在，会无条件重建一次 `/tsm/`；`--dry-run` 不写戳。
+最近 3 个月的月报每轮与库内逐格比，不一致（6-K/A 重述或解析变形）就抛异常、列出 月/列/库内/官方/accession，
+不改写，也挡住新月份写入（同 `fetch/umc.py` 口径坑 7）。
+
+**公司債与董事会核准资本支出仍人工维护**：`monthly_run.audit_manual_series()` 只打印陈旧提示 ——
+公司債月表按 `month` 列、月末后第 32 天（月末 6-K 实测次月第 21–26 天 + GRACE 5 + 1），
+资本支出按 `filed` 列、距上次申报超过 135 天（44 次申报相邻最长 120 天 + 15）。不计入失败清单、不看 `--only`，
+没有陈旧项时一个字不印。自动化待所有者定（§7）。
 
 ---
 
@@ -456,6 +511,31 @@ CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.p
 （文件不在就 `SystemExit`），不像别的表那样只是少几张图。
 月度腿（`series/cost.csv`）与它们**互不读写**，所以只删 SEC 腿不会影响月度那部分。
 
+### 删掉 `/tsm/` 的 6-K 腿
+
+`tsm_6k` 与 `cost_sec` 同一个形状：没有自己的页，不在 `TICKERS` / `CROSS` / `roster.GROUPS` / `roster.LAG`
+里任何一处，所以不在上面「5 处注册 + 3 个文件」的清单里，`check_registry()` 也不认识它。删法（先删调用，再删模块）：
+
+```bash
+#   monthly_run.py   main() 里 `if 'tsm' in todo: fails += tsm_6k(...)` 那两行
+#                    （函数 tsm_6k() 留着不会被调用；想清干净就连它和 test_monthly_run_tsm6k.py 一起删）
+rm fetch/tsm_6k.py fetch/test_tsm_6k.py
+rm -rf cache/tsm_6k          # 月报正文缓存 + 补建戳，可重下
+```
+
+⚠ **两张 CSV 不删**：`series/tsm_guarantees.csv` 与 `series/tsm_derivatives.csv` 由
+`build/mrspecs/_tsm_extra.py` 的 `_load()` 直接 `pd.read_csv`（Ex12/13/16/17 与汇总表下半张），
+删了 `/tsm/` 当场建不出来。删腿之后它们回到人工维护，页面的 `_lag_note()` 照实印滞后；
+顺手把 `_tsm_extra.py` 文件头「刷新」一节与 `_LAG_WHY` 里「随月报 6-K 自动入库」那两句改回人工的说法。
+
+⚠ **两处的后果**：只删 `monthly_run.py` 那两行、模块留着 = **静默停更**（没人调用它，两表就此冻住；
+`/tsm/` 的红点跟营收腿、照样是绿的，逾期黏警报也随调用一起没了，只剩页面上那句滞后说明）；
+只删 `fetch/tsm_6k.py`、那两行留着则不会崩 —— `tsm_6k()` 第一句就是「文件不在就返回空清单」，
+与 `cost_sec` / `mops_remarks` 同款。
+
+`audit_manual_series()` 管的是公司債 / 董事会核准资本支出两张人工表，与 6-K 腿无关，删腿不用动它；
+整页 `/tsm/` 都删时再把 `MANUAL_SERIES` 那两条一起删（表不在时它只是静默跳过，不报错）。
+
 ### 忘了其中一处会怎样
 
 `monthly_run.check_registry()` 每轮开跑前对一次名单，**只告警不退出**
@@ -529,4 +609,5 @@ CSV 没了那些图会缺数据 —— 其中 `cost_fy_be.csv` 是 `build/cost.p
 | ⛔ **不是待办**：`ICE_STIR` / `ICE_MLTIR` 的基期价**永远留空** | 两者已在 `build/pools.py` 用 `contracts_only=True` 显式声明为永久张数口径；理由见 `docs/DELIVERY.md` §3.2。**不要再去撞 ICE 的 reCAPTCHA** | 已定案 |
 | `ndaq` 的 headline 在慢腿上（见 §2.2 注） | 红点与闸门被迫拆成两条腿；改法是动 spec，不是动接线 | 页面口径 |
 | `--only` 不跳过 `fee_rates` / `fx` / `mops_remarks` / `build_cross` | 调试单家时仍会打 ECB、费率源与 TWSE（各一个站） | 沿用既有行为，未改 |
-| `cost_sec` **是唯一看 `--only` 的一步** | 它只有 `/cost/` 一个消费者，`--only cme` 没理由去打 EDGAR、更没理由改写 `data/cost.js`；生产环境 `todo` 恒等于 `TICKERS`，cron 行为与不看 `--only` 完全一样 | 有意为之，见 §2.5 |
+| `cost_sec` 与 `tsm_6k` **两步看 `--only`** | 各自只有一个消费者（`/cost/`、`/tsm/`），`--only cme` 没理由去打 EDGAR / MOPS、更没理由改写 `data/cost.js` / `data/tsm.js`；生产环境 `todo` 恒等于 `TICKERS`，cron 行为与不看 `--only` 完全一样 | 有意为之，见 §2.5 / §2.6 |
+| `tsm_capex_approvals` / `tsm_bonds_*` 仍人工维护 | `audit_manual_series()` 只打印陈旧提示（公司債月末后第 32 天、资本支出距上次申报超过 135 天），不计入失败清单、不推送 —— 漏录只在日志尾部看得见 | 自动化待所有者定 |

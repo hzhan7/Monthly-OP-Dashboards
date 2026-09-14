@@ -80,6 +80,9 @@ fetch/cost_sec.py   /cost/ 的**第二个数据源**：SEC 申报层（CIK 00009
                     与 fetch/cost.py 并列、各写各的 CSV、互不读写。季度/年度节奏，
                     由 monthly_run.cost_sec() 单独一步驱动（**不能挂成 fetch/cost.py 的慢腿**，
                     理由见 docs/CRON_WIRING.md §2.5）
+fetch/tsm_6k.py     /tsm/ 的第二个数据源：SEC 月报 6-K（CIK 0001046179）第 3/4 项 →
+                    series/tsm_guarantees.csv / tsm_derivatives.csv，由 monthly_run.tsm_6k()
+                    单独一步驱动（理由见 docs/CRON_WIRING.md §2.6）
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所里的 9 家走这条；
@@ -153,6 +156,12 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 `EARLY_BY` / `FACT_GATE`** 时才可能红 —— 那张表是手抄的代码常量，抄漏了页面上看不出
 任何异常（2026-08-30 给 umc / ase 加 `EARLY_BY` 那次就漏了，一周后才发现）。
 它**不在 cron 路径上**，理由见脚本头。
+
+改过 `fetch/tsm_6k.py`、`monthly_run.tsm_6k()` 或 `audit_manual_series()` 之后，另手跑
+`python3 fetch/test_tsm_6k.py && python3 fetch/tsm_6k.py audit && python3 test_monthly_run_tsm6k.py`
+（同样不在 cron 路径上，同 `fetch/test_cost_sec.py`）。在 worktree 里跑时 `cache/` 不在：前者要设
+`TSM6K_CACHE=<主 checkout>/cache`（否则真缓存重放那组会 skip），`audit` 要加 `--cache <主 checkout>/cache`
+（否则一份件都读不到，「0 个月」照样退出 0）。
 
 每家输出一行 `<ticker> <状态> <说明>`，stdout **最后一行**是总状态，调度任务只读这一行：
 
@@ -294,7 +303,7 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 
 各家的源、发布节奏、口径坑写在 `fetch/<t>.py` 的模块 docstring 里，那是第一手记录。
 
-⚠ **「一页一个源」不再普遍成立：`/cost/` 有两个。** 除了 GlobeNewswire 的月度销售稿
+⚠ **「一页一个源」不再普遍成立：`/cost/` 与 `/tsm/` 各有两个。** 除了 GlobeNewswire 的月度销售稿
 （`fetch/cost.py` → `series/cost.csv`），2026-09 起还接了 SEC 申报层
 （`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写五张 `series/cost_*.csv`：
 分部收入、客单与客流、财年单店经济、开业年份矩阵，以及 `cost_fy_be.csv`（FY2011–FY2015 的
@@ -303,6 +312,21 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 两条腿节奏完全不同（月度 vs 季度/年度），所以在 `monthly_run.py` 里是**两步**而不是一步；
 接线与「为什么不能合成一步」见 `docs/CRON_WIRING.md` §2.5。
 读这几张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
+
+`/tsm/` 同理：月营收走 `fetch/tsm.py`（TSMC 官网 xlsx → `series/tsm.csv`），2026-09 起另接 SEC 月报 6-K
+（`fetch/tsm_6k.py`，**CIK 0001046179**，与营收新闻稿同一份 6-K 的第 3/4 项），追加
+`series/tsm_guarantees.csv`（背書保證）与 `series/tsm_derivatives.csv`（衍生性商品）；
+在 `monthly_run.py` 里同样是单独一步（`tsm_6k()`），接线见 `docs/CRON_WIRING.md` §2.6。
+读这两张表或改解析器之前先看三条口径坑（全文在 `fetch/tsm_6k.py` 的口径坑 a–c）：
+
+- **TSMC 的 Forward 块可能有两个**：第 4 项 (1) not applying / (2) applying hedge accounting 两节各可能有
+  一个 TSMC Forward 块，名目与市价都要跨两节求和。2023-03..2026-07 的 41 个月里 15 个月有第二块，
+  只取第一块只有 37/41 对得上。
+- **子公司担保人行不计入**：2023-03..2025-01 共 23 个月第 3 项多一行担保人「TSMC Japan Ltd.」。
+  核准与在外只加担保人为 TSMC 的行（核准合计 = MOPS「本公司至本月份累計餘額」）；全部行相加只有 18/41 对得上。
+- **亚利桑那按脚注认行，不按星号**：行数（3–5 行）与星号月月在变，TSMC Arizona 那一行要看脚注里写的公司名。
+
+公司債与董事会核准资本支出两张表仍人工维护，陈旧提示见 `monthly_run.audit_manual_series()`（只打印）。
 
 几条踩过的坑：
 
