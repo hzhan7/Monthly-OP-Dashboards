@@ -1649,9 +1649,12 @@ def guard_dense(e):
                        '看上去像真值，而且不报错' if path.startswith('stacks[') else
                        '右轴线走平滑，null 被当成 0，线会被拽到零附近，而且不报错')
             else:
+                # 抛不抛异常不是一律的（docs/CHART_KINDS.md §1.2）：gs_line / gs_line_avg 逐点标数值、
+                # lines_endlabels 只标首尾；null 碰上格式器之后是抛 TypeError 还是印假 0，看 fmt。
+                hit = '要么抛 TypeError、要么印出一个假的 0（看 fmt）'
                 why = ('DENSE 图型的平滑会把 null 当 0，画出一条塌到零的假线；'
-                       + ('逐点标数值时还会抛 TypeError' if kind != 'lines_endlabels'
-                          else '首尾为 null 时抛 TypeError'))
+                       + (f'逐点标数值标到 null 那一格时，{hit}' if kind != 'lines_endlabels'
+                          else f'它只标首尾两端，首尾为 null 时{hit}，中段的 null 不抛、只是画错'))
             _die(f'Exhibit {e.get("n")}（{kind}）的 {path} 有 {len(bad)} 个 null'
                  f'（首个在 idx {bad[0]}{"，即 " + str(at) if at else ""}）—— {why}。'
                  f'出路是用 dense_win() 把窗口左端让到这几列的共同起点，不是补 0。')
@@ -4055,7 +4058,9 @@ def _dense_guard(kind, n, series):
     """DENSE 图型的无 null 断言（docs/CHART_KINDS.md §1.2）。
 
     `gs_line` / `gs_line_avg` / `lines_endlabels` 把 null 交给 Catmull-Rom，画出
-    **一条塌到零的假线**，逐点标数值时还可能**抛 TypeError 整页后续 exhibit 全丢**；
+    **一条塌到零的假线**；标数值时碰上 null 的，按格式器要么**抛 TypeError 整页后续
+    exhibit 全丢**、要么印出一个假的 0 —— `gs_line` / `gs_line_avg` 逐点标，哪一格 null
+    都碰得上，`lines_endlabels` 只标首尾两端，中段的 null 碰不上、只是画错；
     `stacked_dual` 把 null 加到堆叠基线上（`lo + null === lo`），那一段画成 **0 高**、
     柱照画只是矮一截，右轴线则被平滑拽到 0 —— 这两处都不报错。
     （「NaN 坐标、那根柱不画」只在数组比 n 短、取到 `undefined` 时出现，见 §1.1。）
@@ -4259,7 +4264,8 @@ def _lines_core(kind, n, cols, title, ylab, fmt, note=None, src_extra=None,
     return ex
 
 def lines_endlabels(n, cols, title, ylab, fmt, **kw):
-    """N 条平滑线，只标两端。**首尾任一为 null 就抛 TypeError**（§1.2），
+    """N 条平滑线，只标两端。null 会被平滑当 0、把线拽向零（不报错）；首尾为 null 时
+    标端点数值那一步**要么抛 TypeError、要么印出一个假的 0**，看 `fmt`（§1.2）。
     所以窗口必须先在 Python 侧截到「所有序列都有值」——见 `_lines_core`。"""
     return _lines_core('lines_endlabels', n, cols, title, ylab, fmt, **kw)
 

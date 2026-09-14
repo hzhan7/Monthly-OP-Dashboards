@@ -258,7 +258,8 @@ CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 另外两个一行就能跑的：
 
 ```
-# 1) 有没有 exhibit 整段没渲染出来（null 打断 gs_line/lines_endlabels 的典型症状）
+# 1) 有没有 exhibit 整段没渲染出来（gs_line/lines_endlabels 的 null 撞上会抛 TypeError 的格式器
+#    就是这个症状；印假 0 的格式器、lines_endlabels 中段的 null 都不抛，这一步数不出来，见 CHART_KINDS §1.2）
 #    payload 里的 exhibit 数必须等于 DOM 里的 <svg> 数
 "$CHROME" --headless --disable-gpu --virtual-time-budget=9000 --dump-dom \
   "http://127.0.0.1:8899/ice/" | grep -o '<svg' | wc -l

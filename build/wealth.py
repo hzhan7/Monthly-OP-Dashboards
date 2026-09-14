@@ -59,7 +59,8 @@ Client Cash as a Percentage of Client Assets（自 2014-06 起每期都印）。
 
 一张图能不能带前导 null，由**图型**决定，不由写图的人挑：`lines_endlabels` 属
 `mrwin.DENSE`（Catmull-Rom 平滑 + 无条件取 `values[0]` 做左端标签），数组里有一个 null
-就画出假线并抛异常；`lines` 走 `doSmooth=false` 的那一支，null 是断笔、末点标签走
+就画出一条塌到零的假线，前导 null 还会撞上左端标签、按 fmt 要么抛异常要么印出一个假的 0；
+`lines` 走 `doSmooth=false` 的那一支，null 是断笔、末点标签走
 `lastFinite`，可以带前导 null。所以：
 
   · 各线**起点相同** → 可以留 `lines_endlabels`；
@@ -788,7 +789,8 @@ def plan(items):
 
       · 齐 → `lines_endlabels`（属 `mrwin.DENSE`：整条 values 交给 Catmull-Rom 平滑、
         两端无条件取 `values[0]` / `values[n-1]` 标数值，数组里有一个 null 就画出一条
-        塌到零的假线并抛异常，该卡片之后的 exhibit 全不渲染）。
+        塌到零的假线；null 落在两端时还会撞上端点标签，按 fmt 要么抛异常、该卡片之后的
+        exhibit 全不渲染，要么印出一个假的 0）。
       · 不齐 → `lines` + `end_label`（走 `doSmooth=false` 那一支，null 是断笔；
         末点标签走 `lastFinite`）。短的那家前段留 null，**不补零、不前向填充、不外推**。
 
@@ -885,7 +887,8 @@ def win_note(idx, kind, late, nser=0):
         s += ('本图型是 <code>lines</code>（折线断笔 + 末点标数值）而不是 '
               '<code>lines_endlabels</code>' + KIND_MIX
               + '：后者属平滑图型，整条数组交给 Catmull-Rom 插值、'
-                '两端无条件取首末值标数字，序列里有一个 null 就画出假线并抛异常。'
+                '两端无条件取首末值标数字，序列里有一个 null 就画出一条塌到零的假线；'
+                'null 落在首尾时，标数字那一步还会视数值格式要么抛异常、要么印出一个假的 0。'
                 '要保住起点不同的线，只能换图型 —— 换回去就得把长的那条砍到短的那条的起点。')
     return s
 
@@ -2236,7 +2239,8 @@ if _NS != list(range(1, len(_NS) + 1)):
 # layout_all 会把实测说明（每期几 px、为什么通栏、为什么每 N 期标一个）追加进各自图注。
 mrwin.layout_all(ex)
 
-# DENSE 图型里出现 null = 引擎画出一条塌到零的假线并抛异常，该卡片之后一张都不渲染。
+# DENSE 图型里出现 null = 引擎画出一条塌到零的假线；null 若落在要标数值的位置
+# （lines_endlabels 是首尾两端），还会按 fmt 要么抛异常、该卡片之后一张都不渲染，要么印出一个假的 0。
 # verify_pages 会抓，但那要等构建完；这里当场拦，免得把一份坏 payload 写到磁盘上。
 for _e in ex:
     if _e.get('kind') in mrwin.DENSE:

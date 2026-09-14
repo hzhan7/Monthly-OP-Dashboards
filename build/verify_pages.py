@@ -487,9 +487,12 @@ def check_exhibit(tag, ex, short, long_):
                        if path.startswith('stacks[') else
                        '右轴线走平滑，null 被当成 0，线会被拽到零附近（不抛异常，只是画错）')
             else:
+                # 抛不抛异常不是一律的（CHART_KINDS §1.2）：gs_line / gs_line_avg 逐点标数值、
+                # lines_endlabels 只标首尾；null 碰上格式器之后是抛 TypeError 还是印假 0，看 fmt。
+                hit = '要么抛 TypeError、要么印出一个假的 0（看 fmt，CHART_KINDS §1.2）'
                 why = ('平滑会把 null 当 0，画出一条塌到零的假线'
-                       + ('，且逐点标数值时会抛 TypeError' if kind != 'lines_endlabels'
-                          else ('，首尾为 null 时抛 TypeError' if 0 in bad or len(arr) - 1 in bad
+                       + (f'；逐点标数值标到 null 那一格时，{hit}' if kind != 'lines_endlabels'
+                          else (f'；首尾为 null，标端点数值时{hit}' if 0 in bad or len(arr) - 1 in bad
                                 else '（首尾有值，不抛异常，只是画错）')))
             err(where, f'{kind} 的 {path} 有 {len(bad)} 个 null（首个在 idx {bad[0]}）——{why}')
     # 多线图的可辨识度：判据是**颜色有没有真的撞上**，不是「线数 > 5」。

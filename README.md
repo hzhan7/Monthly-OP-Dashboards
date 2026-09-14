@@ -339,7 +339,8 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   · **窗口一变长，三类错会同时冒出来**，都被现有护栏抓到过，改窗口前先知道它们长什么样：
     ① DENSE 图型（`mrwin.DENSE`：gs_line / lines_endlabels / stacked_dual）窗口里出现
        前导 null → 平滑线（gs_line / lines_endlabels）被 Catmull-Rom 插值画成一条塌到零的假线，
-       逐点标数值时抛 TypeError（cboe Ex7 栽过）；stacked_dual 不是平滑图型，null 段按 0 高画、
+       左端标数值时按 fmt 要么抛 TypeError、要么印出一个假的 0（cboe Ex7 栽过，被 verify_pages
+       当场拦下；它是 lines_endlabels + f0c，真画出来会是后一种，现编号 Ex6）；stacked_dual 不是平滑图型，null 段按 0 高画、
        柱矮一截，右轴线被拽到 0，都不报错。解法是 `mrwin.resolve()` 裁左端，**不是补 0**。
     ② 派生列（环比 / 同比）在序列首月定义上不存在 → 首格 NaN，被 `payload_guard` 拦
        （hkex Ex3 栽过）。解法是丢掉那一格。
