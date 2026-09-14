@@ -4031,9 +4031,11 @@ def _legs(cols, win, primary=None):
     out = []
     for k in cols:
         c = cmeta(k)
+        # 不传 `lag_zh`：它在 mrwin 的图注里是「这条线为什么晚起」的**理由**，截断时原样印进
+        # 「定住左端的是 X（…）」的括注（2026-09-14 起主腿也点名）。原来这里塞的是
+        # `c["unit"]`，印出来会是「定住左端的是 某列（千张/日）」—— 单位冒充理由。
         out.append(mrwin.Leg(k, c['zh'], cvals(k, win),
-                             role='primary' if k in primary else 'derived',
-                             lag_zh=f'{c["unit"]}'))
+                             role='primary' if k in primary else 'derived'))
     return out
 
 def _resolve(kind, cols, win, primary=None):

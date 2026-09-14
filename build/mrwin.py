@@ -25,11 +25,19 @@
   · `doSmooth=false` 那一支逐点走 `if (vs[i] == null) { pen = false; continue; }`
     —— null 是断笔，画得对。`gs_bar` 的次轴 y/y、`qtr_bar` / `grouped_bars` 的
     `ex.line` 全走这一支，**可以带前导 null**。
-  · `doSmooth=true` 那一支把整条 `vs` 交给 `smooth()` 做 Catmull-Rom，null 参与
-    插值就是 NaN；`gs_line` 还要逐点 `fv(vv)` 标数值，null 上直接 TypeError，
-    该卡片之后的 exhibit 全不渲染。`build/verify_pages.py` 的 `DENSE` 集合
-    （gs_line / gs_line_avg / lines_endlabels / stacked_dual）就是这一类，
-    数组里出现一个 null 就是 ERROR。**这类只能截断，不能补 null，更不能补假值。**
+  · `doSmooth=true` 那一支把整条 `vs` 交给 `smooth()` 做 Catmull-Rom，null 在算术里
+    被当成 0，画出一条塌到零的假线（这一步不报错）。标数值那一步再按图型分：`gs_line` /
+    `gs_line_avg` 逐点 `fv(vv)`，任何一格 null 都会碰上；`lines_endlabels` 只标首尾两端，
+    只有端点是 null 才碰上。碰上之后按格式器分：`toFixed` 系抛 TypeError，该卡片之后的
+    exhibit 全不渲染；`f0c` / `int` / `pct0z` 不抛，印一个假的 0（2026-09-14 真引擎复核，
+    细节见 `resolve()` 平滑线那一支的注释）。`build/verify_pages.py` 的 `DENSE` 集合
+    里 gs_line / gs_line_avg / lines_endlabels 就是这一类，数组里出现一个 null 就是 ERROR。
+    **这类只能截断，不能补 null，更不能补假值。**
+  · `DENSE` 里的第四个 `stacked_dual` **理由不同**，别拿上一条去解释它（CHART_KINDS §1.2）：
+    堆叠段不走 `polyline`，段为 null 时 `lo + null === lo`，那一段画成 0 高、整根柱照画
+    只是矮一截；只有可选的右轴线走 `doSmooth=true`，null 当 0 把线拽下来。两处都不抛异常
+    （2026-09-14 用真引擎在浏览器里复核过）。verify_pages 对它同样一个 null 就 ERROR，
+    结论也一样是只能截断 —— 但图注里的理由不一样，`resolve()` 按 kind 出两套措辞。
 
 所以 `resolve()` 的返回值里，`start` 对 DENSE 图型 = 所有腿里最晚的那个首值，
 对非 DENSE 图型 = 主腿的首值（派生腿的前导 null 由引擎断笔处理）。
@@ -183,6 +191,36 @@ class Win:
         return list(vals)[self.start:]
 
 
+def _pinned(legs, start, labels):
+    """DENSE 截断图注里「定住左端的是谁」那半句 —— `resolve()` 两支措辞共用这一处。
+
+    点名规则只有一条：**稠密首格正好落在左端**的腿（`dense_first == start`），主腿也算。
+    2026-09-14 之前平滑线那一支两处都点不准：
+      · 只看派生腿 —— 全是主腿的图一个都点不出，退回期号，印出「定住左端的是Jan-19」
+        这种同义反复（cboe / 台积电 / 日月光的 lines_endlabels、hood 的 stacked_dual 都印过）；
+      · 比 `first` 不比 `dense_first` —— `start` 本来就是按稠密首格裁出来的，中段有洞的腿
+        首个有值点在洞的左边，永远对不上，这条腿永远点不出名。
+    中段有洞的腿，括注里再写出洞在哪几期：不然「它自 X 起才逐期有值」会被读成「X 以前没有数」。
+    """
+    def one(l):
+        why = [l.lag_zh] if l.lag_zh else []
+        if l.first is not None and l.first < start:
+            h = start - 1                       # dense_first 的定义保证 start−1 就是洞的最后一格
+            while h - 1 >= l.first and not _ok(l.vals[h - 1]):
+                h -= 1
+            why.append(f'中间 {labels[h]} 缺了一期' if h == start - 1 else
+                       f'中间 {labels[h]}–{labels[start - 1]} 缺了 {start - h} 期')
+        if not why:
+            return l.zh
+        if l.zh.endswith('）'):                 # 名字自带括注：并进同一对括号，不写成「（…）（…）」
+            return f'{l.zh[:-1]}；{"；".join(why)}）'
+        return f'{l.zh}（{"；".join(why)}）'
+
+    pin = [l for l in legs if not l.drop and l.dense_first == start]
+    who = '、'.join(one(l) for l in pin) or '窗口内最晚才逐期有值的那条序列'
+    return f'定住左端的是 {who}，{"这几条" if len(pin) > 1 else "它"}自 {labels[start]} 起才逐期有值'
+
+
 def resolve(kind, legs, labels, want_from=0):
     """裁决左端 + 产出「为什么这条线比那条短」的机读说明。
 
@@ -229,15 +267,40 @@ def resolve(kind, legs, labels, want_from=0):
     dropped = [l for l in legs if l.drop]
 
     bits = []
-    if dense and start > want_from:
-        who = '、'.join(f'{l.zh}（{l.lag_zh}，首点 {labels[l.first]}）'
-                        for l in legs if l.first == start and l.role != 'primary') \
-            or f'{labels[start]}'
+    if dense and start > want_from and kind == 'stacked_dual':
+        # stacked_dual 在 DENSE 里，但**不是**平滑图型、也不抛异常（CHART_KINDS §1.2；
+        # 2026-09-14 拿真引擎在浏览器里复核过 null 的画法）：堆叠段为 null 时
+        # `lo + null === lo`，那一段画成 0 高、整根柱照画只是矮一截；只有可选的右轴线
+        # 走平滑，null 当 0 把线拽下来（线的逐点标签先过 `isNum()`，null 不标、不抛）。
+        # 下面那支的措辞一个字都不能套过来 —— 两支共用的只有「定住左端的是谁」（`_pinned`）。
         bits.append(
             f'<b>本图左端截在 {labels[start]}，不是序列起点 {labels[0]}</b>：'
-            f'{kind} 是平滑图型，引擎把 null 交给 Catmull-Rom 插值会画出一条塌到零的假线、'
-            f'逐点标数值时还会抛异常，所以窗口只能从「所有线都已经有值」的那一期开始 —— '
-            f'定住左端的是{who}。'
+            f'{kind} 是堆叠柱，缺值时引擎不报错、只会画错 —— 某一段为 null，那一段按 0 高画，'
+            f'整根柱照样立着、只是矮了一截，看上去就像那一期真的更小；'
+            f'右轴线（若有）是平滑曲线，null 被当成 0，线会被拽到零附近。'
+            f'所以窗口只能从「本图每一条序列都已经有值」的那一期开始 —— '
+            f'{_pinned(legs, start, labels)}。'
+            f'补零或补上一期的值都能让图画满，但那是<b>画一个数据里不存在的点</b>，本页不做。')
+    elif dense and start > want_from:
+        # gs_line / gs_line_avg / lines_endlabels。null 进 Catmull-Rom 的算术当 0 用、线塌向零，
+        # 这一步三种都一样、都不报错。出错在**标数值**那一步，而那一步按图型、按格式器各不相同
+        # （2026-09-14 在浏览器里往真页面注入 kind × fmt × 前导 null / 中段洞逐个复核）：
+        #   · gs_line / gs_line_avg 逐点 `fv(vv)` —— 窗口里任何一格 null 都会碰上；
+        #   · lines_endlabels 只标首尾两端 `fe(values[0])` / `fe(values[n-1])` —— 只有端点是
+        #     null 才碰上，中段的 null 不报错、只把线拽下去（CHART_KINDS §1.2）；
+        #   · 碰上之后：`toFixed` 系格式器（f1 / pct0 / pct1 / f2 …，也是 fmtOf 的兜底）抛
+        #     TypeError，该卡片画一半、之后的 exhibit 全不渲染；`comma()` 系（f0c / int）与
+        #     pct0z 不抛，印出一个假的「0」。
+        # 所以不能笼统写「逐点标数值时还会抛异常」：lines_endlabels 不逐点，f0c 也不抛（cboe
+        # Ex6 就是 lines_endlabels + f0c）。本函数不知道 fmt，措辞按 kind 分、两种后果都写。
+        step = ('它只在首尾两端标数值，端点是 null 时那一步' if kind == 'lines_endlabels'
+                else '它还逐点标数值，标到 null 那一格时')
+        bits.append(
+            f'<b>本图左端截在 {labels[start]}，不是序列起点 {labels[0]}</b>：'
+            f'{kind} 是平滑图型，引擎把 null 交给 Catmull-Rom 插值会画出一条塌到零的假线；'
+            f'{step}要么抛异常、要么印出一个假的 0（看数值格式）。'
+            f'所以窗口只能从「所有线都逐期有值」的那一期开始 —— '
+            f'{_pinned(legs, start, labels)}。'
             f'补零或补上一期的值都能让图画满，但那是<b>画一个数据里不存在的点</b>，本页不做。')
     if late:
         for l in late:
@@ -411,7 +474,7 @@ def label_clash(ex, full=None):
 
 # ────────────────────────────── 自检 ──────────────────────────────
 def _selftest():
-    """`python3 build/mrwin.py` —— 对着六类已知失败模式各跑一遍。
+    """`python3 build/mrwin.py` —— 对着八类已知失败模式各跑一遍。
 
     「今天没报错」与「规则坏了」在输出上长得一模一样，只有对着**已知错例**跑
     才分得开（同 tools/check_yoy_caliber.py --selftest 的理由）。
@@ -481,8 +544,81 @@ def _selftest():
     ck(c_half and c_full and c_full['cap'] > c_half['cap'] and c_half['w'] == c_full['w'],
        f'升通栏把标签预算从 {c_half["cap"]:.1f}px 抬到 {c_full["cap"]:.1f}px（标签本身不变）')
 
-    print(f'── mrwin 自检：{n_ok}/11 通过 ──')
-    return 0 if n_ok == 11 else 1
+    # ⑦ 同一种截断，理由按图型分开写。stacked_dual 不是平滑图型、缺值不抛异常（段画成 0 高），
+    #    套平滑线那段措辞就是在图注里说假话；全是主腿时「定住左端的」也必须是**序列名**，
+    #    不许退化成期号（现网真印出过「定住左端的是Jan-23」）。
+    late = [None] * 24 + [1.0] * (N - 24)
+    w = resolve('stacked_dual', [Leg('app', 'App', bar, 'primary'),
+                                 Leg('bs', 'Bitstamp', late, 'primary')], lab, 0)
+    ck(w.start == 24 and '<b>本图左端截在 M024' in w.why and '按 0 高画' in w.why
+       and 'Catmull-Rom' not in w.why and '抛异常' not in w.why,
+       'stacked_dual 截到 idx 24，措辞说「段按 0 高画」，不说 Catmull-Rom / 抛异常')
+    ck('定住左端的是 Bitstamp，它自 M024 起' in w.why, '全是主腿时点名定住左端的序列，不退化成期号')
+    w = resolve('lines_endlabels', [Leg('app', 'App', bar, 'primary'),
+                                    Leg('bs', 'Bitstamp', late, 'primary')], lab, 0)
+    ck(w.start == 24 and 'lines_endlabels 是平滑图型' in w.why and '按 0 高画' not in w.why,
+       '平滑线图型仍走平滑线那套措辞，不串用堆叠柱的「段按 0 高画」')
+
+    # ⑧ 平滑线那一支（gs_line / gs_line_avg / lines_endlabels）的三处老毛病，2026-09-14 修：
+    #    (a) 「定住左端的是谁」只看派生腿 —— 全是主腿的图退化成期号：cboe 印过「定住左端的是
+    #        Jan-19」、台积电「Jan-17」、日月光「May-19」；
+    #    (b) 比的是 `first`，而 `start` 按 `dense_first` 裁 —— 中段有洞的腿永远点不出名；
+    #    (c) 「逐点标数值时还会抛异常」对 lines_endlabels 不成立（只标首尾两端），对 f0c 这类
+    #        千分位格式器也不成立（不抛，印一个假的 0）—— 浏览器里拿真引擎逐个复核过。
+    import re
+
+    def pin_of(why):
+        """→ (点名的那串, '它' / '这几条', 起始期)；图注里没有这半句时 None。"""
+        m = re.search(r'定住左端的是 (.+?)，(它|这几条)自 (M\d{3}) 起才逐期有值', why)
+        return m.groups() if m else None
+
+    lag36 = [None] * 36 + [1.0] * (N - 36)
+    w = resolve('lines_endlabels', [Leg('spx', 'SPX options', bar, 'primary'),
+                                    Leg('vix', 'VIX options', bar, 'primary'),
+                                    Leg('xsp', 'XSP options（Mini-SPX）', lag36, 'primary',
+                                        'Cboe 自 2019-01 才单列 XSP')], lab, 0)
+    ck(w.start == 36 and pin_of(w.why) == ('XSP options（Mini-SPX；Cboe 自 2019-01 才单列 XSP）',
+                                           '它', 'M036')
+       and not re.search(r'定住左端的是\s*M\d{3}', w.why),
+       f'(a) 全是主腿：点名晚起的那条主腿、不印期号；名字自带括注时并进同一对括号（得 {pin_of(w.why)}）')
+
+    gap40 = [1.0] * 40 + [None] + [1.0] * (N - 41)
+    w = resolve('lines_endlabels', [Leg('loc', '本币同比', bar, 'primary'),
+                                    Leg('usd', '美元同比', gap40, 'derived', '要 12 个月')], lab, 0)
+    ck(w.start == 41 and pin_of(w.why) == ('美元同比（要 12 个月；中间 M040 缺了一期）', '它', 'M041'),
+       f'(b) 派生腿中段有洞：按 dense_first 点得出名，括注写出洞在哪（得 {pin_of(w.why)}）')
+
+    gap3 = [1.0] * 8 + [None] * 3 + [1.0] * (N - 11)
+    w = resolve('gs_line', [Leg('mom', '环比', gap3, 'primary')], lab, 0)
+    ck(w.start == 11 and pin_of(w.why) == ('环比（中间 M008–M010 缺了 3 期）', '它', 'M011'),
+       f'(b) 单腿主腿连缺 3 期：点名这条腿本身，洞的首尾期都写出来（得 {pin_of(w.why)}）')
+
+    w = resolve('lines_endlabels', [Leg('a', '本币同比', bar, 'primary'),
+                                    Leg('b', '美元同比', lag12, 'primary', '要 12 个月'),
+                                    Leg('c', '汇率贡献', lag12, 'derived')], lab, 0)
+    ck(pin_of(w.why) == ('美元同比（要 12 个月）、汇率贡献', '这几条', 'M012'),
+       f'(a) 同一期起的几条一起点名、主腿派生腿都算，没定住左端的那条不点（得 {pin_of(w.why)}）')
+
+    def legs_gap():
+        return [Leg('loc', '本币同比', bar, 'primary'),
+                Leg('usd', '美元同比', gap40, 'derived', '要 12 个月')]
+    p_sd = pin_of(resolve('stacked_dual', legs_gap(), lab, 0).why)
+    p_le = pin_of(resolve('lines_endlabels', legs_gap(), lab, 0).why)
+    ck(p_sd is not None and p_sd == p_le,
+       '(a)(b) stacked_dual 与平滑线两支点名同一批腿、措辞逐字相同（共用 _pinned）')
+
+    le = resolve('lines_endlabels', [Leg('a', 'A', bar, 'primary'),
+                                     Leg('b', 'B', lag12, 'primary')], lab, 0).why
+    ck('只在首尾两端标数值' in le and '逐点' not in le and '要么抛异常、要么印出一个假的 0' in le
+       and '还会抛异常' not in le,
+       '(c) lines_endlabels：只说首尾两端标数值、两种后果都写，不笼统说「逐点标数值时还会抛异常」')
+    gl = [resolve(k, [Leg('a', 'A', lag12, 'primary')], lab, 0).why for k in ('gs_line', 'gs_line_avg')]
+    ck(all('逐点标数值' in t and '要么抛异常、要么印出一个假的 0' in t and '还会抛异常' not in t
+           for t in gl),
+       '(c) gs_line / gs_line_avg：逐点标数值，两种后果都写')
+
+    print(f'── mrwin 自检：{n_ok}/21 通过 ──')
+    return 0 if n_ok == 21 else 1
 
 
 if __name__ == '__main__':
