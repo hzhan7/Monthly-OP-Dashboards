@@ -2604,7 +2604,7 @@ class TestSgxOwnerLayout(unittest.TestCase):
 #   · monthly_run 读 `DEGRADED` 的通用协议（`LEG_ALERTS` / `_leg_alerts` / `report_leg_alerts`），
 #     以及 `SLOW_LEGS['lseg']` 追加的 mm_ / aim_ 登记。
 #
-# 四条写法规矩，缺一条这组就会反过来咬人：
+# 五条写法规矩，缺一条这组就会反过来咬人：
 #   · **为什么进 preflight、不放 fetch/test_*.py**：fetch/test_*.py 没接进任何闸门（monthly_run
 #     只调 check_specs / test_guards / verify_pages / check_yoy_caliber），写在那儿只能靠人手敲。
 #   · **全部是注入**：注入日期、临时目录、合成夹具。不联网，不读 cache/，不读 series/ 或 data/
@@ -2614,7 +2614,17 @@ class TestSgxOwnerLayout(unittest.TestCase):
 #     「_overdue_missing 对真 cache 为 []」「slow_pending('lseg') 读真 series 为 False」都不许加。
 #   · **lseg 是可删的交易所**（docs/CRON_WIRING.md §4）：依赖 fetch/lseg*.py 的类按文件在不在
 #     skip，删了不能把 preflight 打挂。只测 monthly_run 通用协议的 M10 不依赖 lseg，不 skip。
+#   · **运维会照报错去改的登记表，一律在 setUp 里换成合成夹具**（addCleanup 还原，见 `_m_seal_registries`）。
+#     反例是 2026-09-14 核查的 lseg-1-1：M1–M8 原先读 fetch/lseg_primary.py `KNOWN_SOURCE_GAPS` 的现值，
+#     而逾期报错正是叫人往这张表里登记 —— 照做登记 ('AIM','2026-08')，M 组红 6 条，次日 07:56 preflight
+#     整轮停跑（登记 ('MM','2024-03') 则红 M4）。护栏给的修法被护栏测试拒绝，就是死锁。
+#     将来加 MARKET_END 这类「报错叫人登记」的表，同一提交在 `_M_REGISTRY_FIXTURES` 里给它放夹具。
+#     **界线**：只有代码改动才会变的配置不密封，照读现值 —— `MARKETS` / `MARKET_START` / `LEGACY_LAST` /
+#     `_MAX_PUBLISH_LAG_DAYS`（报错明说不许调）/ fetch/lseg.py 的 `PARTS`、`COLUMN_LEG` /
+#     monthly_run 的 `SLOW_LEGS`、`TICKERS`。改它们本来就要同一提交连带改测试并跑通 test_guards；
+#     护栏 e 里「从 SLOW_LEGS['lseg'] 摘前缀」前面挂着「另议 MARKET_END」，同样是代码改动，不是登记。
 import contextlib  # noqa: E402
+import copy  # noqa: E402
 import csv  # noqa: E402
 import io  # noqa: E402
 import shutil  # noqa: E402
@@ -2632,7 +2642,7 @@ def _lseg_mod(name):
     """按路径加载 fetch/<name>.py，一轮只加载一次（同 F 组的 spec_from_file_location）。
 
     模块名带 `_m_` 前缀，不与 monthly_run 运行时 load() 出来的同名模块打架。
-    测试替换的模块属性（fetch_rows / _REFRESH）一律 addCleanup 复原，所以共用一份实例无妨。
+    测试替换的模块属性（fetch_rows / _REFRESH / 登记表夹具）一律 addCleanup 复原，所以共用一份实例无妨。
     """
     if name not in _LSEG_MODS:
         import importlib.util
@@ -2654,22 +2664,53 @@ def _m_quiet():
     return contextlib.redirect_stdout(io.StringIO())
 
 
+# 运维照报错去登记的表 → M 组用的合成夹具（组头第五条规矩）。形状照真表，月份**故意不取**真表那两条
+# （MM 2022-12 / AIM 2019-09）：夹具与真表无关，真表登记了什么、写没写坏，本组都不受影响。
+# 夹具月份也不许碰测试里当样例的月份（两个市场的 2026-08、MM 2024-03、MM 2018-04）。
+_M_REGISTRY_FIXTURES = {
+    'lseg_primary': {
+        'KNOWN_SOURCE_GAPS': {
+            ('MM', '2021-06'): ('absent', '夹具：官方索引里没有这一期'),
+            ('AIM', '2020-02'): ('blank', '夹具：文件在、格子空'),
+        },
+        # 模块目前没有这个常量（hasattr 不中就不换）。护栏 e 让人「另议 MARKET_END」，真加上的那天
+        # 本组默认按空表密封（没有市场停发）；它的形状不是 dict 的话，同一提交改这里。
+        'MARKET_END': {},
+    },
+}
+
+
+def _m_seal_registries(tc, mod, name):
+    """把 `mod` 上 `_M_REGISTRY_FIXTURES[name]` 列出的登记表换成夹具的深拷贝，addCleanup 还原现值。
+
+    模块里没有这个名字就不换（表名改了、或 MARKET_END 这类还没加的表）—— 用到它的测试会自己报
+    AttributeError，那是代码改动的事，不是登记的事。
+    """
+    for attr, fixture in _M_REGISTRY_FIXTURES.get(name, {}).items():
+        if hasattr(mod, attr):
+            tc.addCleanup(setattr, mod, attr, getattr(mod, attr))
+            setattr(mod, attr, copy.deepcopy(fixture))
+
+
 @unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
 class TestLsegPrimaryOverdue(unittest.TestCase):
-    """M1–M8：fetch/lseg_primary.py 的逾期护栏。present / today / fetch_rows 全部注入。"""
+    """M1–M8：fetch/lseg_primary.py 的逾期护栏；M13–M15：白名单的类型、反查与形状校验。
+    present / today / fetch_rows 全部注入；KNOWN_SOURCE_GAPS 在 setUp 里换成夹具（组头第五条）。"""
 
     def setUp(self):
         self.P = _lseg_mod('lseg_primary')
+        _m_seal_registries(self, self.P, 'lseg_primary')
 
     def _full(self, upto):
-        """两个市场各自 MARKET_START..upto 的全集减去 KNOWN_SOURCE_GAPS =「该有的都有」。"""
+        """两个市场各自 MARKET_START..upto 的全集减去 KNOWN_SOURCE_GAPS（夹具）=「该有的都有」。"""
         P = self.P
         return {tag: {m for m in P._months_between(P.MARKET_START[tag], upto)
                       if (tag, m) not in P.KNOWN_SOURCE_GAPS}
                 for tag, *_ in P.MARKETS}
 
-    def _run_refresh(self, index_text):
-        """M6 / M8 共用的注入：假 fetch_rows 给两行合成数据，present 缺 AIM 2026-08，today=10-16。
+    def _run_refresh(self, index_text, today=datetime.date(2026, 10, 16), extra=()):
+        """M6 / M8 / M14 / M15 共用的注入：假 fetch_rows 给两行合成数据，present 缺 AIM 2026-08，
+        另加 `extra` 里的 (tag, month)（M14 拿它把夹具里 'absent' 的那一期放进索引）。today 缺省 10-16。
 
         → (异常或 None, 临时 series 目录, stdout)。`refresh()` 按模块全局名现查 fetch_rows，
         所以替换模块属性就换掉了它读 present / index_text 的来源。
@@ -2681,6 +2722,8 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
             return [dict(r) for r in rows]
         present = self._full('2026-08')
         present['AIM'].discard('2026-08')
+        for tag, month in extra:
+            present[tag].add(month)
         fake_fetch_rows.present = present
         fake_fetch_rows.index_text = index_text
         self.addCleanup(setattr, P, 'fetch_rows', P.fetch_rows)
@@ -2689,7 +2732,7 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
         err, buf = None, io.StringIO()
         with contextlib.redirect_stdout(buf):
             try:
-                P.refresh(series, series, today=datetime.date(2026, 10, 16))
+                P.refresh(series, series, today=today)
             except P.LsegPrimaryFetchError as e:
                 err = e
         return err, series, buf.getvalue()
@@ -2715,7 +2758,8 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
                          [('AIM', '2026-08', 46)])
 
     def test_start_and_known_gaps_not_flagged(self):
-        """M4：起点之前与 KNOWN_SOURCE_GAPS（2026-09 是 MM 2022-12、AIM 2019-09）不报；白名单之外的中段洞必须报。"""
+        """M4：起点之前与 KNOWN_SOURCE_GAPS 不报（白名单取自夹具 _M_REGISTRY_FIXTURES，'absent' / 'blank' 都豁免）；
+        白名单之外的中段洞必须报。"""
         P, today = self.P, datetime.date(2026, 10, 16)
         overdue, pending = P._overdue_missing(self._full('2026-07'), today)
         flagged = {(t, m) for t, m, _d in overdue + pending}
@@ -2797,6 +2841,84 @@ class TestLsegPrimaryOverdue(unittest.TestCase):
         self.assertEqual(got[0], P.COLUMNS)
         self.assertEqual([r[0] for r in got[1:]], ['2026-07', '2026-08'])
         self.assertEqual(set(got[2][1:]), {'7'})
+
+    def test_republished_gaps_absent_only(self):
+        """M13：白名单反查只查 'absent'。登记为「官方索引里没有」的那一期出现在 present 里 → 报；
+        'blank'（文件本来就在索引里）出现在 present 里 → 不报；都不在 → 不报。月份全取自夹具。"""
+        P = self.P
+        gaps = sorted(P.KNOWN_SOURCE_GAPS.items())
+        absent = [k for k, (kind, _why) in gaps if kind == 'absent']
+        blank = [k for k, (kind, _why) in gaps if kind == 'blank']
+        self.assertTrue(absent and blank, "夹具里 'absent' / 'blank' 两种都得有")
+        present = self._full('2026-07')
+        self.assertEqual(P._republished_gaps(present), [])
+        for tag, month in blank:
+            present[tag].add(month)
+        self.assertEqual(P._republished_gaps(present), [], "'blank' 的文件本来就在索引里，不许报")
+        for tag, month in absent:
+            present[tag].add(month)
+        self.assertEqual(sorted(P._republished_gaps(present)),
+                         sorted((t, m, P.KNOWN_SOURCE_GAPS[(t, m)][1]) for t, m in absent))
+        # 反查不改逾期豁免：登记过的月份在不在索引里，都不进 overdue / pending
+        overdue, pending = P._overdue_missing(present, datetime.date(2026, 10, 16))
+        self.assertEqual({(t, m) for t, m, _d in overdue + pending} & set(P.KNOWN_SOURCE_GAPS), set())
+
+    def test_refresh_republished_gap_written_alarm(self):
+        """M14：反查命中与逾期同一条路 —— 先写 part CSV，再以 written=True 报警（口径 (a)：进 DEGRADED / 末行）。
+        只有反查命中时抛 LsegPrimaryGapRepublishedError（不是逾期那个类）；同轮也逾期时抛逾期那个类，
+        消息里两段都在；夹具那一期不在索引里时一声不响。"""
+        P = self.P
+        tag, month = sorted(k for k, (kind, _w) in P.KNOWN_SOURCE_GAPS.items() if kind == 'absent')[0]
+        label = '%s %s' % (tag, month)
+        # (a) 09-14：AIM 2026-08 才 +14、只进 pending；夹具里 'absent' 的那一期出现在索引里
+        err, series, out = self._run_refresh({}, today=datetime.date(2026, 9, 14), extra=[(tag, month)])
+        self.assertIsInstance(err, P.LsegPrimaryGapRepublishedError)
+        self.assertNotIsInstance(err, P.LsegPrimaryOverdueError)
+        self.assertTrue(issubclass(P.LsegPrimaryGapRepublishedError, P.LsegPrimaryFetchError))
+        self.assertIs(getattr(err, 'written', None), True)
+        self.assertIn(label, str(err))
+        self.assertIn(label, out, '反查命中没打印 ⚠ 行')
+        self.assertIn('索引里还没有', out, 'pending 那一行被反查吞掉了')
+        path = os.path.join(series, 'lseg_part_primary.csv')
+        self.assertTrue(os.path.exists(path), '抛之前没写 part CSV')
+        with open(path, encoding='utf-8', newline='') as f:
+            self.assertEqual([r[0] for r in list(csv.reader(f))[1:]], ['2026-07', '2026-08'])
+        # (b) 10-16：同轮 AIM 2026-08 也逾期 → 抛逾期那个类，两段都在消息里
+        err, _series, _out = self._run_refresh({}, extra=[(tag, month)])
+        self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+        self.assertIs(getattr(err, 'written', None), True)
+        self.assertIn('AIM 2026-08', str(err))
+        self.assertIn(label, str(err))
+        # (c) 夹具那一期不在索引里：09-14 只有 pending，照常返回
+        err, _series, _out = self._run_refresh({}, today=datetime.date(2026, 9, 14))
+        self.assertIsNone(err)
+
+    def test_gap_table_shape_checked_before_write(self):
+        """M15：登记写坏不许悄悄失效。旧式裸字符串值、类型拼错、市场 tag 不认识、月份格式不对、出处空白 ——
+        _gap_table() 一律抛 LsegPrimaryFetchError（不带 written），refresh() 在写 part CSV 之前就抛。
+        这里换进去的也是合成坏表（setUp 的 addCleanup 照样还原真表）：真表写坏只让 lseg 这一路当天失败，
+        不许让 preflight 变红。"""
+        P = self.P
+        bad_tables = {
+            'bare_string': {('MM', '2021-06'): '裸字符串（旧式写法）'},
+            'bad_kind': {('MM', '2021-06'): ('missing', '类型拼错')},
+            'bad_tag': {('LSE', '2021-06'): ('absent', '市场 tag 不认识')},
+            'bad_month': {('MM', '2021-6'): ('absent', '月份不是 YYYY-MM')},
+            'blank_why': {('MM', '2021-06'): ('absent', '  ')},
+        }
+        # 自带还原，不靠 setUp 那一条：哪天有人拿掉密封，本测试也不许把坏表漏给后面的测试
+        self.addCleanup(setattr, P, 'KNOWN_SOURCE_GAPS', P.KNOWN_SOURCE_GAPS)
+        for case, table in bad_tables.items():
+            with self.subTest(case=case):
+                P.KNOWN_SOURCE_GAPS = table
+                with self.assertRaises(P.LsegPrimaryFetchError) as cm:
+                    P._gap_table()
+                self.assertFalse(getattr(cm.exception, 'written', False))
+                err, series, _out = self._run_refresh({}, today=datetime.date(2026, 9, 14))
+                self.assertIsInstance(err, P.LsegPrimaryFetchError)
+                self.assertFalse(getattr(err, 'written', False), '登记写坏是普通失败，不是「已写入 + 报警」')
+                self.assertFalse(os.path.exists(os.path.join(series, 'lseg_part_primary.csv')),
+                                 '登记写坏时不许先写 part CSV')
 
 
 @unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
