@@ -25,11 +25,16 @@
   · `doSmooth=false` 那一支逐点走 `if (vs[i] == null) { pen = false; continue; }`
     —— null 是断笔，画得对。`gs_bar` 的次轴 y/y、`qtr_bar` / `grouped_bars` 的
     `ex.line` 全走这一支，**可以带前导 null**。
-  · `doSmooth=true` 那一支把整条 `vs` 交给 `smooth()` 做 Catmull-Rom，null 参与
-    插值就是 NaN；`gs_line` 还要逐点 `fv(vv)` 标数值，null 上直接 TypeError，
-    该卡片之后的 exhibit 全不渲染。`build/verify_pages.py` 的 `DENSE` 集合
-    （gs_line / gs_line_avg / lines_endlabels / stacked_dual）就是这一类，
-    数组里出现一个 null 就是 ERROR。**这类只能截断，不能补 null，更不能补假值。**
+  · `doSmooth=true` 那一支把整条 `vs` 交给 `smooth()` 做 Catmull-Rom，null 在算术里
+    被当成 0，画出一条塌到零的假线；`gs_line` 还要逐点 `fv(vv)` 标数值，null 上直接
+    TypeError，该卡片之后的 exhibit 全不渲染。`build/verify_pages.py` 的 `DENSE` 集合
+    里 gs_line / gs_line_avg / lines_endlabels 就是这一类，数组里出现一个 null 就是 ERROR。
+    **这类只能截断，不能补 null，更不能补假值。**
+  · `DENSE` 里的第四个 `stacked_dual` **理由不同**，别拿上一条去解释它（CHART_KINDS §1.2）：
+    堆叠段不走 `polyline`，段为 null 时 `lo + null === lo`，那一段画成 0 高、整根柱照画
+    只是矮一截；只有可选的右轴线走 `doSmooth=true`，null 当 0 把线拽下来。两处都不抛异常
+    （2026-09-14 用真引擎在浏览器里复核过）。verify_pages 对它同样一个 null 就 ERROR，
+    结论也一样是只能截断 —— 但图注里的理由不一样，`resolve()` 按 kind 出两套措辞。
 
 所以 `resolve()` 的返回值里，`start` 对 DENSE 图型 = 所有腿里最晚的那个首值，
 对非 DENSE 图型 = 主腿的首值（派生腿的前导 null 由引擎断笔处理）。
@@ -229,7 +234,26 @@ def resolve(kind, legs, labels, want_from=0):
     dropped = [l for l in legs if l.drop]
 
     bits = []
-    if dense and start > want_from:
+    if dense and start > want_from and kind == 'stacked_dual':
+        # stacked_dual 在 DENSE 里，但**不是**平滑图型、也不抛异常（CHART_KINDS §1.2；
+        # 2026-09-14 拿真引擎在浏览器里复核过 null 的画法）：堆叠段为 null 时
+        # `lo + null === lo`，那一段画成 0 高、整根柱照画只是矮一截；只有可选的右轴线
+        # 走平滑，null 当 0 把线拽下来。下面那支的措辞一个字都不能套过来。
+        # 点名的是「稠密首格正好落在左端」的腿，**主腿也算** —— 下面那支只看派生腿，
+        # 全是主腿的图一个都点不出，只能退回期号：hood 的「Crypto ADV: Robinhood App vs.
+        # Bitstamp」就这样印成过「定住左端的是Jan-23」。
+        pin = [l for l in legs if not l.drop and l.dense_first == start]
+        who = '、'.join(f'{l.zh}（{l.lag_zh}）' if l.lag_zh else l.zh for l in pin) \
+            or '窗口内最晚才逐期有值的那条序列'
+        bits.append(
+            f'<b>本图左端截在 {labels[start]}，不是序列起点 {labels[0]}</b>：'
+            f'{kind} 是堆叠柱，缺值时引擎不报错、只会画错 —— 某一段为 null，那一段按 0 高画，'
+            f'整根柱照样立着、只是矮了一截，看上去就像那一期真的更小；'
+            f'右轴线（若有）是平滑曲线，null 被当成 0，线会被拽到零附近。'
+            f'所以窗口只能从「本图每一条序列都已经有值」的那一期开始 —— '
+            f'定住左端的是 {who}，{"这几条" if len(pin) > 1 else "它"}自 {labels[start]} 起才逐期有值。'
+            f'补零或补上一期的值都能让图画满，但那是<b>画一个数据里不存在的点</b>，本页不做。')
+    elif dense and start > want_from:
         who = '、'.join(f'{l.zh}（{l.lag_zh}，首点 {labels[l.first]}）'
                         for l in legs if l.first == start and l.role != 'primary') \
             or f'{labels[start]}'
@@ -411,7 +435,7 @@ def label_clash(ex, full=None):
 
 # ────────────────────────────── 自检 ──────────────────────────────
 def _selftest():
-    """`python3 build/mrwin.py` —— 对着六类已知失败模式各跑一遍。
+    """`python3 build/mrwin.py` —— 对着七类已知失败模式各跑一遍。
 
     「今天没报错」与「规则坏了」在输出上长得一模一样，只有对着**已知错例**跑
     才分得开（同 tools/check_yoy_caliber.py --selftest 的理由）。
@@ -481,8 +505,23 @@ def _selftest():
     ck(c_half and c_full and c_full['cap'] > c_half['cap'] and c_half['w'] == c_full['w'],
        f'升通栏把标签预算从 {c_half["cap"]:.1f}px 抬到 {c_full["cap"]:.1f}px（标签本身不变）')
 
-    print(f'── mrwin 自检：{n_ok}/11 通过 ──')
-    return 0 if n_ok == 11 else 1
+    # ⑦ 同一种截断，理由按图型分开写。stacked_dual 不是平滑图型、缺值不抛异常（段画成 0 高），
+    #    套平滑线那段措辞就是在图注里说假话；全是主腿时「定住左端的」也必须是**序列名**，
+    #    不许退化成期号（现网真印出过「定住左端的是Jan-23」）。平滑线图型的措辞保持原样。
+    late = [None] * 24 + [1.0] * (N - 24)
+    w = resolve('stacked_dual', [Leg('app', 'App', bar, 'primary'),
+                                 Leg('bs', 'Bitstamp', late, 'primary')], lab, 0)
+    ck(w.start == 24 and '<b>本图左端截在 M024' in w.why and '按 0 高画' in w.why
+       and 'Catmull-Rom' not in w.why and '抛异常' not in w.why,
+       'stacked_dual 截到 idx 24，措辞说「段按 0 高画」，不说 Catmull-Rom / 抛异常')
+    ck('定住左端的是 Bitstamp，它自 M024 起' in w.why, '全是主腿时点名定住左端的序列，不退化成期号')
+    w = resolve('lines_endlabels', [Leg('app', 'App', bar, 'primary'),
+                                    Leg('bs', 'Bitstamp', late, 'primary')], lab, 0)
+    ck(w.start == 24 and 'lines_endlabels 是平滑图型' in w.why and '逐点标数值时还会抛异常' in w.why,
+       '平滑线图型截断的措辞不变')
+
+    print(f'── mrwin 自检：{n_ok}/14 通过 ──')
+    return 0 if n_ok == 14 else 1
 
 
 if __name__ == '__main__':
