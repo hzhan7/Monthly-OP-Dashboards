@@ -1477,9 +1477,9 @@ def quarterly_share_lines(pool):
 
     **为什么是 `lines` 而不是 `stacked_dual` / `lines_endlabels`。**
     这张图的成员起点各不相同（见图注），短历史成员的前段必须是 `null` 才诚实：
-      · `stacked_dual` 的堆叠段与右轴线都**不容忍 null**（段高算成 NaN、线塌到 0），
-        而且把缺席成员按 0 堆进去等于宣称「Nasdaq 2011 年份额是 0」—— 那是假的，
-        真相是「本仓没有它 2011 年的月度披露」。
+      · `stacked_dual` 的堆叠段与右轴线都**不容忍 null**：引擎把 null 段按 0 高画、
+        右轴线被平滑拽到 0，都不报错 —— 缺席成员于是被画成 0，等于宣称
+        「Nasdaq 2011 年份额是 0」，那是假的，真相是「本仓没有它 2011 年的月度披露」。
       · `lines_endlabels` 首尾任一为 null 直接抛 TypeError，中间的 null 会把线画塌到 0。
       · `heat_matrix` 能吃 null，但 62 列会把格内字号压到 4.6px 下限，读不出数值。
     `lines` 是 17 种里**唯一能安全吃缺口的多线图型**（缺处断开，不平滑）；

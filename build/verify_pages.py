@@ -68,7 +68,9 @@ COLORS = {'NAVY', 'BLUE', 'MBLUE', 'GRAY', 'GREEN', 'RED', 'GOLD',
           'WHITE', 'GRID', 'AXIS', 'INK'}
 TOP_REQUIRED = ['ticker', 'tracker', 'title', 'data_through', 'through_label',
                 'subtitle', 'headline', 'source', 'xlabels', 'summary', 'exhibits', 'notes']
-# 平滑类图型：null 会被 JS 当 0 参与 Catmull-Rom，画出一条塌到零的假线（还不报错）。
+# 不容忍 null 的图型（docs/CHART_KINDS.md §1.2）。前三种是平滑线：null 会被 JS 当 0 参与
+# Catmull-Rom，画出一条塌到零的假线（还不报错）。stacked_dual 的堆叠段不走平滑：null 段按 0 高画、
+# 柱矮一截（同样不报错），只有它可选的右轴线走平滑。
 DENSE = {'gs_line', 'gs_line_avg', 'lines_endlabels', 'stacked_dual'}
 # page.js 用 textContent 灌的字段（set()）。里面写 HTML 标签不会加粗，只会把
 # `<b>` 三个字符原样印在抬头上 —— 静默、不报错，只有截图才看得见。
@@ -478,11 +480,18 @@ def check_exhibit(tag, ex, short, long_):
                           else '尾部会静默变成缺失'))
         if kind in DENSE and any(v is None for v in arr):
             bad = [i for i, v in enumerate(arr) if v is None]
-            err(where, f'{kind} 的 {path} 有 {len(bad)} 个 null（首个在 idx {bad[0]}）——'
-                       f'平滑会把 null 当 0，画出一条塌到零的假线'
+            if kind == 'stacked_dual':
+                # 不是平滑图型、也不抛异常（CHART_KINDS §1.2）：段为 null 时 `lo + null === lo`，
+                # 那一段画成 0 高；只有右轴线走平滑。平滑线那句话套不过来。
+                why = ('堆叠段为 null 会按 0 高画，柱照画、只是矮一截，看着像真值（不抛异常，只是画错）'
+                       if path.startswith('stacks[') else
+                       '右轴线走平滑，null 被当成 0，线会被拽到零附近（不抛异常，只是画错）')
+            else:
+                why = ('平滑会把 null 当 0，画出一条塌到零的假线'
                        + ('，且逐点标数值时会抛 TypeError' if kind != 'lines_endlabels'
                           else ('，首尾为 null 时抛 TypeError' if 0 in bad or len(arr) - 1 in bad
                                 else '（首尾有值，不抛异常，只是画错）')))
+            err(where, f'{kind} 的 {path} 有 {len(bad)} 个 null（首个在 idx {bad[0]}）——{why}')
     # 多线图的可辨识度：判据是**颜色有没有真的撞上**，不是「线数 > 5」。
     # 数据色恰好有 6 个（NAVY/BLUE/MBLUE/GRAY/GREEN/GOLD），6 条各占一个色是可读的；
     # 早先按 >5 一刀切，会把「5 家 + 其余合计(GRAY)」这种正好用满 6 色的横截面图误报，
