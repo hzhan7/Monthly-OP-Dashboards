@@ -13,6 +13,9 @@ SLOW_LEGS 与 slow_pending 在本文件之前全仓零测试引用；_due_month 
     取本仓 git 历史里的 3b0ea1d（「更新数据: cost 2026-08, cme 2026-08, miax 2026-08」）：
     那一刻 API 头条腿已进 2026-08，IR 报表腿与历史档案列还停在 2026-07。没登记时 not_due
     从那天起判「追平」，09-04 已发的报表到 09-14 零请求，/exchanges-na/ 钉在 Jul-26。
+    series/miax.csv 与 data/miax.js 取的都是那一刻。除直调 slow_pending 的几条外，另有两条
+    走真 not_due('miax')（today 经 _due_month 注入）：只测 slow_pending 守不住「not_due 末行
+    不再问 slow_pending」这种接线断开 —— 那样其余各条照绿，闸门照样在 09-03 关死。
   · TestFailOpen —— 登记写坏（一列都匹配不上、开闸日不是二元组、条目不是二元组、前缀元组
     漏了逗号成了裸字符串）一律按「欠货」返回 True、打 ⚠，**绝不抛**。2026-09 之前解包在
     try 之外，一条写坏的登记会从 not_due 抛出，带崩整轮 28 家。
@@ -64,7 +67,9 @@ SOURCE_C = 'vol_futures_ag_contracts'
 
 
 def _git(*args):
-    r = subprocess.run(['git'] + list(args), cwd=ROOT, capture_output=True, text=True)
+    # 显式 utf-8：data/miax.js 带中文，不许跟着调用方的 locale 走（cron 下常是 C）
+    r = subprocess.run(['git'] + list(args), cwd=ROOT, capture_output=True, text=True,
+                       encoding='utf-8')
     return r.returncode, r.stdout
 
 
@@ -152,6 +157,14 @@ class TestMiaxReplay(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self._write()
+        # not_due 读 data/<t>.js 的 data_through（头条腿进度）；同一刻的快照放进同一个临时目录。
+        rc, js = _git('show', f'{REPLAY_COMMIT}:data/miax.js')
+        self.assertEqual(rc, 0, f'git show {REPLAY_COMMIT}:data/miax.js 失败')
+        with open(os.path.join(self.tmp, 'miax.js'), 'w', encoding='utf-8') as f:
+            f.write(js)
+        patcher = mock.patch.object(M, 'DATA', self.tmp)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _write(self):
         with open(os.path.join(self.tmp, 'miax.csv'), 'w', encoding='utf-8', newline='') as f:
@@ -177,6 +190,24 @@ class TestMiaxReplay(unittest.TestCase):
     def _pending(self, today):
         got, out = _call('miax', today)
         self.assertNotIn('⚠', out, f'判定走了 fail-open，返回值说明不了问题：{out!r}')
+        return got
+
+    def _not_due(self, on):
+        """调真 not_due('miax')，把「今天」钉在 on。
+
+        not_due 自身不收 today；它的两道判据（头条闸门、slow_pending 的慢腿闸门）都经模块
+        全局 _due_month 取「今天本该有的月份」，所以只在这一处包一层注入，其余全走真代码。
+        """
+        real = M._due_month
+
+        def pinned(open_days, today=None):
+            return real(open_days, today or on)
+
+        buf = io.StringIO()
+        with mock.patch.object(M, '_due_month', pinned), contextlib.redirect_stdout(buf):
+            got = M.not_due('miax')
+        out = buf.getvalue()
+        self.assertNotIn('⚠', out, f'慢腿判定走了 fail-open，返回值说明不了问题：{out!r}')
         return got
 
     def test_snapshot_is_the_incident(self):
@@ -211,6 +242,24 @@ class TestMiaxReplay(unittest.TestCase):
         """IR 报表已回补、源 C（历史档案 PDF，比报表晚 1-4 天）还没到 → 仍欠货。"""
         self._set('2026-08', MIAX_SLOW - {SOURCE_C}, '1')
         self.assertIs(self._pending(D(2026, 9, 15)), True)
+
+    def test_not_due_gate_open_0904(self):
+        """09-04 走真 not_due：data_through 已是 2026-08（头条追平）、11 列停 2026-07 → False。
+
+        not_due 末行不再问 slow_pending（或 miax 没登记）时这里是 True —— 09-04 已发的报表到
+        09-14 零请求，正是这张登记表要修的那起事故。
+        """
+        with mock.patch.object(M, 'slow_pending', return_value=False):
+            self.assertIs(self._not_due(D(2026, 9, 4)), True,
+                          '前提不成立：慢腿不欠时 09-04 头条闸门也没判追平 —— '
+                          '下面的 False 就与慢腿无关，本条什么也没证明')
+        self.assertIs(self._not_due(D(2026, 9, 4)), False)
+
+    def test_not_due_filled_then_next_period(self):
+        """回补后 09-15 真 not_due 判追平（True，不许天天空打）；10-03 下一期 2026-09 开闸 → False。"""
+        self._set('2026-08', MIAX_SLOW, '1')
+        self.assertIs(self._not_due(D(2026, 9, 15)), True)
+        self.assertIs(self._not_due(D(2026, 10, 3)), False)
 
 
 class TestFailOpen(unittest.TestCase):
