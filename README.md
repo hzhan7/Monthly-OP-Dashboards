@@ -55,7 +55,9 @@ assets/page.js      通用页面渲染器，全部页面共用一份（导航分
 assets/style.css    版式
 series/*.csv        历史序列（唯一真值，入库）[注]
                     一家可以有不止一份：hood_q / axp_trust / lseg_part_* /
-                    ibkr_pr（IBKR 月度新闻稿的佣金口径，2016-02 起）等
+                    ibkr_pr（IBKR 月度新闻稿的佣金口径，2016-02 起）/
+                    hood_ipo_pit、hood_ipo_q（HOOD 在月度披露开始之前的 IPO 申报期时点值与
+                    季度损益，由 build/basefill/hood_ipo.py 一次性回填、不进抓取链路）等
 series/cost_seg_q.csv   /cost/ 的 SEC 腿，季度/财年分部收入（US / CA / Other Intl）。
                     ⚠ **口径是 TOTAL REVENUE（净销售额 + 会员费），不是净销售额** ——
                     FY2025 三段合计 275,235 而 total net sales 是 269,912，差的 5,323
