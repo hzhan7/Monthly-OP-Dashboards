@@ -1884,6 +1884,8 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
       · 没有新月份、只因指纹 / 戳不符而补建成功时，状态行之后另印 `tsm_6k REBUILT 补建 /tsm/（原因）`：
         那时状态行是 NOCHANGE，不补这一行，data/tsm.js 变了、进了提交，日志里却找不到是谁动的。只打印，不改返回值。
       · 补建失败那行印 build/tsm.py 的 stderr 尾部（折成一行），不印 sh() 消息开头的命令 —— 生产命令本身就有 102 字。
+        stderr 为空（原因只印在 stdout、或被信号杀掉）时印兜底「stderr 为空；命令 build/tsm.py」，冒号后面不留空；
+        sh() 的消息不带退出码，所以印不出退出码。
     戳放 cache/（gitignore）：它不是数据，放进 PUBLISH 的目录会被 `git add` 收进数据提交。
 
     ══ 失败为什么只进失败清单、不阻断 ══
@@ -1956,6 +1958,14 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
                 # cost_sec / mops_remarks / taiwan_fx_rebuild 的同款截断是台账已知项，另案处理。
                 why = ' | '.join(ln.strip() for ln in str(e).split(' 失败: ', 1)[-1].splitlines()
                                  if ln.strip().strip('^~'))
+                if not why:
+                    # 切出来是空串时冒号后面不许空着：子进程被信号杀掉、或把原因印到 stdout 再以非零码退出，stderr 就是空的。
+                    # sh() 的消息里没有退出码（它的签名与其它调用方不动），只能说出是哪条命令 —— 去掉解释器与仓库前缀，
+                    # 生产环境印出来就是 build/tsm.py。不是 sh() 抛的异常消息为空时不能说「stderr 为空」，改印异常类型。
+                    script = ' '.join(c[len(HERE) + 1:] if c.startswith(HERE + os.sep) else c
+                                      for c in cmd[1:]) or cmd[0]
+                    why = (f'stderr 为空；命令 {script}' if ' 失败: ' in str(e)
+                           else f'{type(e).__name__}（无消息）；命令 {script}')
                 print(f'{"tsm":<10} FAIL     月报 6-K 腿更新后重建失败（补建戳未更新，下一轮重试）: '
                       f'{"…" if len(why) > 300 else ""}{why[-300:]}')
                 bad.append('tsm_6k')

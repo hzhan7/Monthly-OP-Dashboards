@@ -15,7 +15,8 @@ tsm_6k() 是 fetch/tsm_6k.py 的调用侧。它自己的判断全是「日期 ×
      没有新月份而补建成功时紧跟一行 `tsm_6k REBUILT 补建 /tsm/（原因）`；有新月份、建失败、推迟时都不印。
   4. update() / last_month() 抛异常 → 'tsm_6k'，不建。
   5. 补建失败那行带 build/tsm.py 的 stderr 末行：走真 sh()，命令用生产环境那条 102 字的解释器 + 仓库路径
-     （旧写法 str(e)[:100] 在这个长度下只剩命令路径）。
+     （旧写法 str(e)[:100] 在这个长度下只剩命令路径）。stderr 为空时（原因只印在 stdout / 被信号杀掉）冒号后面
+     不许空着，必须印兜底「stderr 为空；命令 build/tsm.py」。
 audit_manual_series() 只打印：两条阈值各测差一天的边界；无陈旧项时 stdout 一个字都没有；自身出错只印 ⚠。
 另有一条静态核对：main() 里两处调用的先后（与 cost_sec / mops_remarks、report_restatement_logs /
 report_leg_alerts 的相对位置是跨支线定下的，挪了不会有任何别的测试变红）。
@@ -368,6 +369,38 @@ class TestRebuildStamp(_Tsm6kCase):
         self.assertTrue(fail[0].endswith(last), fail[0])         # stderr 末行（异常类型 + 消息）完整落在行尾
         self.assertNotIn(PROD_CMD[0], fail[0])                   # 不再印命令路径
         self.assertNotIn('^^^', fail[0])                         # traceback 的纯标记行丢掉了
+
+    def test_rebuild_failure_with_empty_stderr_names_the_command(self):
+        # 走真 sh()：子进程把原因印到 stdout 再 exit 1，或被信号杀掉（returncode < 0），stderr 都是空的。
+        # 只切 stderr 时 FAIL 行停在「…下一轮重试）: 」，冒号后面什么都没有；兜底必须说出 stderr 为空、是哪条命令。
+        # 命令取生产形状（解释器 + 仓库内绝对路径），仓库根就是 M.HERE：印出来应只剩 build/tsm.py。
+        cmd = [PROD_CMD[0], os.path.join(self.here, 'build', 'tsm.py')]
+        for rc, stdout in ((1, '[tsm] 失败：原因只印在 stdout\n'), (-9, '')):
+            with self.subTest(returncode=rc):
+                runs = []
+
+                def fake_run(c, cwd=None, capture_output=False, text=False, **kw):
+                    runs.append(list(c))
+                    return subprocess.CompletedProcess(c, rc, stdout=stdout, stderr='')
+
+                self.make_stub('2026-08')
+                with mock.patch.object(M, 'sh', REAL_SH), \
+                        mock.patch.object(M, 'builder', lambda t: list(cmd) if t == 'tsm' else None), \
+                        mock.patch.object(M.subprocess, 'run', fake_run):
+                    got, out = self.run6k(D(2026, 9, 20))
+                self.assertEqual(got, ['tsm_6k'])
+                self.assertEqual(runs, [cmd])
+                self.assertIsNone(self.read_stamp())
+                fail = [ln for ln in out.splitlines() if re.match(r'tsm\s+FAIL\s', ln)]
+                self.assertEqual(len(fail), 1, out)
+                self.assertTrue(fail[0].endswith('（补建戳未更新，下一轮重试）: stderr 为空；命令 build/tsm.py'), fail[0])
+                self.assertNotIn(PROD_CMD[0], fail[0])
+        # 不是 sh() 抛的、消息又为空：不许谎称「stderr 为空」，印异常类型；冒号后面同样不空
+        self.make_stub('2026-08')
+        self.sh_exc = RuntimeError()
+        got, out = self.run6k(D(2026, 9, 20))
+        self.assertEqual(got, ['tsm_6k'])
+        self.assertRegex(out, r'(?m)^tsm\s+FAIL\s+.*下一轮重试）: RuntimeError（无消息）；命令 build/tsm\.py$')
 
     def test_loop_failed_defers_without_building_or_counting(self):
         self.make_stub('2026-08')

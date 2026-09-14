@@ -402,7 +402,8 @@ ECB 恰恰不是 —— 每个 TARGET2 营业日 14:15 CET 定盘、约 16:00 CE
 （重建失败、进程被杀、本轮 `one('tsm')` 已 FAIL 而推迟），下一轮闸门已关、`update()` 不再被调用 ——
 没有这张戳，页面会一声不响地停在旧图。首轮上线戳不存在，会无条件重建一次 `/tsm/`；`--dry-run` 不写戳。
 没有新月份、只因指纹 / 戳不符而补建成功时，状态行之后另印 `tsm_6k REBUILT 补建 /tsm/（原因）`（只打印，不改末行）；
-补建失败的 `tsm FAIL` 行印的是 `build/tsm.py` stderr 的尾部（折成一行），不是命令路径。
+补建失败的 `tsm FAIL` 行印的是 `build/tsm.py` stderr 的尾部（折成一行），不是命令路径；stderr 为空时（原因只印在 stdout、
+或被信号杀掉）印兜底 `stderr 为空；命令 build/tsm.py` —— `sh()` 的消息不带退出码，印不出来。
 最近 3 个月的月报每轮与库内逐格比，不一致（6-K/A 重述或解析变形）就抛异常、列出 月/列/库内/官方/accession，
 不改写，也挡住新月份写入（同 `fetch/umc.py` 口径坑 7）。
 
@@ -620,4 +621,4 @@ rm -rf cache/tsm_6k          # 月报正文缓存 + 补建戳，可重下
 | `ndaq` 的 headline 在慢腿上（见 §2.2 注） | 红点与闸门被迫拆成两条腿；改法是动 spec，不是动接线 | 页面口径 |
 | `--only` 不跳过 `fee_rates` / `fx` / `mops_remarks` / `build_cross` | 调试单家时仍会打 ECB、费率源与 TWSE（各一个站） | 沿用既有行为，未改 |
 | `cost_sec` 与 `tsm_6k` **两步看 `--only`** | 各自只有一个消费者（`/cost/`、`/tsm/`），`--only cme` 没理由去打 EDGAR / MOPS、更没理由改写 `data/cost.js` / `data/tsm.js`；生产环境 `todo` 恒等于 `TICKERS`，cron 行为与不看 `--only` 完全一样 | 有意为之，见 §2.5 / §2.6 |
-| `tsm_capex_approvals` / `tsm_bonds_*` 仍人工维护 | `audit_manual_series()` 只打印陈旧提示（公司債月末后第 32 天、资本支出距上次申报超过 135 天），不计入失败清单、不推送 —— 漏录只在日志尾部看得见 | 自动化待所有者定 |
+| `tsm_capex_approvals` / `tsm_bonds_monthly` 仍人工维护 | `audit_manual_series()` 只打印陈旧提示（公司債月表 `tsm_bonds_monthly` 月末后第 32 天、资本支出距上次申报超过 135 天；登记簿 `tsm_bonds_tranches` 无陈旧提示），不计入失败清单、不推送 —— 漏录只在日志尾部看得见 | 自动化待所有者定 |
