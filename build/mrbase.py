@@ -1137,13 +1137,28 @@ def _implied_line_note(ds, spec, R):
 
 
 def _boundary_note(want_from, got_from, n, lag_desc, kind):
-    """「本图为什么不是从 x_from 起」这句话 —— 数全部现算，一个都不写死。"""
+    """「本图为什么不是从 x_from 起」这句话 —— 数全部现算，一个都不写死。
+
+    「为什么只能截」按 `kind` 分两套措辞（与 `mrwin.resolve()` 同一个口径，
+    docs/CHART_KINDS.md §1.2）：`gs_line` / `lines_endlabels` 是平滑线；`stacked_dual`
+    虽然也在 DENSE 里，却**不是**平滑图型、缺值也不抛异常 —— 段为 null 时
+    `lo + null === lo`，那一段画成 0 高、整根柱照画只是矮一截。把平滑线那段话套给它，
+    就是在图注里说假话。底座的 `mix` 不给右轴线，所以那一支只讲段。
+    """
     if str(want_from) == str(got_from):
         return ''
     gap = (pd.Period(str(got_from), freq='M') - pd.Period(str(want_from), freq='M')).n
-    return (f'<b>本图从 {mlab(pd.Period(str(got_from), freq="M"))} 起，'
-            f'比页面窗口起点 {want_from} 晚 {gap} 个月</b>：{lag_desc}。'
-            f'<code>{kind}</code> 在引擎里走 Catmull-Rom 平滑曲线，'
+    head = (f'<b>本图从 {mlab(pd.Period(str(got_from), freq="M"))} 起，'
+            f'比页面窗口起点 {want_from} 晚 {gap} 个月</b>：{lag_desc}。')
+    if kind == 'stacked_dual':
+        return (head
+                + f'<code>{kind}</code> 是堆叠柱，<b>缺值时引擎不报错、只会画错</b>：'
+                '某一段为 null，那一段按 0 高画，后面的段从同一条基线接着堆，'
+                '柱照画、只是矮一截（各段都缺就矮到 0），看上去就像那一期的数真的更小。'
+                '所以这里**显式截断**而不是留空 —— '
+                f'既不画缺段的矮柱，也不往前补零或补去年同值。截断后窗口 {n} 个月。')
+    return (head
+            + f'<code>{kind}</code> 在引擎里走 Catmull-Rom 平滑曲线，'
             '<b>吃不了 null</b>（会被 JS 当 0，画出一条塌到零的假线，首尾为 null 还会抛 '
             'TypeError 让整页后续图全丢），所以这里**显式截断**而不是留空 —— '
             f'既不画空线，也不往前补零或补去年同值。截断后窗口 {n} 个月。')
@@ -1151,6 +1166,32 @@ def _boundary_note(want_from, got_from, n, lag_desc, kind):
 
 # 「右轴那条线为什么比柱短」那句话不在本文件生成 —— `mrwin.resolve()` 返回的 `why`
 # 就是它，而且它还覆盖本文件原来没有的第三种情形（整条腿窗口内无值 ⇒ drop）。
+
+
+def _boundary_why(w, want_from, lag_zh):
+    """贴了 `w.why` 的 DENSE 图用这个，不用 `_boundary_note()` —— **同一次截断只讲一遍**。
+
+    DENSE 图被截断时，`w.why`（`mrwin.resolve()` 写的那段）已经讲了截在哪一期、这个图型
+    为什么只能截不能留 null（措辞按 kind 分）、为什么不补假值、定住左端的是哪条腿。
+    fx_lines 原来在它前面再接一段 `_boundary_note()`：同一个解释印两遍，两遍对引擎后果的
+    说法还不一样；而那段写死的「两条线在窗口首年都没有分母」对台积电是假话 —— NAVY 线取
+    公告同比，窗口首月就有值，定住左端的只有美元那条（2026-09-14 对 data/tsm.js 核过）。
+    该点名谁由 mrwin 按数据判，这里不再手写。
+
+    所以以 `w.why` 为准，只补它没印的：
+      · 比**页面窗口起点**晚几个月。`w.why` 对照的是序列起点，spec 的 `x_from` 晚于序列
+        起点的家两者不是同一个月。算法与 `_boundary_note()` 相同（日历月差）；
+      · 截断后窗口多长；
+      · lag —— `w.why` 里找不到 `lag_zh` 时才补。mrwin 点名定住左端的腿时会把它的
+        `lag_zh` 带进括注，但只认派生腿的那一版在全是主腿的图上（fx_lines 就是）只印出
+        一个期号、lag 一个字都没有。判这一下，是为了 lag 既不印两遍、也不漏印。
+    `mom` / `mix` 不贴 `w.why`，照旧走 `_boundary_note()`。
+    """
+    if not w.trim:
+        return w.why
+    gap = (pd.Period(str(w.months[0]), freq='M') - pd.Period(str(want_from), freq='M')).n
+    lag = '' if lag_zh in w.why else f'（{lag_zh}）'
+    return w.why + f'截断后窗口 {w.n} 个月，比页面窗口起点 {want_from} 晚 {gap} 个月{lag}。'
 
 
 def caliber_win(s, kind, n):
@@ -2178,7 +2219,7 @@ def build_exhibits(ds, spec, breaks):
     # 场合最有价值，那正是绝对量图上看不出来的。
     if 'mix' in EX:
         shares = [(sd, ss / ds.rev * 100) for sd, ss in ds.segments]
-        # `stacked_dual` 在 DENSE 名单里（平滑折线吃不了 null），所以窗口按它裁。
+        # `stacked_dual` 在 DENSE 名单里（null 段会被画成 0 高、柱矮一截还不报错），所以窗口按它裁。
         w = Window(ds, i_x, 'stacked_dual',
                    [mrwin.Leg(f'sh{k}', f'{sd["label"]} 占比', sh.values, 'primary')
                     for k, (sd, sh) in enumerate(shares)])
@@ -2252,11 +2293,12 @@ def build_exhibits(ds, spec, breaks):
         #    则是 TypeError 让该卡片以下全不渲染。`resolve()` 对 DENSE 取所有腿的最大值，
         #    这是**由构造保证**的，不靠写图的人记得两条腿的 lag 不一样。
         LG = legs(spec)
+        # 两条腿的 lag 是同一句话，只写一处：图注末尾 `_boundary_why()` 要拿它判
+        # mrwin 那段有没有把 lag 印出来。
+        _lag = f'单月同比要 {Y.LAG} 个月的 lag'
         w = Window(ds, i_x, 'lines_endlabels', [
-            mrwin.Leg('loc', f'{LG["loc_zh"]} 单月同比', ds.loc_yoy.values, 'primary',
-                      '单月同比要 12 个月的 lag'),
-            mrwin.Leg('usd', '美元口径单月同比', ds.usd_yoy.values, 'primary',
-                      '单月同比要 12 个月的 lag')])
+            mrwin.Leg('loc', f'{LG["loc_zh"]} 单月同比', ds.loc_yoy.values, 'primary', _lag),
+            mrwin.Leg('usd', '美元口径单月同比', ds.usd_yoy.values, 'primary', _lag)])
         # 代价**一条线一份**：两条腿的水平列不是同一列（NAVY 画的是 ds.loc 的单月同比，
         # MBLUE 画的是 ds.fgn 的），实测出来的标准差、符号相反的月份数、最大跳变发生
         # 在哪个月都不一样。2026-09 之前这里只算 `ds.rev` 一条，抬头却说「本图两条线…
@@ -2364,10 +2406,8 @@ def build_exhibits(ds, spec, breaks):
                                 '单看同比挑月份，同一段数据能说成两个方向'
                                 + (f'；水平值就是 {R("rev_bar")} 的柱。'
                                    if 'rev_bar' in EX else '（水平值见核对表）。')))
-                      + _boundary_note(want_from, str(w.months[0]), w.n,
-                                       '单月同比要 12 个月的 lag，两条线在窗口首年都没有分母',
-                                       'lines_endlabels')
-                      + w.why)}
+                      # 截断只讲一遍：以 mrwin 那段为准，只补它没印的几样（见 _boundary_why）。
+                      + _boundary_why(w, want_from, _lag))}
         d['note'] += lay(d)
         push('fx_lines', d, w.months)
 
