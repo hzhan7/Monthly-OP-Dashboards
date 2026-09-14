@@ -8,7 +8,8 @@
 1. 口径：TSMC 的 Forward 块跨 (1)(2) 两节求和；只加 guarantor=TSMC 的行；亚利桑那按脚注认行。
 2. 严格语法：第 3/4 项多一句、换一个工具、换一个担保人名、核准<在外、限额<核准和、两行亚利桑那，
    都必须抛，而不是悄悄少算。第 4 项块主体按清单认（口径坑 k）：清单外而名字像 TSMC 的抛，
-   其它清单外主体不计入但打 ⚠。
+   其它清单外主体不计入但打 ⚠；(1) 节不是恰好 1 块 'TSMC' 的抛。TestBlockEntityList 把 SUBSIDIARY_ENTITIES
+   换成虚构夹具清单、夹具里的子公司块主体也换成虚构名 —— 照口径坑 k 往真清单登记子公司，这里不会变红。
 3. 写入：只追加、照抄行尾、幂等、失步自愈、重述抛异常且零字节写；表头调换 / 断月 / 已有行不同 /
    读后被改都抛；last_month 取两表较小值、fingerprint 随字节变；tmp 只落 cache/tsm_6k/。
 4. 候选定位：第 13 天前只看 reportDate 等于月末的件；第 14 天起放宽且限量；
@@ -413,14 +414,43 @@ class TestStrictGrammar(Base):
 
 
 class TestBlockEntityList(Base):
-    """口径坑 k：第 4 项块主体按清单认 —— 'TSMC' 计入；清单内不计入；清单外像 TSMC 的抛；其它打 ⚠。"""
+    """口径坑 k：第 4 项块主体按清单认 —— 'TSMC' 计入；清单内不计入；清单外像 TSMC 的抛；其它打 ⚠；
+    (1) 节恰好 1 块 'TSMC'，否则抛。
+
+    清单换成虚构夹具 FIX_SUBS（setUp 里 mock，addCleanup 还原），真件片段里的子公司块主体也换成虚构名（fx）：
+    照口径坑 k 往真 SUBSIDIARY_ENTITIES 登记 'TSMC Arizona' / 'WaferTech' 之类确认过的子公司，这里照样绿。
+    真清单里那 4 个名字由 TestParse2026_08 与 TestReplayCached 按真件钉住。"""
+    H1 = '(1) Derivatives not applying hedge accounting. '
     H2 = '(2) Derivatives applying hedge accounting. '
+    FIX = {'TSMC China': 'TSMC Fixture Alpha', 'TSMC Nanjing': 'TSMC Fixture Beta',
+           'Japan Advanced Semiconductor Mfg., Inc.': 'Fixture Gamma Mfg., Inc.',
+           'TSMC Global': 'TSMC Fixture Delta'}
+    FIX_SUBS = frozenset(FIX.values())
+    UNLISTED_TSMC_LIKE = 'TSMC Fixture Omega'          # 清单外、名字像 TSMC → 抛
+    UNLISTED_OTHER = 'Fixture Wafer Co.'               # 清单外、名字不像 TSMC → 不计入、打 ⚠
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(T, 'SUBSIDIARY_ENTITIES', self.FIX_SUBS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fx(self, doc):
+        """第 4 项块标题里的真子公司主体换成虚构名（第 3 项脚注里的公司名不动）。"""
+        for real, fake in self.FIX.items():
+            self.assertLessEqual(doc.count('‧' + real + ' '), 1)
+            doc = doc.replace('‧' + real + ' ', '‧' + fake + ' ')
+        return doc
+
+    def ren(self, head, new):
+        """2023-03（两块母公司的月份）某一节那块 TSMC Forward 改印主体名。"""
+        doc, old = self.fx(DOC_2023_03), head + '‧TSMC Forward '
+        self.assertEqual(doc.count(old), 1)
+        return doc.replace(old, head + f'‧{new} Forward ')
 
     def ren2(self, new):
-        """2023-03 的 (2) 节那块 TSMC Forward 改印主体名（旧写法会按子公司静默不计入）。"""
-        old = self.H2 + '‧TSMC Forward '
-        self.assertEqual(DOC_2023_03.count(old), 1)
-        return DOC_2023_03.replace(old, self.H2 + f'‧{new} Forward ')
+        """(2) 节改名（旧写法会按子公司静默不计入）。"""
+        return self.ren(self.H2, new)
 
     def raises(self, doc, needle):
         with self.assertRaises(T.Tsm6kError) as cm:
@@ -432,9 +462,9 @@ class TestBlockEntityList(Base):
         # 旧写法：名目 114,372,932（少 230,810）照样入库
         self.raises(self.ren2('TSMC Ltd.'), "'TSMC Ltd.'")
 
-    def test_tsmc_arizona_forward(self):
-        s4 = S4_2026_08 + ' ' + blk('TSMC Arizona Forward', '1,000', '10').strip()
-        self.raises(pre('August', 2026) + S3_2026_08 + s4, "'TSMC Arizona'")
+    def test_unlisted_tsmc_like_forward(self):
+        s4 = S4_2026_08 + ' ' + blk(self.UNLISTED_TSMC_LIKE + ' Forward', '1,000', '10').strip()
+        self.raises(self.fx(pre('August', 2026) + S3_2026_08 + s4), repr(self.UNLISTED_TSMC_LIKE))
 
     def test_tsmc_like_names_case_insensitive(self):
         for name in ('tsmc', 'Taiwan Semiconductor Manufacturing Co., Ltd.', 'TAIWAN SEMICONDUCTOR MFG. CO.'):
@@ -442,24 +472,36 @@ class TestBlockEntityList(Base):
                 self.raises(self.ren2(name), repr(name))
 
     def test_unlisted_other_name_warns_not_counted(self):
-        s4 = S4_2026_08 + ' ' + blk('WaferTech Forward', '1,000', '10').strip()
-        p, out = quiet(T.parse, pre('August', 2026) + S3_2026_08 + s4, verbose=False)
+        name = self.UNLISTED_OTHER
+        s4 = S4_2026_08 + ' ' + blk(name + ' Forward', '1,000', '10').strip()
+        p, out = quiet(T.parse, self.fx(pre('August', 2026) + S3_2026_08 + s4), verbose=False)
         d = p['deriv']
         self.assertEqual(d['open_notional_ntd_k'], 192798341)
-        self.assertEqual([(b['kind'], b['counted']) for b in d['blocks'] if b['entity'] == 'WaferTech'],
+        self.assertEqual([(b['kind'], b['counted']) for b in d['blocks'] if b['entity'] == name],
                          [('unlisted', False)])
         warns = [ln for ln in out.splitlines() if '⚠' in ln]
         self.assertEqual(len(warns), 1, 'verbose=False（重述体检 / audit）也必须看得见')
-        self.assertIn("'WaferTech'", warns[0])
+        self.assertIn(repr(name), warns[0])
 
     def test_known_subsidiaries_one_info_line(self):
-        out = quiet(T.parse, DOC_2026_08)[1]
+        doc = self.fx(DOC_2026_08)
+        out = quiet(T.parse, doc)[1]
         lines = [ln for ln in out.splitlines() if '按清单不计入' in ln]
         self.assertEqual(len(lines), 1)
-        for e in ('TSMC China', 'TSMC Nanjing', 'Japan Advanced Semiconductor Mfg., Inc.', 'TSMC Global'):
+        for e in sorted(self.FIX_SUBS):
             self.assertIn(e, lines[0])
         self.assertNotIn('⚠', out)
-        self.assertEqual(quiet(T.parse, DOC_2026_08, verbose=False)[1], '')
+        self.assertEqual(quiet(T.parse, doc, verbose=False)[1], '')
+
+    def test_section_1_parent_renamed_non_tsmc_name(self):
+        # 两块母公司的月份：没有 (1) 节不变式时 'The Company' 只打 ⚠、按子公司不计入，名目写成 230,810（真值 114,603,742）
+        self.raises(self.ren(self.H1, 'The Company'), '(1) 节主体恰好是 TSMC 的块有 0 个')
+
+    def test_section_1_two_parent_blocks(self):
+        doc, old = self.fx(DOC_2026_08), self.H1 + '‧TSMC Forward '
+        self.assertEqual(doc.count(old), 1)
+        doc = doc.replace(old, self.H1 + blk('TSMC Forward', '1,000', '10') + '‧TSMC Forward ')
+        self.raises(doc, '(1) 节主体恰好是 TSMC 的块有 2 个')
 
 
 class TestOldFormatRejected(Base):
@@ -546,13 +588,18 @@ class TestCandidates(Base):
                 self.assertIn('6-K/A 优先', out)
 
     def test_widened_6ka_still_read_after_hit(self):
-        # reportDate 没沿用原件的更正件落在第二段：已认到原件也要读它；普通件（两段都有）照旧不下
+        # reportDate 没沿用原件的更正件落在第二段：已认到原件也要读它；普通件（两段都有）照旧不下。
+        # early 是申报日早于 6-K/A 的第二段普通件（真实顺序：普通件在前、更正件在后）——
+        # 把 _scan 里第二段普通件的 continue 改成 break，就读不到后面的 6-K/A、静默选中未更正的原件，这条必须红。
         ka = row('2026-08-20', '0001046179-26-000540', 'tsm-20260820x6ka.htm', 101000, '2026-08-20', form='6-K/A')
+        early = row('2026-08-19', '0001046179-26-000538', 'tsm-misc20260819.htm', 30000, '2026-08-19')
         plain = row('2026-08-21', '0001046179-26-000542', 'tsm-misc20260821.htm', 30000, '2026-08-21')
         st = Stub({url_of(ka): html(synth('2026-07,230720000,-2645507.0', GUA_ROWS[2])),
-                   url_of(plain): filler(30000)})
-        (r, p), _ = quiet(T.find, '2026-07', self.env.cache, TODAY, st,
-                          subs=[REV['2026-07'], MONTHEND_07, ka, plain])
+                   url_of(early): filler(30000), url_of(plain): filler(30000)})
+        subs = [REV['2026-07'], MONTHEND_07, early, ka, plain]
+        self.assertEqual([(r['seg'], r['acc']) for r in T.candidates('2026-07', subs, TODAY)][2:],
+                         [(2, early['acc']), (2, ka['acc']), (2, plain['acc'])])
+        (r, p), _ = quiet(T.find, '2026-07', self.env.cache, TODAY, st, subs=subs)
         self.assertEqual((r['form'], r['acc']), ('6-K/A', ka['acc']))
         self.assertEqual(p['deriv']['open_notional_ntd_k'], 230720000)
         self.assertEqual(st.asked, [url_of(ka)])

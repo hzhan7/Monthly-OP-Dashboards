@@ -63,6 +63,7 @@ r"""台积电（2330.TW / NYSE: TSM）月报 6-K 第 3/4 项 —— 背書保證
                           **块主体按清单认**（口径坑 k）：主体恰好是 'TSMC' 才计入；SUBSIDIARY_ENTITIES
                           里的已知子公司块不计入、打一行；不在清单里、名字（大小写不敏感）含 tsmc 或
                           taiwan semiconductor 的主体一律抛，交人判定；其余清单外主体不计入、打一行 ⚠。
+                          (1) 节必须恰好 1 块主体为 'TSMC'，否则抛（结构不变式，同见口径坑 k）。
 · open_fair_value_ntd_k = 同一批块的 Mark to Market of Outstanding Contracts 之和，
                           括号为负、'-' 为 0，落 '%.1f'。
 · approved_total_k      = 第 3 项 guarantor=='TSMC' 各行 Amount approved by the Board of Directors
@@ -112,8 +113,11 @@ i. **6-K/A 与重述。** submissions 近 1000 份申报里 6-K/A 只有 6 份�
    reportDate 沿用原件（两份都是 2020-04-10）。那份压平后更正格是并排两个数 "9,957,703 9,755,101"，
    同样的印法落在现行版式里会被严格语法拒绝（抛，交人）。
    照此前例，今天的更正件 reportDate 会是数据月月末、落在候选第一段：已认到原件之后 _scan 仍下载未缓存的
-   6-K/A；reportDate 没沿用原件的落在第二段，已认到原件时第二段也只再看 6-K/A（2026-09-14 实拉 submissions：
-   2026-05..08 的候选窗口里没有 6-K/A，常规月份不多一个请求）。同一个月找到多份月报时取 6-K/A、
+   6-K/A；reportDate 没沿用原件的，**前提是更正件 filingDate 在月末 +45 天内（candidates 第二段上界）**，
+   才落在第二段，已认到原件时第二段也只再看 6-K/A（2026-09-14 实拉 submissions：
+   2026-05..08 的候选窗口里没有 6-K/A，常规月份不多一个请求）。超窗的更正件（reportDate 没沿用原件、
+   filingDate 晚于月末 +45 天）不在该月候选里，会被丢弃 —— 即便被后面某个月的第二段下载到，也因 marker
+   月份不符而跳过 —— 重述体检照印「逐格相等」，这一处没有护栏。同一个月找到多份月报时取 6-K/A、
    再取 filingDate 最新的。每次 update() 都拿最近 DRIFT_BACK 个月的月报与库内逐格比，不一致就抛、
    列出 月/列/库内/官方/accession，不改写（同 fetch/umc.py 口径坑 7）；更正的若只是 6 格之外的数
    （如 2020 那次的子公司已沖銷名目），体检照常通过。
@@ -128,6 +132,10 @@ k. **第 4 项块主体按清单认，不是「非 'TSMC' 即子公司」。** �
    后 4 个就是 SUBSIDIARY_ENTITIES。清单外的主体：名字含 tsmc / taiwan semiconductor（大小写不敏感）→ 抛
    （分不清是母公司改了印法还是新的 TSMC 子公司，交人）；其它名字 → 不计入、打一行 ⚠（新的非 TSMC 命名
    子公司不至于每月 FAIL，但日志里看得见；确认是子公司后加进清单）。
+   **结构不变式：(1) 节恰好 1 个主体为 'TSMC' 的块，否则抛**（同一批 42 份逐份确认 42/42；(2) 节 15 份 1 块、
+   27 份 0 块，所以 (2) 节不设）。它堵的是上面那条 ⚠ 路：两块母公司的月份里，(1) 节母公司块改印成清单外的
+   非 TSMC 名字（如 'The Company'）时，没有这条就只打一行 ⚠（不进末行）、按子公司不计入，静默少算 ——
+   2023-03 会写成 230810，真值 114603742。**堵不住的：(2) 节同样改名**，仍只打 ⚠、名目少算一块。
 
 ────────────────────────────────────────────────────────────────────────
 6) 对账记录与重放命令
@@ -393,6 +401,9 @@ _INSTR_WORD = re.compile(
     r'exchange|contracts?|commodity|commodities|collars?|fx|hedges?|hedging|derivatives?)\b')
 
 # 第 4 项已知的子公司块主体（口径坑 k：2023-03..2026-08 共 42 份月报真件普查）—— 不计入、打一行。
+# 登记本表不会让测试变红：fetch/test_tsm_6k.py 的 TestBlockEntityList 用 mock 换成虚构夹具清单，
+# 照口径坑 k 登记确认过的子公司（如 'TSMC Arizona'、'WaferTech'）直接加一行即可。
+# 只有删掉下面 4 个真件里出现过的名字才会红（TestParse2026_08 / TestReplayCached 按真件钉住）。
 SUBSIDIARY_ENTITIES = frozenset({
     'TSMC China',
     'TSMC Nanjing',
@@ -538,11 +549,19 @@ def _parse_s3(month, s3, verbose=True):
 
 def _blocks(s4, pos, month, section):
     """逐块消费第 4 项的一节。每块带 kind（口径坑 k）：
-    parent = 主体恰好是 'TSMC'（计入）；known = SUBSIDIARY_ENTITIES；unlisted = 清单外且名字不像 TSMC。"""
+    parent = 主体恰好是 'TSMC'（计入）；known = SUBSIDIARY_ENTITIES；unlisted = 清单外且名字不像 TSMC。
+    结构不变式（口径坑 k）：(1) 节恰好 1 个 parent 块，否则抛；(2) 节不设。"""
     out = []
     while True:
         m = _BLK.match(s4, pos)
         if not m:
+            n = sum(b['kind'] == 'parent' for b in out)
+            if section == 1 and n != 1:
+                raise Tsm6kError(
+                    f'{month} 第 4 项 (1) 节主体恰好是 TSMC 的块有 {n} 个（应恰好 1 个，42/42 份真件如此）—— '
+                    '母公司块可能改印成了清单外的名字（按子公司不计入就会少算名目），也可能版式变了；'
+                    f'交人判定口径（口径坑 k），本次不写入。本节块主体 {[b["entity"] for b in out]}，'
+                    f'节后文字 {s4[pos:pos + 80]!r}')
             return out, pos
         entity, _, instrument = m['head'].strip().rpartition(' ')
         if not entity:
