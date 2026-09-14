@@ -463,8 +463,16 @@ for p in POOLS:
         p.idx = p.idx[p.idx <= LATEST]
         p.pool_yoy = p.pool_yoy.reindex(p.idx)
 CUR, PRV, YAG = LATEST, LATEST - 1, LATEST - 12
-# 各家自身的最新月（抬头与口径说明里要写出来，才看得出「有没有人跑在前面」）
-AHEAD = sorted({(k, m) for (_t, k), m in latest_each.items() if m > LATEST})
+# 各家自身的最新月（口径说明「发布门槛」那条要写出来，才看得出「有没有人跑在前面」）。
+# 按池分开记：同一个 key 可同时是两个池的成员（miax 期权取 IR 报表列、现货取 API 列），
+# 两条腿到货日不同；按 key 去重会让「现货腿已到新月」盖住「期权腿还在定门槛」
+# （2026-09 实测：miax 被印成「已到 Aug-26」，而整页正是被它的期权腿钉在 Jul-26）。
+# 页面上印「池名的 显示名」，不印内部 key（旧文字印出过「cons（已到 …）」「ind（已到 …）」）。
+_MEM_DISP = {('opt', m.key): m.disp for m in OPT_MEMBERS + [OPT_DENOM]}
+_MEM_DISP.update({('cash', m.key): m.disp for m in CASH_MEMBERS + [CASH_DENOM]})
+_POOL_ZH = {p.pid: p.zh for p in POOLS}
+AHEAD = sorted((t, k, m) for (t, k), m in latest_each.items() if m > LATEST)
+GATING = sorted((t, k) for (t, k), m in latest_each.items() if m == LATEST)
 
 
 # ══════════ 3b. 长历史分子 —— 起止/Δ/桥的 4 年窗口与季度份额图共用 ══════════
@@ -482,8 +490,9 @@ AHEAD = sorted({(k, m) for (_t, k), m in latest_each.items() if m > LATEST})
 # MIAX 期权的深历史来自 miaxglobal.com 的 indsum API 四所分列（2015-04 起，
 # docs/verify/miax.md 实测 136 个月无断档）。该文档同时给了口径顺序：
 # **`adv_multilist_options_kcontracts`（IR 报表）为准，API 只用于 2025-01 之前回补**
-# —— 因为 API 合计比报表稳定低 0.26%–0.32%。本文件照此拼接，并把实测落差写进图注；
-# 拼接点落在两种口径都有的 19 个月里，落差换算成份额只有几个 bp（下面由代码算出）。
+# —— API 合计比报表偏低（至 2026-08 一律如此），但幅度不稳（2026-01~07 约 0.24%-0.33%，
+# 2026-08 一个月 2.18%），区间不在注释里写，见下面现算的 MIAX_SPL_* / MIAX_SEAM_*。
+# 本文件照此拼接，并把实测落差写进图注；重叠月数与各种落差都由下面的代码算出，这里不写死。
 MIAX_OPT_API_COLS = ['adv_miax_options_api_kcontracts', 'adv_pearl_options_api_kcontracts',
                      'adv_emerald_options_api_kcontracts', 'adv_sapphire_options_api_kcontracts']
 for _c in MIAX_OPT_API_COLS:
@@ -515,6 +524,19 @@ MIAX_SPL_N = int(len(_ov))
 MIAX_SPL_REL = float((_ov['api'] / _ov['ir'] - 1).abs().max()) * 100 if MIAX_SPL_N else np.nan
 MIAX_SPL_BP = (float(((_ov['ir'] - _ov['api']) / LONG_DEN['opt'].reindex(_ov.index) * 1e4)
                      .abs().max()) if MIAX_SPL_N else np.nan)
+# 拼接点（IR 报表第一个月）那一格的落差。上面的 _REL / _BP 是全部重叠月的最大值，
+# 只配当「期初走 API 会偏多少」的上界（4 年同月窗口的期初那个月就在 API 段）。
+# 两者本来就不在同一格（回补 Aug-26 之前：最大 Feb-25 约 12bp、拼接点 Jan-25 约 5bp）；
+# 2026-08 起差到 8 倍：最大值那一格跳到 Aug-26（约 40bp；四所合计/报表 0.978），拼接点那一格没动。
+# ⚠ 图上真正看得见的那一级台阶**不是**这一格：本页唯一画出拼接段的时间序列图是季度长历史图，
+#   台阶由接缝季决定，见 QSHARE 下面的 MIAX_SEAM_Q_*。
+# MIAX_SPL_WORST 按份额落差（bp）取最大那一格；至 2026-08 它与相对差最大那一格恰好同月，
+# 但两者不保证永远重合，所以页面文字把它挂在 bp 上限旁边。
+_ov_bp = ((_ov['ir'] - _ov['api']) / LONG_DEN['opt'].reindex(_ov.index) * 1e4).abs().dropna()
+MIAX_SEAM_AT = _ov_bp.index[0] if len(_ov_bp) else None
+MIAX_SEAM_BP = float(_ov_bp.iloc[0]) if len(_ov_bp) else np.nan
+MIAX_SPL_WORST = _ov_bp.idxmax() if len(_ov_bp) else None
+MIAX_SPL_ALL_LOW = bool(MIAX_SPL_N) and bool((_ov['api'] < _ov['ir']).all())
 
 
 # ────────────────────────── 4. 四条自校验锚点 ──────────────────────────
@@ -1405,6 +1427,16 @@ QSHARE = {(p.pid, m.key): qshare(LONG_NUM[(p.pid, m.key)],
                                  LONG_DEN[p.pid]).reindex(QIDX[p.pid])
           for p in POOLS for m in p.members}
 
+# MIAX 拼接的接缝季。季度长历史图（§opt_q§）是本页唯一画出 MIAX 拼接段的时间序列图 ——
+# 月度长历史图（§opt_long§）用的是各家自己的月度披露（MIAX 走 IR 报表列、不拼接，
+# 不够 60 个月就不画）。季度份额是三个月量加权，所以这张图上那一级台阶由接缝季
+# （IR 报表第一个齐三个月的季度）「按报表算 − 按 API 算」决定，不是拼接点那一个月
+# （2026-09 实测：Jan-25 那一格约 5bp，2025Q1 这一季约 7bp，同季的 Feb-25 那一格约 12bp）。
+_q_seam = ((qshare(_mx.series(), LONG_DEN['opt'])
+            - qshare(MIAX_OPT_API, LONG_DEN['opt'])) * 100.0).abs().dropna()
+MIAX_SEAM_Q_AT = _q_seam.index[0] if len(_q_seam) else None
+MIAX_SEAM_Q_BP = float(_q_seam.iloc[0]) if len(_q_seam) else np.nan
+
 # 两处**形式数（pro-forma）断点**，都是仓内已核过的事实，不是本文件的推断：
 #   · docs/verify/verify_ice.md §5.6：ICE 2013-11 才完成 NYSE Euronext 收购，
 #     而它的月度表把 NYSE 的 ADV「for comparison purposes」回填到了全部期间 ——
@@ -1549,8 +1581,11 @@ def quarterly_share_lines(pool):
                     '2025-01 起改用 IR 报表口径 —— 该文档定的口径顺序就是「报表为准、'
                     'API 只做回补」。<b>本文件自己量了这道接缝</b>：两种口径在 '
                     f'{MIAX_SPL_N} 个重叠月里相对差 ≤{MIAX_SPL_REL:.2f}%，'
-                    f'换算成份额 ≤{MIAX_SPL_BP:.1f}bp（{MIAX_SPL_BP / 100:.3f}pp）—— '
-                    '在这张纵轴跨 0–35% 的图上落在一个像素以内，故拼接处不画断点线；'
+                    f'换算成份额 ≤{MIAX_SPL_BP:.1f}bp（最大那一格在 {mlab(MIAX_SPL_WORST)}），'
+                    f'拼接点 {mlab(MIAX_SEAM_AT)} 那一格是 {MIAX_SEAM_BP:.1f}bp。'
+                    f'本图按季量加权，台阶落在接缝季 {MIAX_SEAM_Q_AT}：这一季按报表算与按 API 算差 '
+                    f'{MIAX_SEAM_Q_BP:.1f}bp（{MIAX_SEAM_Q_BP / 100:.3f}pp），'
+                    '图上的台阶只由这一季决定，故拼接处不画断点线；'
                     f'{mlab(LATEST)} 那一格与 Exhibit 1 汇总表完全同源，读数一致。'
                     if pool.pid == 'opt' else '')
                  + '<b>两条红色竖虚线是形式数断点</b>（左侧与右侧不可比）：'
@@ -1690,6 +1725,12 @@ _ndaq_txt = ('、'.join(f'{q} 官方 {o:.1f}% vs 自算 {c:.1f}%' for q, o, c, _
 
 # MIAX 在 4 年期权窗口里的份额变动 —— 口径接缝的影响要挂在这个数上说，所以先算出来
 _MIAX_WIN_D = float(WIN_OPT.df['miax_s'].iloc[-1] - WIN_OPT.df['miax_s'].iloc[0])
+# 这个误差会不会把涨跌方向翻过来：API 一律偏低时真值落在 [D − 上界, D]，
+# 互有高低时落在 [D − 上界, D + 上界]；区间两端都与 D 同号才印「结论不变」。
+_MIAX_WIN_ERR = MIAX_SPL_BP / 100
+_MIAX_WIN_SAME_SIGN = bool(
+    np.sign(_MIAX_WIN_D - _MIAX_WIN_ERR) == np.sign(_MIAX_WIN_D)
+    and (MIAX_SPL_ALL_LOW or np.sign(_MIAX_WIN_D + _MIAX_WIN_ERR) == np.sign(_MIAX_WIN_D)))
 
 # ── 断点线到底画了几条：现扫 ex，不靠记忆断言 ────────────────────────────────
 # ⚠ 原文这条口径说明的开头是「<b>没有口径断点，全页也确实一条断点线都没画。</b>……
@@ -1817,7 +1858,11 @@ NOTES = [
     #   读者拿到的是台账实测的发布日与下面那句 AHEAD 判定，一个真信息都不少。
     f'<b>发布门槛：共同最新月 {mlab(LATEST)}。</b>{mlab(LATEST)} 那一期，{PUB_TXT}。'
     + ('本期确有成员跑在前面，其更新月份<b>不在本页任何一张图、任何一行表里</b>：'
-       + '、'.join(f'{k}（已到 {mlab(m)}）' for k, m in AHEAD) + '。'
+       + '、'.join(f'{_POOL_ZH[t]}的 {_MEM_DISP[(t, k)]}（已到 {mlab(m)}）' for t, k, m in AHEAD)
+       + '。'
+       + ('定住共同最新月的是 '
+          + '、'.join(f'{_POOL_ZH[t]}的 {_MEM_DISP[(t, k)]}' for t, k in GATING) + '。'
+          if GATING else '')
        if AHEAD else '本期四家的最新月一致，无人跑在前面。')
     + '<b>本页有两套窗口，别把它们混着读。</b>'
       '①<b>共同窗口</b>（要求成员全齐，用于月度堆叠带与换算链自检）：'
@@ -1866,7 +1911,8 @@ NOTES = [
        '<code>docs/verify/miax.md</code> 实测 136 个月无断档），2025-01 起改用 IR 报表口径 '
        '—— 该文档定的口径顺序就是「报表为准、API 只做回补」。'
        f'接缝由本文件实测：{MIAX_SPL_N} 个重叠月里相对差 ≤{MIAX_SPL_REL:.2f}%，'
-       f'换算成份额 ≤{MIAX_SPL_BP:.1f}bp，故未画断点线。'
+       f'换算成份额 ≤{MIAX_SPL_BP:.1f}bp；拼接点 {mlab(MIAX_SEAM_AT)} 那一格 {MIAX_SEAM_BP:.1f}bp，'
+       f'季度图上的接缝季 {MIAX_SEAM_Q_AT} 量加权后 {MIAX_SEAM_Q_BP:.1f}bp，故未画断点线。'
        '<b>两张图上各有两条红色形式数断点线</b>：'
        'ICE 2013-11 才完成 NYSE Euronext 收购，其月度表把 NYSE 数据「for comparison '
        'purposes」回填到了全部期间（docs/verify/verify_ice.md §5.6），'
@@ -1955,17 +2001,25 @@ NOTES = [
        + '（形式数断点，来龙去脉见上面「季度长历史份额」那一条）。'
        if _BRK else '本轮 payload 里没有任何 <code>break_at</code>。')
     + f'<b>期权池的月度共同窗口</b>（{len(POOL_OPT.idx)} 个月）只用 MIAX 的 IR 报表口径，不拼接。'
-    f'但 <b>{WIN_YEARS} 年同月窗口与两张长历史图必须拼接</b>：'
+    f'但 <b>{WIN_YEARS} 年同月窗口与季度长历史图（§opt_q§）必须拼接</b>：'
     f'{mlab(WIN_OPT.start)} 那一头 IR 报表根本不存在，只有官网 API。'
     '两个源的落差是本文件实测的，不是引用：'
-    f'{MIAX_SPL_N} 个重叠月里 API 比报表稳定低 ≤{MIAX_SPL_REL:.2f}%，'
-    f'换算成份额 ≤<b>{MIAX_SPL_BP:.1f}bp</b>（{MIAX_SPL_BP / 100:.3f}pp）。'
-    f'<b>方向是已知的，不是不确定性</b>：期初走 API（偏低）、期末走报表，'
-    f'所以 §opt_se§ 里 MIAX 那段 {WIN_YEARS} 年涨幅'
-    f'（{_MIAX_WIN_D:+.2f}pp）被<b>高估</b>至多 {MIAX_SPL_BP / 100:.2f}pp，'
-    f'真值不低于 {_MIAX_WIN_D - MIAX_SPL_BP / 100:+.2f}pp —— 结论不变，但读者有权知道。'
-    f'落差小于图上标签的分辨率，故拼接处不画断点线。'
-    '现货池的 MIAX 只用官网 API 一个源（2020-12 起连续），'
+    f'{MIAX_SPL_N} 个重叠月里 API 比报表{"一律偏低" if MIAX_SPL_ALL_LOW else "互有高低"}，'
+    f'相对差最大 {MIAX_SPL_REL:.2f}%，换算成份额 ≤<b>{MIAX_SPL_BP:.1f}bp</b>'
+    f'（{MIAX_SPL_BP / 100:.3f}pp，最大那一格在 {mlab(MIAX_SPL_WORST)}）。'
+    + (f'<b>方向是已知的，不是不确定性</b>：期初走 API（偏低）、期末走报表，'
+       f'所以 §opt_se§ 里 MIAX 那段 {WIN_YEARS} 年涨幅'
+       f'（{_MIAX_WIN_D:+.2f}pp）被<b>高估</b>至多 {_MIAX_WIN_ERR:.2f}pp，'
+       f'真值不低于 {_MIAX_WIN_D - _MIAX_WIN_ERR:+.2f}pp —— '
+       if MIAX_SPL_ALL_LOW else
+       f'§opt_se§ 里 MIAX 那段 {WIN_YEARS} 年涨幅（{_MIAX_WIN_D:+.2f}pp）'
+       f'的误差在 ±{_MIAX_WIN_ERR:.2f}pp 以内 —— ')
+    + ('结论不变，但读者有权知道。' if _MIAX_WIN_SAME_SIGN
+       else '这个误差足以改变涨跌方向，读数只作量级参考。')
+    + f'拼接点 {mlab(MIAX_SEAM_AT)} 那一格落差 {MIAX_SEAM_BP:.1f}bp，'
+      f'季度长历史图上的接缝季 {MIAX_SEAM_Q_AT} 量加权后 {MIAX_SEAM_Q_BP:.1f}bp，'
+      '故拼接处不画断点线。'
+      '现货池的 MIAX 只用官网 API 一个源（2020-12 起连续），'
     f'与 IR 报表那列整数在 {A_MIAX["api_n"]} 个重叠月里最大差 '
     f'{A_MIAX["api_maxabs"]:.2f} 百万股/日 —— 纯粹是报表取整，不是口径差。'
     'Nasdaq 现货则做了一次<b>同口径拼接</b>：<code>series/ndaq.csv</code> 里那一列'
@@ -2279,7 +2333,9 @@ def main():
     print(f'换算链自检：期权池 指数差 {OPT_DIDX:.2e} 份额差 {OPT_DSHARE:.2e}pp；'
           f'现货池 指数差 {CASH_DIDX:.2e} 份额差 {CASH_DSHARE:.2e}pp')
     print(f'MIAX 期权源拼接：API(2015-04起) → IR 报表(2025-01起)，'
-          f'{MIAX_SPL_N} 个重叠月相对差 ≤{MIAX_SPL_REL:.2f}%（份额 ≤{MIAX_SPL_BP:.1f}bp）')
+          f'{MIAX_SPL_N} 个重叠月相对差 ≤{MIAX_SPL_REL:.2f}%（份额 ≤{MIAX_SPL_BP:.1f}bp）'
+          f'，拼接点 {MIAX_SEAM_AT} {MIAX_SEAM_BP:.1f}bp、最大在 {MIAX_SPL_WORST}'
+          f'、接缝季 {MIAX_SEAM_Q_AT} {MIAX_SEAM_Q_BP:.1f}bp')
     for p in POOLS:
         q = QIDX[p.pid]
         if not len(q):
