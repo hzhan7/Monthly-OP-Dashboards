@@ -4247,7 +4247,8 @@ class Page:
             bits.append(f'左端起于 {mlab(win[0])}：{"、".join(starts)} 这个月才有第一个值')
         else:
             bits.append(f'左端起于 {mlab(win[0])}：再往前，合计与各分项并非月月都有值，'
-                        f'而 100% 堆叠是平滑图型、缺一格就把柱画塌，只能截不能补')
+                        '而 100% 堆叠缺一格时引擎不报错，只把那一段按 0 高画、'
+                        '柱子凭空矮一截，只能截不能补')
         return '<b>窗口口径</b>：' + '；'.join(bits) + '。'
 
     def total_drawn_wider(self, m):

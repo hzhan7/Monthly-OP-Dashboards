@@ -763,8 +763,9 @@ SPEC = {
     'groups': [
         # ── 四所 + 行业分母，API 口径，本页唯一的长历史。
         #    Pearl / Emerald / Sapphire 三列在各自上线前是空值 ——
-        #    <b>平滑类图型（gs_line / gs_line_avg / lines_endlabels / stacked_dual）不能吃这三列</b>，
-        #    引擎会把 null 当 0 画出塌到零的假线，gs_line 还会 null.toFixed() 抛异常。
+        #    <b>DENSE 图型（gs_line / gs_line_avg / lines_endlabels / stacked_dual）不能吃这三列</b>：
+        #    前三种是平滑线，引擎会把 null 当 0 画出塌到零的假线，gs_line 还会 null.toFixed() 抛异常；
+        #    stacked_dual 不是平滑图型，但缺值的段按 0 高画、柱子矮一截，同样不报错。
         #    这一组只能用 lines（唯一能安全吃缺口的多线图型）。
         {'zh': '四家期权所 ADV（indsum API 口径，2015-04 起）', 'cols': [
             {'col': 'adv_miax_options_api_kcontracts', 'zh': 'MIAX（2015-04 起）',
@@ -1074,9 +1075,10 @@ SPEC = {
         '任何 assert == 0 的校验一旦回补到 2019~2024 就会当场炸。',
 
         '<b>Pearl / Emerald / Sapphire 三列在各自上线前是空值</b>（2017-02 / 2019-03 / 2024-08）。'
-        '平滑类图型 gs_line / gs_line_avg / lines_endlabels / stacked_dual 不能吃 null —— '
-        '引擎会把 null 当 0 参与 Catmull-Rom 画出塌到零的假线，gs_line 还会 null.toFixed() 抛 TypeError '
-        '导致该卡片之后的 exhibit 全不渲染。这一组只能用 lines。',
+        'gs_line / gs_line_avg / lines_endlabels / stacked_dual 这四种图型不能吃 null。'
+        '前三种是平滑线，引擎会把 null 当 0 参与 Catmull-Rom 画出塌到零的假线，gs_line 还会 null.toFixed() 抛 TypeError '
+        '导致该卡片之后的 exhibit 全不渲染；stacked_dual 是堆叠柱，缺值的段按 0 高画，'
+        '柱子矮一截、看着像真值，也不报错。这一组只能用 lines。',
 
         '<b>share_multilist_options_pct 与 share_equities_pct 在 CSV 里是百分数（17.1 = 17.1%）</b>，'
         '所以本页用 pct1 直出。注意这与 series/ice.csv、series/ndaq.csv 的 share_* 列相反 —— '

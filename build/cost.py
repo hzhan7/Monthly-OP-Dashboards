@@ -1613,8 +1613,8 @@ def main():
     _SEG_X = fq_xlabels(_sq['fq'], 'Exhibit 7')
     _seg_vals = {nm: L(_sh[nm]) for nm, _, _ in _SEG_REG}
     # ── 断言 4：稠密（stacked_dual ∈ verify_pages.DENSE / mrwin.DENSE）──────────
-    # 平滑图型里一个 null 就是 ERROR：引擎把 null 交给 Catmull-Rom 会画出一条塌到零的
-    # 假线，逐点标数值时还会抛异常。这里显式验，而不是指望 CSV 永远是满的。
+    # DENSE 图型里一个 null 就是 ERROR。stacked_dual 不是平滑图型、也不抛异常：null 段被引擎
+    # 按 0 高画，柱矮一截却看着像真值。这里显式验，而不是指望 CSV 永远是满的。
     _nul = {nm: [i for i, v in enumerate(a) if v is None] for nm, a in _seg_vals.items()}
     if any(_nul.values()) or any(len(a) != len(_SEG_X) for a in _seg_vals.values()):
         raise SystemExit(

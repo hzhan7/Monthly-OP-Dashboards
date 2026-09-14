@@ -51,7 +51,7 @@ robinhood-markets-q1-2023-supplemental-information.xlsx，两页都从 **2021Q1*
   2021Q1~2022Q4 那 8 期 ① 根本没有这一行，留空。
 
 留空的后果是显式的、可被引擎处理的：build/hood.py 的 _rate() 见到成交量非有限或 ≤ 0
-就返回 NaN，费率图按 null 断笔；Exhibit 17（stacked_dual，平滑图型不吃 null）会由
+就返回 NaN，费率图按 null 断笔；Exhibit 17（stacked_dual，DENSE 图型不许有 null）会由
 mrwin.resolve() 自动把左端截在「四段都有值」的 2023Q2，并自己写出那句为什么。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1020,16 +1020,16 @@ ex.append({
                                 W25)),
 })
 
-# stacked_dual 属 mrwin.DENSE：右轴那条占比线走 Catmull-Rom，窗口内出现一个 null 就会
-# 被当 0 插值（还不报错）。六个品种列与总 ADV 在 load() 里已经逐列校验过「无缺值」，
-# 2016-01 起的 127 期因此是满的 —— 下面的断言把这件事钉死，日后源文件缺一个月要在
-# 构建期响，而不是在页面上画出一条塌到零的假线。
+# stacked_dual 属 mrwin.DENSE，窗口内出现一个 null 都不报错、只会画错：堆叠段为 null 会按
+# 0 高画、那根柱矮一截；右轴那条占比线走 Catmull-Rom，null 被当 0 插值。六个品种列与总 ADV
+# 在 load() 里已经逐列校验过「无缺值」，2016-01 起的 127 期因此是满的 —— 下面的断言把这件事
+# 钉死，日后源文件缺一个月要在构建期响，而不是在页面上画出一根矮一截的柱或一条塌到零的假线。
 _stack = {c: win(c, WIN_LINE) for c, _, _ in CLS}
 _share = (win('adv_rates_kcontracts', WIN_LINE) + win('adv_equity_kcontracts', WIN_LINE)) \
     / win('adv_total_kcontracts', WIN_LINE) * 100
 _dense_holes = [nm for c, nm, _ in CLS if np.isnan(_stack[c]).any()]
 if _dense_holes or np.isnan(_share).any():
-    raise SystemExit(f'Exhibit {EX_MIX} 是平滑图型，窗口内不许有缺值：{_dense_holes or "占比线"}')
+    raise SystemExit(f'Exhibit {EX_MIX} 是 stacked_dual（DENSE 图型），窗口内不许有缺值：{_dense_holes or "占比线"}')
 # 右轴上界取 10 的整数倍：占比线要压在堆叠柱之上，太高会掉进柱子里
 _ymax = float(np.ceil(np.nanmax(_share) / 10.0) * 10)
 if np.nanmax(_share) / _ymax > 0.995:
@@ -1208,12 +1208,13 @@ _rm_leg = {k: (df[c] * days / 1000.0 * to_monthly(RPC[k], df.index)).reindex(W25
            for c, _, _, k, _, _ in CLS_REV}                       # $mn / 月
 _rm_sum = np.sum(list(_rm_leg.values()), axis=0)
 
-# ── 护栏①：窗口内六条腿都不许缺值。stacked_dual 属 mrwin.DENSE，一个 null 就让那根柱
-#    整根不画，而引擎不报错。六条 RPC 自 2013-Q2 起、图窗自 WIN_FROM 起，中间只隔十几个
-#    季度 —— 窗口一旦再往左放宽就会画出塌到零的假柱，所以这道断言必须在。
+# ── 护栏①：窗口内六条腿都不许缺值。stacked_dual 属 mrwin.DENSE：段为 null 时引擎把那一段
+#    按 0 高画、柱照画只是矮一截，而且不报错；本图按六腿合计自归一，缺一条腿连分母一起没了，
+#    那一期六段全是 null，就是一根 0 高的空柱。六条 RPC 自 2013-Q2 起、图窗自 WIN_FROM 起，
+#    中间只隔十几个季度 —— 窗口一旦再往左放宽就会画出塌到零的假柱，所以这道断言必须在。
 _rm_holes = [nm for (_, nm, _, k, _, _) in CLS_REV if np.isnan(_rm_leg[k]).any()]
 if _rm_holes or np.isnan(_rm_sum).any():
-    raise SystemExit(f'Exhibit {EX_REVMIX} 是平滑图型，窗口内不许有缺值：'
+    raise SystemExit(f'Exhibit {EX_REVMIX} 是 stacked_dual（DENSE 图型），窗口内不许有缺值：'
                      f'{_rm_holes or "六腿合计"}')
 # ── 护栏②：分母必须为正（占比无定义时本页的做法是不出图，不补零、不补假值）。
 #    这道必须排在算占比**之前** —— 事后再判，numpy 已经先写出 inf/NaN 了。

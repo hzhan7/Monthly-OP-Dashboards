@@ -1137,13 +1137,28 @@ def _implied_line_note(ds, spec, R):
 
 
 def _boundary_note(want_from, got_from, n, lag_desc, kind):
-    """「本图为什么不是从 x_from 起」这句话 —— 数全部现算，一个都不写死。"""
+    """「本图为什么不是从 x_from 起」这句话 —— 数全部现算，一个都不写死。
+
+    「为什么只能截」按 `kind` 分两套措辞（与 `mrwin.resolve()` 同一个口径，
+    docs/CHART_KINDS.md §1.2）：`gs_line` / `lines_endlabels` 是平滑线；`stacked_dual`
+    虽然也在 DENSE 里，却**不是**平滑图型、缺值也不抛异常 —— 段为 null 时
+    `lo + null === lo`，那一段画成 0 高、整根柱照画只是矮一截。把平滑线那段话套给它，
+    就是在图注里说假话。底座的 `mix` 不给右轴线，所以那一支只讲段。
+    """
     if str(want_from) == str(got_from):
         return ''
     gap = (pd.Period(str(got_from), freq='M') - pd.Period(str(want_from), freq='M')).n
-    return (f'<b>本图从 {mlab(pd.Period(str(got_from), freq="M"))} 起，'
-            f'比页面窗口起点 {want_from} 晚 {gap} 个月</b>：{lag_desc}。'
-            f'<code>{kind}</code> 在引擎里走 Catmull-Rom 平滑曲线，'
+    head = (f'<b>本图从 {mlab(pd.Period(str(got_from), freq="M"))} 起，'
+            f'比页面窗口起点 {want_from} 晚 {gap} 个月</b>：{lag_desc}。')
+    if kind == 'stacked_dual':
+        return (head
+                + f'<code>{kind}</code> 是堆叠柱，<b>缺值时引擎不报错、只会画错</b>：'
+                '某一段为 null，那一段按 0 高画，后面的段从同一条基线接着堆，'
+                '柱照画、只是矮一截（各段都缺就矮到 0），看上去就像那一期的数真的更小。'
+                '所以这里**显式截断**而不是留空 —— '
+                f'既不画缺段的矮柱，也不往前补零或补去年同值。截断后窗口 {n} 个月。')
+    return (head
+            + f'<code>{kind}</code> 在引擎里走 Catmull-Rom 平滑曲线，'
             '<b>吃不了 null</b>（会被 JS 当 0，画出一条塌到零的假线，首尾为 null 还会抛 '
             'TypeError 让整页后续图全丢），所以这里**显式截断**而不是留空 —— '
             f'既不画空线，也不往前补零或补去年同值。截断后窗口 {n} 个月。')
@@ -2178,7 +2193,7 @@ def build_exhibits(ds, spec, breaks):
     # 场合最有价值，那正是绝对量图上看不出来的。
     if 'mix' in EX:
         shares = [(sd, ss / ds.rev * 100) for sd, ss in ds.segments]
-        # `stacked_dual` 在 DENSE 名单里（平滑折线吃不了 null），所以窗口按它裁。
+        # `stacked_dual` 在 DENSE 名单里（null 段会被画成 0 高、柱矮一截还不报错），所以窗口按它裁。
         w = Window(ds, i_x, 'stacked_dual',
                    [mrwin.Leg(f'sh{k}', f'{sd["label"]} 占比', sh.values, 'primary')
                     for k, (sd, sh) in enumerate(shares)])

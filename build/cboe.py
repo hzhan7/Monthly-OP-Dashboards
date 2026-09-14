@@ -1230,12 +1230,13 @@ def main():
     # （「其余时序图」不成立：Exhibit 6/7 起于 Jan-19、月度量费分解起于 Jan-17）。
     # 13 个月不是数据下限：这两列在 series/cboe.csv 里 2016-01 起逐月全满
     # （Exhibit 2 画的就是它们的和），13 是画的时候截的。
-    # stacked_dual 属 mrwin.DENSE：占比线走 Catmull-Rom，窗口内一个 null 都不能有 ——
-    # 下面显式校验，日后源文件缺一个月要在构建期响，而不是在页面上画出一条塌到零的假线。
+    # stacked_dual 属 mrwin.DENSE，窗口内一个 null 都不能有：堆叠段为 null 会按 0 高画、
+    # 柱矮一截，右轴占比线走 Catmull-Rom、null 当 0 会被拽到零，两样都不报错 ——
+    # 下面显式校验，日后源文件缺一个月要在构建期响，而不是在页面上画错。
     ix13 = col('adv_index_options_kcontracts', W25)
     ml13 = col('adv_multilist_options_kcontracts', W25)
     if np.isnan(ix13).any() or np.isnan(ml13).any():
-        raise SystemExit('Exhibit 5 是平滑图型，窗口内不许有缺值：'
+        raise SystemExit('Exhibit 5 是 stacked_dual（DENSE 图型），窗口内不许有缺值：'
                          f'index 缺 {int(np.isnan(ix13).sum())} 期、'
                          f'multi-list 缺 {int(np.isnan(ml13).sum())} 期')
     share13 = ix13 / (ix13 + ml13) * 100
@@ -1395,7 +1396,7 @@ def main():
     _mix_hole = [nm for nm, _, v in _mixnum if np.isnan(v).any()] + \
                 (['Index options 总量'] if np.isnan(ix6).any() else [])
     if _mix_hole:
-        raise SystemExit(f'Exhibit {EX_MIXPROD} 是平滑图型，窗口内不许有缺值：'
+        raise SystemExit(f'Exhibit {EX_MIXPROD} 是 stacked_dual（DENSE 图型），窗口内不许有缺值：'
                          f'{"、".join(_mix_hole)}')
     if (ix6 <= 0).any():
         raise SystemExit(f'Exhibit {EX_MIXPROD}：自有指数期权总 ADV 有非正的月份，'
@@ -2093,7 +2094,8 @@ def main():
     #
     # ⚠️ 这一类里有**两种成因**，页尾必须分开说，不能合并成一句：
     #   ① mrwin 裁的（Exhibit 6 / EX_MIXPROD）：某条腿本身没数（XSP 自 2019-01 才单列），
-    #      平滑图型不许带 null，所以左端推到「所有线都已经有值」的那一期。
+    #      DENSE 图型不许带 null（Exhibit 6 是平滑线，EX_MIXPROD 是堆叠柱，理由不同、结论一样），
+    #      所以左端推到「所有线都已经有值」的那一期。
     #   ② 同比吃掉基期年（EX_DECOMP）：**两条腿都齐**，一个月都不缺 —— 左端晚 12 个月
     #      纯粹是因为一格柱要拿去年同月当分母，2016 那 12 个月全在数据里，只是当了分母。
     # 合并成一句的后果是当场说假话：EX_DECOMP 根本没经过 mrwin.resolve()，把它算进
@@ -2519,7 +2521,8 @@ def main():
         + (f'；{_win_late_txt}的左端由 <code>build/mrwin.py</code> 按「线都已经有值」'
            f'裁决，不是窗口不同而是序列本身更短（XSP 自 '
            f'{mlab(df["adv_xsp_options_kcontracts"].dropna().index[0])} 才单列，'
-           f'而这两张都是平滑图型，窗口里不许有 null）' if _win_late else '')
+           '而这两张图的窗口里都不许有 null —— 平滑折线会被 null 拽到 0，'
+           '堆叠柱缺值的段按 0 高画、柱子矮一截，看上去都像真数）' if _win_late else '')
         # 同比吃掉基期年的那一类**单列**：它与上一类看着一样（左端都比窗口晚），
         # 成因完全不同 —— 那一类是缺数，这一类两条腿一个月都不缺。
         + (f'；{_win_base_txt}的左端晚 12 个月<b>不是缺数</b>：它一格柱就是一个月的同比，'
