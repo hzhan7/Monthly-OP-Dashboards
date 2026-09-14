@@ -416,6 +416,30 @@ def _sum4_vs_pdf_zh():
     return '实测 %d 个重叠月的相对差在 %+.2f%%~%+.2f%% 之间' % (len(dev), lo, hi)
 
 
+def _ind_vs_pdf_zh():
+    """API 的行业 TOTAL 与 IR 月报「行业 ADV」的相对差 → 一句话；算不出返回空串。
+
+    与 _sum4_vs_pdf_zh 同一个用途、同一个写法，比的是分母：
+    industry_adv_options_api_kcontracts ÷ industry_adv_options_kcontracts − 1。
+    两个源的行业分母差得比 MIAX 四所合计更多（分类口径不同，fetch/miax.py 口径坑 3），
+    区间同样**不写死** —— 页尾 notes 原来写死的「3.1%~4.5%」，Aug-26 一个月就差到 5.69%。
+    """
+    dev = []
+    for r in _rows():
+        p = _num(r, 'industry_adv_options_kcontracts')
+        a = _num(r, 'industry_adv_options_api_kcontracts')
+        if not p or a is None:
+            continue
+        dev.append((a / p - 1.0) * 100.0)
+    if not dev:
+        return ''
+    lo, hi = min(dev), max(dev)
+    if lo < 0 and hi < 0:
+        return '实测 %d 个重叠月里 API 的行业 TOTAL 一律<b>偏低</b> %.2f%%~%.2f%%' % (
+            len(dev), abs(hi), abs(lo))
+    return '实测 %d 个重叠月的相对差在 %+.2f%%~%+.2f%% 之间' % (len(dev), lo, hi)
+
+
 def _tday_pair_zh():
     """期权段与期货段两列交易日数的关系 → 一句话；有一列没有就返回空串。
 
@@ -437,14 +461,13 @@ def _tday_pair_zh():
 # 「股票段有没有自己的交易日列」—— 现判。释义里「只能等权相加」那半句话的前提，
 # 一旦 fetch 侧补上股票口径的交易日列，这半句必须自己消失（同 _tday_equity_zh 的理由）。
 _TD_HAS_EQ = any(seg == _TDAY_EQUITY for _c, seg in _tday_cols())
-# ⚠️ _SUM4_GAP **现在没有拼进任何一段页面文字**，helper 与这行留着是有意的：
-# 它现算的是全窗口（重叠月全取）的区间，而页尾 notes 第 4 条（两个源的关系）那句
-# 「MIAX 合计比值稳定在 0.9967~0.9976」是 2026 那 7 个月的**子样本**区间
-# （fetch/miax.py 口径坑 3 原文就分两段写：全窗口 0.9922~0.9998，2026 收窄到
-# 0.9967~0.9976）。两个都印，同一页同一个量就有两个不重合的区间；
-# 释义板这一侧先退出（同「行业总量」那条的处理：只说方向、不给区间）。
-# ⇒ 等 notes 那半句改成同一个 helper 的现算值之后，再把它拼回释义里。
+# ⚠️ 2026-09 起页尾 notes 第 4 条（两个源的关系）改用 _SUM4_GAP / _IND_GAP 现算：
+# Aug-26 的 0.978 / 5.69% 让原来写死的 0.9967~0.9976、3.1%~4.5% 当场失真
+# （0.9967~0.9976 是 2026 那 7 个月的**子样本**区间，fetch/miax.py 口径坑 3 原文就分两段写）。
+# 释义板这一侧仍不给区间（同「行业总量」那条的处理：只说方向）：释义板一年到头是同一段，
+# 区间每多一个重叠月就可能变，只配 notes 现算（见下面「名词释义」那块注释的分工）。
 _SUM4_GAP = _sum4_vs_pdf_zh()
+_IND_GAP = _ind_vs_pdf_zh()
 _TDPAIR = _tday_pair_zh()
 
 # ── 释义板专用：三个源各自的**起始月**（只要起点，不要末月与期数）────────────
@@ -1041,8 +1064,8 @@ SPEC = {
 
         '两个源的关系：<b>PDF 是权威值</b>（与 FY2025 10-K 对账，多挂牌 ADV 9,538、行业 55,798、'
         'Pearl 股票 183、农产品 12,989 四项误差均 ≤0.11%），'
-        '<b>API 是历史与分拆</b>。两边的 MIAX 合计比值稳定在 0.9967~0.9976，'
-        '但<b>行业分母差 3.1%~4.5%</b>（API 偏低）—— 所以 industry_adv_options_kcontracts 与 '
+        f'<b>API 是历史与分拆</b>。MIAX 集团四所合计：{_SUM4_GAP or "（算不出）"}；'
+        f'行业分母差得更多：{_IND_GAP or "（算不出）"} —— 所以 industry_adv_options_kcontracts 与 '
         'industry_adv_options_api_kcontracts 是两条不同的线，不要混用、不要互相回补。',
 
         '<b>多挂牌期权 RPC 在本仓有一个同名同口径的对家：Cboe。</b>'

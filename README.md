@@ -82,6 +82,9 @@ fetch/cost_sec.py   /cost/ 的**第二个数据源**：SEC 申报层（CIK 00009
                     与 fetch/cost.py 并列、各写各的 CSV、互不读写。季度/年度节奏，
                     由 monthly_run.cost_sec() 单独一步驱动（**不能挂成 fetch/cost.py 的慢腿**，
                     理由见 docs/CRON_WIRING.md §2.5）
+fetch/tsm_6k.py     /tsm/ 的第二个数据源：SEC 月报 6-K（CIK 0001046179）第 3/4 项 →
+                    series/tsm_guarantees.csv / tsm_derivatives.csv，由 monthly_run.tsm_6k()
+                    单独一步驱动（理由见 docs/CRON_WIRING.md §2.6）
 fetch/fx.py         月度汇率（10 币种对美元，ECB）—— 横截面页的公共底座，不属于任何一家
 build/<t>.py        各家的 payload 生成器：series/*.csv → data/<t>.js
 build/single.py     单公司页通用底座：build/specs/<t>.py → data/<t>.js（10 家新交易所里的 9 家走这条；
@@ -141,12 +144,13 @@ python3 monthly_run.py --dry-run       # 抓取与生成都做，但不 commit/p
 python3 monthly_run.py --force         # 数据没变也重建并推送（改了图表代码后用）
 ```
 
-改过生成器或引擎之后，四条校验各管一层，谁都替代不了谁：
+改过生成器或引擎之后，五条校验各管一层，谁都替代不了谁：
 
 ```bash
 python3 build/verify_pages.py          # 结构层：payload 契约 + 页面引用，0 ERROR 才算过
 python3 tools/check_yoy_caliber.py     # 口径层：同比口径判据（CONTRACT §6 的机检）
 python3 tools/visual_qa.py --all       # 像素层：整站截图 + 机器判据（轴刻度/越界柱/压字）
+python3 test_slow_legs.py              # 闸门层：monthly_run.SLOW_LEGS 登记表不变式 + miax 现场重放（离线、秒级；改 SLOW_LEGS 时必跑）
 python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门表 vs LAG / EARLY_BY / FACT_GATE 真值
 ```
 
@@ -154,6 +158,12 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 `EARLY_BY` / `FACT_GATE`** 时才可能红 —— 那张表是手抄的代码常量，抄漏了页面上看不出
 任何异常（2026-08-30 给 umc / ase 加 `EARLY_BY` 那次就漏了，一周后才发现）。
 它**不在 cron 路径上**，理由见脚本头。
+
+改过 `fetch/tsm_6k.py`、`monthly_run.tsm_6k()` 或 `audit_manual_series()` 之后，另手跑
+`python3 fetch/test_tsm_6k.py && python3 fetch/tsm_6k.py audit && python3 test_monthly_run_tsm6k.py`
+（同样不在 cron 路径上，同 `fetch/test_cost_sec.py`）。在 worktree 里跑时 `cache/` 不在：前者要设
+`TSM6K_CACHE=<主 checkout>/cache`（否则真缓存重放那组会 skip），`audit` 要加 `--cache <主 checkout>/cache`
+（否则一份件都读不到，「0 个月」照样退出 0）。
 
 每家输出一行 `<ticker> <状态> <说明>`，stdout **最后一行**是总状态，调度任务只读这一行：
 
@@ -202,7 +212,7 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 
 > **它连续失败十天，和成功十天，在日志里长得一样吗？** 一样，就缺一道护栏。
 
-本仓踩过的四处。机制都写在代码现场，这里只留指路：
+本仓踩过的五处。机制都写在代码现场，这里只留指路：
 
 | 安静失败的地方 | 为什么看不出来 | 现在靠什么拦 |
 |---|---|---|
@@ -210,8 +220,9 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 | 跑在非 main 分支上 | 裸 `git push` 推的是**当前分支** → 数据进了别处 → 而 Pages 从 main 根目录发 → 站点静默停更 | 同上 |
 | 解析器认不出某行/某列 | 该行被静默丢弃，`latest_month` 停在上个月，fetch 干干净净报 `NOCHANGE`，红点与断档检查全都抓不到。**这一条 2026-08-19 一天之内独立复发三次**：MSCI 把脚注写成裸文本、cboe/ice 手里有自报月却没拿来对账、AXP 的 `Certificates` 被申报方手误写成单数（2021-02 那期，少算一家）—— 三次的形状都是**读不到不抛错** | 用**独立于解析器的外部判据**对账：`fetch/cboe.py` 的 `_crosscheck_report_month`、`fetch/ice.py` 的 `_crosscheck_workbook_month`；词形容错见 `fetch/axp.py` 里 `_series_excess_spread` 的 docstring |
 | 合并冲突时选「保留我的」 | 机械改写行（import 块、月份标签定义）两边都像对的：改动数不变、测试照样绿，于是重构被静默回退 | 验收方式改成**重跑原判据**（如死 import 扫描），而不是读 diff |
+| 多腿源的一条腿降级或晚发 | `fetch/lseg.py` 逐路 catch 之后只打一行 ⚠，这一家仍是 `NOCHANGE`、末行不含它，调度任务 tail -60 看不到（2026-09-05 Tradeweb 实例）；一级市场 factsheet 晚到时，头条追平后闸门不再去取，模块也没有逾期判据 | fetch 模块的 `DEGRADED` → `monthly_run.LEG_ALERTS` → 末行失败清单 + `report_leg_alerts()`；一级市场腿的 `_MAX_PUBLISH_LAG_DAYS` 逾期护栏 + `SLOW_LEGS['lseg']` 登记 |
 
-这四条的共同点：**代价不在「出错」，在出错不会被计入**。
+这五条的共同点：**代价不在「出错」，在出错不会被计入**。
 
 **而且自检要跑在自己身上，不只跑在别人的分支上。** 「引用的符号是否真有定义」
 这道检查最初是为了审一个旧分支的 README 才写的（那里有 4 行指向不存在的文件），
@@ -273,7 +284,7 @@ commit，也不会把页面的新鲜度信号刷成当天。**构建日期不进
 |---|---|---|---|
 | 不可重下 | `basefill/` | 245 MB | **永不清理**，且是唯一需要异地备份的部分 |
 | 热工作集 | `axp/`、`*_rates/` | 172 MB | 永不清理：`fetch/rates_*.py` 的 `rows()` 每次全量重放做重述对账，删了每月重打几百个 SEC 请求 |
-| 删了会回来 | `lseg_primary_*.xlsx` | 38 MB | 不清理：`fetch/lseg_primary.py:843` 每次跑全月份区间，本地没有就重下 |
+| 删了会回来 | `lseg_primary_*.xlsx` | 38 MB | 不清理：`fetch/lseg_primary.py` 的 `fetch_rows()` 每次跑全月份区间，本地没有就重下 |
 | 冷档 | `POLICY` 表登记的族 | 139 MB | 按期次保留最近 N 期 |
 
 `basefill/` 里有三类无人值守拿不回来的东西：只存在于 archive.org 的 CME 规则手册、
@@ -294,7 +305,7 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 
 各家的源、发布节奏、口径坑写在 `fetch/<t>.py` 的模块 docstring 里，那是第一手记录。
 
-⚠ **「一页一个源」不再普遍成立：`/cost/` 有两个。** 除了 GlobeNewswire 的月度销售稿
+⚠ **「一页一个源」不再普遍成立：`/cost/` 与 `/tsm/` 各有两个。** 除了 GlobeNewswire 的月度销售稿
 （`fetch/cost.py` → `series/cost.csv`），2026-09 起还接了 SEC 申报层
 （`fetch/cost_sec.py`，**CIK 0000909832** 的 10-K / 10-Q / 8-K），另写五张 `series/cost_*.csv`：
 分部收入、客单与客流、财年单店经济、开业年份矩阵，以及 `cost_fy_be.csv`（FY2011–FY2015 的
@@ -303,6 +314,21 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 两条腿节奏完全不同（月度 vs 季度/年度），所以在 `monthly_run.py` 里是**两步**而不是一步；
 接线与「为什么不能合成一步」见 `docs/CRON_WIRING.md` §2.5。
 读这几张表之前先看那里的口径警告：`cost_seg_q.csv` 是 **total revenue**，不是净销售额。
+
+`/tsm/` 同理：月营收走 `fetch/tsm.py`（TSMC 官网 xlsx → `series/tsm.csv`），2026-09 起另接 SEC 月报 6-K
+（`fetch/tsm_6k.py`，**CIK 0001046179**，与营收新闻稿同一份 6-K 的第 3/4 项），追加
+`series/tsm_guarantees.csv`（背書保證）与 `series/tsm_derivatives.csv`（衍生性商品）；
+在 `monthly_run.py` 里同样是单独一步（`tsm_6k()`），接线见 `docs/CRON_WIRING.md` §2.6。
+读这两张表或改解析器之前先看三条口径坑（全文在 `fetch/tsm_6k.py` 的口径坑 a–c）：
+
+- **TSMC 的 Forward 块可能有两个**：第 4 项 (1) not applying / (2) applying hedge accounting 两节各可能有
+  一个 TSMC Forward 块，名目与市价都要跨两节求和。2023-03..2026-07 的 41 个月里 15 个月有第二块，
+  只取第一块只有 37/41 对得上。
+- **子公司担保人行不计入**：2023-03..2025-01 共 23 个月第 3 项多一行担保人「TSMC Japan Ltd.」。
+  核准与在外只加担保人为 TSMC 的行（核准合计 = MOPS「本公司至本月份累計餘額」）；全部行相加只有 18/41 对得上。
+- **亚利桑那按脚注认行，不按星号**：行数（3–5 行）与星号月月在变，TSMC Arizona 那一行要看脚注里写的公司名。
+
+公司債与董事会核准资本支出两张表仍人工维护，陈旧提示见 `monthly_run.audit_manual_series()`（只打印）。
 
 几条踩过的坑：
 

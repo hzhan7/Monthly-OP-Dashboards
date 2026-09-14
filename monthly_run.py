@@ -14,6 +14,8 @@
               series/cost_*.csv）。也不是 ticker、也自成一步，但它只有 /cost/ 一个消费者，
               所以**只在 cost 落在本轮名单里时才跑**（公共表那三张不看 --only，它看）。
               为什么不能挂成 fetch/cost.py 的慢腿：见 cost_sec() 的 docstring
+              tsm_6k    /tsm/ 的月报 6-K 腿（series/tsm_derivatives.csv、tsm_guarantees.csv），
+              同理只在 tsm 落在本轮名单里时才跑；为什么不是 fetch/tsm.py 的慢腿见 tsm_6k() 的 docstring
     公共表    三张，都**不是 ticker**、都不进 TICKERS，各自一步：
               fee_rates    季度费率，六个单公司页共用 → 有新季度就重跑那六页
               mops_remarks MOPS 備註原文，七个半导体页共用 → 有新月份就重跑那七页
@@ -31,6 +33,10 @@
     NOCHANGE        官方还没发新数据，或数据与线上一致
     FAIL <原因>     抓取或解析失败；该家保持线上旧数据不动
 
+多腿源（目前只有 lseg）某一条腿降级或报警时，状态字仍按本轮结果写（NEW / REBUILT / NOCHANGE），
+但这一家同时计入末行失败清单 —— 末行可能是 PARTIAL（ok 与 fail 两边都有它）或「FAILED 无更新」；
+明细在末行前的「腿级降级/报警」块，协议见 LEG_ALERTS。
+
 ## 为什么一家失败不中止全局
 
 单公司仓库的老脚本是「一有问题就整体退出」，那时候只有一家，退出=什么都不做，代价为零。
@@ -47,8 +53,9 @@
 `taiwan_fx` 是这里唯一半个例外：它挂了，六页里**本轮有新营收月**的那几家会当场 build
 失败、看得见；**没有新营收月**的那几家一点信号都没有，而它们下个月照样要撞墙 ——
 所以它同样得自己记一条（它还是唯一跑在按家循环**之前**的一张，见它自己的 docstring）。
-`cost_sec` 同理，而且更隐蔽：它冻住时 /cost/ 的红点跟的仍是**月度腿**的 data_through，
-首页照样绿点、照样印着最新月份，页面上一点异常都没有。
+`cost_sec` 与 `tsm_6k` 同理，而且更隐蔽：它们冻住时 /cost/、/tsm/ 的红点跟的仍是**月度腿 /
+营收腿**的 data_through，首页照样绿点、照样印着最新月份，页面上一点异常都没有
+（/tsm/ 只在板块里多一句滞后说明）。
 
 ## 四道体检闸门（2026-09 补接了后三道；任何一道不过 = 整轮不发，末行 FAILED）
 
@@ -70,6 +77,7 @@ preflight（跑在下载之前，查的都是**配置与代码**，与本轮数�
 护栏保持不变，且仍然是「宁可不发也不发错」:
   · 提交范围只有 `data/` 与 `series/`；这两个目录以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
   · 任何一家的 fetch 解析出缺列 / 月份对不上，由该家的 fetch 模块抛异常 → 记 FAIL，不写数据
+    （多腿源的单腿异常例外：降级 + 计入末行，见 LEG_ALERTS）
   · 页面的新鲜度只绑 payload 的 data_through（构建日期只写 data/*.js 首行注释，不进 payload）。
     抓取失败那家不写 series、不重生成，data_through 原地不动，首页按 roster 的 LAG + GRACE
     给它打红点 —— 旧数据看得出是旧的，不会被当成新的
@@ -195,7 +203,8 @@ EARLY_BY = {
     # （2023-01 数据 → 2023-02-02）。默认闸门 = 8−5 = 第 3 天，正踩在最密的那一档上
     # 零余量，且必然漏掉第 2 天那一次。8−7 = 第 1 天开闸，比实测最早再早一天。
     # 另三条腿（LSE 订单簿约 +21 天、Main Market/AIM +1~9、LCH +3~4）填的不是头条列，
-    # 不推进 data_through，靠下一轮回补 —— 它们的滞后不进这里，也不进 LAG。
+    # 不推进 data_through，靠下一轮回补 —— 它们的滞后不进这里，也不进 LAG；
+    # 其中订单簿与一级市场两条腿登记在 SLOW_LEGS['lseg']，LCH 未登记。
     'lseg': (7, 7),
 
     # Nasdaq：**两条腿差一个多星期**，闸门与红点必须各跟各的腿。
@@ -319,18 +328,28 @@ FACT_GATE = {
 #   lseg 17 条订单簿列停 2026-06 / 63 列 2026-07       官方 2026-08-11 就发了
 #   jpx   2 条 IPO 列停 2026-06 / 39 列 2026-07
 # 三家在首页都是**绿点 + 印着 2026-07**，用户看不出慢腿差了一个月。
+# 2026-09 第五个实例：miax 11 条 IR 报表/历史档案列停 2026-07，API 头条腿 09-03 已到 2026-08；
+#   官方报表 09-04 已发，/exchanges-na/ 被钉在 Jul-26 直到回补。
 #
 # 值 = (列名前缀元组, (常规月开闸日, 季末月开闸日))，开闸日单位同 LAG =「该月结束
 # 后第几天」。列名用**前缀**匹配，因为慢腿的列名天然共享前缀；写全名也可以。
 #
 # ⚠ 开闸日不必取该腿实测的**最早**到货日。慢腿闸门要防的是「拖到下月」这种整月丢
 #   失，只要闸门在当月内开，那个月的数据当月就能进来。lseg 订单簿近 30 期跨度是
-#   +2~+24 天，按 +2 开闸等于每月多 20 天下载，而它每轮要打 67 次检索 API
-#   （fetch/lseg_orderbook.py 的逐月 _search，各 sleep 0.25s）—— 取中段即可。
+#   +2~+24 天，按 +2 开闸等于每月多 20 天下载（稳态下 fetch/lseg.py 传 skip，每轮只检索
+#   缺的那几个月，但 update() 每次都是四路整趟跑一遍）—— 取中段即可。
 #
 # ⚠ **不要为「永久停发」的列建登记**：它们永远追不平，闸门会被顶成天天下载。
-#   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年）、lseg 的 6 条
-#   repoclear_* 停在 2026-05（另一条更慢的腿，节奏未实测）。两者都**不**登记。
+#   实测存量：jpx 的 cmdty_proforma 停在 2020-07（停发六年），不登记。
+#   lseg 的 6 条 repoclear_* 是另一条更慢的腿，节奏未实测、不登记（2026-09-02 那轮起已到 2026-07）。
+#
+# ⚠ 不要登记按设计滞后一整期的列（例：miax/cboe 的滚动三月 RPC、miax 的 capture）。
+#   本期报表只给上一期，last < due 恒真，效果等同永久停发，闸门会被顶成天天下载。
+#
+# ⚠ 开闸日不许早于本家头条闸门 max(0, LAG − EARLY_BY.get(t,(EARLY,EARLY)))。早于它时
+#   slow_pending 为真，one() 会整份跑 update()，头条腿当天进库，等于偷偷提前了头条闸门；
+#   docs/CRON_WIRING.md §2.2 的闸门格随之失真，而 check_doc_gates 不读本表，报不出来。
+#   现存五条都满足：tmx 2≥1、db1 8≥0、lseg 12≥1、jpx 15≥3、miax 3≥3。
 SLOW_LEGS = {
     # 现货 CTS 新闻稿：数据月结束后第 2–8 天、中位第 5、139 期最坏第 14
     # （fetch/tmx.py:63-65）。该 docstring 自己的结论就是「闸门次月 2 日开」。
@@ -346,12 +365,36 @@ SLOW_LEGS = {
               'turnover_cash_total_eurbn', 'aum_stoxx_dax_etf_eurbn',
               'vol_licensed_index_contracts'), (8, 8)),
 
-    # LSE 订单簿月报：近 30 期 +2~+24 天，2026 中位 +21
-    # （fetch/lseg_orderbook.py:76-86，节奏 2024 年起明显变慢）。
-    # 取第 12 天是成本折中：比中位早 9 天，又不至于把 67 次/轮的检索 API 打 20 天。
+    # lseg 这一条跨两份上游文件，共用一个开闸日（slow_pending 取所有登记列里最落后的那份）。
+    #
+    # ① LSE 订单簿月报（lse_* / turquoise_* / gbp_eur_rate 八个前缀）：近 30 期（2024-01 起）
+    #    +2~+24 天，2026 年 7 期中位 +19（fetch/lseg_orderbook.py 的「实测发布节奏」节；节奏
+    #    2024 年起明显变慢）。取第 12 天是成本折中：比 2026 中位早一周，又不必从 +2 起天天整趟抓。
+    #
+    # ② LSE 一级市场 factsheet（mm_ / aim_，2026-09 追加）：197 期 created 中位 +2、最晚 +27，
+    #    Main Market 与 AIM 不是每月同步发（fetch/lseg_primary.py 的「发布节奏」节）。
+    #    与订单簿共用 (12, 12)、不单设开闸日，理由三条：
+    #    · 本块第一条 ⚠：慢腿闸门只防整月丢失，不必取实测最早到货日；
+    #    · 不登记时的失效形状：订单簿先到 → 次日 slow_pending 只看订单簿列、判「已追平」→
+    #      闸门关死，一级市场当月晚几天挂出的那期，要等下月 1 号头条闸门重开才顺带回补；
+    #    · 【粗算，设计期回放】2021-01 起两个市场与订单簿都有实测节奏的 66 个月里，旧登记下
+    #      一级市场整月丢失 7-12 次，登记后 0 次；残余是最多晚 7 天（第 3-11 天挂出的那期
+    #      要等到第 12 天）。
+    #
+    # 这条登记的第二个作用：一级市场**尾部欠货**（最新一期没到，mm_ / aim_ 列的末月停住）时 lseg 每天真抓，
+    # fetch/lseg_primary.py 的模块内逾期护栏（_MAX_PUBLISH_LAG_DAYS）因此每天执行，警报是黏的（经
+    # fetch/lseg.py 的 DEGRADED → LEG_ALERTS 计入末行）。**黏只限尾部欠货**：官方跳过中间一期、次月照发
+    # （MM 2022-12 就是这个形状）时，列的末月照样前进，slow_pending 判不欠货，lseg 不再天天被抓 ——
+    # 护栏只在 lseg 被抓的日子执行：首报是过线后 lseg 第一次被抓的那天（可能晚到下月 1 号头条闸门重开），
+    # 之后断续响；陈旧列审计也看不见它（列末月在前进）。细节见 fetch/lseg_primary.py 的逾期护栏说明。
+    # 某个市场**永久停发**时的处置顺序：先由人写下停发结论、处理
+    # KNOWN_SOURCE_GAPS / MARKET_END（后者目前不存在，届时另议），再从这里摘掉 'mm_' / 'aim_'
+    # —— 不摘就撞上面第二条 ⚠（天天下载）；**不调阈值**。
+    # mm_ / aim_ 恰好命中 fetch/lseg.py COLUMN_LEG 里 primary 的全部列，不误收 tradeweb / lch 列
+    # （build/test_guards.py 的 M 组机检）；LCH（含 6 条 repoclear_*）不登记。
     'lseg': (('lse_orderbook_', 'lse_trading_days_', 'lse_lit_uk_share_',
               'turquoise_integrated_', 'turquoise_dark_', 'turquoise_paneuropean_',
-              'turquoise_trading_days_', 'gbp_eur_rate'), (12, 12)),
+              'turquoise_trading_days_', 'gbp_eur_rate', 'mm_', 'aim_'), (12, 12)),
 
     # 资金調達額 historical-sikin.xls：这条腿只填 2 列，比头条腿（次月第 7 天）
     # 晚半个月。实测到货日两点 —— 2026-06 期 07-17、2026-07 期 08-19（后者由
@@ -368,6 +411,41 @@ SLOW_LEGS = {
     #   登记它会把闸门顶成天天下载 —— 见上面第二条 ⚠。列名写全名不写前缀，免得将来
     #   新增的 ipo_* 快腿列被前缀误收进来、把闸门钉死在一条本不该等的腿上。
     'jpx':  (('ipo_public_offerings', 'ipo_funds_jpybn'), (15, 15)),
+
+    # MIAX：头条走 indsum API 腿（源 B），IR 报表腿（源 A）与历史档案列（源 C）是慢腿。
+    # 到货实测（数据月结束后第几个日历日）：
+    #   源 B —— getDate 进入次月即可取整月；2026-08 那行 09-03（头条闸门首日）就建出来了。
+    #   源 A「<年份> Historical Volumes RPC File (PDF)」—— 按 PDF 自述 Updated on：
+    #        2025-11 第 5、2026-05 第 3、2026-06 第 7、2026-07 第 5、2026-08 第 4 天
+    #        （2026-08 那期起文件名改为 MIAX_Key_Stats-<Month>_<YYYY>.pdf，链接文字不变，
+    #         fetch/miax.py 按链接文字选链，解析照过）。
+    #   源 C miax_futures_historical_volume.pdf —— Last-Modified 2026-08-06（7 月数据，第 6 天）、
+    #        2026-09-08（8 月数据，第 8 天），比报表晚 1-4 天。
+    # 没登记时的实测代价（2026-09）：API 腿 09-03 落地 → data_through=2026-08 → not_due 判追平，
+    # 09-04 就可取的报表到 09-14 零请求；/exchanges-na/ 期权池的 MIAX 成员取 IR 口径
+    # adv_multilist_options_kcontracts，整页钉在 Jul-26，自动路径最早 10-03。
+    #
+    # 开闸日 (3, 3) = 本家头条闸门（roster LAG 8 − EARLY 5）。头条闸门当天 through < due，
+    # 本来就整份下载；本条只管「头条先落地之后闸门别关」。不许更早 —— 见上方第四条 ⚠。
+    #
+    # ⚠ 11 列写全名，不写前缀：
+    #   · 不收 `_api_` 列 —— 那是头条腿；前缀 'industry_adv_options_' 会同时命中
+    #     industry_adv_options_api_kcontracts。
+    #   · 不收四条 RPC / capture（fetch/miax.py 的 _PDF_LAGGED，口径坑 6：按设计晚一整期）——
+    #     属上方第三条 ⚠；它们随下一期报表回补，而下一期报表正是本条在等的货。
+    #     所以本条与 build/specs/miax.py 的 slow_cols **刻意不相交**：slow_cols 答「页面门槛
+    #     不等谁」，本表答「下载闸门还欠谁的货」—— 别把两张表对齐。
+    #   · adv_futures_fin_contracts（2026-05 上线）哪天停发：_validate_pdf 先抛「缺列」，
+    #     修解析器那一刀同时把它从本条摘掉、写进 DEAD_COLS。
+    # ⚠ vol_futures_ag_contracts 来自源 C，源 C 在 update() 里是软失败（只写 stderr、不记 FAIL）。
+    #   它坏掉时本条会把闸门顶成每轮下载（约 5 个请求 / 0.7 MB）直到修好，audit_stale_cols()
+    #   三个月后点名 —— 这是「宁可多打请求」那一侧的代价。
+    # 登记表不变式由 test_slow_legs.py 机检（手工跑，不进 preflight）。
+    'miax': (('trading_days_options', 'industry_adv_options_kcontracts',
+              'adv_multilist_options_kcontracts', 'share_multilist_options_pct',
+              'industry_adv_equities_mnshares', 'adv_equities_mnshares',
+              'share_equities_pct', 'trading_days_futures', 'adv_futures_ag_contracts',
+              'adv_futures_fin_contracts', 'vol_futures_ag_contracts'), (3, 3)),
 }
 
 
@@ -732,7 +810,7 @@ def staged_label():
       直接进标题就是「更新数据: cost seg:FY26Q3|Q,…」（见 cost_sec() 的 docstring）。
 
     还有反方向的一半：`months` 只收按家循环里状态为 NEW 的那些，
-    **循环之后**那四步（taiwan_fx_rebuild / cost_sec / mops_remarks / fee_rates）
+    **循环之后**那五步（taiwan_fx_rebuild / cost_sec / tsm_6k / mops_remarks / fee_rates）
     写进 data/ 与 series/ 的东西它一个字都不知道。历史上三个「更新数据: 0 家重建」
     就是这么来的 —— 提交里明明有改动，标题却说什么都没有。
 
@@ -957,12 +1035,17 @@ def slow_pending(t, today=None):
     **失败一律 fail-open（当成「欠货」→ 去下载）**：这个方向错了只多几个 HTTP
     请求，反方向错了是整月静默丢数据 —— 而后者正是本函数要修的那个 bug。所以整个
     函数体裹在 except 里，异常只打 WARN，绝不让它把整轮 monthly_run 带走。
+    登记本身写坏（不是二元组、前缀元组漏了逗号成了裸字符串）也走这条路。2026-09 之前
+    解包在 try 之外，一条写坏的登记会从 not_due 抛出，而 not_due 在 one() 的 try 之外
+    调用，整轮 28 家一起崩。
     """
     reg = SLOW_LEGS.get(t)
     if not reg:
         return False
-    prefixes, open_days = reg
     try:
+        prefixes, open_days = reg          # 挪进 try：登记写坏不许带崩整轮
+        if isinstance(prefixes, str):
+            raise TypeError(f'列名前缀必须是元组，写成了裸字符串 {prefixes!r}')
         due = _due_month(open_days, today)
         if due is None:                       # 这条腿今天还没开闸 → 不欠
             return False
@@ -976,8 +1059,8 @@ def slow_pending(t, today=None):
             print(f'  ⚠ {t}: 慢腿登记的列前缀在 series/{t}.csv 里一列都没匹配上 —— '
                   f'多半是上游改了列名，登记就此静默失效。按欠货处理（照常下载）。')
             return True
-        # 一条腿 = 同一份上游文件、同一次到货 ⇒ 各列的最后非空月本应相同。
-        # 取最小（最落后的那列）才是这条腿真实的进度。
+        # 一条登记可以跨同一家的几份上游文件（miax：IR 报表 + 历史档案 PDF；lseg：LSE 订单簿 + 一级市场 factsheet）。
+        # 取最小 = 最落后那份的进度，任一份没到都算欠货。
         last = min((max((r[0] for r in rows[1:]
                          if i < len(r) and r[i].strip()), default='')
                     for i in idx), default='')
@@ -1176,6 +1259,80 @@ def audit_overdue_headline(today=None):
         return []
 
 
+# ── 人工维护表的陈旧提示 ──────────────────────────────────────────────────────
+# /tsm/ 页上还有两张表没有自动写入路径（2026-09 接 tsm_6k 时所有者定：本轮只加提示，不自动化）。
+# 它们不是任何一家的 series/<t>.csv，audit_stale_cols 扫不到；也不推动任何一页的 data_through，
+# audit_overdue_headline 与首页红点同样看不见 —— 漏录几个月，日志里一个字都没有。
+#
+# 每条 = (series/ 下的文件名, 取「截至哪里」的列, 判据, 判据的来历, 怎么补)。判据两种形状：
+#   · 二元组 (常规月, 季末月)：与 LAG 同单位的「月末后第几天本该有」，走 _due_month()（与首页红点
+#     同一份日期算术）；该列末月 < _due_month(判据) 就算陈旧。给逐月序列用。
+#   · 整数 N：该列（ISO 日期）的最大值距今超过 N 天就算陈旧。给「按事件记、不是逐月序列」的表用。
+MANUAL_SERIES = [
+    ('tsm_bonds_monthly.csv', 'month', (32, 32),
+     '月末 6-K（42 期实测次月第 21–26 天）+ GRACE 5 + 1',
+     '补录 series/tsm_bonds_tranches.csv 后跑 python3 fetch/tsm.py bonds --write'),
+    ('tsm_capex_approvals.csv', 'filed', 135,
+     '董事会当日 6-K；44 次申报相邻最长 120 天 + 15',
+     '按董事会当日 6-K（CIK 0001046179）人工录入，口径见 build/mrspecs/_tsm_extra.py 文件头第 1 条'),
+]
+
+
+def audit_manual_series(today=None):
+    """人工维护表的陈旧提示：只打印，不计入 fails、不看 --only，**没有陈旧项时一个字都不印**。
+
+    登记与判据形状见 MANUAL_SERIES 上方那段。
+
+    ═══ 为什么只打印、不计入失败清单 ═══
+    （所有者 2026-09-14 定；备选「计入 fails 触发推送」没选。）这两张表靠人补，不是 cron 修得好的
+    故障：计入 fails 等于每个季度按时催一次，末行在有人录入之前天天 FAILED / PARTIAL —— 正是 DEAD_COLS
+    那段「每季度假一次的警报，人很快学会无视」。所以与 audit_stale_cols / report_restatement_logs 同档：
+    「该有人去看一眼」，不是「这一轮跑挂了」。代价说清楚：漏录不会推送，只在日志尾部看得见。
+
+    ═══ 两个阈值的来历 ═══
+    · 公司債月表 (32, 32)：源是次月下旬的月末 6-K，42 期实测落在月末后第 21–26 天；最晚那天再加
+      首页红点同款的 GRACE 5 + 1（+1 的来历见 audit_overdue_headline 的 docstring）。
+      这张表由登记簿重建（fetch/tsm.py bonds --write），末月跟的是「最近一次有人补录并重建」。
+    · 董事会核准资本支出 135：按董事会场次记、约每季一次，不是逐月序列 —— 按月判会在两次董事会之间
+      天天误报。44 次申报相邻间隔最长 120 天，再留 15 天。判的是 filed（申报日），不是 month。
+
+    ═══ 位置与形状 ═══
+    调用处在 report_restatement_logs 之后、report_leg_alerts 之前（理由写在 main() 里）。
+    不看 --only：该补的人工表可能几个月前就该补了，今天只跑 cme 也照报。
+    表不在就静默跳过：整页 /tsm/ 被删时不留残渣（同 audit_stale_cols 对横截面页的处理）。
+    整个函数体裹在 except 里，与 audit_stale_cols() 同规矩：一道观察自己出错，绝不能把这一轮带走。
+
+    `today` 只为测试留缝，生产路径一律走默认值（同 _due_month 的那条缝）。
+    """
+    try:
+        today = today or datetime.date.today()
+        for name, col, rule, why, fix in MANUAL_SERIES:
+            p = os.path.join(SERIES, name)
+            if not os.path.exists(p):
+                continue
+            with open(p, encoding='utf-8', newline='') as f:
+                rows = list(csv.reader(f))
+            if not rows or col not in rows[0]:
+                raise ValueError(f'series/{name} 的表头里没有 {col} 列')
+            i = rows[0].index(col)
+            vals = [r[i].strip() for r in rows[1:] if i < len(r) and r[i].strip()]
+            if not vals:
+                raise ValueError(f'series/{name} 的 {col} 列一个值都没有')
+            last = max(vals)
+            if isinstance(rule, tuple):
+                due = _due_month(rule, today)
+                if due and last < due:
+                    print(f'  ⚠ 人工表陈旧 series/{name} 止于 {last}，按月末后第 {rule[0]} 天本该已有 {due}'
+                          f'（{why}）—— {fix}')
+            else:
+                n = (today - datetime.date.fromisoformat(last)).days
+                if n > rule:
+                    print(f'  ⚠ 人工表陈旧 series/{name} 止于 {col} {last}，距今 {n} 天 > {rule} 天'
+                          f'（{why}）—— {fix}')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 人工表陈旧提示自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+
+
 # ── 重述台账 ──────────────────────────────────────────────────────────────────
 # 七个 fetch 模块对**已入库的值永不覆盖**：官方新值与 series 对不上时，只把冲突写进
 # gitignore 的 cache/ 里一份台账「供人工判断」、stdout 打一行，然后照常返回 —— 按家状态
@@ -1297,6 +1454,40 @@ def report_restatement_logs(since):
         print(f'  ⚠ 重述台账体检自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
 
 
+def report_leg_alerts():
+    """把本轮 LEG_ALERTS 印成末行前的一块。只打印：不 exit、不改 fails（计入末行在 main() 里做）。
+
+    **LEG_ALERTS 为空时一个字都不印** —— 每天多占的每一行都在挤调度任务 tail -60 的窗口。
+    位置按「谁读得到」摆，与 report_restatement_logs 同一条理由：会话里看的是 tail -60，
+    而两道收尾闸门的转印占了日志大半，fetch 模块自己那行 ⚠ 落在窗外。它解释的正是末行
+    失败清单里那一家「为什么同时在 ok 与 fail 两边」，所以排在收尾体检的最后、离末行最近。
+
+    每条按腿一行、**不截断**（空白与换行压成单个空格）：逾期类异常把逾期清单排在消息最前面，
+    一项几十字，截到固定字数会在清单变长时正好截掉后面的月份；全文另在本轮日志里该路的 ⚠ 行。
+    整个函数体裹在 except 里，与 audit_stale_cols() 同规矩；单条转不成文本也只影响那一条。
+    """
+    try:
+        if not LEG_ALERTS:
+            return
+
+        def text(v):
+            try:
+                return ' '.join(str(v).split())
+            except Exception as e:            # noqa: BLE001
+                return f'（这一条转不成文本：{type(e).__name__}）'
+
+        print(f'  🔴 腿级降级/报警 {len(LEG_ALERTS)} 家（该家其余腿照常发布，已计入末行失败清单）：')
+        for t in sorted(LEG_ALERTS, key=str):
+            legs = LEG_ALERTS[t]
+            pairs = (sorted(legs.items(), key=lambda kv: str(kv[0])) if isinstance(legs, dict)
+                     else [('?', legs)])
+            for leg, why in pairs:
+                print(f'     {text(t):<6} {text(leg)} → {text(why)}')
+        print('     处置：逾期类看该 part 模块 docstring「护栏」节；普通异常看本轮日志里该路的 ⚠ 行')
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        print(f'  ⚠ 腿级降级/报警汇总自身出错（{type(e).__name__}: {e}）—— 不影响本轮发布。')
+
+
 def builder(t):
     """→ 重新生成 `data/<t>.js` 的命令行；三种写法都找不到时返回 None。
 
@@ -1353,6 +1544,46 @@ def series_fingerprint(t):
     return h.hexdigest()
 
 
+# ── 腿级降级 / 报警 ──────────────────────────────────────────────────────────
+# 多腿源（一家的数据来自几份互相独立的上游文件，目前只有 lseg 的四路）有一种故障，
+# one() 的状态字表达不了：**一条腿坏了，其余腿照常有新数据**。
+#
+# 协议：任何 fetch 模块都可以暴露模块级 `DEGRADED: dict`（{腿名: '异常类型: 消息'}，每轮
+# update() 开头清空、填入本轮降级或报警的腿）。one() 在 update() 返回之后读它，非空就记进
+# LEG_ALERTS[t]；main() 把这些家并入末行失败清单，report_leg_alerts() 在末行前印明细。
+# 本文件**不认得任何一家的名字**，只问「这个模块有没有这个属性」—— 与 builder() 同一条
+# 「删一家不留残渣」的规矩。
+# 旁路步 tsm_6k() 也按同一协议读 fetch/tsm_6k.py 的 DEGRADED（第 4 项清单外块主体），记在 'tsm_6k' 名下。
+#
+# 腿级报警**不改这一家的状态字**（NEW / REBUILT / NOCHANGE 照旧），但**计入末行**：
+#   · 不走 FAIL：one() 记 FAIL 时在 build 之前就 return，其余腿本轮的新数据跟着不重建页面 ——
+#     一条腿坏了去惩罚同一家的另外几条，正是「一家失败不中止全局」要避免的形状（缩小一号）；
+#   · 不能只打 WARN：fetch 模块自己那行 ⚠ 落在日志中段，调度任务只读 tail -60。
+#     2026-09-05 Tradeweb 改版那次就是这样：lseg 被判 NOCHANGE、末行不含 lseg，
+#     这条故障在状态字里完全不可见。
+# 代价：该家可能同时出现在末行的 ok 与 fail 两边（PARTIAL），读末行的人要去看「腿级降级/报警」块。
+LEG_ALERTS = {}
+
+
+def _leg_alerts(mod):
+    """读 fetch 模块的 `DEGRADED` → {腿名: 说明}；没有可报的返回 {}。**绝不抛。**
+
+    属性缺失 / 为 None / 为空 → {}（单腿源本来就没有这个属性）。
+    是 dict → {str(k): str(v)}。其他类型 → {'?': repr(v)}：协议写坏了，宁可吵。
+    整个函数体裹在 except 里（读出错也返回一条 '?'）：它跑在 one() 的 try 之外，
+    这里一抛就是整轮 28 家一起崩。
+    """
+    try:
+        v = getattr(mod, 'DEGRADED', None)
+        if not v:
+            return {}
+        if isinstance(v, dict):
+            return {str(k): str(x) for k, x in v.items()}
+        return {'?': repr(v)}
+    except Exception as e:                    # noqa: BLE001 —— 见 docstring
+        return {'?': f'读取 DEGRADED 出错: {type(e).__name__}: {e}'}
+
+
 def one(t, force):
     """跑一家：抓取 → series 内容变了（或 --force）就重生成 data/<t>.js。
 
@@ -1364,7 +1595,7 @@ def one(t, force):
     旧写法 `if not added` 有一个不出声的漏洞：**慢腿回补不算「新月份」**。
     两腿源（一腿早、一腿晚，同一行的不同列）在回补那一轮里只是把已存在行的空格填上，
     `update()` 返回空 list，于是这里 return NOCHANGE，页面不重建 —— 而数据已经在
-    series 里了。fetch/ndaq.py:1053 与 fetch/db1.py:1114 都明写「回补不计入返回值」。
+    series 里了。fetch/ndaq.py 与 fetch/db1.py 的 update() docstring 都明写「回补不计入返回值」（刻意不写行号：原先的 :1053 / :1114 早已漂走）。
 
     实测当时的现场（2026-08-08）：series/ndaq.csv 的 2026-07 行已有四个 IR 快腿列
     （402 / 4.1 / 56161 / 88），九个 nasdaqtrader 慢腿列空着，data/ndaq.js 的
@@ -1378,6 +1609,14 @@ def one(t, force):
     解决的；放在这里是同一个修法的模块无关版本，一次覆盖 ndaq、db1 与以后任何双腿源。
 
     代价：多算一次全文件 hash（series 里最大的一家几百 KB，可忽略）。
+
+    ## 腿级降级：不改状态字，但计入末行（2026-09 加）
+
+    多腿源的 fetch 模块可以暴露 `DEGRADED`（协议，以及「为什么不走 FAIL、也不能只打 WARN」，
+    见 LEG_ALERTS 上方那段）。这里在 `update()` 返回之后、NOCHANGE 提前返回**之前**读它：
+    挪到后面的话，「一条腿坏了、其余腿也没新数据」那一天恰好走 NOCHANGE 分支，报警就被
+    那个 return 吞掉 —— 而那正是 2026-09-05 lseg 的形状。`update()` 抛异常时照旧 FAIL、
+    不读它（整家都挂了，用不着腿级明细）。返回值 (状态, 说明) 的契约不变，计入末行在 main() 里做。
     """
     if not force and not_due(t):
         # 这两种情况以前共用一句「未到披露期，跳过下载」，而 2026-08-17 实测那天被
@@ -1397,11 +1636,16 @@ def one(t, force):
     added = []
     if os.path.exists(fp):
         try:
-            added = load(fp, f'fetch_{t}').update(SERIES, CACHE) or []
+            mod = load(fp, f'fetch_{t}')
+            added = mod.update(SERIES, CACHE) or []
         except Exception as e:
             return 'FAIL', f'{type(e).__name__}: {e}'
     else:
         return 'FAIL', f'缺 fetch/{t}.py（无法自动更新，需人工补数据）'
+    # 腿级降级/报警（协议见 LEG_ALERTS）：必须在下面 NOCHANGE 提前返回之前读，理由见 docstring 末节。
+    a = _leg_alerts(mod)
+    if a:
+        LEG_ALERTS[t] = a
     touched = series_fingerprint(t) != before
 
     if not added and not touched and not force:
@@ -1582,6 +1826,185 @@ def cost_sec():
     except Exception as e:
         print(f'{"cost":<10} FAIL     SEC 腿更新后重建失败: {str(e)[:100]}')
         bad.append('cost_sec')
+    return bad
+
+
+def tsm_6k(dry_run=False, today=None, loop_failed=False):
+    """刷新 /tsm/ 的**第二个数据源** —— 月报 6-K 第 3/4 项那两张 series/tsm_*.csv，返回失败清单。
+
+    写的是 series/tsm_guarantees.csv（背書保證）与 series/tsm_derivatives.csv（衍生性商品），
+    喂 /tsm/「非营收月度披露」板块的 Ex12/13/16/17 与汇总表下半张。口径、严格语法、MOPS 对账、
+    写入协议全在 fetch/tsm_6k.py 的模块 docstring 里；本函数只管「什么时候去取、取完谁来重建、
+    失败怎么计」。
+
+    ══ 为什么是独立一步，而不是 fetch/tsm.py 里的一条慢腿 ══
+    与 cost_sec() 同样的三条，任何一条单独都足以否掉：
+
+    1. **`one('tsm')` 走不到那儿。** 它在 import fetch 模块之前先问 `not_due('tsm')`，而那个判断
+       读的 data_through 由**营收腿**（series/tsm.csv）独家推动。营收一入库闸门就关死整月：
+       2026-09-11 07:23 那轮 tsm 2026-08 入库（4d5c1f4），此后 `not_due('tsm')` 一直为真，
+       `one('tsm')` 连 fetch/tsm.py 都不 import。6-K 只要比营收 xlsx 晚到一轮，慢腿写法就要等到
+       下个月才去取 —— 而那一个月里日志天天是干净的 NOCHANGE。
+    2. **SLOW_LEGS 顶不上来。** `slow_pending()` 只扫 series/tsm.csv 的列，这两张表一列都不在里面。
+    3. **炸的范围反了。** 严格语法是刻意的「宁可不发」—— TSMC 在第 3/4 项多一种句式就整月抛。
+       慢腿写法下这会让 `one('tsm')` 记 FAIL，连当天的营收新月份也一起不写、不建。
+       独立一步之后，6-K 腿失败只扣它自己。
+
+    ══ 闸门：复用 tsm 的 LAG−EARLY（与 cost_sec 刻意不同：这一步**有**日历预闸）══
+    月报 6-K 就是营收新闻稿那一份，42 期 filingDate 落在月末后第 6–13 天（fetch/tsm_6k.py 第 3 节）。
+    所以开闸日直接用 tsm 自己那一格 `_due_month((LAG − EARLY))`（LAG=(10, 10)、EARLY 默认 5 →
+    月末后第 5 天，比实测最早的第 6 天早一天），不另立一张节奏表。判据是两表末月的较小值 have
+    对候选月 due：
+      · have ≥ due → 不调 update()，零请求。每月第 0–4 天、以及到货之后直到下月第 5 天，都走这一支；
+      · have < due → update(upto=due)：每轮 1 个 submissions JSON（最近 3 个月的重述体检读缓存件），
+        到货那轮多 1 份正文 + 1 个 MOPS t05st11 POST。
+    cost_sec 不设闸门，是因为那条腿的探针与整轮 update 打的是同样两个请求，闸门省不下网络；
+    这条腿追平之后一个请求都不必打，一个月里大部分日子都是追平的。
+
+    ══ 逾期线：与首页红点同一口径 ══
+    `overdue = _due_month((LAG + GRACE + 1))` = 月末后第 16 天，与 audit_overdue_headline() 一字不差
+    （+1 的来历见那个函数的 docstring），比实测最晚的第 13 天多留 3 天。过线仍没入库就每轮
+    `tsm_6k FAIL 逾期…`，**黏的**，一直响到真入库或有人修 —— 同 _cost_sec_behind 的「宁可吵」。
+    必须它自己响：/tsm/ 的红点跟的是营收腿，6-K 腿冻住时首页照样绿点，页面上只有板块里
+    `_lag_note()` 那一句滞后说明，而读 cron 日志的人看不见页面。
+    update() 自己抛异常的那一轮已经记了 FAIL、直接返回，不再叠印逾期。
+
+    ══ 有新东西为什么必须自己重建 data/tsm.js，以及补建戳 ══
+    与 cost_sec() 同一个理由：按家循环里 `one('tsm')` 早就 NOCHANGE 走人，那次 build（如果有）读的
+    是旧 CSV；没有下面这次 `sh(builder('tsm'))`，CSV 更新了而页面永远读不到。
+    触发条件是「新增了月份，或两表指纹变了，或补建戳与当前指纹不符」。第三条就是补建戳：
+    cache/tsm_6k/_last_built.sha256 记着上次**建成**时两表的指纹。CSV 写成了而页面没建成时
+    （重建失败、进程恰在两步之间被杀、本轮推迟），下一轮 have ≥ due、update() 不再被调用、
+    指纹前后也不变 —— 没有这张戳，页面会一声不响地停在旧图。
+      · 首轮上线时戳不存在，会无条件重建一次 /tsm/（几秒）；cache/ 被清过也一样，无害。
+      · --dry-run 不写戳：试跑生成的 data/ 常被人手 `git restore` 掉，戳留下来会让下一轮正式跑
+        以为页面已经建过。
+      · loop_failed（本轮 tsm 已在按家循环里记了 FAIL）时推迟补建：不建、不写戳、不另记失败。
+        那个故障已经在失败清单里；若坏的是生成器，再建一次只会把同一件事以 tsm_6k 的名义再记一遍。
+        戳没写，下一轮自动重试。
+      · 没有新月份、只因指纹 / 戳不符而补建成功时，状态行之后另印 `tsm_6k REBUILT 补建 /tsm/（原因）`：
+        那时状态行是 NOCHANGE，不补这一行，data/tsm.js 变了、进了提交，日志里却找不到是谁动的。只打印，不改返回值。
+      · 补建失败那行印 build/tsm.py 的 stderr 尾部（折成一行），不印 sh() 消息开头的命令 —— 生产命令本身就有 102 字。
+        stderr 为空（原因只印在 stdout、或被信号杀掉）时印兜底「stderr 为空；命令 build/tsm.py」，冒号后面不留空；
+        sh() 的消息不带退出码，所以印不出退出码。
+    戳放 cache/（gitignore）：它不是数据，放进 PUBLISH 的目录会被 `git add` 收进数据提交。
+
+    ══ 清单外块主体：照常写入、进末行（2026-09-14 所有者定）══
+    第 4 项出现不在 SUBSIDIARY_ENTITIES、名字又不含 TSMC 的块时，fetch/tsm_6k.py 照常写入（按子公司不计入），
+    同时记进模块级 DEGRADED；本函数在 update() 返回后按 one() 同一协议读它（_leg_alerts），非空就记
+    LEG_ALERTS['tsm_6k']，由 main() 并入末行失败清单、report_leg_alerts() 印明细。返回值不变：不算本步失败、
+    不挡重建。只在闸门开着、本轮真调过 update() 时读；最近 3 个月的重述体检再读到同一份月报会再报，黏到有人处置。
+
+    ══ 失败为什么只进失败清单、不阻断 ══
+    6-K 腿失败时两张 CSV 原地不动（整行校验完才写，tmp 文件落 cache/tsm_6k/），/tsm/ 照旧画上个月
+    —— 页面是旧但不错的，`_lag_note()` 会如实印滞后，不属于「宁可不发也不发错」要拦的那个「错」。
+    失败名是 'tsm_6k'（不是 ticker，同 cost_sec）：同一轮确实发布了东西，末行是 PARTIAL；
+    没有发布，末行是 `FAILED 无更新且 N 家失败: …`（main() 里的 nothing()）。
+
+    ══ 只在 `'tsm' in todo` 时跑（同 cost_sec，与公共表刻意不同）══
+    这条腿只有 /tsm/ 一个消费者，而那个消费者就是 TICKERS 里的 `tsm`：`--only cme` 没有理由去打
+    EDGAR 与 MOPS，更没有理由改写 data/tsm.js。生产环境 todo 恒等于 TICKERS，cron 行为不受影响。
+
+    `today` 只为测试留缝，生产路径一律走默认值（同 _due_month 的那条缝）。
+    """
+    p = os.path.join(HERE, 'fetch', 'tsm_6k.py')
+    if not os.path.exists(p):
+        return []                          # 与 cost_sec / mops_remarks 同：删了就当没有
+    try:
+        lag = due_lag('tsm')
+        if lag is None:
+            return []                      # roster 里已没有 tsm：没有节奏可复用，也没有页可喂
+        mod = load(p, 'fetch_tsm_6k')
+        grace = load(os.path.join(HERE, 'build', 'roster.py'), 'roster_tsm6k').GRACE
+        early = EARLY_BY.get('tsm', (EARLY, EARLY))
+        due = _due_month((lag[0] - early[0], lag[1] - early[1]), today)
+        overdue = _due_month((lag[0] + grace + 1, lag[1] + grace + 1), today)
+        have = mod.last_month(SERIES)
+        before = mod.fingerprint(SERIES)
+        gate_open = bool(due and have < due)
+        added = (mod.update(SERIES, CACHE, upto=due, today=today) or []) if gate_open else []
+        have2 = mod.last_month(SERIES)
+        cur = mod.fingerprint(SERIES)
+        # 戳的文件名取模块自己声明的常量（fetch/tsm_6k.py 文件头「对外接口」那一节），不在这里另写一份
+        stamp = os.path.join(CACHE, mod.CACHE_SUB, mod.STAMP_NAME)
+    except Exception as e:
+        print(f'{"tsm_6k":<10} FAIL     {type(e).__name__}: {str(e)[:160]}')
+        return ['tsm_6k']
+
+    def overdue_day(month):                # 该数据月的逾期线 = 月末后第几天（季末月取 LAG 的第二位）
+        return (lag[1] if int(month[5:7]) % 3 == 0 else lag[0]) + grace + 1
+
+    bad = []
+    if added:
+        print(f'{"tsm_6k":<10} NEW      {",".join(added)}')
+    elif gate_open:
+        y, m = divmod(int(have2[:4]) * 12 + int(have2[5:7]), 12)     # have2 的下一个月
+        want = f'{y}-{m + 1:02d}'
+        print(f'{"tsm_6k":<10} NOCHANGE 源上 {want} 的月报 6-K 尚未入库'
+              f'（逾期线：月末后第 {overdue_day(want)} 天）')
+    else:
+        print(f'{"tsm_6k":<10} NOCHANGE 已追平候选月 {due}（零请求）')
+
+    if gate_open:
+        # 清单外块主体（fetch/tsm_6k.py 口径坑 k）：照常写入，但进末行 —— 与 one() 读 DEGRADED 同一协议（见 LEG_ALERTS）。
+        # 只在本轮真调过 update() 时读：闸门关着时模块里的 DEGRADED 不是本轮的。
+        a = _leg_alerts(mod)
+        if a:
+            LEG_ALERTS['tsm_6k'] = a
+            print(f'{"":<10} ⚠ 腿级报警：{",".join(sorted(a))}（明细见文末「腿级降级/报警」）')
+
+    try:
+        with open(stamp, encoding='utf-8') as f:
+            stamped = f.read().strip()
+    except (OSError, ValueError):
+        stamped = None                     # 没有戳 / 读不出 = 视为不符：宁可多建一次
+    cmd = builder('tsm')
+    if cmd is not None and (added or cur != before or stamped != cur):
+        if loop_failed:
+            print(f'{"":<10} ⚠ tsm 本轮在按家循环里已记 FAIL，补建推迟到下一轮（补建戳未更新）')
+        else:
+            try:
+                sh(cmd)
+            except Exception as e:
+                # sh() 的消息是「<完整命令> 失败: <stderr 尾部>」，而生产命令本身就有 102 字（py312 解释器 +
+                # 仓库绝对路径）：截消息头只印得出命令路径、一个字的原因都没有，戳不符又让这一行每轮重复。
+                # 所以只取「 失败: 」之后那段 stderr，折成一行（traceback 里只有 ^~ 的标记行丢掉），印尾部 ——
+                # 异常类型与消息就在最后一行。不是 sh() 抛的（如解释器路径不存在）没有这个分隔符，整条照印尾部。
+                # cost_sec / mops_remarks / taiwan_fx_rebuild 的同款截断是台账已知项，另案处理。
+                why = ' | '.join(ln.strip() for ln in str(e).split(' 失败: ', 1)[-1].splitlines()
+                                 if ln.strip().strip('^~'))
+                if not why:
+                    # 切出来是空串时冒号后面不许空着：子进程被信号杀掉、或把原因印到 stdout 再以非零码退出，stderr 就是空的。
+                    # sh() 的消息里没有退出码（它的签名与其它调用方不动），只能说出是哪条命令 —— 去掉解释器与仓库前缀，
+                    # 生产环境印出来就是 build/tsm.py。不是 sh() 抛的异常消息为空时不能说「stderr 为空」，改印异常类型。
+                    script = ' '.join(c[len(HERE) + 1:] if c.startswith(HERE + os.sep) else c
+                                      for c in cmd[1:]) or cmd[0]
+                    why = (f'stderr 为空；命令 {script}' if ' 失败: ' in str(e)
+                           else f'{type(e).__name__}（无消息）；命令 {script}')
+                print(f'{"tsm":<10} FAIL     月报 6-K 腿更新后重建失败（补建戳未更新，下一轮重试）: '
+                      f'{"…" if len(why) > 300 else ""}{why[-300:]}')
+                bad.append('tsm_6k')
+            else:
+                if not added:
+                    # 只因指纹 / 补建戳不符而补建：上面的状态行印的是 NOCHANGE（没取到新月份），不补这一行，
+                    # data/tsm.js 变了、进了提交，日志里却找不到是谁、为什么动了这一页（同 one() 的 REBUILT）。
+                    # 只打印：返回值不变，末行与 commit 标题（staged_label 读暂存 diff）都不受影响。
+                    reason = ('两表内容有变但无新增月份' if cur != before
+                              else '补建戳缺失或读不出' if stamped is None else '补建戳不符')
+                    print(f'{"tsm_6k":<10} REBUILT  补建 /tsm/（{reason}）')
+                if not dry_run:
+                    try:
+                        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+                        with open(stamp, 'w', encoding='utf-8') as f:
+                            f.write(cur + '\n')
+                    except OSError as e:
+                        print(f'{"":<10} ⚠ 补建戳写不进去（{e}）—— 下一轮会再重建一次 /tsm/，不影响本轮')
+
+    if overdue and have2 < overdue:
+        print(f'{"tsm_6k":<10} FAIL     逾期：两表止于 {have2}，按 TSMC 月报节奏'
+              f'（月末后第 LAG+GRACE+1 = {overdue_day(overdue)} 天）本该已有 {overdue}')
+        if 'tsm_6k' not in bad:
+            bad.append('tsm_6k')
     return bad
 
 
@@ -1931,6 +2354,8 @@ def main():
     for t in todo:
         st, msg = one(t, a.force)
         print(f'{t:<10} {st:<8} {msg}')
+        if t in LEG_ALERTS:               # 状态字不变，但这一家记下了腿级报警（协议见 LEG_ALERTS）
+            print(f'{"":<10} ⚠ 腿级报警：{",".join(sorted(LEG_ALERTS[t]))}（明细见文末「腿级降级/报警」）')
         if st == 'FAIL':
             fails.append(t)
         elif st in ('NEW', 'REBUILT'):
@@ -1950,6 +2375,17 @@ def main():
     # 完整推理（含为什么不拿 latest_quarter() 当跳过闸门）在 cost_sec() 的 docstring 里。
     if 'cost' in todo:
         fails += cost_sec()
+
+    # /tsm/ 的第二个数据源（SEC 月报 6-K，CIK 0001046179）：背書保證 / 衍生性商品两张 series/tsm_*.csv。
+    # **必须在按家循环之后单独一步**，与 cost_sec 同一个理由：`one()` 在 import fetch 之前先问
+    # `not_due('tsm')`，而那个判断读的 data_through 由**营收腿**独家推动 —— 营收一入库闸门就关死整月，
+    # 6-K 晚到一轮就再没人去取，且长得和健康的安静日一模一样。
+    # 与 cost_sec 不同，它有日历预闸（复用 tsm 的 LAG−EARLY，两表追平后零请求）和月末后第
+    # LAG+GRACE+1 天起的逾期黏警报；有新月份就自己去催 build/tsm.py 重建，页面没建成靠补建戳下一轮补。
+    # loop_failed：tsm 本轮已在上面记了 FAIL 时推迟补建，不把同一件事以 tsm_6k 的名义再记一遍。
+    # 完整推理在 tsm_6k() 的 docstring 里。
+    if 'tsm' in todo:
+        fails += tsm_6k(a.dry_run, loop_failed='tsm' in fails)
 
     # MOPS 備註原文：七家台湾半导体页的 brief 引文与核对表那一列共用一份 series，
     # 不是 ticker、不进 TICKERS（理由与失败语义全在 mops_remarks() 的 docstring 里）。
@@ -1981,6 +2417,12 @@ def main():
     # 去重是必须的 —— 一家今天 fetch 失败会先进 fails，它同时逾期就会被记两次，
     # 末行的 `len(fails)` 与逗号串都会翻倍，读日志的人会以为出了两件事。
     fails += [t for t in audit_overdue_headline() if t not in fails]
+    # 腿级报警并入失败清单（协议见 LEG_ALERTS 上方那段）：该家其余腿本轮照常发布，所以它可能
+    # 同时出现在 ok 与 fails 两边，末行因此可能是 PARTIAL；明细由 report_leg_alerts() 在末行前印。
+    # ⚠ 必须排在 taiwan_fx_rebuild(fx_added, set(ok) | set(fails)) **之后**：那一步把 set(ok) | set(fails)
+    #   当成「循环里已建过」而跳过汇率补重建 —— 一家只有腿级报警、本轮没 build 的台湾家若先进了
+    #   fails，就会被误跳过。去重理由同上一行。
+    fails += [t for t in LEG_ALERTS if t not in fails]
 
     # ── 收尾闸门：产物体检（34 页全部生成完之后、commit 之前）─────────────────
     # 这两道与 preflight 那两道的分界线是「查配置/代码」还是「查产物」：
@@ -2035,6 +2477,14 @@ def main():
     # 更早退出的那几条（脏树 / preflight / 未知 ticker）本轮一家都没抓，不会有新台账，下一轮照报。
     # 不看 --only：台账可能是上一轮留下的，今天只跑 cme 也照报 enx 那份。
     report_restatement_logs(t_run)
+    # 人工维护表（公司債月表 / 董事会核准资本支出）的陈旧提示（定案见 audit_manual_series 的 docstring）：
+    # 只打印、不计入 fails、不看 --only，无陈旧项时一个字不印。放在这里是为了落进日志尾部可见区，
+    # 与 report_restatement_logs 同一理由；排在 report_leg_alerts 之前，是因为后者解释的是末行失败清单、
+    # 离末行越近越好，而这一道不改末行。
+    audit_manual_series()
+    # 腿级降级/报警明细（定案见 report_leg_alerts 的 docstring）：只打印，LEG_ALERTS 为空时不印。
+    # 排在收尾体检的最后 = 离末行最近 —— 它解释的正是末行失败清单里那一家。
+    report_leg_alerts()
     # 两道都跑完再判，不在第一道失败时短路：一次跑出全部问题，人只需要修一遍、重跑一次。
     if gate_fail:
         print(f'FAILED 产物闸门未通过（{"、".join(gate_fail)}；逐条见上），'

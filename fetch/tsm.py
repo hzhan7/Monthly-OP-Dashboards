@@ -7,10 +7,17 @@
   series/tsm_fx.csv     month, ntd_per_usd                  ← 本模块自动维护
   series/tsm_guidance.csv                                   ← 本模块**不碰**，见下文「口径坑 5」
 
+/tsm/ 页另外几张非营收表的指路（本模块都不写）：
+  series/tsm_derivatives.csv、tsm_guarantees.csv ← 由 fetch/tsm_6k.py（SEC 月报 6-K 第 3/4 项）维护，本模块不碰
+  series/tsm_capex_approvals.csv                 ← 仍人工录；陈旧提示见 monthly_run.audit_manual_series()
+
 另外还挂着一段**不在无人值守路径上**的公司債工具（文件末尾「公司債」那一节）：
 
-  series/tsm_bonds_tranches.csv   逐檔登记簿                ← 人工录，本模块只读
-  series/tsm_bonds_monthly.csv    月度在外余额/票面          ← 由登记簿重建，可重放
+  series/tsm_bonds_tranches.csv   逐檔登记簿                ← 人工录，本模块只读；**没有**陈旧提示
+  series/tsm_bonds_monthly.csv    月度在外余额/票面          ← 由登记簿重建，可重放；有陈旧提示（同上）
+
+  两张公司債表里只有月表（tsm_bonds_monthly.csv）登记在 monthly_run.MANUAL_SERIES，判据跟它的 month 列；
+  登记簿本身不在登记里。
 
   python3 fetch/tsm.py bonds            对着 Form 20-F 的年末余额逐年打表（只读）
   python3 fetch/tsm.py bonds --write    对账通过后重写 tsm_bonds_monthly.csv

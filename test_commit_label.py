@@ -157,6 +157,23 @@ class TestSatelliteCollapse(unittest.TestCase):
              '+++ b/series/tsm_fx.csv\n+2026-08,32.0\n+2026-09,32.1\n')
         self.assertEqual(self._label(d), 'tsm 2026-08, tsm_fx 2026-08,2026-09')
 
+    def test_tsm_6k_satellites_alone(self):
+        # monthly_run.tsm_6k() 的常见形状：营收早一轮已入库，这一轮只有月报 6-K 那两张表各多一行
+        # （2026-08 的真值，0001046179-26-000658）⇒ 各自成一项，绝不借本家的名字说成「tsm 2026-08」
+        d = ('+++ b/series/tsm_derivatives.csv\n+2026-08,192798341,1582051.0\n'
+             '+++ b/series/tsm_guarantees.csv\n'
+             '+2026-08,657356394,520453981.0,483851076.0,346948663.0\n')
+        self.assertEqual(self._label(d), 'tsm_derivatives 2026-08, tsm_guarantees 2026-08')
+
+    def test_tsm_6k_satellites_absorbed_by_parent(self):
+        # 营收 xlsx 与月报 6-K 同一轮入库（同一份新闻稿、同日发）⇒ 三张表同月，并回「tsm 2026-09」
+        # （数值是合成的，只有月份键参与判定）
+        d = ('+++ b/series/tsm.csv\n+2026-09,500000,46.0\n'
+             '+++ b/series/tsm_derivatives.csv\n+2026-09,190000000,1500000.0\n'
+             '+++ b/series/tsm_guarantees.csv\n'
+             '+2026-09,660000000,520000000.0,480000000.0,350000000.0\n')
+        self.assertEqual(self._label(d), 'tsm 2026-09')
+
     def test_shared_ledger_excluded(self):
         # source_dates.csv 是全仓共用台账，21 个提交里 11 个动了它，不进标题
         d = ('+++ b/series/cme.csv\n+2026-08,1\n'

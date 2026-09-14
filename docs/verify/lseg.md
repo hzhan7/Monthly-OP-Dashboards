@@ -339,6 +339,15 @@ Open Interest **绝不能相加**，只取月末最后一个交易日那一格�
 那个月」当发布日证据，**绝不给回补的历史月份补记发布日**。HTTP `Last-Modified` 被重传污染得更狠
 （AIM 103 期里 58 期与 created 不同，最大滞后 **751 天**），只能当旁证。
 
+**闸门与逾期护栏（2026-09 补记，不改上面的结论）**：本腿自 2026-09 起登记在
+`monthly_run.SLOW_LEGS['lseg']`（`mm_` / `aim_` 前缀，与订单簿共用开闸日，数值见代码），
+头条追平后只要一级市场列欠货，lseg 每天照抓。模块内另设 45 天逾期护栏：官方索引里某月过了
+月末后 45 天还没有文件，`refresh()` 先写完 part CSV 再抛 `LsegPrimaryOverdueError`（推导见
+`fetch/lseg_primary.py` 的 `_MAX_PUBLISH_LAG_DAYS` 注释：197 期 created 最晚 +27、未被重传
+污染的 Last-Modified 最晚 +28），或白名单反查 `LsegPrimaryGapRepublishedError`（written=True，
+`fetch/lseg_primary.py` 护栏 g：`KNOWN_SOURCE_GAPS` 登记为 `'absent'` 的月份出现在了索引里），
+两者都是先写后抛，经 `fetch/lseg.py` 的 `DEGRADED` 计入末行。
+
 ### `orderbook`（**曾是**最慢的一条腿；2026-08-19 已不是，慢腿现在是 LCH RepoClear）
 
 **闸门样本仍是 2021-01 起**，判据是 PDF 内嵌的 `/CreationDate`（Excel 导出时间戳）。
@@ -667,7 +676,8 @@ after prior postings; historical volumes are periodically updated."
    红线画在**每一张**横轴是月份的图上，为一两列的变化误伤其余八十多列不划算。
    三条都写进页尾 `notes` 了。
 9. **降级与不降级的分界**（`fetch/lseg.py`）：**源头缺席**（站挂了 / 官方还没发 / 解析器按铁律 2 主动抛）
-   → 该路本轮不刷新，但**已落库的 part CSV 照常参与合流**，其余三路照跑，打 WARN；
+   → 该路本轮不刷新，但**已落库的 part CSV 照常参与合流**，其余三路照跑，打 WARN
+   （2026-09 起还记进 `fetch/lseg.py` 的 `DEGRADED`，经 `monthly_run.LEG_ALERTS` 计入末行失败清单）；
    四路**全挂**才抛异常（否则 `monthly_run` 会看到 `added=[]` 报 NOCHANGE，
    把一次全站故障伪装成「本月没有新数据」）。**结构缺席**（part 模块文件不见了 /
    part CSV 表头与该模块 `COLUMNS` 对不上）→ **立刻抛，不降级**：那两种情况下宽表会

@@ -471,6 +471,14 @@ class TestRealRemarks(unittest.TestCase):
 # stale() 逐行移植成 Python，与 monthly_run.audit_overdue_headline 用的那条算术
 # 在 28 家 × 6 个 data_through × 730 天上逐组对拍。
 #
+# **本组只守「判据与红点等价」，不守「今天该不该响」。** 2026-09 删掉了原先的
+# test_no_false_alarm_today：它断言 `audit_overdue_headline() == []`，读的是 data/*.js 的活状态，
+# 而本文件是 preflight 硬闸（main() 里 test_guards 非 0 就 sys.exit(1)，排在按家循环之前）——
+# 任何一家头条过了红点线的那天起整轮一家都不抓，逾期那家永远追不上，天天 FAILED。
+# 逾期信号并没有丢：main() 在按家循环与 roster() 之后 `fails += audit_overdue_headline()`，
+# 逾期家计入末行失败清单（PARTIAL 或「FAILED 无更新且 N 家失败」），不 exit、不拦其余各家发布。
+# 以后加的测试同样不许断言活状态（见 M 组组头第三条规矩）。
+#
 # ⚠ 移植时两处最容易写错，都在下面 _js_stale 里标了：
 #   · end.getMonth() 是 **0-indexed**，JS 里 `mo = getMonth()===0 ? 12 : getMonth()`
 #     算的是「end 的前一个月」= 候选月；
@@ -543,11 +551,6 @@ class TestOverdueMatchesRedDot(unittest.TestCase):
                 self.assertNotEqual(
                     self._disagreements(bump), [],
                     f'偏移 lag+GRACE+{bump} 竟无分歧 —— 对拍失去意义，先查 _js_stale')
-
-    def test_no_false_alarm_today(self):
-        """今天真跑一遍：仓库当前状态下不该有任何一家逾期（有就是真出事了）。"""
-        mr, _ = _load_once()
-        self.assertEqual(mr.audit_overdue_headline(), [])
 
 
 
@@ -2588,6 +2591,571 @@ class TestSgxOwnerLayout(unittest.TestCase):
                and (any(_in_group(e, gz) for gz in gzs)
                     or any(s.get('name') in names for s in e.get('series') or []))]
         self.assertEqual(bad, [])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# M. LSEG 一级市场逾期护栏 + 腿级降级计入末行
+# ═══════════════════════════════════════════════════════════════════════════
+# 守 2026-09 那次改动的三件事：
+#   · fetch/lseg_primary.py 的逾期护栏：官方索引里某月过了 `_MAX_PUBLISH_LAG_DAYS` 还没有文件，
+#     `refresh()` 先写完 part CSV 再抛 `LsegPrimaryOverdueError`（written=True）；
+#   · fetch/lseg.py 的 `DEGRADED`：单腿降级或报警逐路记账、每轮清空，带 written 的报警不算
+#     「这一路失败」，不计入「四路全挂」；
+#   · monthly_run 读 `DEGRADED` 的通用协议（`LEG_ALERTS` / `_leg_alerts` / `report_leg_alerts`），
+#     以及 `SLOW_LEGS['lseg']` 追加的 mm_ / aim_ 登记。
+#
+# 五条写法规矩，缺一条这组就会反过来咬人：
+#   · **为什么进 preflight、不放 fetch/test_*.py**：fetch/test_*.py 没接进任何闸门（monthly_run
+#     只调 check_specs / test_guards / verify_pages / check_yoy_caliber），写在那儿只能靠人手敲。
+#   · **全部是注入**：注入日期、临时目录、合成夹具。不联网，不读 cache/，不读 series/ 或 data/
+#     的现值 —— 上游今天是什么状态，都卡不死整轮（本文件在硬闸里，红一条 = 28 家当天都不发）。
+#   · **禁止「今天不该报警」这类断言**，反例就是 2026-09 已删除的 test_no_false_alarm_today（原在 E 组）：
+#     它读活状态，任何一家头条过了红点线的那天起 preflight 天天红，逾期那家永远追不上（删除理由见 E 组组头）。
+#     「_overdue_missing 对真 cache 为 []」「slow_pending('lseg') 读真 series 为 False」都不许加。
+#   · **lseg 是可删的交易所**（docs/CRON_WIRING.md §4）：依赖 fetch/lseg*.py 的类按文件在不在
+#     skip，删了不能把 preflight 打挂。只测 monthly_run 通用协议的 M10 不依赖 lseg，不 skip。
+#   · **运维会照报错去改的登记表，一律在 setUp 里换成合成夹具**（addCleanup 还原，见 `_m_seal_registries`）。
+#     反例是 2026-09-14 核查的 lseg-1-1：M1–M8 原先读 fetch/lseg_primary.py `KNOWN_SOURCE_GAPS` 的现值，
+#     而逾期报错正是叫人往这张表里登记 —— 照做登记 ('AIM','2026-08')，M 组红 6 条，次日 07:56 preflight
+#     整轮停跑（登记 ('MM','2024-03') 则红 M4）。护栏给的修法被护栏测试拒绝，就是死锁。
+#     将来加 MARKET_END 这类「报错叫人登记」的表，同一提交在 `_M_REGISTRY_FIXTURES` 里给它放夹具。
+#     **界线**：只有代码改动才会变的配置不密封，照读现值 —— `MARKETS` / `MARKET_START` / `LEGACY_LAST` /
+#     `_MAX_PUBLISH_LAG_DAYS`（报错明说不许调）/ fetch/lseg.py 的 `PARTS`、`COLUMN_LEG` /
+#     monthly_run 的 `SLOW_LEGS`、`TICKERS`。改它们本来就要同一提交连带改测试并跑通 test_guards；
+#     护栏 e 里「从 SLOW_LEGS['lseg'] 摘前缀」前面挂着「另议 MARKET_END」，同样是代码改动，不是登记。
+import contextlib  # noqa: E402
+import copy  # noqa: E402
+import csv  # noqa: E402
+import io  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+import types  # noqa: E402
+
+_LSEG_FILES = tuple(os.path.join(ROOT, 'fetch', f) for f in (
+    'lseg.py', 'lseg_orderbook.py', 'lseg_primary.py', 'lseg_tradeweb.py', 'lseg_lch.py'))
+_HAVE_LSEG = all(os.path.exists(p) for p in _LSEG_FILES)
+_NO_LSEG = 'fetch/lseg.py 或 fetch/lseg_*.py 不在（lseg 是可删的交易所，见 docs/CRON_WIRING.md §4）'
+_LSEG_MODS = {}
+
+
+def _lseg_mod(name):
+    """按路径加载 fetch/<name>.py，一轮只加载一次（同 F 组的 spec_from_file_location）。
+
+    模块名带 `_m_` 前缀，不与 monthly_run 运行时 load() 出来的同名模块打架。
+    测试替换的模块属性（fetch_rows / _REFRESH / 登记表夹具）一律 addCleanup 复原，所以共用一份实例无妨。
+    """
+    if name not in _LSEG_MODS:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_m_' + name, os.path.join(ROOT, 'fetch', name + '.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _LSEG_MODS[name] = mod
+    return _LSEG_MODS[name]
+
+
+def _m_tmpdir(tc, prefix):
+    d = tempfile.mkdtemp(prefix=prefix)
+    tc.addCleanup(shutil.rmtree, d, True)
+    return d
+
+
+def _m_quiet():
+    return contextlib.redirect_stdout(io.StringIO())
+
+
+# 运维照报错去登记的表 → M 组用的合成夹具（组头第五条规矩）。形状照真表，月份**故意不取**真表那两条
+# （MM 2022-12 / AIM 2019-09）：夹具与真表无关，真表登记了什么、写没写坏，本组都不受影响。
+# 夹具月份也不许碰测试里当样例的月份（两个市场的 2026-08、MM 2024-03、MM 2018-04）。
+_M_REGISTRY_FIXTURES = {
+    'lseg_primary': {
+        'KNOWN_SOURCE_GAPS': {
+            ('MM', '2021-06'): ('absent', '夹具：官方索引里没有这一期'),
+            ('AIM', '2020-02'): ('blank', '夹具：文件在、格子空'),
+        },
+        # 模块目前没有这个常量（hasattr 不中就不换）。护栏 e 让人「另议 MARKET_END」，真加上的那天
+        # 本组默认按空表密封（没有市场停发）；它的形状不是 dict 的话，同一提交改这里。
+        'MARKET_END': {},
+    },
+}
+
+
+def _m_seal_registries(tc, mod, name):
+    """把 `mod` 上 `_M_REGISTRY_FIXTURES[name]` 列出的登记表换成夹具的深拷贝，addCleanup 还原现值。
+
+    模块里没有这个名字就不换（表名改了、或 MARKET_END 这类还没加的表）—— 用到它的测试会自己报
+    AttributeError，那是代码改动的事，不是登记的事。
+    """
+    for attr, fixture in _M_REGISTRY_FIXTURES.get(name, {}).items():
+        if hasattr(mod, attr):
+            tc.addCleanup(setattr, mod, attr, getattr(mod, attr))
+            setattr(mod, attr, copy.deepcopy(fixture))
+
+
+@unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
+class TestLsegPrimaryOverdue(unittest.TestCase):
+    """M1–M8：fetch/lseg_primary.py 的逾期护栏；M13–M16：白名单的类型、反查、形状校验与「'blank' 不豁免逾期」。
+    present / today / fetch_rows 全部注入；KNOWN_SOURCE_GAPS 在 setUp 里换成夹具（组头第五条）。"""
+
+    def setUp(self):
+        self.P = _lseg_mod('lseg_primary')
+        _m_seal_registries(self, self.P, 'lseg_primary')
+
+    def _full(self, upto):
+        """两个市场各自 MARKET_START..upto 的全集减去 KNOWN_SOURCE_GAPS（夹具）里 'absent' 类的月份 =「该有的都有」。
+        'blank' 类（夹具 AIM 2020-02）**留在** present 里：真 blank 的文件本来就在索引里，逾期护栏靠「在索引里」
+        跳过它，不靠登记豁免（fetch/lseg_primary.py 护栏 g；反过来的情形见 M16）。"""
+        P = self.P
+        return {tag: {m for m in P._months_between(P.MARKET_START[tag], upto)
+                      if (P.KNOWN_SOURCE_GAPS.get((tag, m)) or ('',))[0] != 'absent'}
+                for tag, *_ in P.MARKETS}
+
+    def _run_refresh(self, index_text, today=datetime.date(2026, 10, 16), extra=()):
+        """M6 / M8 / M14 / M15 共用的注入：假 fetch_rows 给两行合成数据，present 缺 AIM 2026-08，
+        另加 `extra` 里的 (tag, month)（M14 拿它把夹具里 'absent' 的那一期放进索引）。today 缺省 10-16。
+
+        → (异常或 None, 临时 series 目录, stdout)。`refresh()` 按模块全局名现查 fetch_rows，
+        所以替换模块属性就换掉了它读 present / index_text 的来源。
+        """
+        P = self.P
+        rows = [dict({'month': m}, **{c: 7 for c in P.COLUMNS[1:]}) for m in ('2026-07', '2026-08')]
+
+        def fake_fetch_rows(cache_dir=None):
+            return [dict(r) for r in rows]
+        present = self._full('2026-08')
+        present['AIM'].discard('2026-08')
+        for tag, month in extra:
+            present[tag].add(month)
+        fake_fetch_rows.present = present
+        fake_fetch_rows.index_text = index_text
+        self.addCleanup(setattr, P, 'fetch_rows', P.fetch_rows)
+        P.fetch_rows = fake_fetch_rows
+        series = _m_tmpdir(self, 'tg_m_primary_')
+        err, buf = None, io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                P.refresh(series, series, today=today)
+            except P.LsegPrimaryFetchError as e:
+                err = e
+        return err, series, buf.getvalue()
+
+    def test_overdue_silent_within_window(self):
+        """M1：8 月数据在 09-14（+14）还不在索引里是常态 —— 不报逾期，只进 pending。"""
+        overdue, pending = self.P._overdue_missing(self._full('2026-07'), datetime.date(2026, 9, 14))
+        self.assertEqual(overdue, [])
+        self.assertEqual(pending, [('MM', '2026-08', 14), ('AIM', '2026-08', 14)])
+
+    def test_overdue_boundary_is_strict(self):
+        """M2：+45 不报、+46 报 ——「严格大于」，与 fetch/lseg_orderbook.py 那道 90 天哨兵同一个比较方向。"""
+        present = self._full('2026-07')
+        self.assertEqual(self.P._overdue_missing(present, datetime.date(2026, 10, 15))[0], [])
+        self.assertEqual(self.P._overdue_missing(present, datetime.date(2026, 10, 16))[0],
+                         [('MM', '2026-08', 46), ('AIM', '2026-08', 46)])
+
+    def test_one_market_only(self):
+        """M3：两个市场不是每月同步发 —— 只报没到的那一个。"""
+        present = self._full('2026-07')
+        present['MM'].add('2026-08')
+        self.assertEqual(self.P._overdue_missing(present, datetime.date(2026, 10, 16))[0],
+                         [('AIM', '2026-08', 46)])
+
+    def test_start_and_known_gaps_not_flagged(self):
+        """M4：起点之前与 KNOWN_SOURCE_GAPS 不报（白名单取自夹具 _M_REGISTRY_FIXTURES：'absent' 靠登记豁免，'blank' 的文件在索引里）；
+        白名单之外的中段洞必须报。"""
+        P, today = self.P, datetime.date(2026, 10, 16)
+        overdue, pending = P._overdue_missing(self._full('2026-07'), today)
+        flagged = {(t, m) for t, m, _d in overdue + pending}
+        self.assertTrue(P.KNOWN_SOURCE_GAPS)
+        for key in sorted(P.KNOWN_SOURCE_GAPS) + [('MM', '2018-04')]:
+            with self.subTest(gap=key):
+                self.assertNotIn(key, flagged)
+        self.assertEqual(sorted(x for x in flagged if x[1] < P.MARKET_START[x[0]]), [],
+                         '起点之前的月份被报了')
+        present = self._full('2026-07')
+        present['MM'].discard('2024-03')
+        self.assertIn(('MM', '2024-03'), {(t, m) for t, m, _d in P._overdue_missing(present, today)[0]})
+
+    def test_threshold_band_vs_documented_max(self):
+        """M5：max(docstring「发布节奏」表的最晚) + 8 <= _MAX_PUBLISH_LAG_DAYS < 90。
+
+        +8 = created 到挂出的 7 天先例 + 挂出当天 cron 已跑过、次日才取得到的 1 天；
+        90 = 订单簿那条腿的哨兵，也基本等于陈旧列审计首报日 —— 到 90 这道护栏就白设了。
+        「最晚」是**按文本**从模块 docstring 那张表（AIM 与 Main Market 两行）读的，不是写死的数：
+        要调 `_MAX_PUBLISH_LAG_DAYS`，必须先改那张表与本测试，不能只改常量。
+        """
+        P = self.P
+        lines = [ln.strip() for ln in (P.__doc__ or '').splitlines() if ln.strip().startswith('|')]
+        head = next((ln for ln in lines if '市场' in ln and '最晚' in ln), None)
+        self.assertIsNotNone(head, 'fetch/lseg_primary.py docstring 里找不到「发布节奏」表头（含「市场」与「最晚」）')
+        col = [c.strip() for c in head.strip('|').split('|')].index('最晚')
+        latest = {}
+        for ln in lines:
+            cells = [c.strip() for c in ln.strip('|').split('|')]
+            if cells[0] in ('AIM', 'Main Market'):
+                m = re.fullmatch(r'\+(\d+)', cells[col]) if col < len(cells) else None
+                self.assertIsNotNone(m, f'「{cells[0]}」那一行的「最晚」格读不出：{ln!r}')
+                latest[cells[0]] = int(m.group(1))
+        self.assertEqual(set(latest), {'AIM', 'Main Market'}, f'「发布节奏」表只读到 {sorted(latest)}')
+        lim = P._MAX_PUBLISH_LAG_DAYS
+        self.assertLessEqual(max(latest.values()) + 8, lim,
+                             f'阈值 {lim} 离实测最晚 +{max(latest.values())} 不足 8 天：会把正常晚发报成逾期')
+        self.assertLess(lim, 90, f'阈值 {lim} 已追上订单簿哨兵 / 陈旧列审计：这道护栏白设了')
+
+    def test_witness_does_not_gate_raise(self):
+        """M6：证词只写进报错消息、不决定抛不抛 ——「没认出来」与「晚发或停发」两种证词下都照样抛。"""
+        P = self.P
+        self.assertIn('没认出来', P._witness('MM', '2026-08', 'Main Market factsheet Aug 2026.xlsx'))
+        self.assertIn('晚发或停发', P._witness('MM', '2026-08', ''))
+        for text, word in (({'AIM': 'AIM factsheet Aug 2026.xlsx'}, '没认出来'), ({}, '晚发或停发')):
+            with self.subTest(index_text=text):
+                err, _series, _out = self._run_refresh(text)
+                self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+                self.assertIn(word, str(err))
+
+    def test_url_for_mirrors_legacy_rule(self):
+        """M7：护栏认的「有文件」与 fetch_rows 真去下载的是同一条规则 ——
+        .xls 只在 LEGACY_LAST 之内认（AIM 2016-12 及更早），Main Market 的 .xls 一律不认；两种都有时取 xlsx。"""
+        P = self.P
+        xlsx = {'MM': {}, 'AIM': {'2016-06': 'aim-2016-06.xlsx'}}
+        xls = {'MM': {'2009-01': 'mm-2009-01.xls', '2019-05': 'mm-2019-05.xls'},
+               'AIM': {'2016-05': 'aim-2016-05.xls', '2016-06': 'aim-2016-06.xls',
+                       '2017-05': 'aim-2017-05.xls'}}
+        self.assertEqual(P._url_for(xlsx, xls, 'AIM', '2016-05'), 'aim-2016-05.xls')
+        self.assertIsNone(P._url_for(xlsx, xls, 'AIM', '2017-05'))
+        for month in ('2009-01', '2019-05'):
+            with self.subTest(market='MM', month=month):
+                self.assertIsNone(P._url_for(xlsx, xls, 'MM', month))
+        self.assertEqual(P._url_for(xlsx, xls, 'AIM', '2016-06'), 'aim-2016-06.xlsx')
+
+    def test_refresh_writes_before_raise(self):
+        """M8：先写后抛。抛出的是 LsegPrimaryOverdueError（written=True，LsegPrimaryFetchError 的子类），
+        而那一刻 part CSV 已经写完、合成的两行都在 —— 顺序反了，一个市场晚发就会拖住另一个市场入库。"""
+        P = self.P
+        err, series, _out = self._run_refresh({})
+        self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+        self.assertTrue(issubclass(P.LsegPrimaryOverdueError, P.LsegPrimaryFetchError))
+        self.assertIs(getattr(err, 'written', None), True)
+        self.assertIn('AIM 2026-08', str(err))
+        path = os.path.join(series, 'lseg_part_primary.csv')
+        self.assertTrue(os.path.exists(path), '抛之前没写 part CSV')
+        with open(path, encoding='utf-8', newline='') as f:
+            got = list(csv.reader(f))
+        self.assertEqual(got[0], P.COLUMNS)
+        self.assertEqual([r[0] for r in got[1:]], ['2026-07', '2026-08'])
+        self.assertEqual(set(got[2][1:]), {'7'})
+
+    def test_republished_gaps_absent_only(self):
+        """M13：白名单反查只查 'absent'。登记为「官方索引里没有」的那一期出现在 present 里 → 报；
+        'blank'（文件本来就在索引里）出现在 present 里 → 不报；都不在 → 不报。月份全取自夹具。"""
+        P = self.P
+        gaps = sorted(P.KNOWN_SOURCE_GAPS.items())
+        absent = [k for k, (kind, _why) in gaps if kind == 'absent']
+        blank = [k for k, (kind, _why) in gaps if kind == 'blank']
+        self.assertTrue(absent and blank, "夹具里 'absent' / 'blank' 两种都得有")
+        present = self._full('2026-07')
+        self.assertEqual(P._republished_gaps(present), [])
+        for tag, month in blank:
+            present[tag].add(month)
+        self.assertEqual(P._republished_gaps(present), [], "'blank' 的文件本来就在索引里，不许报")
+        for tag, month in absent:
+            present[tag].add(month)
+        self.assertEqual(sorted(P._republished_gaps(present)),
+                         sorted((t, m, P.KNOWN_SOURCE_GAPS[(t, m)][1]) for t, m in absent))
+        # 反查不改逾期判定：此时两类登记的月份都在索引里，都不进 overdue / pending（'blank' 不在索引里照报，见 M16）
+        overdue, pending = P._overdue_missing(present, datetime.date(2026, 10, 16))
+        self.assertEqual({(t, m) for t, m, _d in overdue + pending} & set(P.KNOWN_SOURCE_GAPS), set())
+
+    def test_refresh_republished_gap_written_alarm(self):
+        """M14：反查命中与逾期同一条路 —— 先写 part CSV，再以 written=True 报警（口径 (a)：进 DEGRADED / 末行）。
+        只有反查命中时抛 LsegPrimaryGapRepublishedError（不是逾期那个类）；同轮也逾期时抛逾期那个类，
+        消息里两段都在；夹具那一期不在索引里时一声不响。"""
+        P = self.P
+        tag, month = sorted(k for k, (kind, _w) in P.KNOWN_SOURCE_GAPS.items() if kind == 'absent')[0]
+        label = '%s %s' % (tag, month)
+        # (a) 09-14：AIM 2026-08 才 +14、只进 pending；夹具里 'absent' 的那一期出现在索引里
+        err, series, out = self._run_refresh({}, today=datetime.date(2026, 9, 14), extra=[(tag, month)])
+        self.assertIsInstance(err, P.LsegPrimaryGapRepublishedError)
+        self.assertNotIsInstance(err, P.LsegPrimaryOverdueError)
+        self.assertTrue(issubclass(P.LsegPrimaryGapRepublishedError, P.LsegPrimaryFetchError))
+        self.assertIs(getattr(err, 'written', None), True)
+        self.assertIn(label, str(err))
+        self.assertIn(label, out, '反查命中没打印 ⚠ 行')
+        self.assertIn('索引里还没有', out, 'pending 那一行被反查吞掉了')
+        path = os.path.join(series, 'lseg_part_primary.csv')
+        self.assertTrue(os.path.exists(path), '抛之前没写 part CSV')
+        with open(path, encoding='utf-8', newline='') as f:
+            self.assertEqual([r[0] for r in list(csv.reader(f))[1:]], ['2026-07', '2026-08'])
+        # (b) 10-16：同轮 AIM 2026-08 也逾期 → 抛逾期那个类，两段都在消息里
+        err, _series, _out = self._run_refresh({}, extra=[(tag, month)])
+        self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+        self.assertIs(getattr(err, 'written', None), True)
+        self.assertIn('AIM 2026-08', str(err))
+        self.assertIn(label, str(err))
+        # (c) 夹具那一期不在索引里：09-14 只有 pending，照常返回
+        err, _series, _out = self._run_refresh({}, today=datetime.date(2026, 9, 14))
+        self.assertIsNone(err)
+
+    def test_gap_table_shape_checked_before_write(self):
+        """M15：登记写坏不许悄悄失效。旧式裸字符串值、类型拼错、市场 tag 不认识、月份格式不对、出处空白 ——
+        _gap_table() 一律抛 LsegPrimaryFetchError（不带 written），refresh() 在写 part CSV 之前就抛。
+        这里换进去的也是合成坏表（setUp 的 addCleanup 照样还原真表）：真表写坏只让 lseg 这一路当天失败，
+        不许让 preflight 变红。"""
+        P = self.P
+        bad_tables = {
+            'bare_string': {('MM', '2021-06'): '裸字符串（旧式写法）'},
+            'bad_kind': {('MM', '2021-06'): ('missing', '类型拼错')},
+            'bad_tag': {('LSE', '2021-06'): ('absent', '市场 tag 不认识')},
+            'bad_month': {('MM', '2021-6'): ('absent', '月份不是 YYYY-MM')},
+            'blank_why': {('MM', '2021-06'): ('absent', '  ')},
+        }
+        # 自带还原，不靠 setUp 那一条：哪天有人拿掉密封，本测试也不许把坏表漏给后面的测试
+        self.addCleanup(setattr, P, 'KNOWN_SOURCE_GAPS', P.KNOWN_SOURCE_GAPS)
+        for case, table in bad_tables.items():
+            with self.subTest(case=case):
+                P.KNOWN_SOURCE_GAPS = table
+                with self.assertRaises(P.LsegPrimaryFetchError) as cm:
+                    P._gap_table()
+                self.assertFalse(getattr(cm.exception, 'written', False))
+                err, series, _out = self._run_refresh({}, today=datetime.date(2026, 9, 14))
+                self.assertIsInstance(err, P.LsegPrimaryFetchError)
+                self.assertFalse(getattr(err, 'written', False), '登记写坏是普通失败，不是「已写入 + 报警」')
+                self.assertFalse(os.path.exists(os.path.join(series, 'lseg_part_primary.csv')),
+                                 '登记写坏时不许先写 part CSV')
+
+    def test_blank_registration_does_not_exempt_overdue(self):
+        """M16：'blank' 登记不豁免逾期（fetch/lseg_primary.py 护栏 g）。'blank' 只说「文件在索引里、格子空」，
+        真 blank 的月份靠「在索引里」跳过；登记成 'blank' 而索引里没有文件，就与没登记一样报 ——
+        阈值内进 pending，+46 进 overdue，经 refresh() 先写 part CSV 再以 written=True 抛 LsegPrimaryOverdueError。
+        对照：同一期按 'absent' 登记则豁免。反例是 2026-09-14 复核的 S7b / C3：两类都豁免时，照逾期报错把
+        AIM 2026-08 登记成 'blank'，报警一声不响地没了。表一律取自 setUp 换进来的夹具（加条目也在副本上），不读真表。"""
+        P = self.P
+        # (a) 夹具里的 'blank' 月份不在索引里 → 照报，不因登记跳过
+        tag, month = sorted(k for k, (kind, _w) in P.KNOWN_SOURCE_GAPS.items() if kind == 'blank')[0]
+        present = self._full('2026-07')
+        self.assertIn(month, present[tag], "_full 须把 'blank' 夹具月留在 present 里")
+        present[tag].discard(month)
+        self.assertIn((tag, month),
+                      {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 10, 16))[0]})
+        # (b) 照逾期报错把 AIM 2026-08 登记成 'blank' / 'absent'（夹具副本上加一条；自带还原，不靠 setUp 那一条）
+        self.addCleanup(setattr, P, 'KNOWN_SOURCE_GAPS', P.KNOWN_SOURCE_GAPS)
+        base, key = dict(P.KNOWN_SOURCE_GAPS), ('AIM', '2026-08')
+        for kind in ('blank', 'absent'):
+            with self.subTest(kind=kind):
+                table = dict(base)
+                table[key] = (kind, '夹具：照逾期报错登记')
+                P.KNOWN_SOURCE_GAPS = table
+                present = self._full('2026-07')
+                pending = {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 9, 14))[1]}
+                overdue = {(t, m) for t, m, _d in P._overdue_missing(present, datetime.date(2026, 10, 16))[0]}
+                err, series, out = self._run_refresh({})
+                if kind == 'blank':
+                    self.assertIn(key, pending, "'blank' 登记把阈值内的缺月从 pending 里吞掉了")
+                    self.assertIn(key, overdue, "'blank' 登记压掉了逾期")
+                    self.assertIsInstance(err, P.LsegPrimaryOverdueError)
+                    self.assertIs(getattr(err, 'written', None), True)
+                    self.assertIn('AIM 2026-08', str(err))
+                    self.assertIn('AIM 2026-08', out, '逾期没打印 ⚠ 行')
+                    self.assertTrue(os.path.exists(os.path.join(series, 'lseg_part_primary.csv')),
+                                    '抛之前没写 part CSV')
+                else:
+                    self.assertNotIn(key, pending | overdue)
+                    self.assertIsNone(err, "对照：'absent' 登记豁免逾期，这一期不在索引里时一声不响")
+
+
+@unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
+class TestLsegDegraded(unittest.TestCase):
+    """M9：fetch/lseg.py 的 DEGRADED。四路 part CSV 与宽表全是合成的，不拷贝仓库 series 的现值。"""
+
+    def test_degraded_recorded_cleared_and_written_not_counted(self):
+        L = _lseg_mod('lseg')
+        series, cache = _m_tmpdir(self, 'tg_m_series_'), _m_tmpdir(self, 'tg_m_cache_')
+        for leg, _n, part_csv, _d in L.PARTS:
+            cols = ['month'] + L._data_columns(leg)
+            with open(os.path.join(series, part_csv), 'w', encoding='utf-8', newline='') as f:
+                w = csv.writer(f, lineterminator='\n')
+                w.writerow(cols)
+                for month in ('2026-06', '2026-07'):
+                    w.writerow([month] + ['1'] * (len(cols) - 1))
+        saved = dict(L._REFRESH)
+
+        def restore():
+            L._REFRESH.clear()
+            L._REFRESH.update(saved)
+            L.DEGRADED.clear()
+        self.addCleanup(restore)
+        with _m_quiet():
+            L._update(series, cache, refresh=False)        # 合成 part CSV → 合成 lseg.csv（基线）
+        wide = os.path.join(series, L.CSV_NAME)
+        with open(wide, 'rb') as f:
+            snap = f.read()
+
+        class Written(Exception):
+            written = True
+
+        def noop(mod, s, c):
+            return None
+
+        def alarm(mod, s, c):
+            raise Written('一级市场逾期（注入）')
+
+        def boom(mod, s, c):
+            raise RuntimeError('网络抖动（注入）')
+
+        legs = [p[0] for p in L.PARTS]
+        # (a) 只有 primary 报警，其余三路空操作：不算新增、只记账、宽表逐字节不动
+        L._REFRESH.update({leg: noop for leg in legs}, primary=alarm)
+        with _m_quiet():
+            added = L._update(series, cache, refresh=True)
+        self.assertEqual(added, [])
+        self.assertEqual(set(L.DEGRADED), {'primary'})
+        with open(wide, 'rb') as f:
+            self.assertEqual(f.read(), snap, '只有报警、没有新数据，合成 lseg.csv 却变了')
+        # (b) 其余三路真失败 + primary 报警：报警不算「这一路失败」，不许凑成「四路全挂」
+        L._REFRESH.update({leg: boom for leg in legs}, primary=alarm)
+        try:
+            with _m_quiet():
+                L._update(series, cache, refresh=True)
+        except L.LsegFetchError as e:
+            self.fail(f'三路失败 + 一路 written 报警被当成四路全挂：{e}')
+        self.assertEqual(set(L.DEGRADED), set(legs))
+        # (c) 四路全是普通失败：照旧抛
+        L._REFRESH.update({leg: boom for leg in legs})
+        with _m_quiet(), self.assertRaises(L.LsegFetchError):
+            L._update(series, cache, refresh=True)
+        # 全换成空操作再跑一轮：上一轮的记账必须清掉，否则 monthly_run 会报一条已经好了的腿
+        L._REFRESH.update({leg: noop for leg in legs})
+        with _m_quiet():
+            L._update(series, cache, refresh=True)
+        self.assertEqual(L.DEGRADED, {})
+
+
+class TestLegAlertsProtocol(unittest.TestCase):
+    """M10：monthly_run 读 DEGRADED 的通用协议。不依赖 fetch/lseg*.py（删了 lseg 照样成立），不 skip。"""
+
+    def test_leg_alerts_protocol(self):
+        """_leg_alerts 四种输入都不抛；report_leg_alerts 空时不印、明细不截断、坏条目不抛；
+        one() 在 NOCHANGE 提前返回之前读 DEGRADED。"""
+        mr, _ = _load_once()
+        NS = types.SimpleNamespace
+        self.assertEqual(mr._leg_alerts(NS(DEGRADED={'primary': 'X'})), {'primary': 'X'})
+        for mod in (NS(), NS(DEGRADED=None), NS(DEGRADED={})):
+            with self.subTest(mod=mod):
+                self.assertEqual(mr._leg_alerts(mod), {})
+        self.assertTrue(mr._leg_alerts(NS(DEGRADED='oops')), '协议写坏了（不是 dict）必须吵，不能当没事')
+
+        class Hostile:
+            def __getattr__(self, name):
+                raise RuntimeError('读属性就炸（注入）')
+        self.assertTrue(mr._leg_alerts(Hostile()), '读 DEGRADED 出错时必须吵，且绝不抛')
+
+        saved = dict(mr.LEG_ALERTS)
+
+        def restore():
+            mr.LEG_ALERTS.clear()
+            mr.LEG_ALERTS.update(saved)
+        self.addCleanup(restore)
+
+        def report():
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                mr.report_leg_alerts()
+            return buf.getvalue()
+
+        mr.LEG_ALERTS.clear()
+        self.assertEqual(report(), '', 'LEG_ALERTS 为空时必须一个字都不印（每一行都在挤 tail -60 的窗口）')
+        # 逾期清单排在异常消息最前面、一项几十字：多到三项以上就超过 300 字，明细不许被截掉
+        items = '；'.join(f'AIM 2025-{m:02d}（月末后 {300 - m} 天；证词：索引里连这个月的字样都没有）'
+                         for m in range(1, 9))
+        mr.LEG_ALERTS['lseg'] = {'primary': 'LsegPrimaryOverdueError: 逾期未见：' + items}
+        out = report()
+        self.assertIn('腿级降级/报警', out)
+        for m in range(1, 9):
+            self.assertIn(f'AIM 2025-{m:02d}', out)
+
+        class Unprintable:
+            def __str__(self):
+                raise ValueError('转不成文本（注入）')
+            __repr__ = __str__
+        mr.LEG_ALERTS['zz_unprintable'] = {'leg': Unprintable()}
+        mr.LEG_ALERTS['zz_not_a_dict'] = 'oops'
+        self.assertIn('腿级降级/报警', report())            # 不许抛
+
+        # one() 必须在 NOCHANGE 提前返回**之前**读 DEGRADED ——「一条腿坏了、其余腿也没新数据」那天
+        # 正好走 NOCHANGE，读晚了报警就被那个 return 吞掉（2026-09-05 lseg 的形状）。
+        # 全部注入：临时 HERE 下放一个空的 fetch/zz_leg.py 占位，load / not_due / builder /
+        # series_fingerprint 换成替身 —— 不跑任何真 fetch、不读 series/。
+        here = _m_tmpdir(self, 'tg_m_one_')
+        os.makedirs(os.path.join(here, 'fetch'))
+        open(os.path.join(here, 'fetch', 'zz_leg.py'), 'w').close()
+        fake = NS(DEGRADED={}, update=lambda series, cache: [])
+        for name, val in (('HERE', here), ('not_due', lambda t: False), ('builder', lambda t: ['true']),
+                          ('series_fingerprint', lambda t: 'same'), ('load', lambda path, name: fake)):
+            self.addCleanup(setattr, mr, name, getattr(mr, name))
+            setattr(mr, name, val)
+        mr.LEG_ALERTS.clear()
+        fake.DEGRADED = {'tradeweb': 'RuntimeError: 注入'}
+        self.assertEqual(mr.one('zz_leg', False), ('NOCHANGE', ''))
+        self.assertEqual(mr.LEG_ALERTS.get('zz_leg'), {'tradeweb': 'RuntimeError: 注入'},
+                         'one() 走 NOCHANGE 分支时没读到 DEGRADED —— 报警被提前 return 吞掉了')
+        mr.LEG_ALERTS.clear()
+        fake.DEGRADED = {}
+        self.assertEqual(mr.one('zz_leg', False), ('NOCHANGE', ''))
+        self.assertNotIn('zz_leg', mr.LEG_ALERTS)
+
+
+@unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
+class TestSlowLegsLseg(unittest.TestCase):
+    """M11–M12：SLOW_LEGS['lseg'] 的 mm_ / aim_ 登记。夹具全是合成的，不读 series/ 现值。"""
+
+    def setUp(self):
+        self.mr, _ = _load_once()
+        if 'lseg' not in self.mr.TICKERS or 'lseg' not in self.mr.SLOW_LEGS:
+            self.skipTest('lseg 已从 monthly_run.TICKERS / SLOW_LEGS 删掉')
+
+    def test_slow_legs_lseg_covers_primary_not_tradeweb(self):
+        """M11：前缀覆盖 fetch/lseg.py COLUMN_LEG 里 primary 的全部列（2026-09 是 24 列），
+        且一列 tradeweb / lch 都不收 —— 那两条腿不登记（Tradeweb 是头条腿，LCH 见 SLOW_LEGS 该条注释）。"""
+        L = _lseg_mod('lseg')
+        prefixes = tuple(self.mr.SLOW_LEGS['lseg'][0])
+        hit = {c for c in L.COLUMN_LEG if c.startswith(prefixes)}
+        primary = {c for c, leg in L.COLUMN_LEG.items() if leg == 'primary'}
+        self.assertTrue(primary)
+        self.assertEqual(sorted(primary - hit), [], 'primary 有列没被 SLOW_LEGS["lseg"] 的前缀命中')
+        self.assertEqual(sorted(c for c in hit if L.COLUMN_LEG[c] in ('tradeweb', 'lch')), [],
+                         'SLOW_LEGS["lseg"] 误收了 tradeweb / lch 列')
+
+    def test_slow_pending_primary_keeps_gate_open(self):
+        """M12：订单簿 8 月先到、一级市场还没到时闸门必须开着（不登记 mm_ / aim_ 时这天就判「已追平」，
+        一级市场当月那期要等下月 1 号）；两个市场都到了才关；登记的开闸日之前不欠。"""
+        mr = self.mr
+        d = _m_tmpdir(self, 'tg_m_slow_')
+        self.addCleanup(setattr, mr, 'SERIES', mr.SERIES)
+        mr.SERIES = d
+        open_day = mr.SLOW_LEGS['lseg'][1][0]              # 8 月不是季末月 → 常规月那一位（2026-09 是 12）
+        after = datetime.date(2026, 9, min(28, open_day + 9))    # (12, 12) 时 = 09-21
+
+        def write(aug):
+            with open(os.path.join(d, 'lseg.csv'), 'w', encoding='utf-8', newline='') as f:
+                w = csv.writer(f, lineterminator='\n')
+                w.writerow(['month', 'lse_orderbook_value_gbp_m',
+                            'mm_companies_eop_count', 'aim_companies_eop_count'])
+                w.writerows([['2026-07', '1', '1', '1'], ['2026-08'] + aug])
+
+        def pending(today):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                got = mr.slow_pending('lseg', today=today)
+            self.assertEqual(buf.getvalue(), '', f'slow_pending 走了 fail-open 分支：{buf.getvalue()!r}')
+            return got
+
+        write(['1', '', ''])
+        self.assertIs(pending(after), True, '订单簿到了、一级市场没到，闸门却关了')
+        if open_day >= 2:
+            self.assertIs(pending(datetime.date(2026, 9, open_day - 1)), False, '开闸日之前就判欠货')
+        write(['1', '1', ''])
+        self.assertIs(pending(after), True, '只到了 Main Market，闸门却关了')
+        write(['1', '1', '1'])
+        self.assertIs(pending(after), False, '三列都到了 2026-08，闸门却没关')
 
 
 if __name__ == '__main__':

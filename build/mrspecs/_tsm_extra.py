@@ -16,11 +16,24 @@
 1. `tsm_capex_approvals.csv` 董事會核准資本支出 —— SEC 董事会当日 6-K（CIK 0001046179）。
    **不是 capex**：核准授权约为当年现金资本支出的 1.5–1.7 倍。
    只收 2016 起：更早有 4 次是新台币口径、3 个月一月两会，混进来会静默算错年度合计。
-2. `tsm_derivatives.csv` 遠期外匯未平倉 —— MOPS ajax_t15sf。
-   ⚠️ `未沖銷契約-契約總金額` 是**月底存量**；同表相邻的 `已沖銷` 才是年初至今累计、
-   每年一月归零。两栏同名、相邻，解析错一行整条序列作废。
-3. `tsm_guarantees.csv` 背書保證 —— approved 来自 MOPS ajax_t05st11，
-   outstanding 只有 SEC 月度 6-K 有。**两者差约 26%，永远不可拼接成一条序列**。
+2. `tsm_derivatives.csv` 遠期外匯未平倉 —— 两段来源、同一口径：
+   · 2026-08 起由 `fetch/tsm_6k.py` 从 TSMC 月报 6-K（CIK 0001046179）第 4 项自动追加，
+     口径 = entity 为 TSMC 的全部 Forward 块之和（not applying / applying hedge accounting
+     两节合计；子公司块不计入）。TSMC 名下出现非 Forward 块（如 Swap）时解析器抛异常、交人
+     判定口径，不是静默剔除 —— 那个月两表都不写，页面停在上个月、由 `_lag_note()` 印滞后；
+   · 2026-07 及以前的行人工录自 MOPS ajax_t15sf，同口径 = 不符 + 符合避險會計两表的
+     遠期契約之和（112/03、113/08 实测）；
+   · 远期为 0 的 6 个月（2006-01…2011-06）历史上缺行。
+   ⚠️ `未沖銷契約-契約總金額`（6-K 的 Existing Contracts）是**月底存量**；同表相邻的
+   `已沖銷`（Expired Contracts）才是年初至今累计、每年一月归零。两栏同名、相邻，
+   解析错一行整条序列作废。
+3. `tsm_guarantees.csv` 背書保證 ——
+   · 2023-03 起核准与在外都取自 6-K 第 3 项 guarantor=TSMC 各行，子公司担保人行
+     （如 TSMC Japan Ltd.，23 个月）不计入；核准合计 = MOPS ajax_t05st11「本公司至本月份
+     累計餘額」，新月份写入时尝试与之对账（MOPS 当轮取不到则只告警、照常写入，不补做；
+     取到了而对不上或认不出版式才抛）—— 线上图注 `_S_GUAR` 同此措辞，别写回「逐月对账」；
+   · 2023-03 之前的 6-K 不印核准栏，那段核准只来自 MOPS。
+   **核准与在外两者差约 26%，永远不可拼接成一条序列**。
 4. `tsm_bonds_monthly.csv` / `tsm_bonds_tranches.csv` 公司債 —— MOPS ajax_t47sb17 +
    逐檔發行辦法登记簿 + FY2012~FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表。
    月报表只留滚动 3 个月窗口，**整条序列里只有最近 3 个月来自月报表本身**，
@@ -42,11 +55,20 @@
        恰好是旧券已全部到期（末檔 102-4F，2023-09）之后的三年。
 
 ━━ 刷新 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ **这五张表目前没有接进 `monthly_run.py`，不会自动更新。** 月营收往前走、它们
-不走时，页面不会静默装作同月：`_lag_note()` 逐图现算各自的数据截止月，滞后就在
-章节标题与图注里印出来。要自动化得给这五个源各写一个 fetcher —— 而且 TSM 的
-`not_due()` 在营收到手后整月返回 NOCHANGE，董事会 6-K 是月中发的，
-不能挂在现有的 `one('tsm')` 后面搭车。
+逐表说明（不再对整个板块下一句全称判断）：
+  · 衍生性商品、背書保證 —— 由 `monthly_run.tsm_6k()`（驱动 `fetch/tsm_6k.py`）每月自动追加，
+    月报 6-K 逾期未入库记 FAIL。
+  · 公司債 —— 仍人工维护：新券登记进 `tsm_bonds_tranches.csv`，再跑
+    `python3 fetch/tsm.py bonds --write` 重建 `tsm_bonds_monthly.csv`。
+  · 董事會核准資本支出 —— 仍人工录。
+  后两类的陈旧提示见 `monthly_run.audit_manual_series()`（只打印）。
+不管哪一类，月营收往前走而某张表没走时，页面不会静默装作同月：`_lag_note()` 逐图现算
+各自的数据截止月，滞后就在章节标题与图注里印出来。
+反方向（表比营收新）只会出现在 6-K 两表上（营收 xlsx 冻住而 6-K 已到）：`_load()` 把它们截到
+月营收的最新月，领先的月份留在 CSV 里、等营收到了再上页，所以 `_lag_note()` 只需要管滞后。
+董事會核准資本支出允许领先，由 Exhibit 10 的图注自己交代。
+这几条腿都不能挂在现有的 `one('tsm')` 后面搭车：TSM 的 `not_due()` 在营收到手后整月
+返回 NOCHANGE（`one('tsm')` 连 fetch/tsm.py 都不 import），而董事会 6-K 是月中发的。
 """
 import os
 
@@ -61,12 +83,14 @@ _SEC = '非营收月度披露：台积电按月申报的另外五张表'
 
 _S_CAPEX = ('Exhibit source: TSMC 董事会当日 Form 6-K（SEC EDGAR，CIK 0001046179），'
             '与月末 6-K 分项及 MOPS ajax_t05st01 三方对账')
-_S_DERIV = ('Exhibit source: MOPS ajax_t15sf 衍生性商品交易情形'
-            '（取得或處分資產處理準則 §31 第 4 項）')
+_S_DERIV = ('Exhibit source: TSMC 月报 Form 6-K 第 4 项 financial derivative transactions'
+            '（SEC EDGAR，CIK 0001046179）；2026-07 及以前人工录自 MOPS ajax_t15sf，'
+            '两源同口径（2023-03 起 41 个月逐格相等）')
 _S_BOND = ('Exhibit source: MOPS ajax_t47sb17 公司債月報表 + 逐檔發行辦法登记簿 + '
            'FY2012–FY2019 Form 20-F 的 BONDS PAYABLE 逐檔表（CIK 0001046179）；'
            '年末对账见 build/mrspecs/_tsm_extra.py 文件头第 4 条')
-_S_GUAR = ('Exhibit source: 核准数 MOPS ajax_t05st11、在外数 TSMC 月度 Form 6-K；'
+_S_GUAR = ('Exhibit source: TSMC 月报 Form 6-K 第 3 项（核准数与在外数）；2023-03 之前的核准数'
+           '取自 MOPS ajax_t05st11，新月份写入时尝试与之对账（MOPS 当轮取不到则只告警，不补做）；'
            '美元化用本页汇率图同一条 H.10 月均汇率')
 
 # 在外数窗口的起点。见 _load() 里那段注释：这个数**必须写死**。
@@ -81,11 +105,20 @@ def _read(name):
 
 def _load(ds):
     d = {}
+    # 背書保證 / 衍生性商品两表**截到月营收的最新月**（ds.all[-1]），与汇总表 summary_rows() 的
+    # reindex(ds.all) 同一口径。这两张由 monthly_run.tsm_6k() 自动推进，可以跑到营收前面：营收 xlsx
+    # 冻住而当轮没有报错（one('tsm') 记 NOCHANGE）、6-K 却已到货时，tsm_6k 写入下一个月并重建。
+    # 不截的话 Ex12/13/16/17 横轴画到营收之后一个月，summary_note() 拿两表末行（下个月）的核准与在外
+    # 说话，紧挨着的汇总表却 reindex 在营收月 —— 注文里的月份与数字在表上找不到，两道收尾闸门也都不拦。
+    # 截掉的月份仍在 CSV 里，等营收到了再上页；补建戳算的是 CSV 指纹，不受影响。
+    # 另两张不截：公司債月表人工维护、只会滞后；董事會核准資本支出按董事会场次记，领先营收是常态
+    # （Exhibit 10 的图注自己交代本次领先与否）。
+    cur = ds.all[-1]
     d['cap'] = _read('tsm_capex_approvals.csv')['approved_usd_mn'].astype(float) / 1000.0
-    d['gua'] = _read('tsm_guarantees.csv')
+    d['gua'] = _read('tsm_guarantees.csv').loc[:cur]
     d['bmo'] = _read('tsm_bonds_monthly.csv')
     d['btr'] = pd.read_csv(os.path.join(mrbase.SERIES, 'tsm_bonds_tranches.csv'))
-    d['notional'] = (_read('tsm_derivatives.csv')['open_notional_ntd_k']
+    d['notional'] = (_read('tsm_derivatives.csv').loc[:cur, 'open_notional_ntd_k']
                      .astype(float) / 1e6)                              # NT$bn
 
     # 避险强度 = 名目 ÷ 月均营收（TTM ÷ 12）。分母不用当月营收：当月带农历年与季末
@@ -188,14 +221,32 @@ def _lags(ds, d):
     return out
 
 
+# 各表为什么会落后于月营收。键必须与 `_lags()` 的键逐字一致 —— 不一致时 `_lag_note()`
+# 直接 KeyError（构建期响），不会静默印出一句没有理由的滞后。
+_LAG_WHY = {
+    '衍生性商品': '随月报 6-K 自动入库，通常月末后第 6–13 天到货',
+    '背書保證': '随月报 6-K 自动入库，通常月末后第 6–13 天到货',
+    '公司債': '登记簿人工录入后重建，源为次月下旬的月末 6-K',
+    '董事會核准資本支出': '按董事会场次记录、约每季一次，不是逐月序列',
+}
+
+
 def _lag_note(ds, d):
-    """滞后就说滞后。这五张表没接进 monthly_run，月营收先走时必须在页面上看得见。"""
-    lag = {k: v for k, v in _lags(ds, d).items() if v[1] > 0}
+    """滞后就说滞后，并说清为什么会滞后。
+
+    衍生性商品、背書保證随月报 6-K 自动入库（monthly_run.tsm_6k()），公司債与董事會核准資本支出
+    人工维护；任何一张落后于月营收时都必须在页面上看得见。理由句取自 `_LAG_WHY`：
+    先对 `_lags()` 的全部键取一遍理由，所以键对不上时不管今天滞不滞后都会 KeyError。
+    """
+    lags = _lags(ds, d)
+    why = {k: _LAG_WHY[k] for k in lags}
+    lag = {k: v for k, v in lags.items() if v[1] > 0}
     if not lag:
         return ''
     return ('⚠️ <b>本板块的数据未与月营收同步</b>：'
-            + '；'.join(f'{k}截至 {mlab(m)}（滞后 {n} 个月）' for k, (m, n) in lag.items())
-            + '。这五张表尚未接入月度自动刷新，读数请按各自的截止月理解。')
+            + '；'.join(f'{k}截至 {mlab(m)}（滞后 {n} 个月；{why[k]}）'
+                       for k, (m, n) in lag.items())
+            + '。读数请按各自的截止月理解。')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -364,7 +415,7 @@ def exhibits(ds, spec, n0, R):
         note=('台积电以美元卖货、以新台币入账，把未来会收到的美元提前卖成新台币；'
               '柱高就是这个「已提前卖掉」的规模。'
               '⚠️ <b>这是月底未平倉存量，不是当月成交量，也不是年初至今累计</b> —— '
-              '同一张 MOPS 表里紧挨着的「已沖銷契約」才是 YTD、每年一月归零，'
+              '同一张申报表里紧挨着的「已沖銷契約／Expired Contracts」才是 YTD、每年一月归零，'
               '而两栏都叫「契約總金額」，解析器错一行整条序列作废。'
               f'峰值 NT${d["notional"].max():,.0f}bn（{mlab(d["notional"].idxmax())}），'
               f'当前 NT${nt.iloc[-1]:,.0f}bn。'
@@ -691,7 +742,8 @@ def exhibits(ds, spec, n0, R):
               '2025-05 新台币单月大幅升值，亚利桑那腿的 NT$ 口径掉了 318 亿，'
               '而美元口径两条腿都几乎没动。'
               f'⚠️ 窗口自 {mlab(az.index[0])} 起，因为<b>核准腿只从那时才有</b> —— '
-              'MOPS 只发核准数、6-K 只发在外数，在那之前的 6-K 不分栏，'
+              'MOPS 只发全公司核准合计；2023-03 起的月报 6-K 才逐被保证方同时印核准与在外，'
+              '之前的 6-K 只印余额、不分栏，'
               f'两个来源不可拼接。在外腿本身可回溯到 {mlab(azo.index[0])}，'
               '本图为了让两条线共用一个窗口没有画那一段。')))
     return ex

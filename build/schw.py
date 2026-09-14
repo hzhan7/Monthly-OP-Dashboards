@@ -12,7 +12,7 @@ data/schw.js 里的一个 exhibit 对象。图序、编号、标题文案、图�
     改用年化有机增长率**（当月净新增 x 12 / 上月末资产），本页 Exhibit 4 采用。
   · GS「IBKR Monthly」的成对图法（水平柱 + 均线 + YoY/MoM 气泡 ⇄ 变化率曲线）。
 
-数据源：series/schw.csv（Schwab Monthly Activity Report，次月 12-14 日）、
+数据源：series/schw.csv（Schwab Monthly Activity Report，次月第 10 个美股交易日，12-17 日）、
         series/schw_avg_margin.csv（2020-04 至 2025-12 的平均融资余额，之后停发）、
         series/fee_rates.csv（季报口径的生息资产与 NIM）。
 季末月（3/6/9/12）无独立月报，该月数值取自当季季报，故序列连续。
@@ -1489,7 +1489,7 @@ summary['note'] = (
     f'当期各口径并排现算 —— {"；".join(_CAL_ROWS)}。')
 
 notes = [
-    f'<b>数据源与节奏。</b>Schwab Monthly Activity Report，通常次月 12–14 日发布；'
+    f'<b>数据源与节奏。</b>Schwab Monthly Activity Report，次月第 10 个美股交易日发布（多为 12–14 日，9 月撞劳动节顺延到 15–17 日）；'
     f'本页数据截至 {mlab(LATEST)}，全序列自 {mlab(df.index[0])} 起。'
     '所有数值来自 <code>series/schw.csv</code> 与 <code>series/fee_rates.csv</code>，'
     '无任何估算或补插。'

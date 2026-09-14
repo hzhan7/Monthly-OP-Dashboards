@@ -11,8 +11,15 @@
            上一年那份多一段年份：..._2025_05062026.pdf
            302 跳到 filecache.investorroom.com/mr5ir_miaxglobal/{n}/<同名>.pdf，
            `{n}` 每次抓可能不同（同一个文件实测拿到过 252 / 253），**必须走 302，不可拼**。
+           2026-09-04 起当年那份改名为 image/MIAX_Key_Stats-<Month>_<YYYY>.pdf
+           （实测 MIAX_Key_Stats-August_2026.pdf，302 → filecache.investorroom.com/mr5ir_miaxglobal/257/），
+           页面带 /Rotate 90（pdfinfo：612x792、Page rot 90；旧版 792x612、rot 0），
+           pdfplumber 读出的坐标系不变（旋转后仍是 792x612）。
+           上一年那份仍是 MIH_Volume_and_RPC_Report_2025_05062026.pdf。
+           **选链只认链接文字**（_discover_pdfs，口径坑 10），改名不需要改代码。
   文件名里的 MMDDYYYY 是**发布日不是数据月**，所以只能解析列表页拿链接，不能按月拼 URL
-  （与 fetch/cboe.py 同理）。
+  （与 fetch/cboe.py 同理）。新名里的 <Month>_<YYYY> 在唯一一期样本里是数据月
+  （8 月数据、09-04 发布，名字写 August_2026），一期样本定不了规律，照样不拼 URL。
   UA：`ir.miaxglobal.com` 对默认 `Python-urllib/3.x` 一律 **403**，换常规浏览器 UA 立刻 200。
   不是 Cloudflare 挑战、不是 Akamai JA3（没有 HOOD 那种「连上但永不返回」的症状）。
 
@@ -31,7 +38,8 @@
   直链   : https://www.miaxglobal.com/miax_futures_historical_volume.pdf
   14 页、约 350 KB、27 张结构相同的宽表（YEAR × JAN..DEC + ANNUAL VOLUME）。
   www 站，**无 UA 校验**（ir 站那套 403 规避在这里用不上），标准库 urllib 直取 200。
-  每月随月报一起重发（实测 Last-Modified Thu, 06 Aug 2026 19:26:12 GMT）。
+  每月重发一次，但比月报晚 1-4 天：Last-Modified Thu, 06 Aug 2026 19:26:12 GMT 对应 7 月月报 08-05；
+  Tue, 08 Sep 2026 17:36:43 GMT 对应 8 月月报 09-04。
   第 13 页的 `TOTAL MIAX FUTURES VOLUME` 是**逐月**总张数（= 期货腿 + 期货期权腿），
   2026 一路回到 1987；HRSW 单品种那张表回到 1965（页首另有 1883 起的年度序列）。
   本模块从它派生**一列**：`vol_futures_ag_contracts` = TOTAL − Σ(金融类产品表)。
@@ -51,7 +59,7 @@
                                     U.S. Equities 段共用同一行值，本模块只取 Options 段那一行。
   industry_adv_options_kcontracts   **全行业**（全美 OPRA 挂牌）equity & ETF 期权 ADV，
                                     单位千张/日。这是 MIH 自报的行业分母，
-                                    与 API 的 TOTAL 行差 3.1%-4.5%（见口径坑 3）。
+                                    比 API 的 TOTAL 行高几个百分点，幅度不稳（区间见口径坑 3）。
   adv_multilist_options_kcontracts  MIAX 四所**合计** equity & ETF 期权 ADV，千张/日。
                                     **与 series/cboe.csv 的同名列逐字同口径**
                                     （Cboe 侧源标签 'Multiply-listed options (Equities & ETPs)'）。
@@ -87,8 +95,8 @@
   adv_emerald_options_api_kcontracts   MIAX Emerald（D），2019-03 起
   adv_sapphire_options_api_kcontracts  MIAX Sapphire（S），2024-08 起
       以上四列 = 各所 EQUITY_OPTION_TOTAL_AVERAGE_VOLUME ÷ 1000。
-      **四列之和 ≠ adv_multilist_options_kcontracts**，实测（两源重叠的 19 个月）
-      低 0.02%-0.78%，见口径坑 3。
+      **四列之和 ≠ adv_multilist_options_kcontracts**，至 2026-08 一律偏低、幅度不稳
+      （两源重叠的前 19 个月低 0.02%-0.78%，2026-08 一个月低 2.18%），见口径坑 3。
       某所尚未开业的月份，API 返回体里根本没有那一行 —— 本模块留空而不是写 0，
       因为我们没有观测到官方说「零」，只是它不在表里。下游求四所合计时按缺失即 0 处理。
   adv_index_options_api_kcontracts     MIAX 四所**合计**指数期权 ADV，千张/日。
@@ -137,19 +145,25 @@
   2026-05 数据 → 2026-06-03（第 3）
   2026-06 数据 → 2026-07-07（第 4；7/3 因独立日休市，= 月末后第 7 个日历日）
   2026-07 数据 → 2026-08-05（第 3）
+  2026-08 数据 → 2026-09-04（第 4 / 月末后第 4 个日历日）
 月度报表**独立于季报**（2026-08-05 当天既发 7 月数据也发 Q2 财报，但 6 月数据早在 7/7 就发了），
 所以 build/roster.py 的 LAG 不需要为季末月单独开一档。
 
 **source_date 只认 PDF 第 2 行自述的 `Updated on <Month D, YYYY>`。**
-HTTP Last-Modified **不是**权威字段：实测 5 份里 3 份与 PDF 自述不一致，且一律**早 1-3 天**
+HTTP Last-Modified **不是**权威字段：实测 6 份里 4 份与 PDF 自述不一致，且一律**早 1-3 天**
 （文件先上传、通稿后挂）——
   08052026.pdf  Updated on August 5, 2026    last-modified Wed, 05 Aug 2026  一致
   2025_05062026 Updated on May 6, 2026       last-modified Wed, 06 May 2026  一致
   12052025.pdf  Updated on December 5, 2025  last-modified Tue, 02 Dec 2025  **早 3 天**
   06032026.pdf  Updated on June 3, 2026      last-modified Tue, 02 Jun 2026  **早 1 天**
   07072026.pdf  Updated on July 7, 2026      last-modified Mon, 06 Jul 2026  **早 1 天**
+  MIAX_Key_Stats-August_2026.pdf  Updated on September 4, 2026
+                                  last-modified Thu, 03 Sep 2026 21:00:15 GMT  **早 1 天**
 拿 last-modified 当发布日会把 2025-11 那期记成 12-02（官方标注 12-05）。
 本模块把 last-modified 写进 evidence 当**辅助线索**，权威值取 PDF 自述那一行。
+
+头条列走源 B；源 A 的 10 条非滞后列与源 C 那一列登记在 monthly_run.SLOW_LEGS
+（开闸日与取舍理由见该条），四条 RPC/capture（_PDF_LAGGED）刻意不登记。
 
 ━━ 口径坑（按踩坑概率排序）━━
 1. **PDF 里的数字会被拆成两个 word，按 token 顺序解析会静默出错。**
@@ -170,6 +184,10 @@ HTTP Last-Modified **不是**权威字段：实测 5 份里 3 份与 PDF 自述�
    实测两源重叠的全部 19 个月（2025-01…2026-07）：
      四所合计/PDF = 0.9922~0.9998（低 0.02%-0.78%；2026 那 7 个月收窄到 0.9967~0.9976）
      行业 API/PDF = 0.9546~0.9758（低 2.4%-4.5%）
+   2026-08 一个月四所合计/PDF 跌到 0.97816、行业 API/PDF 0.94311（差 5.69%）；
+   2026-09-14 回源 indsum，Aug 的返回值与 09-03 入库时逐值相同，不是抓早了的半截数。
+   区间别再写成「稳定」—— 页面上的区间一律现算（build/specs/miax.py 的 _sum4_vs_pdf_zh /
+   _ind_vs_pdf_zh，build/exchanges_na.py 的 MIAX_SPL_* / MIAX_SEAM_*）。
    方向始终一致（API 更小），是分类口径差（PDF 更接近 OCC 的 equity+ETF 分类，API 是 OPRA
    挂牌代码分类，ETF 期权归属不同），不是抓错。所以两套列并存、名字分开，
    **画图时 2024-12 → 2025-01 换源那一格必须标结构性断点**，否则会凭空冒出一个假台阶。
@@ -323,8 +341,8 @@ API_EQUITIES_START = '2020-12'     # 2020-11 → []
 FIN_FUTURES_START = '2026-05'      # PDF 脚注 4：金融期货 2026-05-17 上线（trade date 05-18）
 
 # ── 源 C：MIAX Futures 历史成交量 PDF ────────────────────────────────────
-# www 站，无 UA 校验（ir 站那套 403 规避不适用于它）。每月随月报一起重发，
-# Last-Modified 实测 2026-08-06，14 页，350 KB 左右。
+# www 站，无 UA 校验（ir 站那套 403 规避不适用于它）。每月重发（比月报晚 1-4 天），
+# Last-Modified 实测 2026-08-06、2026-09-08，14 页，350 KB 左右。
 FUT_HIST_URL = 'https://www.miaxglobal.com/miax_futures_historical_volume.pdf'
 
 #: 这份 PDF 技术上能给到 1987-01（HRSW 单表甚至到 1883），但本模块**只入库到
@@ -475,8 +493,9 @@ _TAGS = re.compile(r'<[^>]+>')
 # 行聚簇容差：行距约 9pt，脚注上标基线比正文高约 1.4pt，取 4pt 两头都够（口径坑 2）。
 _ROW_TOL = 4.0
 # 数值 word 落到月份桶里时，允许的最大偏移（列间距的倍数）。
-# 数字右对齐、表头居中，天然有个稳定的右偏；五份不同期次的 PDF 实测最差 0.386
-# （08052026 / 2025_05062026 / 12052025 / 06032026 / 07072026），取 0.45 留余量。
+# 数字右对齐、表头居中，天然有个稳定的右偏；六份不同期次的 PDF 实测最差 0.3992
+# （MIAX_Key_Stats-August_2026，旋转 90° 的新版式；二分实测最小可过容差），取 0.45 留余量。
+# 其余五份：08052026 / 2025_05062026 / 12052025 / 06032026 / 07072026（此前实测最差 0.386）。
 # 超过就说明版式漂了，宁可炸 —— 但这只是第二道网，主力是 _closure_check。
 _BUCKET_TOL = 0.45
 
@@ -1437,7 +1456,7 @@ def _restatement_audit(body, idx, pdf_data):
 def _futures_restatement_audit(body, idx, fut_data):
     """源 C 的重述体检。与 PDF 段同一个逻辑：只告警、不改历史。
 
-    源 C 每月随月报一起重发，136 个月每次都会重新解析一遍，所以它比 API 段更需要
+    源 C 每月重发（比月报晚 1-4 天），136 个月每次都会重新解析一遍，所以它比 API 段更需要
     这条网 —— API 段「已入库的月份从不重抓」，源 C 是每月全量重算的。
     """
     have = {r[0]: r for r in body}
@@ -1514,7 +1533,7 @@ def update(series_dir, cache_dir):
         for mon, rec in data.items():
             pdf_data.setdefault(mon, rec)
         if upd:
-            # evidence 里同时写上 last-modified，但只当**辅助线索**：实测 5 份里 3 份
+            # evidence 里同时写上 last-modified，但只当**辅助线索**：实测 6 份里 4 份
             # 与 PDF 自述不一致（一律早 1-3 天，文件先上传、通稿后挂），
             # 拿它当权威值会把发布日记早，而记早的日期看上去完全正常。
             pub[newest] = (upd, '%s 第 2 行 "Updated on %s"（权威）；'
