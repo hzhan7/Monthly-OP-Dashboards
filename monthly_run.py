@@ -1553,6 +1553,7 @@ def series_fingerprint(t):
 # LEG_ALERTS[t]；main() 把这些家并入末行失败清单，report_leg_alerts() 在末行前印明细。
 # 本文件**不认得任何一家的名字**，只问「这个模块有没有这个属性」—— 与 builder() 同一条
 # 「删一家不留残渣」的规矩。
+# 旁路步 tsm_6k() 也按同一协议读 fetch/tsm_6k.py 的 DEGRADED（第 4 项清单外块主体），记在 'tsm_6k' 名下。
 #
 # 腿级报警**不改这一家的状态字**（NEW / REBUILT / NOCHANGE 照旧），但**计入末行**：
 #   · 不走 FAIL：one() 记 FAIL 时在 build 之前就 return，其余腿本轮的新数据跟着不重建页面 ——
@@ -1888,6 +1889,12 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
         sh() 的消息不带退出码，所以印不出退出码。
     戳放 cache/（gitignore）：它不是数据，放进 PUBLISH 的目录会被 `git add` 收进数据提交。
 
+    ══ 清单外块主体：照常写入、进末行（2026-09-14 所有者定）══
+    第 4 项出现不在 SUBSIDIARY_ENTITIES、名字又不含 TSMC 的块时，fetch/tsm_6k.py 照常写入（按子公司不计入），
+    同时记进模块级 DEGRADED；本函数在 update() 返回后按 one() 同一协议读它（_leg_alerts），非空就记
+    LEG_ALERTS['tsm_6k']，由 main() 并入末行失败清单、report_leg_alerts() 印明细。返回值不变：不算本步失败、
+    不挡重建。只在闸门开着、本轮真调过 update() 时读；最近 3 个月的重述体检再读到同一份月报会再报，黏到有人处置。
+
     ══ 失败为什么只进失败清单、不阻断 ══
     6-K 腿失败时两张 CSV 原地不动（整行校验完才写，tmp 文件落 cache/tsm_6k/），/tsm/ 照旧画上个月
     —— 页面是旧但不错的，`_lag_note()` 会如实印滞后，不属于「宁可不发也不发错」要拦的那个「错」。
@@ -1937,6 +1944,14 @@ def tsm_6k(dry_run=False, today=None, loop_failed=False):
               f'（逾期线：月末后第 {overdue_day(want)} 天）')
     else:
         print(f'{"tsm_6k":<10} NOCHANGE 已追平候选月 {due}（零请求）')
+
+    if gate_open:
+        # 清单外块主体（fetch/tsm_6k.py 口径坑 k）：照常写入，但进末行 —— 与 one() 读 DEGRADED 同一协议（见 LEG_ALERTS）。
+        # 只在本轮真调过 update() 时读：闸门关着时模块里的 DEGRADED 不是本轮的。
+        a = _leg_alerts(mod)
+        if a:
+            LEG_ALERTS['tsm_6k'] = a
+            print(f'{"":<10} ⚠ 腿级报警：{",".join(sorted(a))}（明细见文末「腿级降级/报警」）')
 
     try:
         with open(stamp, encoding='utf-8') as f:

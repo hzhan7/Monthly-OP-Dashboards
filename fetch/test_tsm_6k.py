@@ -8,7 +8,7 @@
 1. 口径：TSMC 的 Forward 块跨 (1)(2) 两节求和；只加 guarantor=TSMC 的行；亚利桑那按脚注认行。
 2. 严格语法：第 3/4 项多一句、换一个工具、换一个担保人名、核准<在外、限额<核准和、两行亚利桑那，
    都必须抛，而不是悄悄少算。第 4 项块主体按清单认（口径坑 k）：清单外而名字像 TSMC 的抛，
-   其它清单外主体不计入但打 ⚠；(1) 节不是恰好 1 块 'TSMC' 的抛。TestBlockEntityList 把 SUBSIDIARY_ENTITIES
+   其它清单外主体不计入、照常写入、打 ⚠ 并记进 DEGRADED（末行告警）；(1) 节不是恰好 1 块 'TSMC' 的抛。TestBlockEntityList 把 SUBSIDIARY_ENTITIES
    换成虚构夹具清单、夹具里的子公司块主体也换成虚构名 —— 照口径坑 k 往真清单登记子公司，这里不会变红。
 3. 写入：只追加、照抄行尾、幂等、失步自愈、重述抛异常且零字节写；表头调换 / 断月 / 已有行不同 /
    读后被改都抛；last_month 取两表较小值、fingerprint 随字节变；tmp 只落 cache/tsm_6k/。
@@ -735,6 +735,33 @@ class TestAppendIdempotent(Base):
         self.assertEqual(added, [])
         self.assertEqual(e.raw(), before)
         self.assertIn('尚未出现', out)
+
+    def test_unlisted_block_written_and_flagged(self):
+        # 口径坑 k，2026-09-14 所有者定：清单外、名字不像 TSMC 的块照常写入（按子公司不计入），但记进 DEGRADED → 末行
+        self.addCleanup(T.DEGRADED.clear)
+        self.env = e = Env()
+        st = e.stub()
+        name = 'Fixture Wafer Co.'                         # 虚构名：真清单登记什么都不影响这条
+        s4 = S4_2026_08 + ' ' + blk(name + ' Forward', '1,000', '10').strip()
+        st.routes[url_of(REV['2026-08'])] = html(pre('August', 2026) + S3_2026_08 + s4)
+        added, out = quiet(T.update, e.series, e.cache, '2026-08', TODAY, st)
+        self.assertEqual(added, ['2026-08'])
+        der, gua = e.raw()
+        self.assertTrue(der.endswith((LINE_DER_08 + '\n').encode()), '名目只算 TSMC 块，照常写入')
+        self.assertTrue(gua.endswith((LINE_GUA_08 + '\n').encode()))
+        self.assertEqual(list(T.DEGRADED), ['2026-08 清单外块主体'])
+        msg = T.DEGRADED['2026-08 清单外块主体']
+        self.assertIn(repr(name), msg)
+        self.assertIn('口径坑 k', msg)
+        quiet(T.update, e.series, e.cache, '2026-08', TODAY, e.stub())    # 下一轮追平：update() 开头清空
+        self.assertEqual(T.DEGRADED, {})
+
+    def test_clean_update_clears_stale_degraded(self):
+        self.addCleanup(T.DEGRADED.clear)
+        T.DEGRADED['stale'] = '上一轮残留'
+        self.env = e = Env()
+        self.assertEqual(quiet(T.update, e.series, e.cache, '2026-08', TODAY, e.stub())[0], ['2026-08'])
+        self.assertEqual(T.DEGRADED, {})
 
 
 class TestWriteGuards(Base):

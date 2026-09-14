@@ -17,6 +17,8 @@ tsm_6k() 是 fetch/tsm_6k.py 的调用侧。它自己的判断全是「日期 ×
   5. 补建失败那行带 build/tsm.py 的 stderr 末行：走真 sh()，命令用生产环境那条 102 字的解释器 + 仓库路径
      （旧写法 str(e)[:100] 在这个长度下只剩命令路径）。stderr 为空时（原因只印在 stdout / 被信号杀掉）冒号后面
      不许空着，必须印兜底「stderr 为空；命令 build/tsm.py」。
+  6. 清单外块主体（fetch/tsm_6k.py 口径坑 k）：update() 填了 DEGRADED → 记进 LEG_ALERTS['tsm_6k']（照常建页、返回值不变）；
+     闸门关着时不读模块里残留的 DEGRADED。
 audit_manual_series() 只打印：两条阈值各测差一天的边界；无陈旧项时 stdout 一个字都没有；自身出错只印 ⚠。
 另有一条静态核对：main() 里两处调用的先后（与 cost_sec / mops_remarks、report_restatement_logs /
 report_leg_alerts 的相对位置是跨支线定下的，挪了不会有任何别的测试变红）。
@@ -100,7 +102,7 @@ class _Tsm6kCase(unittest.TestCase):
             self.addCleanup(p.stop)
 
     # ── 桩 ──
-    def make_stub(self, have, fp='fp-old', added=(), update_exc=None, last_exc=None, new_fp='fp-new'):
+    def make_stub(self, have, fp='fp-old', added=(), update_exc=None, last_exc=None, new_fp='fp-new', degraded=None):
         """两表状态只用「末月 + 指纹」两个值表示；update() 返回非空时推进末月并把指纹换成 new_fp。
 
         new_fp=fp 模拟「指纹没跟着内容变」（fingerprint() 被改坏，例如只哈希文件名）——
@@ -108,6 +110,7 @@ class _Tsm6kCase(unittest.TestCase):
         """
         state = {'have': have, 'fp': fp}
         calls = []
+        degraded_now = {}                  # 模块级 DEGRADED：update() 开头清空、再填本轮的（degraded）
 
         def last_month(series_dir):
             if last_exc:
@@ -119,6 +122,8 @@ class _Tsm6kCase(unittest.TestCase):
 
         def update(series_dir, cache_dir, upto, today=None, opener=None):
             calls.append({'series_dir': series_dir, 'cache_dir': cache_dir, 'upto': upto, 'today': today})
+            degraded_now.clear()
+            degraded_now.update(degraded or {})
             if update_exc:
                 raise update_exc
             if added:
@@ -126,7 +131,7 @@ class _Tsm6kCase(unittest.TestCase):
             return list(added)
 
         self.stub = types.SimpleNamespace(last_month=last_month, fingerprint=fingerprint, update=update,
-                                          CACHE_SUB='tsm_6k', STAMP_NAME='_last_built.sha256',
+                                          CACHE_SUB='tsm_6k', STAMP_NAME='_last_built.sha256', DEGRADED=degraded_now,
                                           calls=calls, state=state)
         return self.stub
 
@@ -505,6 +510,41 @@ class TestAuditManualSeries(unittest.TestCase):
                 self.assertTrue(isinstance(rule, int) or (isinstance(rule, tuple) and len(rule) == 2))
 
 
+class TestUnlistedBlockAlert(_Tsm6kCase):
+    """清单外块主体（fetch/tsm_6k.py 口径坑 k）：照常写入、照常建页，但进 LEG_ALERTS → 末行（2026-09-14 所有者定）。"""
+
+    ALERT = {'2026-08 清单外块主体': "(2) 节 'Fixture Wafer Co.' Forward 名目 1,000 —— 按子公司不计入、照常写入"}
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(M.LEG_ALERTS, {}, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_flagged_update_goes_to_leg_alerts(self):
+        self.make_stub('2026-07', added=('2026-08',), degraded=self.ALERT)
+        got, out = self.run6k(D(2026, 9, 14))
+        self.assertEqual(got, [], '返回值不变：不算本步失败（并入末行在 main() 里做）')
+        self.assertEqual(M.LEG_ALERTS, {'tsm_6k': self.ALERT})
+        self.assertEqual(self.sh_calls, [CMD], '照常建页')
+        self.assertRegex(out, r'(?m)^tsm_6k\s+NEW\s+2026-08\n\s+⚠ 腿级报警：2026-08 清单外块主体（明细见文末「腿级降级/报警」）$')
+
+    def test_clean_update_no_alert(self):
+        self.make_stub('2026-07', added=('2026-08',))
+        _, out = self.run6k(D(2026, 9, 14))
+        self.assertEqual(M.LEG_ALERTS, {})
+        self.assertNotIn('腿级报警', out)
+
+    def test_gate_closed_ignores_stale_degraded(self):
+        stub = self.make_stub('2026-08')
+        stub.DEGRADED['2026-07 清单外块主体'] = '上一轮残留'
+        self.write_stamp('fp-old')
+        _, out = self.run6k(D(2026, 9, 20))
+        self.assertEqual(stub.calls, [])
+        self.assertEqual(M.LEG_ALERTS, {})
+        self.assertNotIn('腿级报警', out)
+
+
 class TestMainWiring(unittest.TestCase):
     """main() 里两处调用的位置是跨支线定下的（docs/CRON_WIRING.md §1），挪了不会有别的测试变红。"""
 
@@ -521,6 +561,7 @@ class TestMainWiring(unittest.TestCase):
         self.assertLess(at('fails += cost_sec()'), at("if 'tsm' in todo:"))
         self.assertLess(at("if 'tsm' in todo:"), at(call))
         self.assertLess(at(call), at('fails += mops_remarks()'))
+        self.assertLess(at(call), at('fails += [t for t in LEG_ALERTS if t not in fails]'))   # 清单外块主体报警要赶得上并入末行
         self.assertLess(at('report_restatement_logs(t_run)'), at('audit_manual_series()'))
         self.assertLess(at('audit_manual_series()'), at('report_leg_alerts()'))
         self.assertLess(at('report_leg_alerts()'), at('if gate_fail:'))

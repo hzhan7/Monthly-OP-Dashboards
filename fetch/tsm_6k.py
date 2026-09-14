@@ -16,11 +16,13 @@ r"""台积电（2330.TW / NYSE: TSM）月报 6-K 第 3/4 项 —— 背書保證
   下一轮只补落后的那张（两表失步可自愈）。tmp 文件一律写在 cache/tsm_6k/ 下，
   绝不在 series/ 里留 .tmp（`git add series` 会把它收走）。
 · 历史行一个字节不碰：与官方重新读到的值不一致时抛异常，不改写（口径坑 i）。
-· 对外接口（monthly_run.tsm_6k() 依赖这四个名字与语义，别改）：
+· 对外接口（monthly_run.tsm_6k() 依赖这五个名字与语义，别改）：
     last_month(series_dir)   → 'YYYY-MM'，两表末月取较小值；表头不对就抛
     fingerprint(series_dir)  → 两表字节的 sha256 hex（补建戳比的就是它）
     update(series_dir, cache_dir, upto, today=None, opener=None) → 新增月份列表（升序）
     STAMP_NAME = '_last_built.sha256'  补建戳的文件名（戳只由 monthly_run.tsm_6k() 写，本模块不写）
+    DEGRADED = {}                      本轮 update() 读到的清单外块主体（口径坑 k）；update() 开头清空，
+                                       monthly_run.tsm_6k() 读它记进 LEG_ALERTS['tsm_6k']、计入末行
   日历预闸、逾期黏警报、补建戳都在调用侧；update() 被调到就去取 (两表末月较小值, upto] 这几个月。
 
 ────────────────────────────────────────────────────────────────────────
@@ -62,7 +64,8 @@ r"""台积电（2330.TW / NYSE: TSM）月报 6-K 第 3/4 项 —— 背書保證
                           (1) not applying / (2) applying hedge accounting 两节合计；不含子公司块。
                           **块主体按清单认**（口径坑 k）：主体恰好是 'TSMC' 才计入；SUBSIDIARY_ENTITIES
                           里的已知子公司块不计入、打一行；不在清单里、名字（大小写不敏感）含 tsmc 或
-                          taiwan semiconductor 的主体一律抛，交人判定；其余清单外主体不计入、打一行 ⚠。
+                          taiwan semiconductor 的主体一律抛，交人判定；其余清单外主体不计入、照常写入、打一行 ⚠，
+                          并记进 DEGRADED → 末行告警（2026-09-14 所有者定）。
                           (1) 节必须恰好 1 块主体为 'TSMC'，否则抛（结构不变式，同见口径坑 k）。
 · open_fair_value_ntd_k = 同一批块的 Mark to Market of Outstanding Contracts 之和，
                           括号为负、'-' 为 0，落 '%.1f'。
@@ -130,12 +133,14 @@ k. **第 4 项块主体按清单认，不是「非 'TSMC' 即子公司」。** �
    TSMC（57 块，(1)(2) 两节，全是 Forward）、TSMC China 与 TSMC Nanjing（各 42 块，(1) 节 Forward）、
    TSMC Global（42 块，(2) 节 Future）、Japan Advanced Semiconductor Mfg., Inc.（JASM，33 块，2023-12 起）。
    后 4 个就是 SUBSIDIARY_ENTITIES。清单外的主体：名字含 tsmc / taiwan semiconductor（大小写不敏感）→ 抛
-   （分不清是母公司改了印法还是新的 TSMC 子公司，交人）；其它名字 → 不计入、打一行 ⚠（新的非 TSMC 命名
-   子公司不至于每月 FAIL，但日志里看得见；确认是子公司后加进清单）。
+   （分不清是母公司改了印法还是新的 TSMC 子公司，交人）；其它名字 → 不计入、照常写入、打一行 ⚠，
+   并记进 DEGRADED → monthly_run.LEG_ALERTS['tsm_6k'] → 末行失败清单（2026-09-14 所有者定：新的非 TSMC
+   命名子公司不至于整月不发，但必须进末行，不能只在日志中段打 ⚠；确认是子公司就加进清单，是母公司改了
+   印法就改口径并人工订正已写入的月份）。
    **结构不变式：(1) 节恰好 1 个主体为 'TSMC' 的块，否则抛**（同一批 42 份逐份确认 42/42；(2) 节 15 份 1 块、
    27 份 0 块，所以 (2) 节不设）。它堵的是上面那条 ⚠ 路：两块母公司的月份里，(1) 节母公司块改印成清单外的
    非 TSMC 名字（如 'The Company'）时，没有这条就只打一行 ⚠（不进末行）、按子公司不计入，静默少算 ——
-   2023-03 会写成 230810，真值 114603742。**堵不住的：(2) 节同样改名**，仍只打 ⚠、名目少算一块。
+   2023-03 会写成 230810，真值 114603742。**堵不住的：(2) 节同样改名** —— 名目仍少算一块，但照上一段进末行告警。
 
 ────────────────────────────────────────────────────────────────────────
 6) 对账记录与重放命令
@@ -184,6 +189,11 @@ _CTX = ssl.create_default_context()
 
 CACHE_SUB = 'tsm_6k'
 STAMP_NAME = '_last_built.sha256'
+
+# 本轮 update() 读到的清单外块主体（口径坑 k）→ {'<月> 清单外块主体': 说明}。update() 开头清空、_plan() 逐月填；
+# monthly_run.tsm_6k() 在 update() 返回后读它，非空就记进 LEG_ALERTS['tsm_6k']，计入末行失败清单。
+# 2026-09-14 所有者定：清单外块照常写入（按子公司不计入），但必须进末行，不能只在日志中段打 ⚠。
+DEGRADED = {}
 
 DER_CSV = 'tsm_derivatives.csv'
 GUA_CSV = 'tsm_guarantees.csv'
@@ -611,7 +621,7 @@ def _parse_s4(month, s4, verbose=True):
     for b in blocks:                        # 清单外：不看 verbose，重述体检 / audit 里也要看得见
         if b['kind'] == 'unlisted':
             print(f'[tsm_6k][warn] ⚠ {month} 第 4 项 ({b["section"]}) 节有清单外的块主体 {b["entity"]!r}'
-                  f'（{b["instrument"]}，名目 {b["notional"]:,}）—— 名字不含 TSMC，按子公司不计入；'
+                  f'（{b["instrument"]}，名目 {b["notional"]:,}）—— 名字不含 TSMC，按子公司不计入、照常写入（update() 时进末行）；'
                   '确认是子公司后加进 SUBSIDIARY_ENTITIES（口径坑 k）')
     return dict(open_notional_ntd_k=notional,
                 open_fair_value_ntd_k=sum(b['mtm'] for b in fwd),
@@ -877,6 +887,16 @@ def _diff(row, cols, cells):
     return out
 
 
+def _flag_unlisted(month, p, row):
+    # 把 month 选中的那份月报里的清单外块主体记进 DEGRADED（口径坑 k）。只记、不抛：照常写入是所有者定的。
+    bad = [b for b in p['deriv']['blocks'] if b['kind'] == 'unlisted']
+    if bad:
+        DEGRADED[f'{month} 清单外块主体'] = (
+            '；'.join(f'({b["section"]}) 节 {b["entity"]!r} {b["instrument"]} 名目 {b["notional"]:,}' for b in bad)
+            + f' —— 按子公司不计入、照常写入（{row["acc"]}）；确认是子公司就加进 SUBSIDIARY_ENTITIES，'
+            '是母公司改了印法就改口径并人工订正已写入的月份（fetch/tsm_6k.py 口径坑 k）')
+
+
 def _plan(series_dir, cache_dir, upto, today=None, opener=None):
     """update() 的全部读与校验，不写 series。→ dict(der=[行], gua=[行], months=[月], raw=(der, gua))。"""
     today = today or datetime.date.today()
@@ -902,6 +922,7 @@ def _plan(series_dir, cache_dir, upto, today=None, opener=None):
             print(f'[tsm_6k][warn] 重述体检：{M} 的月报 6-K 定位不到，本月跳过体检')
             continue
         row, p = hit
+        _flag_unlisted(M, p, row)
         cells = _cells(p)
         for c, have, want in _diff(der[M], DER_COLS, cells) + _diff(gua[M], GUA_COLS, cells):
             drift.append(f'{M} {c}: 库内 {have!r} vs 官方 {want} ({row["acc"]})')
@@ -922,6 +943,7 @@ def _plan(series_dir, cache_dir, upto, today=None, opener=None):
             break
         row, p = hit
         print(f'[tsm_6k] {M} ← {row["form"]} {row["acc"]} {row["doc"]}（filed {row["fd"]}）')
+        _flag_unlisted(M, p, row)
         cells = _cells(p)
         for name, have_rows, cols in ((DER_CSV, der, DER_COLS), (GUA_CSV, gua, GUA_COLS)):
             if M in have_rows and _diff(have_rows[M], cols, cells):
@@ -947,6 +969,7 @@ def update(series_dir, cache_dir, upto, today=None, opener=None):
 
     幂等：没有新月份时两表一个字节不动。所有月份都校验通过后才写；tmp 文件落 cache_dir/tsm_6k/。
     """
+    DEGRADED.clear()                        # 本轮的清单外块主体由 _plan() 重新填（monthly_run.tsm_6k() 读）
     plan = _plan(series_dir, cache_dir, upto, today, opener)
     tmp_dir = os.path.join(cache_dir, CACHE_SUB)
     for name, lines, raw in ((DER_CSV, plan['der'], plan['raw'][0]),
