@@ -1034,8 +1034,9 @@ def main():
              f'{PF_YEARS[0]} 年' if len(PF_YEARS) == 1 else
              f'{PF_YEARS[0]}–{str(PF_YEARS[-1])[2:]} 年')
 
-    # RPC 与 implied revenue 的窗口以 LATEST_RPC 结尾：末点为 null 时 lines_endlabels
-    # 会对 null 调 toFixed 而崩，且一个空的末点也不带信息
+    # RPC 与 implied revenue 的窗口以 LATEST_RPC 结尾：末点为 null 时 lines_endlabels 的末端标签
+    # 会碰上 null —— Exhibit 3 的 usd3 走 usdFmt、先取 Math.abs，不崩，而是印一个假的「$0.000」
+    # （docs/CHART_KINDS.md §1.2），比崩更难发现；且一个空的末点也不带信息
     i_rpc = ALL.index(LATEST_RPC)
     W25R = ALL[_i0:i_rpc + 1]
     XL25R = [mlab(p) for p in W25R]

@@ -670,7 +670,8 @@ def exhibits(ds, spec, n0, R):
 
     # ── ⑧ 亚利桑那腿 ────────────────────────────────────────────────────
     # 只画核准腿存在的区间：lines_endlabels 属于 DENSE，序列里带 null 会被平滑
-    # 当成 0，画出一条塌到零的假线（首尾为 null 时直接抛 TypeError）。
+    # 当成 0，画出一条塌到零的假线；首尾为 null 时本图的 usd1 走 usdFmt、先取 Math.abs，
+    # 不抛异常，而是在端点印一个假的「$0.0」（docs/CHART_KINDS.md §1.2）。
     az = d['az'].dropna()
     azo = d['az']['outstanding'].dropna()
     ex.append(base(
