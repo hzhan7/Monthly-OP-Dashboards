@@ -260,6 +260,10 @@ class TestMiaxReplay(unittest.TestCase):
         self._set('2026-08', MIAX_SLOW, '1')
         self.assertIs(self._not_due(D(2026, 9, 15)), True)
         self.assertIs(self._not_due(D(2026, 10, 3)), False)
+        with mock.patch.object(M, 'slow_pending', return_value=False):
+            self.assertIs(self._not_due(D(2026, 10, 3)), False,
+                          '慢腿钉成不欠时 10-03 仍须 False，只剩头条判据 through < due 能给出它 —— '
+                          '这里是 True = 头条判据没了，没登记慢腿的家从此永不下载')
 
 
 class TestFailOpen(unittest.TestCase):
