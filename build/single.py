@@ -266,8 +266,26 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio', 'no_yoy'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
-GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap', 'stock_inline'}
+GROUP_KEYS = {'zh', 'cols', 'mix', 'section', 'ratio_rhs', 'spike_cap', 'stock_inline', 'at_end'}
 GROUP_REQUIRED = {'zh', 'cols'}
+
+# ── groups[].at_end —— 本组在 ③ 的那一段图挪到全部图之后（2026-09-15 补，默认关）──────────
+# 缺省（不给 / `False`）：本组照 spec 的先后在 ③ 里出图 —— 逐字节回到没有这个开关之前。
+# `True`：③ 跳过这一组，改在 ⑦（`level_yoy`）之后、⑧ 核对表之前出；几组都开时按 spec 的先后。
+# 挪的是 ③ 那一整段组体（`Page._group_here()`：流量 mix、各单位桶、`stock_inline` 的存量图、
+# 本组 section、锚在本组的 `after_group` 分解图），与 ③ 共用同一个方法，不许各写一份。
+# 没开 `stock_inline` 的存量图不跟着走，照旧排在 ⑤ —— 这个开关只管 ③ 那一段；
+# 要存量图也跟到末尾，同时开 `stock_inline`。
+#
+# 由来：/miax/ 页面所有者 2026-09-15 的指令「Ex6 放到 Ex23 后面」—— 原 Exhibit 6 是
+# 「四家期权所 ADV」组的单月同比热力矩阵，原 Exhibit 23 是全页最后一张图（⑦ 的水平值 +
+# 单月同比）。⑥ ⑦ 缺省就追加在末尾，改 `groups` 的先后只能在 ③ 里挪、排不到它们后面，
+# 所以只能加开关。**只改排序，不改口径**：图还是那张图，窗口、配色、图注一字不动。
+#
+# 落在 group 上而不是 SPEC 顶层，理由同 `stock_inline`：需求逐组提。
+# 声明了却在 ③ 一张图都出不了（见 `Page.__init__` 里 at_end 死配置那一段）硬失败。
+# 图号位移同 `after_group` / `stock_inline`：被挪走那一段原位之后的图整体前移，
+# docs/SINGLE_SPEC.md §2 表下的三类白名单与「页尾交代新旧号」照搬。
 
 # ── groups[].stock_inline —— 本组的存量图**就地**排在本组流量图之后（2026-09 补，默认关）──
 # 缺省（不给 / `False`）：存量图一律排在 ⑤，即季节性之后、与本页其余存量图集中排列 ——
@@ -1938,7 +1956,10 @@ class Page:
                                         f'groups[{gi}]（{g["zh"]}）.spike_cap'),
                 # 同上：只认真布尔量。语义见模块头 GROUP_KEYS 下面 stock_inline 那一段。
                 'stock_inline': _norm_flag(g.get('stock_inline'),
-                                           f'groups[{gi}]（{g["zh"]}）.stock_inline')})
+                                           f'groups[{gi}]（{g["zh"]}）.stock_inline'),
+                # 同上。语义见模块头 GROUP_KEYS 下面 at_end 那一段。
+                'at_end': _norm_flag(g.get('at_end'),
+                                     f'groups[{gi}]（{g["zh"]}）.at_end')})
 
         # ── stock_inline 的死配置：本组根本没有存量图可挪 ──────────────────────────
         # 判据按 **spec 声明**，放在剔空列之前：「列本轮整列为空」是等数据，不许因此
@@ -2018,6 +2039,26 @@ class Page:
                        f'出现 {k} 次 —— 「排在它之后」有 {k} 个答案，挑哪个都是猜')
                     + '。名字对不上就静默掉回页尾，图还在、闸门全过，'
                       '只有对着页面数图号的人才看得出所有者要的位置没生效')
+        # ── at_end 的死配置：本组在 ③ 一张图都出不了 ─────────────────────────────────
+        # 判据按 **spec 声明**（在剔空列之前，理由同上面 stock_inline 那一段：整列为空是等数据）。
+        # ③ 里一组出得了图只有四种来源，与 `_group_here` 的四段逐条对应：声明了流量列、
+        # mix 的合计是流量列、开了 stock_inline（存量图跟着组走）、有分解图用 after_group
+        # 锚在本组。四样全无还写 at_end，挪的是空气 —— 下一个人会以为这一组的图排在末尾。
+        _stk = {c['col']: c['stock']
+                for c in self.head + [c for g_ in self.groups for c in g_['cols']]}
+        for gi, g in enumerate(self.groups):
+            if not g['at_end']:
+                continue
+            if (any(not c['stock'] for c in g['cols'])
+                    or (g['mix'] and not _stk.get(g['mix']['total'], False))
+                    or g['stock_inline']
+                    or any(d['after_group'] == g['zh'] for d in self.decomp)):
+                continue
+            raise SpecError(
+                f'groups[{gi}]（{g["zh"]}）.at_end=True，但这一组在 ③ 没有任何图可挪：'
+                f'cols 全是存量列、mix 的合计不是流量列、没开 stock_inline、'
+                f'也没有 decomp 用 after_group 锚在本组 —— 这个开关只挪 ③ 那一段，'
+                f'存量图排在 ⑤ 不受它管。要么删掉 at_end，要么同时开 stock_inline')
         self.level_yoy = [_norm_level_yoy(t, f'level_yoy[{i}]')
                           for i, t in enumerate(spec.get('level_yoy') or [])]
 
@@ -6970,6 +7011,71 @@ class Page:
         _mark_section(ex, _g0, g.get('section'))
         return n
 
+    def _group_here(self, ex, n, g):
+        """出组 g 在 ③ 的那一整段图（就地追加进 `ex`）→ 新的图号计数 n。
+
+        就是原来 `payload()` ③ 的循环体，一字未改地提出来：2026-09-15 起它有**两个调用点**
+        —— ③（缺省）与 ⑦ 之后（本组声明了 `at_end`，见模块头 GROUP_KEYS 下面那一段）。
+        理由同 `_stock_here`：留两份，一份哪天改了另一份不跟，挪到末尾的组与留在原位的组
+        就是两种画法，而没有任何护栏会响。
+
+        顺序固定：流量 mix → 各单位桶 → `stock_inline` 的存量图 → 本组 section 收口 →
+        锚在本组的 `after_group` 分解图。
+        """
+        _g0 = len(ex)
+        # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」。
+        # （**不写死「两张」**：合计那一列已被本页别处那张更宽的图画过时只出后一张，
+        #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成；
+        #   声明了 `alt_splits` 的组在占比堆叠之后还会连着多出几张。）
+        # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
+        # 也不该在阅读顺序上互相插队）—— 除非本组声明了 `stock_inline`：
+        # 那时它与本组的存量列一起在本组流量图之后就地出（见本方法末尾那一支）。
+        eaten = set()
+        if g['mix'] and not g['mix']['total']['stock']:
+            pair, eaten = self.mix_pair(n, g)
+            for e in pair:
+                ex.append(e); n += 1
+        # 被 mix 吃掉的列不再进常规对比图：结构由占比堆叠交代，水平值由那张
+        # **画了合计这一列的柱图**交代 —— 通常是本组自己的合计柱，合计柱有意不出
+        # 的那一档（`total_drawn_wider`）则是本页别处那张横轴更宽的图。
+        # 两种情形下这一列都算被吃掉，再画一遍都是同一批数在同一页上出现两次。
+        flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
+        # 单位不同的列不能共用一根轴（cboe 原 deck 的 Exhibit 9 把 2 : 15 : 64 三个
+        # 量级画在同一根轴上，最小的那条振幅只占画布 0.9% —— 那条线是白画的）。
+        # 所以按单位分桶，一桶一张图；分桶保持 spec 里的先后顺序。
+        buckets = []
+        for c in flow:
+            for b in buckets:
+                if b[0] == c['unit']:
+                    b[1].append(c)
+                    break
+            else:
+                buckets.append((c['unit'], [c]))
+        for _, cs in buckets:
+            for e in self.ex_group(n, g['zh'], cs, rr=g.get('ratio_rhs'),
+                                   spike=g.get('spike_cap', False)):
+                if e is None:
+                    continue
+                ex.append(e)
+                n += 1
+        # `stock_inline`：本组的存量图紧跟本组流量图就地出（/sgx/ 页面所有者
+        # 2026-09-12「月末未平仓那张挪到衍生品成交那组旁边」，见模块头 GROUP_KEYS 那一段）。
+        # 位置是硬要求：必须在本组 `_mark_section` **之前** —— 否则存量图拿不到本组的
+        # section；也必须在 `_decomp_here` **之前** —— 就地分解图的语义是「排在这一组
+        # 之后」，而这一组现在包括它的存量图。与 ⑤ 共用 `_stock_here`，一处都不另写。
+        if g.get('stock_inline'):
+            _i0 = len(ex)
+            n = self._stock_here(ex, n, g)
+            self.stock_inline_ns.append({'gz': g['zh'],
+                                         'flow': [e_['n'] for e_ in ex[_g0:_i0]],
+                                         'ns': [e_['n'] for e_ in ex[_i0:]]})
+        _mark_section(ex, _g0, g.get('section'))
+        # 声明了 `after_group` 的分解图**就地**出图（见 `payload()` ⑥ 那段注释里的例外条款）。
+        # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
+        # 混进上面那一段的话它会被无条件涂成本组的 section。
+        n = self._decomp_here(ex, n, g['zh'])
+        return n
+
     def stock_order_zh(self):
         """`stock_inline` 的排序那半句 → 页尾「存量与流量分开读」那一段的末尾。
 
@@ -6995,7 +7101,9 @@ class Page:
                 b += f'，紧跟本组的流量图（Exhibit {_ns(d["flow"])}）'
             bits.append(b)
         tail = getattr(self, 'stock_tail_ns', None) or []
-        where = '季节性图之后' if getattr(self, 'season_ns', None) else '全部组图之后'
+        # `at_end` 的组排在 ⑤ 之后：有它们时「全部组图之后」不成立，退成「留在原位的各组图之后」。
+        where = ('季节性图之后' if getattr(self, 'season_ns', None) else
+                 '留在原位的各组图之后' if any(g['at_end'] for g in self.groups) else '全部组图之后')
         return ('排序上，' + '；'.join(bits)
                 + (f'；其余存量图（Exhibit {_ns(tail)}）集中排在{where}' if tail else '')
                 + '。')
@@ -7086,58 +7194,9 @@ class Page:
         self.stock_inline_ns, self.stock_tail_ns, self.season_ns = [], [], []
 
         for g in self.groups:                                 # ③ 每组多列对比
-            _g0 = len(ex)
-            # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」。
-            # （**不写死「两张」**：合计那一列已被本页别处那张更宽的图画过时只出后一张，
-            #   见 `mix_pair` / `total_drawn_wider`；两张各自还都可能画不成；
-            #   声明了 `alt_splits` 的组在占比堆叠之后还会连着多出几张。）
-            # 合计是存量列的留到 ⑤ 与本页其余存量图排在一起（存量与流量不共轴，
-            # 也不该在阅读顺序上互相插队）—— 除非本组声明了 `stock_inline`：
-            # 那时它与本组的存量列一起在本组流量图之后就地出（见本循环末尾那一支）。
-            eaten = set()
-            if g['mix'] and not g['mix']['total']['stock']:
-                pair, eaten = self.mix_pair(n, g)
-                for e in pair:
-                    ex.append(e); n += 1
-            # 被 mix 吃掉的列不再进常规对比图：结构由占比堆叠交代，水平值由那张
-            # **画了合计这一列的柱图**交代 —— 通常是本组自己的合计柱，合计柱有意不出
-            # 的那一档（`total_drawn_wider`）则是本页别处那张横轴更宽的图。
-            # 两种情形下这一列都算被吃掉，再画一遍都是同一批数在同一页上出现两次。
-            flow = [c for c in g['cols'] if not c['stock'] and c['col'] not in eaten]
-            # 单位不同的列不能共用一根轴（cboe 原 deck 的 Exhibit 9 把 2 : 15 : 64 三个
-            # 量级画在同一根轴上，最小的那条振幅只占画布 0.9% —— 那条线是白画的）。
-            # 所以按单位分桶，一桶一张图；分桶保持 spec 里的先后顺序。
-            buckets = []
-            for c in flow:
-                for b in buckets:
-                    if b[0] == c['unit']:
-                        b[1].append(c)
-                        break
-                else:
-                    buckets.append((c['unit'], [c]))
-            for _, cs in buckets:
-                for e in self.ex_group(n, g['zh'], cs, rr=g.get('ratio_rhs'),
-                                       spike=g.get('spike_cap', False)):
-                    if e is None:
-                        continue
-                    ex.append(e)
-                    n += 1
-            # `stock_inline`：本组的存量图紧跟本组流量图就地出（/sgx/ 页面所有者
-            # 2026-09-12「月末未平仓那张挪到衍生品成交那组旁边」，见模块头 GROUP_KEYS 那一段）。
-            # 位置是硬要求：必须在本组 `_mark_section` **之前** —— 否则存量图拿不到本组的
-            # section；也必须在 `_decomp_here` **之前** —— 就地分解图的语义是「排在这一组
-            # 之后」，而这一组现在包括它的存量图。与 ⑤ 共用 `_stock_here`，一处都不另写。
-            if g.get('stock_inline'):
-                _i0 = len(ex)
-                n = self._stock_here(ex, n, g)
-                self.stock_inline_ns.append({'gz': g['zh'],
-                                             'flow': [e_['n'] for e_ in ex[_g0:_i0]],
-                                             'ns': [e_['n'] for e_ in ex[_i0:]]})
-            _mark_section(ex, _g0, g.get('section'))
-            # 声明了 `after_group` 的分解图**就地**出图（见下面 ⑥ 那段注释里的例外条款）。
-            # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
-            # 混进上面那一段的话它会被无条件涂成本组的 section。
-            n = self._decomp_here(ex, n, g['zh'])
+            if g['at_end']:
+                continue          # 挪到 ⑦ 之后出（见模块头 GROUP_KEYS 下面 at_end 那一段）
+            n = self._group_here(ex, n, g)
 
         _s0 = len(ex)
         for c in self.head:                                   # ④ 季节性
@@ -7191,6 +7250,13 @@ class Page:
                 continue
             ex.append(e); n += 1
             _mark_section(ex, _d0, t_.get('section'))
+
+        # ⑦ 之后：声明了 `at_end` 的组（/miax/ 页面所有者 2026-09-15「Ex6 放到 Ex23 后面」）。
+        # 与 ③ 共用 `_group_here`，一处都不另写；必须排在下面 `_pleg_fill` 之前 ——
+        # 那一趟要求全部 exhibit 都已进 `ex`（理由见它上面第一条）。
+        for g in self.groups:
+            if g['at_end']:
+                n = self._group_here(ex, n, g)
 
         # ── 第二趟：把月度分解图注里那句**页面级**交叉引用填上（见 `_pleg_fill`）──
         # 位置是硬要求，不是随手放的：

@@ -1924,6 +1924,71 @@ class TestStockInline(unittest.TestCase):
                 self.assertEqual(_json(_page_payload(off)[1]), _json(_page_payload(sp)[1]))
 
 
+class TestAtEnd(unittest.TestCase):
+    """`groups[].at_end`：本组在 ③ 的那一整段图挪到 ⑦ 之后（/miax/ 页面所有者 2026-09-15）。
+
+    与 TestStockInline 同一套测法：夹具上每条反例只改一处；正例判「挪走的那一段张数与次序不变、
+    接在全部图之后，其余图一张不增、不减、不换序，图号仍从 2 连号」。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+
+    @staticmethod
+    def _at_end(*names, inline=()):
+        sp = _sgx_fixture()
+        for g in sp['groups']:
+            if g['zh'] in names:
+                g['at_end'] = True
+            if g['zh'] in inline:
+                g['stock_inline'] = True
+        return sp
+
+    @staticmethod
+    def _block(pay, gz):
+        """缺省版里 gz 在 ③ 的那一段：季节性之前、标题带本组前缀的图。"""
+        s0 = _season0(pay)
+        return [t for i, t in enumerate(_titles(pay))
+                if (s0 is None or i < s0) and t[1].startswith(gz + '：')]
+
+    def test_only_true_or_false(self):
+        for bad in ('yes', 1, 'True'):
+            with self.subTest(v=bad):
+                sp = _sgx_fixture()
+                _grp(sp, _GZ_SEC)['at_end'] = bad
+                _raises_spec(self, sp, ('at_end',))
+
+    def test_dead_config_raises(self):
+        """纯存量组、没开 stock_inline —— ③ 里一张图都没有，挪的是空气。"""
+        _raises_spec(self, self._at_end(_GZ_CAP), ('没有任何图可挪',))
+
+    def test_block_moves_to_the_very_end(self):
+        _p, base = _page_payload(_sgx_fixture())
+        _p, moved = _page_payload(self._at_end(_GZ_SEC))
+        block = self._block(base, _GZ_SEC)
+        self.assertTrue(block, f'「{_GZ_SEC}」在缺省版的 ③ 里一张图都没有 —— 样例选错了')
+        rest = [t for t in _titles(base) if t not in block]
+        self.assertEqual(_titles(moved), rest + block)
+        self.assertEqual([e['n'] for e in moved['exhibits']],
+                         list(range(2, 2 + len(rest) + len(block))))
+
+    def test_stock_inline_travels_with_the_group(self):
+        """两个开关同开：本组的存量图跟着流量图一起到末尾，⑤ 里不再有它。"""
+        _p, pay = _page_payload(self._at_end(_GZ_DER, inline=(_GZ_DER,)))
+        oi = _idx(pay, f'{_GZ_DER}：月末未平仓（存量，期末口径）', 'gs_bar')
+        self.assertEqual(oi, [len(pay['exhibits']) - 1], '存量图没跟到末尾，或 ⑤ 里还留着一张')
+
+    def test_absent_is_byte_identical_to_explicit_false(self):
+        for label, sp in (('夹具', _sgx_fixture()), ('jpx', self.S.load_spec('jpx'))):
+            with self.subTest(spec=label):
+                off = copy.deepcopy(sp)
+                for g in off['groups']:
+                    g['at_end'] = False
+                self.assertEqual(_json(_page_payload(off)[1]), _json(_page_payload(sp)[1]))
+
+
 class TestMixAltSplits(unittest.TestCase):
     """`groups[].mix.alt_splits`：同一个合计的第二种（第 k 种）切法。合计柱只画一次。"""
 
@@ -2693,6 +2758,73 @@ def _m_seal_registries(tc, mod, name):
 
 
 @unittest.skipUnless(_HAVE_LSEG, _NO_LSEG)
+class TestMiaxOwnerLayout(unittest.TestCase):
+    """活的 /miax/：页面所有者 2026-09-15 的两条指令。只读 spec、建到临时目录（同 TestSgxOwnerLayout）。
+
+    ① 开篇四张（原 Exhibit 2–5）并成两张「全历史水平值柱 + 次轴单月同比」（`headline_style='bar_yoy'`）；
+    ② 四家期权所那一组的同比热力矩阵（原 Exhibit 6）排在全页最后（`groups[].at_end`）。
+    按列名找组、按 spec 里的中文名拼标题，图号一个都不写死。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls.pay, cls.err = None, None
+        cls.tmp = tempfile.mkdtemp(prefix='tg_miax_')
+        # 接 SystemExit 而不只是 SpecError，理由见 TestSgxOwnerLayout.setUpClass。
+        try:
+            cls.spec = single.load_spec('miax')
+            out = single.build(copy.deepcopy(cls.spec), out_dir=cls.tmp, quiet=True)
+            if out:
+                with open(out, encoding='utf-8') as fh:
+                    m = re.search(r'window\.DASH = (.*);\n?$', fh.read(), re.S)
+                cls.pay = json.loads(m.group(1))
+        except SystemExit as e:
+            cls.err = str(e)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if self.err is not None:
+            self.fail(f'活的 miax spec 建不出来：{self.err[:600]}')
+        if self.pay is None:
+            self.skipTest('miax 本轮门槛没到（等数据，不是 spec 写错）')
+
+    def _tail_group(self):
+        hits = [g for g in self.spec['groups'] if g.get('at_end')]
+        self.assertEqual(len(hits), 1, f'声明 at_end 的组应恰好一个，实有 {len(hits)} 个')
+        self.assertIn('adv_pearl_options_api_kcontracts', [c['col'] for c in hits[0]['cols']],
+                      'at_end 挂错了组：所有者要挪的是四家期权所那一组')
+        return hits[0]
+
+    def test_opening_is_two_level_yoy_bars(self):
+        self.assertEqual(self.spec.get('headline_style'), 'bar_yoy')
+        ex, heads = self.pay['exhibits'], self.spec['headline']
+        self.assertEqual([(e['n'], e['kind'], e['title']) for e in ex[:len(heads)]],
+                         [(2 + i, 'gs_bar', f'{c["zh"]}：全历史水平值与单月同比')
+                          for i, c in enumerate(heads)])
+        for e in ex[:len(heads)]:
+            with self.subTest(n=e['n']):
+                self.assertTrue((e.get('yoy') or {}).get('values'), '开篇柱图没有次轴同比线')
+        gone = {f'{c["zh"]}：{s}' for c in heads for s in ('全历史与近 3 年分位带', '单月同比')}
+        self.assertEqual([e['title'] for e in ex if e['title'] in gone], [])
+        self.assertEqual([e['n'] for e in ex
+                          if any('P90' in str(s.get('name')) for s in e.get('series') or [])], [])
+        self.assertIsNone(re.search(r'Exhibit\s*\d+\s*的灰色分位带', _notes_txt(self.pay)))
+
+    def test_heat_matrix_group_is_last(self):
+        gz = self._tail_group()['zh']
+        ex = self.pay['exhibits']
+        mine = [i for i, e in enumerate(ex) if _in_group(e, gz)]
+        self.assertTrue(mine, f'「{gz}」一张图都没出')
+        self.assertEqual(mine, list(range(len(ex) - len(mine), len(ex))), '这一组的图没有排在全页最后')
+        self.assertIn('heat_matrix', [ex[i]['kind'] for i in mine])
+        self.assertEqual([e['n'] for e in ex], list(range(2, 2 + len(ex))))
+
+
 class TestLsegPrimaryOverdue(unittest.TestCase):
     """M1–M8：fetch/lseg_primary.py 的逾期护栏；M13–M16：白名单的类型、反查、形状校验与「'blank' 不豁免逾期」。
     present / today / fetch_rows 全部注入；KNOWN_SOURCE_GAPS 在 setUp 里换成夹具（组头第五条）。"""
