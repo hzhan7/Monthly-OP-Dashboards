@@ -36,6 +36,25 @@
       新版式必然捞到上面某张不相干的表，**静默**返回空 —— 97 份里只读出 15 份，
       看上去就像「2017-04 之后官方不附表了」。
       教训：解析器读不到，和源里没有，长得一模一样；分辨这两者只能去看原文。
+    - 第二次更正（2026-09-16）写「2014 年那三份整份返回 {} 是因为 _TITLE_RE 不认
+      "Monthly **Market** Activity Report"」→ **只说对了三分之一**。那三份（报送
+      2014-01-16 / 2014-04-15 / 2014-07-16，报告月 2013-12 / 2014-03 / 2014-06，
+      DFIN 排版）身上叠着**三个各自独立的病因**，每一个单独都足以让整份静默返回 {}：
+        (1) 标题正则不认 "Monthly **Market** Activity Report"；
+        (2) 这三份的 HTML 标签**全大写**（<TABLE> / <TR> / <TD>），而定表尾的
+            `html.find('</table>')` 和抠行、抠格的两个 `re.findall` 都是大小写敏感的 ——
+            同一个函数里定表**头**用的是 `html.lower()`，唯独这三处漏了大小写。
+            季频腿那边（_q_rows 一带）早就带着 re.I，月频这边一直没有；
+        (3) 那一版把**行标签单独占一行**，值落在下一行的单位说明格后面
+            （'Total Client Assets' 自己一行，下一行才是
+            '(at month end, in billions of dollars)' '1,951.6' …）。`row_of()` 取到
+            标签行发现没有值就跳过，锚点行 _anchor_money 因此返回 None → 整份 {}。
+      **最值得记的不是这三条本身，而是它们叠在一起的样子**：修好 (1) 之后，症状
+      （整份返回 {}）**一个字都没变** —— 此时最顺手的结论正是「那就是源里真没有」，
+      而那是错的。一个症状可以叠着好几个独立病因，症状不变 ≠ 修的地方不对。
+      三层都修完，50 份 EX-99.1 全部解析出结果（此前 47 份），原先能解析的 47 份
+      **逐字未变**；三份 DFIN 件彼此重叠 10 / 7 / 10 个月逐值相等，与 series/schw.csv
+      既有 42 个 (月,列) 也逐值相等 —— 「读的是对的那张表」靠的是这个，不是肉眼看版式。
   现在的做法见 parse_edgar_monthly()：锚在**标题正则**上，再按标题落在表内还是表外
   决定往前还是往后找 <table>。实测 871 个与 series/schw.csv 重叠的 (月,指标) 全部相等，
   含 2019-04 那个 core NNA = -0.3（会计负号的右括号被拆进独立 <td>，见 _glue）。
@@ -186,6 +205,17 @@ dats_k 整列是空的，实际只有 2018-12…2024-12 共 7 个年末的月末
 dats_k / margin_balances_usdbn 仍然从 2025-01 起。补出来的只是客户总资产与新开经纪账户。
 （这说的是**月频**这条路径；这两个量的**季频**历史回得到 2016Q1 甚至更早，走的是另一条腿
 series/schw_q.csv，不经过 --backfill，见下方「季频腿」。）
+
+⚠️ **2026-09-16 起 `--backfill` 能多拿 9 个月，但故意还没去拿。** 解析器这次学会了
+2013/2014 那代 DFIN 版式（三层病因见上面「第二次更正」），于是那三份件里的
+total_client_assets_usdbn 与 new_brokerage_accounts_k 变得可读，窗口最左到 **2012-12**。
+真跑一次 `--backfill`，series/schw.csv 会从现在的 2013-09 往前长出 **2012-12…2013-08
+共 9 行**（与现起点连号、不留洞；三份件彼此重叠 10/7/10 个月逐值相等，与既有 42 个
+(月,列) 也逐值相等，数据本身是干净的）。**没跑，是因为这不是数据问题而是版式问题**：
+schw 页与 wealth 页多张图的左缘由各自序列的首个非空月决定，加 9 行就会再挪一次 ——
+这类可见的版式变更属页面所有者的决定（页面所有者 2026-09-16 的裁定是「只修解析器、
+不动数据」）。下次要动它的人：数已经验过了，你要问的是「这 9 个月该不该上图」，
+不是「这 9 个月的数对不对」。
 
 ========================= 季频腿（series/schw_q.csv）=========================
 本文件还维护**第二张 CSV**：series/schw_q.csv，键是**季**不是月，两列
@@ -342,6 +372,13 @@ _CORE_NNA_FROM = (2017, 2)
 #   · 序列侧 —— series/schw.csv 本来就从 2013-09 起，再往前也无处可写。
 # cache 里最老的申报是 2014-01-16 报送那期，2013 年及更早的 8-K 没查过；真要再往前推，
 # 先去看那几期原件有没有这一行，**不要**照着现在这个常数反推「官方那时没披露」。
+#
+# 2026-09-16 追记：天花板那三期（2014-01-16 / 2014-04-15 / 2014-07-16 报送）当初是
+# **整份解析不出来**的，「没有这一行」只能靠手工搜字符串得到。现在 parse_edgar_monthly()
+# 认得这一代版式了（三层病因见模块 docstring），三份都能解析出 13 个月 × 2 列，
+# 而解析结果里**确实没有** client_cash_pct —— 于是这条天花板反证从「手工搜不到」
+# 升级成「管道读得进来、读出来的东西里就是没有这一行」，是两条独立证据而不是一条。
+# 两列的具体窗口：2012-12…2013-12 / 2013-03…2014-03 / 2013-06…2014-06。
 _CASH_PCT_FROM = (2013, 9)
 
 # 同一个月同时来自月报和季报时谁说了算：季报是最终版。
@@ -863,7 +900,8 @@ def _edgar_8k(limit_before: str = _EDGAR_UNTIL) -> list:
 
 
 _HTML_TAG = re.compile(r'<[^>]+>')
-_TITLE_RE = re.compile(r'Monthly Activity Report\s+For\s+([A-Za-z]+)\s+(\d{4})', re.I)
+_TITLE_RE = re.compile(
+    r'Monthly\s+(?:Market\s+)?Activity\s+Report\s+For\s+([A-Za-z]+)\s+(\d{4})', re.I)
 
 
 def _cell_text(c: str) -> str:
@@ -921,6 +959,15 @@ def parse_edgar_monthly(html: str) -> dict:
     与 xlsx 那条路共用同一套规矩：**按标签前缀取行、按锚点行反推单位倍率、
     表头月份与标题月倒推逐个核对**。核对不上就整份丢掉（返回 {}）而不是猜 ——
     这批文件跨 4 年、版式改过好几次，错位一格在图上看不出来。
+
+    **一共要认三代版式**（全大写标签那一代是 2026-09-16 才补上的，经过见模块 docstring
+    「第二次更正」那条）：
+      · 2013-12 … 2014-06（DFIN 报送，3 份）：标题是 "Monthly **Market** Activity
+        Report"、HTML 标签**全大写**、行标签与值**分两行**（值在 '(单位说明)' 那行）。
+      · 2014-09 … 2017-03：标题在表的**第一行里**，标签与值同一行，小写标签。
+      · 2017-04 起至今：标题在表**上方的 <div> 里**，其余同上。
+    所以本函数里凡是按位置找 <table>/<tr>/<td> 的地方**一律走 lower() 或 re.I** ——
+    这不是洁癖：漏一处的表现不是报错，而是**静默**返回 {}，与「官方没印这张表」同形。
     """
     # ── 锚点：必须锚在**标题**上，不能锚在「monthly activity report」这个词上 ──
     # 正文里另有一句脚注「…please see the Monthly Activity Report.」，位置比真表更靠前。
@@ -939,12 +986,13 @@ def parse_edgar_monthly(html: str) -> dict:
         a = a_back                       # 老版式：标题落在这张表内部
     else:
         a = html.lower().find('<table', i)   # 新版式：标题在表上方
-    b = html.find('</table>', a) if a >= 0 else -1
+    b = html.lower().find('</table>', a) if a >= 0 else -1
     if a < 0 or b < 0:
         return {}
     rows = []
-    for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S):
-        cells = [_cell_text(c) for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S)]
+    for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S | re.I):
+        cells = [_cell_text(c) for c in
+                 re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S | re.I)]
         rows.append(_glue(cells))
     ay, am = int(hit.group(2)), _MON.index(hit.group(1).lower()[:3]) + 1
     hdr = next(([c.lower()[:3] for c in r if c.lower()[:3] in _MON]
@@ -964,15 +1012,25 @@ def parse_edgar_monthly(html: str) -> dict:
 
     def row_of(prefix, skip_core=False):
         pfx = _pfx(prefix)
-        for r in rows:
+        for idx, r in enumerate(rows):
             lab = re.sub(r'\s+', ' ', r[0]).strip().lower() if r else ''
             if not lab.startswith(pfx):
                 continue
             if skip_core and lab.startswith('core'):
                 continue
-            vals = [_html_num(x) for x in r[1:1 + len(yms)]]
-            if sum(v is not None for v in vals) >= len(yms) - 2:
-                return {ym: v for ym, v in zip(yms, vals) if v is not None}
+            # 先在本行取值（2015 年至今的版式，标签与值同一行）。取不到再往下看一行：
+            # 2013/2014 那版 DFIN 排版把标签单独占一行，值落在下一行的**单位说明**格
+            # 后面（'Total Client Assets' / '(at month end, in billions of dollars)'
+            # '1,951.6' …）。只在本行取不到、且下一行以 '(' 开头时才接受这种配对 ——
+            # 不加这个括号条件就会把**下一条指标**的值安到本行头上，而错位的值看着完全正常。
+            cands = [r]
+            nxt = rows[idx + 1] if idx + 1 < len(rows) else None
+            if nxt and nxt[0].strip().startswith('('):
+                cands.append(nxt)
+            for rr in cands:
+                vals = [_html_num(x) for x in rr[1:1 + len(yms)]]
+                if sum(v is not None for v in vals) >= len(yms) - 2:
+                    return {ym: v for ym, v in zip(yms, vals) if v is not None}
         return None
 
     a_money = row_of(_LABEL['_anchor_money'])
