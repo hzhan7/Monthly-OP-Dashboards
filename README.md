@@ -343,6 +343,12 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
 - **AXP**：SEC EDGAR CIK 0000004962 的 8-K Item 7.01。2026-05 起口径从 loans-only
   改成合并的 Card balances，两套口径不可连比，分别存不同 CSV。
 - **SCHW / LPLA**：季末月（3/6/9/12）没有独立月报，数值取自当季季报。
+  ⚠️ SCHW 的季报附表里还多印着两张月报上没有的表 —— `Clients' Daily Average Trades`
+  与 `Growth in Client Assets and Accounts` 的 `Margin loans outstanding`。这两个量在
+  **月报**里 2026-01 那期才新增、只回填到 2025-01，在**季报**里却一直有（本地缓存的
+  8-K Ex-99.1 最老一份印到 2013Q3）。落 `series/schw_q.csv`（2016Q1 起），画成
+  schw 页 Exhibit 15 / 16。**教训**：一条列的「披露边界」要分「哪一列」和「什么频率」
+  两问，只查月报就断言「任何来源都补不出更早的」，2026-08 到 2026-09 在本仓错了两次。
 - **HKEX**：官方有时先把下个月的列开出来再填数，所以「最新月」以**表里最后一个
   ADT 非空的月**为准，不能信文件名。
 
