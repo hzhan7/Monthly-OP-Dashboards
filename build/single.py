@@ -273,7 +273,8 @@ GROUP_REQUIRED = {'zh', 'cols'}
 # 缺省（不给 / `False`）：本组照 spec 的先后在 ③ 里出图 —— 逐字节回到没有这个开关之前。
 # `True`：③ 跳过这一组，改在 ⑦（`level_yoy`）之后、⑧ 核对表之前出；几组都开时按 spec 的先后。
 # 挪的是 ③ 那一整段组体（`Page._group_here()`：流量 mix、各单位桶、`stock_inline` 的存量图、
-# 本组 section、锚在本组的 `after_group` 分解图），与 ③ 共用同一个方法，不许各写一份。
+# 本组 section、锚在本组的 `after_group` 分解图与 level_yoy 图），与 ③ 共用同一个方法，
+# 不许各写一份。
 # 没开 `stock_inline` 的存量图不跟着走，照旧排在 ⑤ —— 这个开关只管 ③ 那一段；
 # 要存量图也跟到末尾，同时开 `stock_inline`。
 #
@@ -493,11 +494,26 @@ DECOMP_BUCKETS = ('year', 'monthly')
 #: 理由同 LEVEL_YOY 那次删键：留着一个再也不起作用的声明，比当场报错糟 ——
 #: 它会让下一个人以为月度图的横轴还受 year_start_month 管。
 DECOMP_YEAR_ONLY_KEYS = ('year_start_month', 'year_label', 'years')
-# ── level_yoy —— 「水平值柱 + 次轴单月同比」那几张（一律排在页尾）─────────────
+# ── level_yoy —— 「水平值柱 + 次轴单月同比」那几张（缺省排在页尾）─────────────
 # 旧名 `ttm_yoy`：次轴曾是 12 个月滚动合计的同比。2026-09 按页面所有者的指令改成
 # **单月同比**（当月对去年同月，本列除本列），键名、函数名与标题一并跟着改 ——
 # 留着 `ttm_yoy` 这个名字，就是让配置替一张不再做滚动合计的图署名。
-LEVEL_YOY_KEYS = {'zh', 'level', 'note', 'section'}
+#
+# ── level_yoy[].after_group —— 这张图就地排在某个 group 的图之后（2026-09-16 补）──
+# 缺省（不给）：排在页尾（⑦），核对表之前 —— 逐字节回到没有这个键之前。
+# 给一个 `groups[].zh`：这张图改在那一组的图之后**就地**出，与 `decomp[].after_group`
+# 同一条路、同一套校验、同一套记账，一个字都不另写：
+#   · 组名写错或重名 → `SpecError`（「等人」，硬失败）。不校验的话它会静默掉回页尾，
+#     图还在、闸门全过，只有对着页面数图号的人才看得出所有者要的位置没生效。
+#   · 组名写对、但那一组本轮整组不在页上（声明的列整列为空）→ 退回页尾并记一笔
+#     （「等数据」，不硬失败，源表补上列就自动回到原位）。
+# 由来：/ndaq/ 页面所有者 2026-09-16 指令第 4 条「ex14 插到 ex7 后面，并给说明这两个图
+# 的差异」。原 Exhibit 14 是 ⑦ 的「水平值 + 单月同比」（单盘口成交股数），原 Exhibit 7 是
+# ③ 里那张三盘口合计成交股数 —— 两张图长得几乎一样，隔着七张图读者认不出差别在哪。
+# ⚠️ **只改排序，不改口径**：图还是那张图，窗口、配色、图注一字不动。
+# ⚠️ 图号位移同 `decomp[].after_group` / `stock_inline` / `at_end`：被挪走那张原位
+# 之后的图整体前移，docs/SINGLE_SPEC.md §2 表下的三类白名单与「页尾交代新旧号」照搬。
+LEVEL_YOY_KEYS = {'zh', 'level', 'note', 'section', 'after_group'}
 LEVEL_YOY_REQUIRED = {'zh', 'level'}
 
 # 源表的量列有两种粒度，本仓两种都有（SGX 的 sec_turnover_* 是当月总量，
@@ -511,12 +527,24 @@ GRANS = ('monthly_total', 'daily_avg')
 #:
 #:   'band_yoy'  两张：①「全历史折线 + 近 3 年 P10/P90 分位带」②「单月同比柱」
 #:   'bar_yoy'   **一张**：全历史的水平值柱 + 次轴单月同比折线
+#:   'line_only' **一张**：全历史折线，**不画**分位带；②「单月同比柱」也不出
 #:
 #: `'bar_yoy'` 是 2026-09 按页面所有者的指令加的：「柱状图和 yoy 的折线图要在一个图里」。
 #: ⚠️ **代价说清楚**：分位带在柱图上没有位置（引擎没有「柱 + 两条带 + 次轴线」这种
 #: 图型），所以选 `'bar_yoy'` 就等于把 P10/P90 那条常态区间从页面上拿掉 ——
 #: 汇总表的「3Y %ile」列还在（它不靠这张图），但页尾那句「Exhibit 2 的灰色分位带与它
 #: 同窗口同口径」会自动消失，不会留下一句指着不存在的图的话。
+#:
+#: `'line_only'` 是 2026-09-16 按 /ndaq/ 页面所有者的指令加的，原话两条：
+#: 「ex2/3 里面近 36 个月的线全部删除」「ex4/5 删除，这两个指标没意义」。
+#: 它与 `'bar_yoy'` / `'none'` 的区别是**只减不换**：① 那张图连同它的窗口
+#: （首个有值月 → 末个有值月，逐月连续）、`zero_base`、`end_label`、断点竖线
+#: 全部原样留着，去掉的只有 `series` 里 P90 / P10 那两条辅助线与图注里讲带的那半句；
+#: ② 整段不出。⚠️ **代价与 `'bar_yoy'` 同一笔**：分位带离开页面 ——
+#: 汇总表的「3Y %ile」列还在（它直接从序列算，不靠这张图），页尾那句
+#: 「Exhibit N 的灰色分位带与它同窗口同口径」按真画出来的图自动换成
+#: 「本页没有画分位带那张图」，不会留下一句指着不存在的图的话。
+#: ⚠️ 这一档**有** ①，所以 `headline_section` 照常可写（与 `'none'` 那一档相反）。
 #:
 #:   'none'      **零张**：①② 整段不出，页面从 ③ 的第一组图开始
 #:
@@ -528,7 +556,7 @@ GRANS = ('monthly_total', 'daily_avg')
 #: 头条列若没在任何 `groups[].cols` 里声明，这一档下它在组图里也没有位置 ——
 #: 不硬失败（页面仍然成立，汇总表 / 抬头 / 季节性里都有它），`build()` 打一行告警。
 #: 同时声明 `headline_section` 是死配置（它只命名 ①② 那一段，而那一段是空的）→ 硬失败。
-HEADLINE_STYLES = ('band_yoy', 'bar_yoy', 'none')
+HEADLINE_STYLES = ('band_yoy', 'bar_yoy', 'line_only', 'none')
 
 # 分解出来的那个**派生量**（= 金额 ÷ 数量）到底是什么，全仓有三类，含义互不相通：
 # 混用一套措辞会让读者把「订单碎片化」读成「价格下跌」，把「费率」读成「成交价」。
@@ -1688,6 +1716,10 @@ def _norm_level_yoy(t, where):
         'level': lvl,
         'note': str(t.get('note') or ''),
         'section': str(t['section']) if t.get('section') else None,
+        # 挂载点：某个 group 的 zh 字符串。留空 = 老行为（排在页尾、核对表之前）。
+        # 组名存不存在、唯不唯一由 `Page.__init__` 现查（那里才拿得到 groups），
+        # 与 `_norm_decomp` 的同名键逐字同源。
+        'after_group': (str(t['after_group']) if t.get('after_group') else None),
     }
 
 
@@ -1985,8 +2017,9 @@ class Page:
         if self.headline_style not in HEADLINE_STYLES:
             raise SpecError(f"headline_style={self.headline_style!r} 只能是 "
                             f"{HEADLINE_STYLES[0]!r}（两张：全历史分位带 + 同比柱）、"
-                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）或 "
-                            f"{HEADLINE_STYLES[2]!r}（零张：不出开篇头条图）")
+                            f"{HEADLINE_STYLES[1]!r}（一张：全历史柱 + 次轴单月同比）、"
+                            f"{HEADLINE_STYLES[2]!r}（一张：全历史折线，不画分位带、不出同比柱）或 "
+                            f"{HEADLINE_STYLES[3]!r}（零张：不出开篇头条图）")
         # `'none'` 下 ①② 那一段是空的，`headline_section` 没有任何一张图可命名 ——
         # `_mark_section` 对空段是空操作，声明会被静默吞掉。死配置，硬失败。
         if self.headline_style == 'none' and spec.get('headline_section'):
@@ -2013,6 +2046,11 @@ class Page:
                              if self.headline_style == 'none' else [])
         self.decomp = [_norm_decomp(d, f'decomp[{i}]')
                        for i, d in enumerate(spec.get('decomp') or [])]
+        # level_yoy 在这里归一化（而不是等到下面）：它 2026-09-16 起也带 `after_group`，
+        # 而紧接着的锚点校验与 at_end 死配置判定**都要看得见它** —— 晚一步归一化，
+        # at_end 那段就会把「只靠一条 level_yoy 才有图」的组判成「挪的是空气」。
+        self.level_yoy = [_norm_level_yoy(t, f'level_yoy[{i}]')
+                          for i, t in enumerate(spec.get('level_yoy') or [])]
         # ── `after_group` 的锚点必须**写得对**且唯一（这一档是「等人」，硬失败）──────
         # 这条改动最可能的失败模式就是**名字打错**：不校验的话，锚点匹配不上，
         # 这张图会静默掉回页尾 —— 图还在、页面照常上线、闸门全过，
@@ -2039,11 +2077,27 @@ class Page:
                        f'出现 {k} 次 —— 「排在它之后」有 {k} 个答案，挑哪个都是猜')
                     + '。名字对不上就静默掉回页尾，图还在、闸门全过，'
                       '只有对着页面数图号的人才看得出所有者要的位置没生效')
+        # `level_yoy[].after_group` 同一条规矩、同一份组名表（2026-09-16 补）。
+        # 单开一轮而不是与上面合并：两个字段的报错要各自点名到 `decomp[i]` / `level_yoy[i]`，
+        # 合成一轮就得在文案里再判一次「这条是哪种」，而那正是会写错的地方。
+        for i, t_ in enumerate(self.level_yoy):
+            a = t_['after_group']
+            if a is None:
+                continue
+            k = _gz.count(a)
+            if k != 1:
+                raise SpecError(
+                    f"level_yoy[{i}]（{t_['zh']}）的 after_group={a!r} 在 groups 里"
+                    + (f'找不到 —— 可用的组名：{_gz}' if k == 0 else
+                       f'出现 {k} 次 —— 「排在它之后」有 {k} 个答案，挑哪个都是猜')
+                    + '。名字对不上就静默掉回页尾，图还在、闸门全过，'
+                      '只有对着页面数图号的人才看得出所有者要的位置没生效')
         # ── at_end 的死配置：本组在 ③ 一张图都出不了 ─────────────────────────────────
         # 判据按 **spec 声明**（在剔空列之前，理由同上面 stock_inline 那一段：整列为空是等数据）。
-        # ③ 里一组出得了图只有四种来源，与 `_group_here` 的四段逐条对应：声明了流量列、
+        # ③ 里一组出得了图只有五种来源，与 `_group_here` 的五段逐条对应：声明了流量列、
         # mix 的合计是流量列、开了 stock_inline（存量图跟着组走）、有分解图用 after_group
-        # 锚在本组。四样全无还写 at_end，挪的是空气 —— 下一个人会以为这一组的图排在末尾。
+        # 锚在本组、有 level_yoy 用 after_group 锚在本组（2026-09-16 补的第五种）。
+        # 五样全无还写 at_end，挪的是空气 —— 下一个人会以为这一组的图排在末尾。
         _stk = {c['col']: c['stock']
                 for c in self.head + [c for g_ in self.groups for c in g_['cols']]}
         for gi, g in enumerate(self.groups):
@@ -2052,15 +2106,14 @@ class Page:
             if (any(not c['stock'] for c in g['cols'])
                     or (g['mix'] and not _stk.get(g['mix']['total'], False))
                     or g['stock_inline']
-                    or any(d['after_group'] == g['zh'] for d in self.decomp)):
+                    or any(d['after_group'] == g['zh'] for d in self.decomp)
+                    or any(t_['after_group'] == g['zh'] for t_ in self.level_yoy)):
                 continue
             raise SpecError(
                 f'groups[{gi}]（{g["zh"]}）.at_end=True，但这一组在 ③ 没有任何图可挪：'
                 f'cols 全是存量列、mix 的合计不是流量列、没开 stock_inline、'
-                f'也没有 decomp 用 after_group 锚在本组 —— 这个开关只挪 ③ 那一段，'
-                f'存量图排在 ⑤ 不受它管。要么删掉 at_end，要么同时开 stock_inline')
-        self.level_yoy = [_norm_level_yoy(t, f'level_yoy[{i}]')
-                          for i, t in enumerate(spec.get('level_yoy') or [])]
+                f'也没有 decomp / level_yoy 用 after_group 锚在本组 —— 这个开关只挪 ③ '
+                f'那一段，存量图排在 ⑤ 不受它管。要么删掉 at_end，要么同时开 stock_inline')
 
         # ── 列必须真实存在于 CSV。缺列是 spec 写错，硬失败（要人去改，不是等数据）──
         have = set(self.df.columns)
@@ -2134,6 +2187,21 @@ class Page:
             # 锚点作废：置回 None，让页尾那一轮（`payload()` ⑥）接住它。
             # 不置 None 的话 `_decomp_here` 不触发、页尾又 `continue`，两头都没人接。
             d['after_group'] = None
+        # `level_yoy[].after_group` 同一档、同一套文案（2026-09-16 补）。另开一本账而不是
+        # 并进 `decomp_moved`：页尾那句的主语是「分解图」，把一张「水平值 + 单月同比」
+        # 塞进去就是替它安了个它不是的图型。
+        self.level_yoy_moved = []
+        for t_ in self.level_yoy:
+            a = t_['after_group']
+            if a is None or a in _live:
+                continue
+            gone = [c for c in _declared.get(a, []) if c in self.empty]
+            self.level_yoy_moved.append(
+                f'{t_["zh"]}：spec 要它紧跟「{a}」那一组出图，但那一组本轮整组不在页上'
+                f'（它声明的 {len(gone)} 列 '
+                f'{"、".join(gone) or "（列已被别处剔除）"} 整列为空），锚点没有着落，'
+                f'这张图改排页尾')
+            t_['after_group'] = None
 
         # ── groups[].mix：列名 → 列配置，并把「被 mix 吃掉」的列记下来 ──────────────
         #
@@ -2272,11 +2340,16 @@ class Page:
             if c['no_yoy']:
                 # 路径名跟着 `headline_style` 走：'none' 下 ex_head_bar / ex_yoy 一张都不画，
                 # 照旧写那两个名字就是把维护者指到不存在的代码路径上（2026-09-12 审稿）。
-                # 另外两档沿用原措辞（逐字节不变，只是报错文案）。
+                # 'line_only' 同理：那一档只走 ex_history（且不画带），ex_yoy 一张不出。
+                # 其余两档沿用原措辞（逐字节不变，只是报错文案）。
                 _ny.append(f'headline[{i}]「{c["zh"]}」→ '
                            + ("headline_style='none' 不出开篇图，头条列只进 ex_season / "
                               '汇总表 / 抬头行，三处都不读这个开关'
-                              if self.headline_style == 'none' else '走 ex_head_bar / ex_yoy'))
+                              if self.headline_style == 'none' else
+                              "headline_style='line_only' 只出 ex_history（不画分位带），"
+                              '不出 ex_yoy，两处都不读这个开关'
+                              if self.headline_style == 'line_only' else
+                              '走 ex_head_bar / ex_yoy'))
         for g in self.groups:
             m = g.get('mix')
             eaten = set()
@@ -3611,7 +3684,17 @@ class Page:
                                           for c in cols]
 
     # ────────────────────── exhibit：头条长历史 + 3Y 分位带 ──────────────────────
-    def ex_history(self, n, c):
+    def ex_history(self, n, c, band=True):
+        """① 头条列的全历史折线。`band=False` 时**只画主线**，不画近 3 年 P10/P90 两条带。
+
+        `band=False` 由 `headline_style='line_only'` 走（/ndaq/ 页面所有者 2026-09-16
+        「ex2/3 里面近 36 个月的线全部删除」）。**只减不换**：窗口、`zero_base`、
+        `end_label`、`xstep`、断点竖线、`_cols` 全部与 `band=True` 逐字节相同，
+        差别只在 `series` 少两条，外加与那两条绑死的四处文案一起收 ——
+        标题的「与近 3 年分位带」、`src_extra` 的 grey lines 那半句、图注里讲带的整句、
+        以及「当月在不在带内」那个判定（`pos`）。四处留一处不收就是一句指着
+        不存在的线的话，而 `verify_pages.py` 只看得见结构、看不见措辞。
+        """
         # 横轴取「首个有值的月 → 末个有值的月」**逐月连续**的整段，不是 dropna 后的索引：
         # dropna 会把中间缺的月直接从横轴上抹掉，于是相隔两个月的两点被并排画成相邻期 ——
         # 那是一根假时间轴（CONTRACT 规矩 3）。留成 null 由 lines 图型断笔才是对的。
@@ -3620,14 +3703,16 @@ class Page:
         idx = list(self.df.index)
         win = idx[idx.index(fin.index[0]):idx.index(fin.index[-1]) + 1]
         v = s.reindex(win).values.astype(float)
-        lo, hi = pct_band(v)
+        # 不画带时连算都不算：`pct_band` 的结果只喂那两条 series 与 `pos` 判定，
+        # 两者都不在场。留着算会让下面每一处「有没有带」的分支多一个可以读错的变量。
+        lo, hi = pct_band(v) if band else (None, None)
         xl = [mlab(p) for p in win]
         zero_ok = bool(np.nanmin(v) >= 0)
         ex = {
             'n': n, 'kind': 'lines', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
             'xlabels': xl, 'xstep': max(1, len(win) // 14),
             'full': True, 'height': LINE_H_ENDLABEL, 'end_label': True,
-            'title': f'{c["zh"]}：全历史与近 3 年分位带',
+            'title': f'{c["zh"]}：全历史与近 3 年分位带' if band else f'{c["zh"]}：全历史',
             'ylab': c['unit'],
             # `_cols` 是给 chartscale 用的临时键（这张图画了哪几列），payload() 里被 pop 掉。
             # 它存在的唯一理由：同一列出现在长历史图 / 季节性图 / 自己那张组图里时，
@@ -3636,14 +3721,15 @@ class Page:
             '_cols': [c['col']],
             'series': [
                 {'name': c['zh'], 'color': 'NAVY', 'values': LN(v)},
+            ] + ([
                 # 带的上下沿必须**两个色**。同色两条线在图例里指不到具体哪条（位置能分开、
                 # 图例分不开），build/verify_pages.py 的多线可辨识度检查也是判「颜色有没有
                 # 真的撞上」。GRAY 与 BLUE 是六个数据色里最浅的两个，做辅助线不抢主线。
                 {'name': f'近 {pctile.WINDOW} 个月 P90（上沿）', 'color': BAND_HI, 'values': LN(hi)},
                 {'name': f'近 {pctile.WINDOW} 个月 P10（下沿）', 'color': BAND_LO, 'values': LN(lo)},
-            ],
-            'src_extra': 'Full disclosed history; grey lines are the trailing 36-month '
-                         'P10/P90 of the same series',
+            ] if band else []),
+            'src_extra': ('Full disclosed history; grey lines are the trailing 36-month '
+                          'P10/P90 of the same series') if band else 'Full disclosed history',
         }
         if zero_ok:
             # 纵轴从 0 起：不给的话引擎走 y0 = min − 极差×5%，那是一次没有任何标注的
@@ -3651,16 +3737,25 @@ class Page:
             # 两个都是当时的号，那两张全历史线后来分别按页面所有者的指令删了）。
             ex['zero_base'] = True
         hit = self.mark_breaks(ex, win, [c])
-        cur, plo, phi = v[-1], lo[-1], hi[-1]
-        pos = ('高于近 3 年 P90' if np.isfinite(phi) and cur > phi else
-               '低于近 3 年 P10' if np.isfinite(plo) and cur < plo else '在近 3 年 P10–P90 带内')
+        cur = v[-1]
+        if band:
+            plo, phi = lo[-1], hi[-1]
+            pos = ('高于近 3 年 P90' if np.isfinite(phi) and cur > phi else
+                   '低于近 3 年 P10' if np.isfinite(plo) and cur < plo else
+                   '在近 3 年 P10–P90 带内')
+            band_zh = (f'灰线（上沿 P90）与浅蓝线（下沿 P10）'
+                       f'是<b>同一条序列</b>近 {pctile.WINDOW} 个月（含当月）的滚动分位，'
+                       f'两条合起来就是「近 3 年的常态区间」，与汇总表「3Y %ile」同窗口同口径；'
+                       f'样本不足 12 个月的早期月份不画带（不硬算）。')
+            pos_zh = f'，{pos}'
+        else:
+            # 没有带就没有「在不在带内」这个说法 —— 这半句连同上面那段一起撤，
+            # 不留「与汇总表同窗口同口径」那句（它讲的是带，不是这条主线）。
+            band_zh, pos_zh = '', ''
         ex['note'] = (
-            f'{xl[0]} → {xl[-1]} 共 {len(win)} 个月。灰线（上沿 P90）与浅蓝线（下沿 P10）'
-            f'是<b>同一条序列</b>近 {pctile.WINDOW} 个月（含当月）的滚动分位，'
-            f'两条合起来就是「近 3 年的常态区间」，与汇总表「3Y %ile」同窗口同口径；'
-            f'样本不足 12 个月的早期月份不画带（不硬算）。'
-            f'{xl[-1]} 读数 {unit_txt(cur, c)}，'
-            f'{pos}。同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
+            f'{xl[0]} → {xl[-1]} 共 {len(win)} 个月。' + band_zh
+            + f'{xl[-1]} 读数 {unit_txt(cur, c)}'
+            + f'{pos_zh}。同比 {chg_txt(c, v)}、环比 {chg_txt(c, v, lag=1)}。'
             + ('纵轴从 0 起（不截轴）。' if zero_ok else '序列含负值，纵轴不强制从 0 起。')
             + (self.brk_zh(hit, win) + '，线左边那段与右边不可比。' if hit else ''))
         return ex
@@ -4750,6 +4845,10 @@ class Page:
         `tmx` 的 `mx_adv_contracts` 当时被开篇柱与 mix 合计柱各画一张（296 期 vs
         128 期），两张图注却印着同一组 273 个月的实测数（那一对已在 2026-09 并成一张，
         见 `Page.total_drawn_wider` —— 这里按列名留证，不写会随增删图位移的图号）。
+        ⚠️ **上面这几个图号是当时的实测证据，一律冻结、不许跟着现网改**（`docs/SINGLE_SPEC.md`
+        §2 表下白名单第 3 类）：改过去反而会指到一张与当年那个 bug 无关的图上。
+        举例：`ndaq` Ex14 在 2026-09-16 按页面所有者的指令挪了位（`level_yoy[].after_group`），
+        今天它排在三盘口合计成交股数那张之后，早已不是 14 号。
         所以窗口由调用方把**这张图真画出来的那一段**传进来，一处都不许省。
 
         ── 走 `build/yoy.py`，不自己写口径 ──────────────────────────────────
@@ -6984,6 +7083,27 @@ class Page:
             _mark_section(ex, _d0, d.get('section'))
         return n
 
+    def _level_yoy_here(self, ex, n, gz):
+        """在 groups 循环里就地出「锚点 = gz」的那几张 level_yoy 图 → 新的图号计数 n。
+
+        逐行镜像 `_decomp_here`：与页尾那一轮（`payload()` ⑦）共用同一个 `ex_level_yoy`
+        与同一套记账（`skipped` / `_mark_section`），两处不许各写一遍。留两份的下场
+        与 `_group_here` / `_stock_here` 记的一样 —— 一份哪天改了另一份不跟，
+        就地出的那张与排在页尾的那张变成两种画法，而没有任何护栏会响。
+        """
+        for t in self.level_yoy:
+            if t['after_group'] != gz:
+                continue
+            _d0 = len(ex)
+            e, why = self.ex_level_yoy(n, t)
+            if e is None:
+                self.skipped.append(why)
+                continue
+            ex.append(e)
+            n += 1
+            _mark_section(ex, _d0, t.get('section'))
+        return n
+
     def _stock_here(self, ex, n, g):
         """出组 g 的存量图（就地追加进 `ex`）→ 新的图号计数 n。
 
@@ -7020,7 +7140,8 @@ class Page:
         就是两种画法，而没有任何护栏会响。
 
         顺序固定：流量 mix → 各单位桶 → `stock_inline` 的存量图 → 本组 section 收口 →
-        锚在本组的 `after_group` 分解图。
+        锚在本组的 `after_group` 分解图 → 锚在本组的 `after_group` level_yoy 图。
+        末两段的先后与页尾那两轮（⑥ 再 ⑦）一致，不许在这里倒过来。
         """
         _g0 = len(ex)
         # 声明了 mix 且合计是**流量**列 → 先出「合计柱 + 占比堆叠」。
@@ -7074,6 +7195,10 @@ class Page:
         # 排在本组 `_mark_section` 之后，好让分解图带自己的 section 走 ——
         # 混进上面那一段的话它会被无条件涂成本组的 section。
         n = self._decomp_here(ex, n, g['zh'])
+        # 声明了 `after_group` 的 level_yoy 同理（2026-09-16 补）。排在分解图之后，
+        # 与页尾那两轮（⑥ 再 ⑦）同序 —— 两处顺序不一致的话，同一份 spec 在
+        # 「锚点组在不在页上」两种情形下会画出两种先后。
+        n = self._level_yoy_here(ex, n, g['zh'])
         return n
 
     def stock_order_zh(self):
@@ -7173,6 +7298,12 @@ class Page:
                 ex.append(self.ex_history(n, c)); n += 1
             for c in self.head:                               # ② 同比
                 ex.append(self.ex_yoy(n, c)); n += 1
+        elif self.headline_style == 'line_only':
+            # ① 照出，但不画分位带；② 整段不出（/ndaq/ 页面所有者 2026-09-16 两条指令）。
+            # 与 'none' 的差别是这一档**有** ①：`headline_section` 仍有挂载点，
+            # 头条列也仍然各有一张自己的图，所以不进 `head_orphans` 那本告警账。
+            for c in self.head:
+                ex.append(self.ex_history(n, c, band=False)); n += 1
         # 'none'：①② 一张不出（/sgx/ 页面所有者 2026-09-12「删掉开篇那四张」）。
         # 写成显式的 elif 而不是把 band_yoy 留在 else 里：第三个取值落进 else 会静默画出
         # 分位带那两张 —— 与所有者要的正好相反，而页面结构完全正常、闸门全过。
@@ -7242,7 +7373,11 @@ class Page:
                 continue
             ex.append(e); n += 1
             _mark_section(ex, _d0, d.get('section'))
+        # 下面这一轮只处理**没有** after_group 的那些（有的已在 ③ 里就地出过了），
+        # 与上面 decomp 那一轮逐字同源。
         for t_ in self.level_yoy:
+            if t_['after_group']:
+                continue
             _d0 = len(ex)
             e, why = self.ex_level_yoy(n, t_)
             if e is None:
@@ -7750,12 +7885,18 @@ class Page:
             # 指着不存在的图的话。改成按**真画出来的图**收放。
             # ⚠️ 没有分位带的那一支从前只有一种理由（「开篇图是柱 + 次轴同比」），
             # 2026-09-12 加了 `headline_style='none'` 之后要分两支：那一档**根本没有开篇图**，
-            # 照旧印「开篇图是…」就是第二句指着不存在的图的话。判据仍然先看真画出来的图
-            # （`_band_n`），没有带时才按开关分叉 —— 不许倒过来只看开关。
+            # 照旧印「开篇图是…」就是第二句指着不存在的图的话。2026-09-16 又加了
+            # `'line_only'`（开篇图**是折线**、只是所有者要求撤掉带），第三支同理 ——
+            # 前两句理由对它都是假的：它有开篇图，而且那张图不是柱。判据仍然先看真画
+            # 出来的图（`_band_n`），没有带时才按开关分叉 —— 不许倒过来只看开关。
             + (f'Exhibit {_band_n} 的灰色分位带与它同窗口同口径。' if _band_n else
                '本页没有画分位带那张图（本页不设开篇头条图），'
                '所以这一列的分位只在本表里出现。'
                if self.headline_style == 'none' else
+               '本页没有画分位带那张图（开篇图只画那条全历史折线，'
+               '页面所有者指定撤掉近 36 个月 P10/P90 两条辅助线），'
+               '所以这一列的分位只在本表里出现。'
+               if self.headline_style == 'line_only' else
                '本页没有画分位带那张图（开篇图是「柱 + 次轴同比」，'
                '带的上下沿与柱同量纲、画上去会被读成第三根柱），'
                '所以这一列的分位只在本表里出现。')
@@ -7829,6 +7970,14 @@ class Page:
                        + '；'.join(self.decomp_moved)
                        + '。<b>图本身照常出、每一格的数一个都没变</b>，'
                          '变的只有它在本页的排序位置：本来该紧跟它的输入之后，'
+                         '现在退到页尾。源表补上那几列之后自动回到原位，不需要改 spec。')
+        # 同一档、另一个图型（2026-09-16）。不并进上面那条：那条的主语写死成
+        # 「分解图」，而这几张是「水平值 + 单月同比」—— 并进去等于替它安一个它不是的图型。
+        if getattr(self, 'level_yoy_moved', None):
+            out.append('<b>本轮改排页尾的「水平值 + 单月同比」图。</b>'
+                       + '；'.join(self.level_yoy_moved)
+                       + '。<b>图本身照常出、每一格的数一个都没变</b>，'
+                         '变的只有它在本页的排序位置：本来该紧跟指定的那一组之后，'
                          '现在退到页尾。源表补上那几列之后自动回到原位，不需要改 spec。')
         # 同一条同比画了两遍（只告警的那一档）。**没有并进上面那本账**：
         # 上面那段的收尾是「数据补齐后自动回来」，而这一档的图**已经出了**、
@@ -7918,6 +8067,9 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     for why in (getattr(page, 'decomp_moved', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 分解图改排页尾：{why}')
+    for why in (getattr(page, 'level_yoy_moved', None) or []):
+        if not quiet:
+            print(f'[{t}] ⚠️ 「水平值 + 单月同比」图改排页尾：{why}')
     # 同一条同比画在两张图上（同族同窗口那一档已经在 log_yoy_bar 里硬失败了，
     # 到这里的都是「留着有信息、但读者会以为看漏了差别」的那一档）。
     # 不硬失败，但必须响：页尾那段是给读者的，这一行是给维护者的。

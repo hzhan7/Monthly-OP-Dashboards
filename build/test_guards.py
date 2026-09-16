@@ -1547,9 +1547,18 @@ def _gpos(order, title):
 
 
 def _n_head_charts(spec):
-    """开篇段有几张图。只给 band_yoy / bar_yoy 两种既有写法记数，'none' 记 0。"""
-    per = {'band_yoy': 2, 'bar_yoy': 1, 'none': 0}[spec.get('headline_style') or 'band_yoy']
+    """开篇段有几张图。band_yoy 两张、bar_yoy 与 line_only 各一张、'none' 零张。"""
+    per = {'band_yoy': 2, 'bar_yoy': 1, 'line_only': 1,
+           'none': 0}[spec.get('headline_style') or 'band_yoy']
     return per * len(spec['headline'])
+
+
+def _level_yoy_fixture(after_group=None):
+    """一条「水平值 + 单月同比」配置（SGX 证券侧那条流量列，本夹具别处没画过）。"""
+    t = {'zh': '证券市场成交额', 'level': _c('sec_turnover_sgdmn', '当月成交额', 'S$mn/month')}
+    if after_group is not None:
+        t['after_group'] = after_group
+    return t
 
 
 _EXREF = re.compile(r'Exhibit\s*(\d+(?:\s*(?:[、,，/]|与|和|及|或)\s*(?:Exhibit\s*)?\d+)*)')
@@ -1639,11 +1648,12 @@ class TestHeadlineStyleNone(unittest.TestCase):
         out = set()
         for c in _sgx_fixture()['headline']:
             out |= {f'{c["zh"]}：全历史与近 3 年分位带', f'{c["zh"]}：全历史水平值与单月同比',
-                    f'{c["zh"]}：单月同比'}
+                    f'{c["zh"]}：单月同比', f'{c["zh"]}：全历史'}
         return out
 
     def test_none_is_the_third_style(self):
-        self.assertEqual(set(self.S.HEADLINE_STYLES), {'band_yoy', 'bar_yoy', 'none'})
+        self.assertEqual(set(self.S.HEADLINE_STYLES),
+                         {'band_yoy', 'bar_yoy', 'line_only', 'none'})
         sp = _sgx_fixture()
         sp['headline_style'] = 'none'
         self.assertEqual(self.S.Page(sp).headline_style, 'none')
@@ -2823,6 +2833,282 @@ class TestMiaxOwnerLayout(unittest.TestCase):
         self.assertEqual(mine, list(range(len(ex) - len(mine), len(ex))), '这一组的图没有排在全页最后')
         self.assertIn('heat_matrix', [ex[i]['kind'] for i in mine])
         self.assertEqual([e['n'] for e in ex], list(range(2, 2 + len(ex))))
+
+
+class TestHeadlineStyleLineOnly(unittest.TestCase):
+    """`headline_style='line_only'`：① 照出但不画分位带，② 整段不出（/ndaq/ 所有者 2026-09-16）。
+
+    与 `'none'` 的分界正是这一组要守的：那一档**根本没有开篇图**，这一档**有**，
+    只是少了两条带 —— 页尾那句「分位带在不在」因此要第三支话，前两支对它都是假的。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls._memo = {}
+
+    def _pay(self, style):
+        if style not in self._memo:
+            sp = _sgx_fixture()
+            if style is not None:
+                sp['headline_style'] = style
+            self._memo[style] = _page_payload(sp)[1]
+        return self._memo[style]
+
+    def test_one_line_chart_per_headline_col_and_no_yoy_chart(self):
+        pay, heads = self._pay('line_only'), _sgx_fixture()['headline']
+        self.assertEqual([(e['n'], e['kind'], e['title']) for e in pay['exhibits'][:len(heads)]],
+                         [(2 + i, 'lines', f'{c["zh"]}：全历史')
+                          for i, c in enumerate(heads)])
+        gone = {f'{c["zh"]}：单月同比' for c in heads}
+        self.assertEqual([t for _k, t in _titles(pay) if t in gone], [],
+                         "'line_only' 下还出了开篇同比柱图")
+
+    def test_band_series_are_gone_but_the_main_line_stays(self):
+        pay, heads = self._pay('line_only'), _sgx_fixture()['headline']
+        for i, c in enumerate(heads):
+            with self.subTest(col=c['col']):
+                e = pay['exhibits'][i]
+                self.assertEqual([s_['name'] for s_ in e['series']], [c['zh']],
+                                 '主线之外还留着别的 series（分位带没删干净）')
+                self.assertEqual(len(e['series'][0]['values']),
+                                 len(self._pay(None)['exhibits'][i]['series'][0]['values']),
+                                 '主线被换了窗口 —— 这个开关只减线，不许改窗口')
+
+    def test_chart_is_band_yoy_minus_the_two_band_lines(self):
+        """除 series / 标题 / src_extra / note 四处外，① 那张与 band_yoy 逐键相同。"""
+        band, line = self._pay(None), self._pay('line_only')
+        for i in range(len(_sgx_fixture()['headline'])):
+            with self.subTest(i=i):
+                a = {k: v for k, v in band['exhibits'][i].items()
+                     if k not in ('series', 'title', 'src_extra', 'note')}
+                b = {k: v for k, v in line['exhibits'][i].items()
+                     if k not in ('series', 'title', 'src_extra', 'note')}
+                self.assertEqual(a, b)
+                self.assertNotIn('P90', line['exhibits'][i]['note'])
+                self.assertNotIn('P10', line['exhibits'][i]['note'])
+                self.assertNotIn('带内', line['exhibits'][i]['note'])
+                self.assertNotIn('P10/P90', line['exhibits'][i]['src_extra'])
+
+    def test_rest_of_page_is_band_yoy_minus_the_yoy_charts(self):
+        """开篇段以外逐张不变；图号从 2 起连号、不留洞，核对表紧跟其后。"""
+        band, line = self._pay(None), self._pay('line_only')
+        k = len(_sgx_fixture()['headline'])
+        self.assertEqual(_titles(line)[k:], _titles(band)[2 * k:])
+        self.assertEqual([e['n'] for e in line['exhibits']],
+                         list(range(2, 2 + len(line['exhibits']))))
+        self.assertEqual(line['table']['n'], 2 + len(line['exhibits']))
+
+    def test_headline_duties_kept(self):
+        band, line = self._pay(None), self._pay('line_only')
+        for key in ('data_through', 'headline', 'hub_line', 'summary'):
+            with self.subTest(key=key):
+                self.assertEqual(line[key], band[key])
+        for c in _sgx_fixture()['headline']:
+            with self.subTest(season=c['zh']):
+                self.assertEqual(len(_idx(line, f'{c["zh"]}：与同月常态比', 'seasonality')), 1)
+
+    def test_notes_get_their_own_third_branch(self):
+        """页尾那句不许说「不设开篇头条图」（有），也不许说「开篇图是柱」（是折线）。"""
+        txt = _notes_txt(self._pay('line_only'))
+        self.assertIsNone(re.search(r'Exhibit\s*\d+\s*的灰色分位带', txt))
+        self.assertNotIn('本页不设开篇头条图', txt)
+        self.assertNotIn('开篇图是「柱 + 次轴同比」', txt)
+        self.assertIn('开篇图只画那条全历史折线', txt)
+        self.assertIn('Y %ile', txt, '分位那一列还在，读法那句不能跟着整条消失')
+
+    def test_headline_section_still_has_a_mount(self):
+        """与 'none' 相反：这一档有 ①，`headline_section` 不是死配置。"""
+        sp = _sgx_fixture()
+        sp['headline_style'] = 'line_only'
+        sp['headline_section'] = '开篇'
+        _p, pay = _page_payload(sp)
+        # 收口时只有一节的**第一张**落 `section`，后续是「沿用上一节」——
+        # 所以判的是「第一张起了这个标题、第二张不另起」，不是两张都带。
+        self.assertEqual(pay['exhibits'][0].get('section'), '开篇')
+        self.assertIsNone(pay['exhibits'][1].get('section'))
+
+
+class TestLevelYoyAfterGroup(unittest.TestCase):
+    """`level_yoy[].after_group`：这张图就地排在指定组之后（/ndaq/ 所有者 2026-09-16）。
+
+    与 `decomp[].after_group` 同一条路，所以照它的测法：不给 = 排页尾且逐字节不变；
+    给对了 = 纯位移；给错了 = 硬失败；锚点组本轮整组不在页上 = 退页尾并记一笔。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+
+    @staticmethod
+    def _spec(after_group=None):
+        sp = _sgx_fixture()
+        sp['level_yoy'] = [_level_yoy_fixture(after_group)]
+        return sp
+
+    _TITLE = '证券市场成交额：水平值与单月同比'
+
+    def test_absent_is_byte_identical_to_the_tail_position(self):
+        _p, tail = _page_payload(self._spec())
+        self.assertEqual(_idx(tail, self._TITLE, 'gs_bar'), [len(tail['exhibits']) - 1],
+                         '不给 after_group 时这张图必须还在页尾')
+
+    def test_moves_to_just_after_its_group(self):
+        _p, tail = _page_payload(self._spec())
+        _p, moved = _page_payload(self._spec(_GZ_SEC))
+        mine = _idx(moved, self._TITLE, 'gs_bar')
+        self.assertEqual(len(mine), 1)
+        block = [t for t in _titles(moved) if t[1].startswith(_GZ_SEC + '：')]
+        self.assertTrue(block, f'「{_GZ_SEC}」一张图都没出 —— 样例选错了')
+        self.assertEqual(_titles(moved)[mine[0] - 1], block[-1],
+                         '没有紧跟在锚点组最后一张图之后')
+        # 纯位移：同一批标题、同一个集合，只是次序变了；图号仍从 2 连号。
+        one = [t for t in _titles(tail) if t[1] != self._TITLE]
+        self.assertEqual([t for t in _titles(moved) if t[1] != self._TITLE], one)
+        self.assertEqual([e['n'] for e in moved['exhibits']],
+                         list(range(2, 2 + len(moved['exhibits']))))
+        self.assertEqual(moved['table']['n'], 2 + len(moved['exhibits']))
+
+    def test_bad_anchor_raises(self):
+        _raises_spec(self, self._spec('没有这一组'), ('after_group', 'level_yoy'))
+
+    def test_duplicate_anchor_raises(self):
+        sp = self._spec(_GZ_SEC)
+        sp['groups'].append({'zh': _GZ_SEC,
+                             'cols': [_c('ddav_contracts', '另一条', 'contracts/day')]})
+        _raises_spec(self, sp, ('after_group',))
+
+    def test_it_lands_after_the_after_group_decomp(self):
+        """同锚一组时，先分解图后 level_yoy —— 与页尾那两轮（⑥ 再 ⑦）同序。"""
+        sp = self._spec(_GZ_SEC)
+        sp['decomp'] = [_decomp_fixture(_GZ_SEC)]
+        _p, pay = _page_payload(sp)
+        dec = [i for i, e in enumerate(pay['exhibits']) if e['kind'] == 'bridge_bar']
+        self.assertEqual(len(dec), 1)
+        self.assertEqual(_idx(pay, self._TITLE, 'gs_bar'), [dec[0] + 1])
+
+    def test_at_end_group_may_be_held_up_by_a_level_yoy_alone(self):
+        """纯存量组本来 at_end 是死配置；有 level_yoy 锚在它身上就不是了。"""
+        sp = self._spec(_GZ_CAP)
+        _grp(sp, _GZ_CAP)['at_end'] = True
+        _p, pay = _page_payload(sp)
+        self.assertEqual(_idx(pay, self._TITLE, 'gs_bar'), [len(pay['exhibits']) - 1])
+
+
+class TestNdaqOwnerLayout(unittest.TestCase):
+    """活的 /ndaq/：页面所有者 2026-09-16 的四条指令。只读 spec、建到临时目录（同 TestMiaxOwnerLayout）。
+
+    ①「ex2/3 里面近 36 个月的线全部删除」+ ②「ex4/5 删除」（`headline_style='line_only'`）；
+    ③「ex10 插在 ex3 后面」（B 组份额那一组排到 `groups` 最前）；
+    ④「ex14 插到 ex7 后面，并给说明这两个图的差异」（`level_yoy[].after_group`）；
+    另加所有者第 5 条：两条头条指标名进名词释义。
+    按列名找图、按 spec 里的中文名拼标题，图号一个都不写死。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import single
+        cls.S = single
+        cls.pay, cls.err = None, None
+        cls.tmp = tempfile.mkdtemp(prefix='tg_ndaq_')
+        try:
+            cls.spec = single.load_spec('ndaq')
+            out = single.build(copy.deepcopy(cls.spec), out_dir=cls.tmp, quiet=True)
+            if out:
+                with open(out, encoding='utf-8') as fh:
+                    m = re.search(r'window\.DASH = (.*);\n?$', fh.read(), re.S)
+                cls.pay = json.loads(m.group(1))
+        except SystemExit as e:
+            cls.err = str(e)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if self.err is not None:
+            self.fail(f'活的 ndaq spec 建不出来：{self.err[:600]}')
+        if self.pay is None:
+            self.skipTest('ndaq 本轮门槛没到（等数据，不是 spec 写错）')
+
+    def _group_of(self, col):
+        """声明了 col 的那一组（唯一）。"""
+        hits = [g for g in self.spec['groups'] if col in [c['col'] for c in g['cols']]]
+        self.assertEqual(len(hits), 1, f'{col} 应恰好在一个组里，实有 {len(hits)} 个')
+        return hits[0]
+
+    def test_openers_are_bandless_lines_and_the_yoy_bars_are_gone(self):
+        self.assertEqual(self.spec.get('headline_style'), 'line_only')
+        ex, heads = self.pay['exhibits'], self.spec['headline']
+        self.assertEqual([(e['n'], e['kind'], e['title']) for e in ex[:len(heads)]],
+                         [(2 + i, 'lines', f'{c["zh"]}：全历史') for i, c in enumerate(heads)])
+        for e in ex[:len(heads)]:
+            with self.subTest(n=e['n']):
+                self.assertEqual(len(e['series']), 1, '开篇折线上还留着别的 series')
+        self.assertEqual([e['n'] for e in ex
+                          if any('P90' in str(s.get('name')) or 'P10' in str(s.get('name'))
+                                 for s in e.get('series') or [])], [])
+        gone = {f'{c["zh"]}：单月同比' for c in heads}
+        self.assertEqual([e['title'] for e in ex if e['title'] in gone], [])
+        self.assertEqual([e['n'] for e in ex if e['kind'] == 'grouped_bars'], [])
+        self.assertIsNone(re.search(r'Exhibit\s*\d+\s*的灰色分位带', _notes_txt(self.pay)))
+
+    def test_share_group_comes_right_after_the_openers(self):
+        """指令③：四条份额线那一组紧跟开篇两张折线。"""
+        gz = self._group_of('share_us_cash_matched_group')['zh']
+        self.assertEqual(self.spec['groups'][0]['zh'], gz, '份额那一组不在 groups 最前')
+        ex, k = self.pay['exhibits'], len(self.spec['headline'])
+        mine = [i for i, e in enumerate(ex) if _in_group(e, gz)]
+        self.assertEqual(mine, [k], '份额那一组的图没有紧跟在开篇两张之后')
+        self.assertEqual(ex[k]['kind'], 'lines_endlabels')
+
+    def test_level_yoy_sits_right_after_the_three_venue_chart(self):
+        """指令④：单盘口那张「水平值 + 单月同比」紧跟三盘口合计那张。"""
+        t = self.spec['level_yoy'][0]
+        self.assertEqual(t['level']['col'], 'vol_us_cash_matched_nasdaq_sh')
+        gz = self._group_of('vol_us_cash_matched_mnsh')['zh']
+        self.assertEqual(t['after_group'], gz, 'level_yoy 锚错了组')
+        ex = self.pay['exhibits']
+        mine = _idx(self.pay, f'{t["zh"]}：水平值与单月同比', 'gs_bar')
+        self.assertEqual(len(mine), 1)
+        self.assertTrue(_in_group(ex[mine[0] - 1], gz), '前一张不是三盘口合计那一组的图')
+        self.assertEqual([e['n'] for e in ex], list(range(2, 2 + len(ex))))
+
+    def test_the_two_lookalike_charts_say_how_they_differ(self):
+        """指令④后半句：差异必须写在页面上，且点到两条列名。"""
+        t = self.spec['level_yoy'][0]
+        e = self.pay['exhibits'][_idx(self.pay, f'{t["zh"]}：水平值与单月同比', 'gs_bar')[0]]
+        note = re.sub(r'<[^>]+>', '', e['note'])
+        for token in ('vol_us_cash_matched_mnsh', 'vol_us_cash_matched_nasdaq_sh',
+                      'NTX', 'PSX', '前一张'):
+            with self.subTest(token=token):
+                self.assertIn(token, note)
+
+    def test_headline_metric_names_are_in_the_glossary(self):
+        """指令⑤：抬头行那两个指标名进释义。词条名是缩写（全名超 dt 宽上限），全名在正文里。"""
+        import glossary as G
+        dts = re.findall(r'<dt>(.*?)</dt>', self.pay['glossary'])
+        dds = re.findall(r'<dd>(.*?)</dd>', self.pay['glossary'])
+        self.assertEqual(len(dts), len(set(dts)))
+        for dt in dts:
+            with self.subTest(dt=dt):
+                self.assertLessEqual(G.dt_px(dt), G._DT_MAX_PX)
+        body = re.sub(r'<[^>]+>', '', ''.join(dds))
+        for c in self.spec['headline']:
+            with self.subTest(metric=c['zh']):
+                self.assertIn(c['zh'], body, f'释义正文里没有「{c["zh"]}」的全名')
+
+    def test_page_tells_readers_the_numbers_moved(self):
+        """§2 判例第 4 条：图号位移要向读者交代，且只许写「原 Exhibit N」。"""
+        notes = _notes_txt(self.pay)
+        self.assertIn('原 Exhibit', notes)
+        hist = [n for n in self.pay['notes'] if '原 Exhibit' in str(n)]
+        self.assertEqual(len(hist), 1, '历史账应恰好一条')
+        txt = re.sub(r'<[^>]+>', '', str(hist[0]))
+        # 这一条里出现的每一个 Exhibit 号都必须带「原」字 —— 写当前号的那天它就开始过期。
+        self.assertEqual(_ex_refs(txt), _ex_refs(''.join(re.findall(r'原 Exhibit[\s\d、,，和与]*', txt))))
 
 
 class TestLsegPrimaryOverdue(unittest.TestCase):
