@@ -1616,7 +1616,19 @@ if _QCHK and len(_QCHK_IN) != len(_QCHK):     # 规矩 5：对不上就响，别
     raise SystemExit(f'季度 DATs 与月度 DATs 对不上（季均不在该季三个月区间内）: {_bad}')
 ex.append({
     'n': 10, 'kind': 'qtr_bar', 'full': True, 'height': H_BAR,
-    'fmt': 'f1', 'label_fmt': 'f2',
+    # yfmt 必须显式给，与 Exhibit 6（:1128 那段注释）同一个坑、同一种修法。
+    # 不给的话左轴走引擎的 plainAxis(step)，它对**半整数步长**判 0 位小数
+    # （`-floor(log10(2.5)) == 0`；而 `|2.5 - round(2.5)| == 0.5`，「整数步长归 0 位」
+    # 那一刀只往下压位数、救不了它）。本图右轴同比跨零（2022–2023 那段是负的），
+    # 两轴对零点把左轴从 [0, 15.73] 拉到 [-4.50, 15.73]，量程涨 28.6%，
+    # raw = 20.23/9 = 2.25 正好落进 (2, 2.5] ⇒ 步长跳到 2.5，轴上印出
+    # 「15 │ 13 │ 10 │ 8 │ 5 │ 3 │ 0」：网格线等距而标签差在 2 和 3 之间跳，
+    # 按标签量线系统性偏半档，tools/visual_qa.py 对这个是硬 🔴
+    # （AXIS_UNEVEN，像素-数值比偏离 33.3%）。f1 让 12.5 / 7.5 / 2.5 如实印出来。
+    # 修在 payload 侧而不是 plainAxis：那个函数是 34 页 / 588 张图共用的。
+    # 只动左轴刻度：柱顶读数走 label_fmt(f2)、截轴真值 capFmt 也先认 label_fmt，都不受影响。
+    # 姊妹图 Exhibit 11（季末融资余额）不用改：它的步长是 50（整数），余量 13.6×。
+    'fmt': 'f1', 'yfmt': 'f1', 'label_fmt': 'f2',
     'xlabels': _QX,
     'title': f'Daily average trades by quarter — {_QX[0]} 至今（季报附表口径）',
     'ylab': 'mn trades / day', 'legend': 'Quarterly (季报附表)',
