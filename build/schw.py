@@ -2501,7 +2501,8 @@ GLOSSARY = [
      # ⚠️ 这里**只说得住「生息资产没有月度值」这一半**。「Schwab 不披露客户现金」
      # 是句流传过的假话，fetch/schw.py 的「口径坑」第 7 条点名禁止再写进任何图注：
      # 月报 Client Activity 块下的 Client Cash as a Percentage of Client Assets
-     # 自 2014-06 起每期都印（同文件 _CASH_PCT_FROM），series/schw.csv 的
+     # 自 2013-09 起每期都印（同文件 _CASH_PCT_FROM；2015-01-16 报送及更早那一行
+     # 没有 Client 前缀，该处有实证），series/schw.csv 的
      # client_cash_pct 就是它。释义板是「一年到头同一段」的定义性文字，更不能带这句。
      '它存在的理由是：<b>生息资产不按月披露</b>（只随季报出），'
      '能按月对上的分母代理只有客户资产。'
