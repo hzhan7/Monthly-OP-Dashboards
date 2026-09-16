@@ -36,6 +36,25 @@
       新版式必然捞到上面某张不相干的表，**静默**返回空 —— 97 份里只读出 15 份，
       看上去就像「2017-04 之后官方不附表了」。
       教训：解析器读不到，和源里没有，长得一模一样；分辨这两者只能去看原文。
+    - 第二次更正（2026-09-16）写「2014 年那三份整份返回 {} 是因为 _TITLE_RE 不认
+      "Monthly **Market** Activity Report"」→ **只说对了三分之一**。那三份（报送
+      2014-01-16 / 2014-04-15 / 2014-07-16，报告月 2013-12 / 2014-03 / 2014-06，
+      DFIN 排版）身上叠着**三个各自独立的病因**，每一个单独都足以让整份静默返回 {}：
+        (1) 标题正则不认 "Monthly **Market** Activity Report"；
+        (2) 这三份的 HTML 标签**全大写**（<TABLE> / <TR> / <TD>），而定表尾的
+            `html.find('</table>')` 和抠行、抠格的两个 `re.findall` 都是大小写敏感的 ——
+            同一个函数里定表**头**用的是 `html.lower()`，唯独这三处漏了大小写。
+            季频腿那边（_q_rows 一带）早就带着 re.I，月频这边一直没有；
+        (3) 那一版把**行标签单独占一行**，值落在下一行的单位说明格后面
+            （'Total Client Assets' 自己一行，下一行才是
+            '(at month end, in billions of dollars)' '1,951.6' …）。`row_of()` 取到
+            标签行发现没有值就跳过，锚点行 _anchor_money 因此返回 None → 整份 {}。
+      **最值得记的不是这三条本身，而是它们叠在一起的样子**：修好 (1) 之后，症状
+      （整份返回 {}）**一个字都没变** —— 此时最顺手的结论正是「那就是源里真没有」，
+      而那是错的。一个症状可以叠着好几个独立病因，症状不变 ≠ 修的地方不对。
+      三层都修完，50 份 EX-99.1 全部解析出结果（此前 47 份），原先能解析的 47 份
+      **逐字未变**；三份 DFIN 件彼此重叠 10 / 7 / 10 个月逐值相等，与 series/schw.csv
+      既有 42 个 (月,列) 也逐值相等 —— 「读的是对的那张表」靠的是这个，不是肉眼看版式。
   现在的做法见 parse_edgar_monthly()：锚在**标题正则**上，再按标题落在表内还是表外
   决定往前还是往后找 <table>。实测 871 个与 series/schw.csv 重叠的 (月,指标) 全部相等，
   含 2019-04 那个 core NNA = -0.3（会计负号的右括号被拆进独立 <td>，见 _glue）。
@@ -147,7 +166,7 @@ mtime、下载日、构建日同理，一律不用。
    Funds 两条月末 $bn（脚注 (7) 给了 sweep 的定义），而 "Client Activity" 块下面还有
    一行 **Client Cash as a Percentage of Client Assets**（脚注 (8)：Schwab One、若干
    现金等价物、银行存款、第三方银行存款账户与货基余额占客户总资产的比重）——
-   后者自 2013-09 起每期都印（2015-01-16 报送及更早那一行**没有 Client 前缀**，
+   后者自 2013-09 起每期都印（2015-04-15 报送及更早那一行**没有 Client 前缀**，
    见 _CASH_PCT_FROM）。三者互相咬得住：(sweep + MMF) / Total Client Assets
    逐月复现官方印的那个占比，2025-01…2026-08 共 20 个重叠月最大偏差 0.054pp
    （就是 0.1pp 印刷精度）。
@@ -234,6 +253,17 @@ dats_k / margin_balances_usdbn 仍然从 2025-01 起。补出来的只是客户�
 （这说的是**月频**这条路径；这两个量的**季频**历史回得到 2016Q1 甚至更早，走的是另一条腿
 series/schw_q.csv，不经过 --backfill，见下方「季频腿」。）
 
+⚠️ **2026-09-16 起 `--backfill` 能多拿 9 个月，但故意还没去拿。** 解析器这次学会了
+2013/2014 那代 DFIN 版式（三层病因见上面「第二次更正」），于是那三份件里的
+total_client_assets_usdbn 与 new_brokerage_accounts_k 变得可读，窗口最左到 **2012-12**。
+真跑一次 `--backfill`，series/schw.csv 会从现在的 2013-09 往前长出 **2012-12…2013-08
+共 9 行**（与现起点连号、不留洞；三份件彼此重叠 10/7/10 个月逐值相等，与既有 42 个
+(月,列) 也逐值相等，数据本身是干净的）。**没跑，是因为这不是数据问题而是版式问题**：
+schw 页与 wealth 页多张图的左缘由各自序列的首个非空月决定，加 9 行就会再挪一次 ——
+这类可见的版式变更属页面所有者的决定（页面所有者 2026-09-16 的裁定是「只修解析器、
+不动数据」）。下次要动它的人：数已经验过了，你要问的是「这 9 个月该不该上图」，
+不是「这 9 个月的数对不对」。
+
 ========================= 季频腿（series/schw_q.csv）=========================
 本文件还维护**第二张 CSV**：series/schw_q.csv，键是**季**不是月，两列
 q_dats_k（季报附表 Clients' Daily Average Trades 的 Total 行，千笔/日）与
@@ -311,7 +341,7 @@ _LABEL = {
     # 客户现金三行。前缀要写全 'total money market funds'：同一张表里还有一行
     # 'Money Market Funds'（净买卖流量，$mn），前缀写短了会取到那一行。
     # 占比那一行历史上有**三种写法**，互不为前缀，所以三个都得列上（判据见 _CASH_PCT_FROM）：
-    #   'Cash as a Percentage of Client Assets'          2015-01-16 报送及更早
+    #   'Cash as a Percentage of Client Assets'          2015-04-15 报送及更早
     #   'Client Cash as a Percentage of Client Assets'   2015-07-16 报送起，至今
     #   'Client Cash as Percentage of Client Assets'     少一个 "a"，只见于 2017-Q1 那一档
     #                                                    （2017-04 报送的 EX-99.1 与
@@ -395,7 +425,7 @@ _CORE_NNA_FROM = (2017, 2)
 # 讽刺的是**这段错话就是那一条 commit 写下的**，同一次改动一边治病一边又犯了一遍。
 # 原注释写「2015-07-16 那期第一次印它，最左是 2014-06；再往前三期整张表没有这一行 ——
 # 连 "Client Cash as a Percentage" 这个字符串都搜不到」。**搜不到是因为搜的是新写法。**
-# 这一行官方改过名（见 _LABEL）：2015-01-16 报送及更早印的是 "Cash as a Percentage of
+# 这一行官方改过名（见 _LABEL）：2015-04-15 报送及更早印的是 "Cash as a Percentage of
 # Client Assets"（**没有 Client 前缀**），2015-07-16 报送起才改成 "Client Cash as a
 # Percentage of Client Assets"。老写法过不了原来那条单前缀，于是 2014-10-15 与
 # 2015-01-16 两期的这一行被**静默丢掉**，看上去就像官方 2015-07 才开始披露。
@@ -403,10 +433,15 @@ _CORE_NNA_FROM = (2017, 2)
 #   · 000031670914000029（2014-10-15，窗 2013-09…2014-09）"Cash as a Percentage of
 #     Client Assets (3)" = 13.5 13.2 13.0 13.1 13.2 12.7 12.7 12.4 12.2 11.9 12.1 11.9 12.2
 #   · 000031670915000005（2015-01-16，窗 2013-12…2014-12）同一写法，重叠 10 个月逐值相等
+#   · 000031670915000018（2015-04-15，窗 2014-03…2015-03）仍是老写法，重叠 10 个月逐值相等
 #   · 000031670915000036（2015-07-16，窗 2014-06…2015-06）起换成新写法，重叠月同样逐值相等
-# 改名发生在 2015-01-16 与 2015-07-16 两期**之间** —— 夹在中间的 2015-04-15 那期本地
-# cache 里没有，所以只界定得到区间，钉不到具体哪一期。（原注释把那一期写成「实测没有
-# 这一行」，而本地根本没有它的文件 —— 别再把「没查」写成「实测」。）
+# 改名**卡死在 2015-04-15 与 2015-07-16 两期之间**（相邻两期，中间再无别的申报）。
+# 2026-09-16 补记：上一版写「只界定得到 2015-01-16…2015-07-16 这个区间，因为夹在中间的
+# 2015-04-15 那期本地 cache 里没有」—— 那句话在当时**属实**，但「本地没有」不等于
+# 「拿不到」：它在 EDGAR 上一直都在（0000316709-15-000018），一条 `_edgar_get` 就取回来了，
+# 现在已落进 cache/schw_rates/。教训与本文件反复记的那条同源、只是换了一层皮：
+# **「我这儿没有」和「它不存在」也长得一模一样**；上一版已经躲过了「把没查写成实测」，
+# 却停在「本地没有所以钉不到」，而那一步本来还可以再往前走一格。
 # 两种写法是同一条序列：脚注定义同义（Schwab One®/现金等价物/银行存款/货基余额 ÷ 客户总资产），
 # 跨期重叠月无一处打架，切换前后相邻月平滑（2015-06 = 11.7%）。所以**拼接**，不像
 # _CORE_NNA_FROM 那样分家。
@@ -414,8 +449,25 @@ _CORE_NNA_FROM = (2017, 2)
 # 边界取 2013-09 的两重含义，别再混为一谈：
 #   · 官方侧 —— 这一行被印出来的最早月份就是 2013-09（首次刊印那期滚动表的最左列）；
 #   · 序列侧 —— series/schw.csv 本来就从 2013-09 起，再往前也无处可写。
-# cache 里最老的申报是 2014-01-16 报送那期，2013 年及更早的 8-K 没查过；真要再往前推，
-# 先去看那几期原件有没有这一行，**不要**照着现在这个常数反推「官方那时没披露」。
+# 天花板已经查到 2006-06，不再是「没查过」：2026-09-16 顺着 `_edgar_8k()` 的 156 份清单
+# 把 2015-09 之前能解析的历次 EX-99.1 全取了回来，其中**没有这一行的共 12 份**
+# （报告月 Jun-2007 / Jun-2008 / Jun-2009 / Sep-2009 / Jun-2012 / Dec-2012 / Mar-2013 /
+# Jun-2013 / Sep-2013 / Dec-2013 / Mar-2014 / Jun-2014），剥标签归一空白后
+# 'percentage of client assets' 命中数**逐份都是 0**，而同样这 12 份都能被
+# parse_edgar_monthly 正常解析出 13 个月 × 2 列 —— 即「读得进来，读出来的里面没有」。
+# 12 份的窗口并起来覆盖 **77 个月**，但**不是一整条**，两段中间有个洞，照实记下来：
+#     2006-06 … 2009-09（40 个月）
+#     〔空档 2009-10 … 2011-05，20 个月 —— 这一段没有任何一份被取回来〕
+#     2011-06 … 2014-06（37 个月）
+# 所以能说的是：**2014-10-15 那期是首次刊印**（它之前每一份读得到的申报都没有这一行），
+# 而不是「2006-06 以来每个月都验过」。那 20 个月的空档与 2006-06 之前都仍未查 ——
+# 真要往前推还是老规矩：去看原件有没有这一行，**不要**照着这个常数反推「官方那时没披露」。
+#
+# 2026-09-16 追记：天花板那几期当初是**整份解析不出来**的，「没有这一行」只能靠手工搜
+# 字符串得到。现在 parse_edgar_monthly() 认得这一代版式了（三层病因见模块 docstring），
+# 12 份全都能解析出 13 个月 × 2 列（total_client_assets_usdbn 与 new_brokerage_accounts_k），
+# 而解析结果里**确实没有** client_cash_pct —— 于是这条天花板反证从「手工搜不到」升级成
+# 「管道读得进来、读出来的东西里就是没有这一行」，两条互相独立的证据而不是一条。
 _CASH_PCT_FROM = (2013, 9)
 # 平均生息资产这一行的月频起点。**这不是披露边界，是本仓能回溯到的边界**，两者的区别
 # 正是这一列被漏抓七年的教训（同 ab70cd7 / 47710ce / 963dc76 那三次先例）：它在**每一期**
@@ -974,7 +1026,8 @@ def _edgar_8k(limit_before: str = _EDGAR_UNTIL) -> list:
 
 
 _HTML_TAG = re.compile(r'<[^>]+>')
-_TITLE_RE = re.compile(r'Monthly Activity Report\s+For\s+([A-Za-z]+)\s+(\d{4})', re.I)
+_TITLE_RE = re.compile(
+    r'Monthly\s+(?:Market\s+)?Activity\s+Report\s+For\s+([A-Za-z]+)\s+(\d{4})', re.I)
 
 
 def _cell_text(c: str) -> str:
@@ -1032,6 +1085,15 @@ def parse_edgar_monthly(html: str) -> dict:
     与 xlsx 那条路共用同一套规矩：**按标签前缀取行、按锚点行反推单位倍率、
     表头月份与标题月倒推逐个核对**。核对不上就整份丢掉（返回 {}）而不是猜 ——
     这批文件跨 4 年、版式改过好几次，错位一格在图上看不出来。
+
+    **一共要认三代版式**（全大写标签那一代是 2026-09-16 才补上的，经过见模块 docstring
+    「第二次更正」那条）：
+      · 2013-12 … 2014-06（DFIN 报送，3 份）：标题是 "Monthly **Market** Activity
+        Report"、HTML 标签**全大写**、行标签与值**分两行**（值在 '(单位说明)' 那行）。
+      · 2014-09 … 2017-03：标题在表的**第一行里**，标签与值同一行，小写标签。
+      · 2017-04 起至今：标题在表**上方的 <div> 里**，其余同上。
+    所以本函数里凡是按位置找 <table>/<tr>/<td> 的地方**一律走 lower() 或 re.I** ——
+    这不是洁癖：漏一处的表现不是报错，而是**静默**返回 {}，与「官方没印这张表」同形。
     """
     # ── 锚点：必须锚在**标题**上，不能锚在「monthly activity report」这个词上 ──
     # 正文里另有一句脚注「…please see the Monthly Activity Report.」，位置比真表更靠前。
@@ -1050,12 +1112,13 @@ def parse_edgar_monthly(html: str) -> dict:
         a = a_back                       # 老版式：标题落在这张表内部
     else:
         a = html.lower().find('<table', i)   # 新版式：标题在表上方
-    b = html.find('</table>', a) if a >= 0 else -1
+    b = html.lower().find('</table>', a) if a >= 0 else -1
     if a < 0 or b < 0:
         return {}
     rows = []
-    for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S):
-        cells = [_cell_text(c) for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S)]
+    for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html[a:b + 8], re.S | re.I):
+        cells = [_cell_text(c) for c in
+                 re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', r, re.S | re.I)]
         rows.append(_glue(cells))
     ay, am = int(hit.group(2)), _MON.index(hit.group(1).lower()[:3]) + 1
     hdr = next(([c.lower()[:3] for c in r if c.lower()[:3] in _MON]
@@ -1073,25 +1136,33 @@ def parse_edgar_monthly(html: str) -> dict:
     if [_MON[mm - 1] for _, mm in yms] != hdr:      # 表头与标题月倒推对不上 → 版式变了
         return {}
 
-    def row_of(prefix, skip_core=False, unit_row=False):
-        # unit_row 与 xlsx 那条路的 _row_values(unit_row=True) 是同一件事、同一个理由：
-        # 这一行在 EX-99.1 里也是「标签独占一行、数值落在下面那行 (in millions of
-        # dollars) 上」。实测 2014-10-15 报送的 Sep-2014 那份：标签行整行只有 1 个 cell，
-        # 值行 15 个（13 个月 + 环比/同比两格，rows[j][1:1+len(yms)] 正好切到 13 个月）。
+    def row_of(prefix, skip_core=False):
+        # 「标签独占一行、值在下一行」这件事在 EX-99.1 里是**无条件**兜的（下面 cands
+        # 那一段），与 xlsx 那条路的 _row_values(unit_row=True) 只对指定列开是**有意**
+        # 的差别：这里连锚点行都需要它（2013/2014 那版 DFIN 排版把 Total Client Assets
+        # 也印成这种两行），不兜就是整份返回 {}；xlsx 那边 8 个老列的标签行一直自带值，
+        # 无条件兜只会多出误配的风险而换不来任何一格数据。
+        # 平均生息资产在这条路上同样是两行版式（2014-10-15 报送的 Sep-2014 那份：标签行
+        # 整行只有 1 个 cell、值行 15 个 = 13 个月 + 环比/同比两格，r[1:1+len(yms)] 正好
+        # 切到 13 个月），所以它不必再单独开关。
         pfx = _pfx(prefix)
-        for k, r in enumerate(rows):
+        for idx, r in enumerate(rows):
             lab = re.sub(r'\s+', ' ', r[0]).strip().lower() if r else ''
             if not lab.startswith(pfx):
                 continue
             if skip_core and lab.startswith('core'):
                 continue
-            for j in ([k, k + 1] if unit_row else [k]):
-                if j != k:
-                    nxt = rows[j] if j < len(rows) else None
-                    if not (nxt and _UNIT_ROW_RE.match(
-                            re.sub(r'\s+', ' ', nxt[0]).strip().lower())):
-                        break
-                vals = [_html_num(x) for x in rows[j][1:1 + len(yms)]]
+            # 先在本行取值（2015 年至今的版式，标签与值同一行）。取不到再往下看一行：
+            # 2013/2014 那版 DFIN 排版把标签单独占一行，值落在下一行的**单位说明**格
+            # 后面（'Total Client Assets' / '(at month end, in billions of dollars)'
+            # '1,951.6' …）。只在本行取不到、且下一行以 '(' 开头时才接受这种配对 ——
+            # 不加这个括号条件就会把**下一条指标**的值安到本行头上，而错位的值看着完全正常。
+            cands = [r]
+            nxt = rows[idx + 1] if idx + 1 < len(rows) else None
+            if nxt and nxt[0].strip().startswith('('):
+                cands.append(nxt)
+            for rr in cands:
+                vals = [_html_num(x) for x in rr[1:1 + len(yms)]]
                 if sum(v is not None for v in vals) >= len(yms) - 2:
                     return {ym: v for ym, v in zip(yms, vals) if v is not None}
         return None
@@ -1105,7 +1176,7 @@ def parse_edgar_monthly(html: str) -> dict:
 
     out: dict = {ym: {} for ym in yms}
     for col in COLS:
-        vals = row_of(_LABEL[col], unit_row=col in _SELF_SCALED)
+        vals = row_of(_LABEL[col])
         if vals is None:
             continue
         if col in _RATIO:
