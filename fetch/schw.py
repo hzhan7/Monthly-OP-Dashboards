@@ -246,7 +246,8 @@ _DATELINE = re.compile(
 SERIES = 'schw.csv'
 COLS = ['core_nna_usdbn', 'total_client_assets_usdbn',
         'new_brokerage_accounts_k', 'dats_k', 'margin_balances_usdbn',
-        'client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn']
+        'client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn',
+        'avg_interest_earning_assets_usdbn']
 
 # 标签前缀（小写、去空白后前缀匹配）。用前缀而不是全等，是因为官方在标签尾部挂脚注号，
 # 脚注号每期都在变（"(1,2)" → "(1,2,3)"），全等匹配必挂。
@@ -261,6 +262,13 @@ _LABEL = {
     'client_cash_pct':          'client cash as a percentage of client assets',
     'sweep_cash_usdbn':         'transactional sweep cash',
     'mmf_usdbn':                'total money market funds',
+    # 平均生息资产。写法在 25 份 xlsx + 48 份 EX-99.1 上**只有这一种**（title-case、
+    # 带连字符、尾部挂脚注号），所以不需要像 fetch/rates_schw.py 的 _DEPOSIT_LABELS
+    # 那样并列多个前缀。无连字符的 'Average Interest Earning Assets' 与小写的
+    # 'Average interest-earning assets' 只出现在**正文散文**里（前者 1 处：4Q20 的
+    # 脚注；后者 2 处：1Q26/2Q26 的 bullet），从来不是行标签 —— 为散文兜底只会
+    # 把前缀放宽到能命中别的东西。
+    'avg_interest_earning_assets_usdbn': 'average interest-earning assets',
     # 下面两行只用来定单位倍率，不入库
     '_anchor_money':            'total client assets',
     '_anchor_count':            'active brokerage accounts',
@@ -272,6 +280,19 @@ _COUNT = {'new_brokerage_accounts_k', 'dats_k'}
 # 比率类不跟锚点走 —— 它和金额/计数不在同一个单位块里：xlsx 里印的是**分数**
 # （0.101），EDGAR 的 HTML 里印的是**百分点字符串**（'10.1%'）。两边都归一到百分点。
 _RATIO = {'client_cash_pct'}
+# 自锚类：也不跟锚点走，但候选倍率是金额那一套 —— 拿**自己这一行**的值反推。
+# 为什么不能挂 _MONEY：锚点行 Total Client Assets 坐在 `Client Assets (in billions
+# of dollars)` 那个块里，而平均生息资产坐在另一个块里，两个块的单位**长期不同**：
+#   · 2025-11 及更早：`Selected Average Balances (in millions of dollars)`（老版式更早
+#     是标签下面单挂一行 `(in millions of dollars)`）—— 与客户资产差 1000 倍；
+#   · 2026-01 那期起：块头改成 `Selected Balances (in billions of dollars)`，才与客户资产同档。
+# 套锚点倍率在 2026-01 之前会整整错 1000 倍，而且是**静默**错（量级断言若忘了配就直接落盘）。
+# 三档候选是实测出来的，不是留余量：同一行在 25 份 xlsx 里出现过 $mn（242584）、
+# $bn（453）与**原始美元**（187933000000）三种量纲，且在 2017Q1↔Q2、2018Q2↔Q3 这种
+# **相邻两期**之间来回跳，按年份/按月报-季报都推不出来。1e-6（千）没有任何一份用过，
+# 不列 —— 候选越少，_scale 那道「只有一档满足」的唯一性判据越硬。
+_SELF_SCALED = {'avg_interest_earning_assets_usdbn'}
+_SELF_CANDS = (1.0, 1e-3, 1e-9)
 
 # 合理量级断言。core NNA 会是负数、也可能接近 0（2019-04 是 -0.3），无法用量级判，
 # 所以它不做独立断言，只跟着锚点倍率走。
@@ -283,6 +304,12 @@ _SANE = {
     # 百分点。历史区间实测 8.6–13.0，给到 3–30 —— 这个下界同时兼任「分数还是百分点」
     # 的判据：0.086 这种分数落不进 3–30，倍率只有 100 那一档能过（见 _scale 的 cands）。
     'client_cash_pct':           (3.0, 30.0),
+    # $bn。实测区间 135（2013-09）– 588（2021Q4 峰）。给到 50–2000 有两个作用：
+    # 一是量级断言，二是**替 _SELF_CANDS 挑档**——三档候选套上去只有一档落得进这个区间
+    # （453×1=453 ✓ / ×1e-3=0.45 ✗；242584×1e-3=242.6 ✓ / ×1=242584 ✗；
+    # 187933000000×1e-9=187.9 ✓ / ×1e-3=1.88e8 ✗），所以区间放宽一个数量级都还是唯一解，
+    # 但**不能**把下界压到 0.5 以下：那样 $mn 与 $bn 两档会同时满足，_scale 直接抛歧义。
+    'avg_interest_earning_assets_usdbn': (50.0, 2_000.0),
     'new_brokerage_accounts_k':  (10.0, 100_000.0),       # 千（含 2020-10 那个 14718）
     'dats_k':                    (100.0, 1_000_000.0),    # 千笔/日
     '_anchor_count':             (5_000.0, 500_000.0),    # 千个活跃账户
@@ -303,6 +330,12 @@ _CORE_NNA_FROM = (2017, 2)
 # 2014-10-15）实测整张表**没有这一行**，不是解析漏了 —— 三份 HTML 里连
 # "Client Cash as a Percentage" 这个字符串都搜不到。
 _CASH_PCT_FROM = (2014, 6)
+# 平均生息资产这一行的月频起点。**这不是披露边界，是本仓能回溯到的边界**，两者的区别
+# 正是这一列被漏抓七年的教训（同 ab70cd7 / 47710ce 那两次先例）：它在**每一期**月报与
+# 每一份业绩 8-K 的 EX-99.1 里都印着，回得到 2013-09 是因为 EDGAR 上最早那份
+# （2014-10-15 报送的 Sep-2014 月报）的 13 个月滚动表最左就是 2013-09 —— 再往前的申报
+# 本仓没有取，**不是查过没有**。哪天有人把 EDGAR 窗口往左挪，这个常数就该跟着往左挪。
+_AVG_IEA_FROM = (2013, 9)
 
 # 同一个月同时来自月报和季报时谁说了算：季报是最终版。
 _SOURCE_RANK = {'monthly': 0, 'quarterly': 1}
@@ -457,8 +490,25 @@ def _month_columns(ws, report_ym: tuple[int, int]) -> dict[tuple[int, int], int]
     return out
 
 
-def _row_values(ws, prefix: str, cols: dict) -> dict | None:
-    """按标签前缀找行，返回 {(y,m): 原始数值}；找不到该行返回 None。"""
+# 「标签占一行、数值在下一行」那种老版式里，下一行第一列写的就是单位说明。
+# 三种写法都见过（0 / 1 / 2 个前导空格），归一去空白后只剩这一个正则。
+# **判据必须是这一行长什么样，不能是「往下找一行」**：Schwab 的 SMART 页整张表都是
+# 「标题行 + 明细行」的堆叠（`Net Buy (Sell) Activity` 下面就跟着三行基金流量），
+# 无条件往下顺一行，会把隔壁指标的数当成本行的，而且看上去完全正常。
+_UNIT_ROW_RE = re.compile(r'^\(in (?:millions|billions|thousands) of dollars\)$')
+
+
+def _row_values(ws, prefix: str, cols: dict, unit_row: bool = False) -> dict | None:
+    """按标签前缀找行，返回 {(y,m): 原始数值}；找不到该行返回 None。
+
+    unit_row=True 时多认一种版式：标签行**一个数值格都没有**、数值落在紧邻的
+    「单位说明行」上（见 _UNIT_ROW_RE）。这不是可有可无的兼容 —— 平均生息资产在
+    2019 年及更早的 13 份附表里全是这种版式，而本函数对「标签匹配上、但这一行没有
+    数」的处理是**继续往下扫、最终返回 None**，调用方 parse_table 又把 None 当
+    「这一期没有这一行」`continue` 掉。于是整列**静默缺席**，日志里一个字都不会有。
+    这正是这一列被漏抓七年的机制：不是官方不披露，是解析器只看标签那一行。
+    默认 False，既有 8 列的行为与改动前逐字相同。
+    """
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
         lab = row[0].value
         if not isinstance(lab, str):
@@ -466,13 +516,19 @@ def _row_values(ws, prefix: str, cols: dict) -> dict | None:
         lab = re.sub(r'\s+', ' ', lab).strip().lower()
         if not lab.startswith(prefix):
             continue
-        vals = {}
-        for ym, col in cols.items():
-            v = ws.cell(row=row[0].row, column=col).value
-            if isinstance(v, (int, float)):
-                vals[ym] = float(v)
-        if vals:
-            return vals
+        for r in ([row[0].row, row[0].row + 1] if unit_row else [row[0].row]):
+            if r != row[0].row:
+                nxt = ws.cell(row=r, column=1).value
+                if not (isinstance(nxt, str)
+                        and _UNIT_ROW_RE.match(re.sub(r'\s+', ' ', nxt).strip().lower())):
+                    break
+            vals = {}
+            for ym, col in cols.items():
+                v = ws.cell(row=r, column=col).value
+                if isinstance(v, (int, float)):
+                    vals[ym] = float(v)
+            if vals:
+                return vals
     return None
 
 
@@ -499,13 +555,19 @@ def parse_table(path: str, report_ym: tuple[int, int]) -> dict:
     s_money = _scale(a_money, *_SANE['total_client_assets_usdbn'], 'money')
     s_count = _scale(a_count, *_SANE['_anchor_count'], 'count')
 
-    raw = {c: _row_values(ws, _LABEL[c], cols) for c in COLS}
+    # unit_row 与 _SELF_SCALED 用的是同一个集合，不是图省事：两者是**同一个事实**的
+    # 两个后果 —— 这一行坐在自己的单位块里，所以（a）老版式要把单位单独印一行（那一行
+    # 才有数），（b）它的倍率不能跟客户资产那个锚点走。将来若出现只占其中一条的列，
+    # 这里就该拆成两个集合，别硬塞进来。
+    raw = {c: _row_values(ws, _LABEL[c], cols, unit_row=c in _SELF_SCALED) for c in COLS}
     out: dict[tuple[int, int], dict] = {ym: {} for ym in cols}
     for c in COLS:
         if raw[c] is None:
             continue
         if c in _RATIO:
             s = _scale(raw[c], *_SANE[c], f'{c}', cands=(1.0, 100.0))
+        elif c in _SELF_SCALED:
+            s = _scale(raw[c], *_SANE[c], f'{c}', cands=_SELF_CANDS)
         else:
             s = s_money if c in _MONEY else s_count
         for ym, v in raw[c].items():
@@ -533,6 +595,8 @@ def _required(ym: tuple[int, int]) -> list[str]:
     对它们「2025-01 是披露边界」目前仍成立。
     """
     out = list(COLS)
+    if ym < _AVG_IEA_FROM:
+        out = [c for c in out if c != 'avg_interest_earning_assets_usdbn']
     if ym < _DATS_MARGIN_FROM:
         out = [c for c in out if c not in ('dats_k', 'margin_balances_usdbn',
                                            'sweep_cash_usdbn', 'mmf_usdbn')]
@@ -910,16 +974,26 @@ def parse_edgar_monthly(html: str) -> dict:
     if [_MON[mm - 1] for _, mm in yms] != hdr:      # 表头与标题月倒推对不上 → 版式变了
         return {}
 
-    def row_of(prefix, skip_core=False):
-        for r in rows:
+    def row_of(prefix, skip_core=False, unit_row=False):
+        # unit_row 与 xlsx 那条路的 _row_values(unit_row=True) 是同一件事、同一个理由：
+        # 这一行在 EX-99.1 里也是「标签独占一行、数值落在下面那行 (in millions of
+        # dollars) 上」。实测 2014-10-15 报送的 Sep-2014 那份：标签行整行只有 1 个 cell，
+        # 值行 15 个（13 个月 + 环比/同比两格，r[1:1+len(yms)] 正好切到 13 个月）。
+        for k, r in enumerate(rows):
             lab = re.sub(r'\s+', ' ', r[0]).strip().lower() if r else ''
             if not lab.startswith(prefix):
                 continue
             if skip_core and lab.startswith('core'):
                 continue
-            vals = [_html_num(x) for x in r[1:1 + len(yms)]]
-            if sum(v is not None for v in vals) >= len(yms) - 2:
-                return {ym: v for ym, v in zip(yms, vals) if v is not None}
+            for j in ([k, k + 1] if unit_row else [k]):
+                if j != k:
+                    nxt = rows[j] if j < len(rows) else None
+                    if not (nxt and _UNIT_ROW_RE.match(
+                            re.sub(r'\s+', ' ', nxt[0]).strip().lower())):
+                        break
+                vals = [_html_num(x) for x in rows[j][1:1 + len(yms)]]
+                if sum(v is not None for v in vals) >= len(yms) - 2:
+                    return {ym: v for ym, v in zip(yms, vals) if v is not None}
         return None
 
     a_money = row_of(_LABEL['_anchor_money'])
@@ -931,11 +1005,13 @@ def parse_edgar_monthly(html: str) -> dict:
 
     out: dict = {ym: {} for ym in yms}
     for col in COLS:
-        vals = row_of(_LABEL[col])
+        vals = row_of(_LABEL[col], unit_row=col in _SELF_SCALED)
         if vals is None:
             continue
         if col in _RATIO:
             s = _scale(vals, *_SANE[col], f'edgar {col}', cands=(1.0, 100.0))
+        elif col in _SELF_SCALED:
+            s = _scale(vals, *_SANE[col], f'edgar {col}', cands=_SELF_CANDS)
         else:
             s = s_money if col in _MONEY else s_count
         for ym, v in vals.items():
@@ -1263,7 +1339,11 @@ def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
 # 看见「新增 0 个月」，会以为没事。2026-08-19 加 client_cash_pct 三列时就是这样发现的。
 #
 # 铁律（与另两条一致）：**非空单元格一个字符都不改**；重叠值不符就整次失败。
-_NEW_COLS = ('client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn')
+_NEW_COLS = ('avg_interest_earning_assets_usdbn',)
+
+# 列回填时同一个月拿到两套值（不同报告期给的数不一样）。与 _collect 的 RESTATEMENTS
+# 同一个用途：官方重述过就让人看见，不静默取其一。
+COLRESTATEMENTS: list = []
 
 
 def _col_sources(cache_dir: str):
@@ -1271,19 +1351,157 @@ def _col_sources(cache_dir: str):
 
     月报的 13 个月滚动表意味着「每 12 个月取一份」就够铺满，不必逐月下载：
       · CDN 月报 schw_may<y>_table.xlsx（y=2019…今年）→ 2018-05 … 最新一期的 5 月
+      · CDN 季报附表 schw_q4_<y>_earnings_tables.xlsx → 与上一条错开半年的第二相位
       · CDN 最近 8 个月 / 3 个季度（_candidates）→ 补上最新一期 5 月之后的月份
       · CDN 历史附表 _HIST_XLSX → 2015-09 … 2018-12
       · 再往前只有 SEC EDGAR（见下方 EDGAR 那一段）
+
+    **返回顺序按报告期从新到旧**，因为 absorb() 是「先写者胜」，而它的注释一直写着
+    「源按新 → 旧排，越新的文件越权威」—— 在 2026-09-16 之前那句话是假的：may<y> 那个
+    循环是 `range(2019, y_now+1)`，**升序**，最老的 may2019 第一个写。三列老列碰巧没被
+    这个顺序咬到（官方没重述过它们），平均生息资产一加进来就咬：2025-12 起的口径变更
+    **追溯调整了 2025-01…2025-11**（月报脚注：`Beginning in December 2025, average
+    balances of client margin loans and short credits related to certain client
+    long/short strategies … are excluded … Prior period amounts have been adjusted
+    accordingly.`），升序会让 may2025 先写下旧基的 2025-01…2025-05，再让 2026 年的
+    文件补上新基的 2025-06…2025-11 —— 同一条序列里混两个基，接缝在 5/6 月之间。
+
+    q4_<y> 这一相位不是为了「多一层保险」，是为了让**重述后的那一份**能覆盖全部被改过的
+    月份：schw_q4_2025_earnings_tables.xlsx 的滚动表正好是 2024-12…2025-12，而 may<y>
+    这一相位在 2025 年只有 may2025（重述**之前**发的）。少了它，2025-01 会落回旧基。
     """
     y_now = _today_ym()[0]
     out = []
     for y in range(2019, y_now + 1):
         out.append(((y, 5), MONTHLY_URL.format(mon='may', year=y)))
+    for y in range(2016, y_now + 1):
+        out.append(((y, 12), QUARTER_URL.format(q=4, year=y)))
     for _kind, url, ym in _candidates(back=8):
         out.append((ym, url))
     for ym, name in _HIST_XLSX:
         out.append((ym, CDN + '/excels/' + name))
+    # 报告期新的排前面；同一报告期内保持原有相对次序（sorted 是稳定的）。
+    return sorted(out, key=lambda t: t[0], reverse=True)
+
+
+# ═══════ 恒等式自检 2：月度平均生息资产 ↔ series/fee_rates.csv 的季度腿 ═══════
+# 两条腿是**同一个量**的两种频率：月频取自月报附表 SMART 页的
+# `Average Interest-Earning Assets`，季频取自季度业绩 8-K EX-99.1 的
+# `Net Interest Revenue Information` 表（fetch/rates_schw.py 抓，metric 名
+# avg_interest_earning_assets，单位 USD_mn）。两张表、两个解析器、两条抓取路径，
+# 所以这道自检真正在核的是「我们有没有把行取对、单位判对、月份对齐对」。
+#
+# ── 为什么是**日历日加权**而不是算术平均 ──
+# 派工单要求的是「按季取算术平均」，实测过，**那样写这道闸就是个摆设**：
+# 月度值是该月**日均**、季度值是该季**日均**，严格关系是按当月日历天数加权
+#     Q = (d1·M1 + d2·M2 + d3·M3) / (d1 + d2 + d3)
+# 算术平均等于把 1/3 当权重，误差项 = (1/3 − di/Σd) 与月序列曲率的乘积。51 个季度实测：
+#     口径        自身噪声(2018Q4 起，剔已知断点)      「三个月整体错位一格」的最小信号
+#     算术平均    max 289 $mn / 987 ppm                617 ppm
+#     日加权      max 5.79 $mn / 21 ppm                617 ppm
+# 算术平均的噪声**盖过**了它要抓的最小信号，信噪比 < 1；日加权约 29×。
+# 最干净的一刀是闰年季 2020-Q1（2 月只有 29 天）：算术平均差 −289 $mn，日加权差 −0.35 $mn。
+# 派工单给的参照（2026-Q2 算术平均 445.00 vs 季报 444.982，差 0.018 $bn）两种口径都过
+# （日加权 444.967，差 −0.015），所以那组数**分不出**高下，不能拿它当选型依据。
+# 下一个想把它改回算术平均的人：先把上面这张表复算一遍。
+_IEA_CHECK_FROM = (2018, 4)         # 从 2018-Q4 起核。更早**不是**不能核，是官方自己对不上：
+# 2013-Q4…2018-Q3 共 20 季的日加权残差全是同号正偏（中位 +94 $mn、最大 +214 / 1484 ppm），
+# 而月度与季度取自**同一份申报**，排除了解析错/重述/单位错三种可能 —— 只能是那一代官方
+# 自己的口径或舍入差。2018-Q4 起残差塌到 ≤ 5.79 $mn（21 ppm），分界干净，所以窗口定在这里。
+# 把窗口往左挪的人：挪之前先看这一段，别把官方自己的偏差当成本模块的 bug 去「修」。
+_IEA_CHECK_SKIP = {
+    (2020, 4): 'TD Ameritrade 并表 2020-10-06 落在季中，月度日均与季度日均不是同一个口径'
+               '（残差 +941 $mn / 2033 ppm，全样本唯一越过硬闸的正常季）'
+               '—— 与 build/schw.py 的 BRK_Q_TDA 是同一个断点',
+    (2025, 1): 'fee_rates.csv 存的是**原报值**，而 2025-Q1…Q3 的原报发生在 2025-12 那次口径变更'
+               '之前（旧基），本表的月度值取自变更后的滚动表（新基）—— 两边不是同一个口径',
+    (2025, 2): '同上（旧基原报 422,729，重述后 421,845；新基月度日加权 421,832）',
+    (2025, 3): '同上（旧基原报 419,780；新基月度日加权 416,937，差 −6,775 ppm，纯假警报）',
+}
+# 容差两级，都是「绝对下限 + 相对」取大者，同 backfill() 里 max(0.05, |cur|*1e-6) 的写法。
+# 硬闸 1000 ppm：纳入窗口内实测最大残差 375 ppm（2019-Q2），留 2.7× 余量；同时低于
+#   62 个「整体错位一格」场景里 60 个的信号强度（p5 = 2139 ppm），单位错档、口径混基、
+#   TDA 式结构断点全部在这一档之外。绝对下限 120 $mn 只在季均 < 120,000 $mn 时才生效
+#   （≈2013 年那一段，本来就在窗口外），留着是防窗口哪天左移时相对腿塌成个位数。
+# 软闸 150 ppm：窗口内「正常」季的残差 ≤ 21 ppm（p95 = 1.6 ppm），留 7× 余量；
+#   三个已知的官方毛刺（2019-Q2 375 / 2024-Q2 293 / 2019-Q3 167 ppm）正好落在软硬之间 ——
+#   它们月度季度同源同文件、无重述、无单位切换，是官方自身的不一致（旁证：2Q24 那份
+#   EX-99.1 自己印的 Q1+Q2 均值 427,833 与同页的 H1-2024 428,020 也差 187），
+#   29 个在窗口内的季度里出现 3 次，做成硬失败会每年误报一两次，人很快学会无视。
+# 绝对下限 30 $mn：2026 起月报只印到 0.1 $bn，单月半档 50 $mn，三月同向偏最坏使加权均偏
+#   50 $mn（实测 2026-Q1 3.9、2026-Q2 15.0）；季均 ≈445,000 时相对腿给出 66.8 $mn 已罩住它。
+#   **要把软闸改成硬闸的人：绝对下限必须 ≥ 60 $mn，否则 2026 起每季都被印刷精度顶穿。**
+_IEA_HARD = (120.0, 0.0010)
+_IEA_SOFT = (30.0, 0.00015)
+
+
+def _fee_rates_iea(series_dir: str) -> dict:
+    """series/fee_rates.csv 里 SCHW 的季度平均生息资产 → {(y, q): USD_mn}。
+
+    取不到就返回 {}（调用方只喊不抛）：这道自检的判官是**另一条腿**，判官不在场时
+    不能反过来把数据摄入判死 —— 与 _crosscheck_due_month 的「判官哑了只喊不抛」同一条规矩。
+    """
+    path = os.path.join(series_dir, 'fee_rates.csv')
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path, newline='') as f:
+        for row in csv.DictReader(f):
+            if row.get('company') != 'SCHW' or row.get('metric') != 'avg_interest_earning_assets':
+                continue
+            if row.get('unit') != 'USD_mn':          # 单位名变了就别猜，当判官不在场
+                return {}
+            m = re.fullmatch(r'(20\d{2})-Q([1-4])', (row.get('period') or '').strip())
+            if m:
+                out[(int(m.group(1)), int(m.group(2)))] = float(row['value'])
     return out
+
+
+def _crosscheck_quarter_iea(body: list, series_dir: str, log) -> None:
+    """月度平均生息资产按日历日加权折成季均，与季度腿逐季对账。见上方那一大段。"""
+    col = 'avg_interest_earning_assets_usdbn'
+    q_ref = _fee_rates_iea(series_dir)
+    if not q_ref:
+        log('  [恒等式2] 跳过：series/fee_rates.csv 里取不到 SCHW 的季度平均生息资产'
+            '（判官不在场，只喊不抛）')
+        return
+    i = 1 + COLS.index(col)
+    mon = {}
+    for r in body:
+        if r[i] != '':
+            mon[(int(r[0][:4]), int(r[0][5:]))] = float(r[i])
+
+    hard, soft, n = [], [], 0
+    for (y, q), ref in sorted(q_ref.items()):
+        if (y, q) < _IEA_CHECK_FROM or (y, q) in _IEA_CHECK_SKIP:
+            continue
+        yms = [(y, (q - 1) * 3 + k) for k in (1, 2, 3)]
+        if any(ym not in mon for ym in yms):
+            continue                      # 缺月一律跳过，缺值不当失败（同本模块其它几道）
+        days = [_month_end(ym).day for ym in yms]
+        got = sum(d * mon[ym] for d, ym in zip(days, yms)) / sum(days) * 1_000  # $bn → $mn
+        d = abs(got - ref)
+        n += 1
+        if d > max(_IEA_HARD[0], _IEA_HARD[1] * ref):
+            hard.append((f'{y}-Q{q}', round(got, 1), ref, round(d / ref * 1e6)))
+        elif d > max(_IEA_SOFT[0], _IEA_SOFT[1] * ref):
+            soft.append((f'{y}-Q{q}', round(got, 1), ref, round(d / ref * 1e6)))
+    log(f'  [恒等式2] 月度日加权季均 vs fee_rates 季度腿：核了 {n} 个季度，'
+        f'超硬闸 {len(hard)} 个、超软闸 {len(soft)} 个'
+        + (f'（跳过 {len(_IEA_CHECK_SKIP)} 个已记名的断点季）' if n else ''))
+    for x in soft:
+        log(f'    [软闸] {x[0]} 月度折算 {x[1]} vs 季报 {x[2]} $mn，差 {x[3]} ppm —— '
+            '官方自身的不一致，记一笔，不拦')
+    if hard:
+        for x in hard[:10]:
+            log(f'    MISMATCH {x[0]} 月度折算 {x[1]} vs 季报 {x[2]} $mn，差 {x[3]} ppm')
+        raise FetchError(
+            f'月度平均生息资产折成季均，与 series/fee_rates.csv 的季度腿有 {len(hard)} 个季度'
+            f'超硬闸（{_IEA_HARD[1] * 1e6:.0f} ppm），拒绝写入。三种可能：月度行取错了'
+            '（老版式标签行没有数、值在下面那行单位说明行上，见 _row_values 的 unit_row）、'
+            '单位倍率判错了一档（_SELF_CANDS 那三档相差 1e3/1e6），'
+            '或者官方又做了一次追溯重述而两条腿不同步（那就往 _IEA_CHECK_SKIP 里记名并写清理由）。'
+            '三种都得人去看，绝不静默取其一。')
 
 
 def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
@@ -1316,18 +1534,21 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
             keep = {c: v for c, v in vals.items() if c in cols}
             if not keep:
                 continue
-            # 先写者胜（源按「新 → 旧」排，越新的文件越权威），与 _collect 同规矩
-            if ym not in merged:
-                merged[ym], prov[ym] = keep, src
-            else:
-                for c, v in keep.items():
-                    if c not in merged[ym]:
-                        merged[ym][c] = v
+            # 先写者胜（_col_sources 已按报告期从新到旧排，越新的文件越权威），与 _collect 同规矩。
+            # 后来者不覆盖，但**打架要记下来**：这一列的 2025-01…2025-11 就是被官方追溯
+            # 调整过的，不记的话「新基旧基混在一起」与「本来就只有一套值」在日志里一样安静。
+            slot, first = merged.setdefault(ym, {}), prov.setdefault(ym, src)
+            for c, v in keep.items():
+                if c in slot:
+                    if _differs(c, slot[c], v):
+                        COLRESTATEMENTS.append((ym, c, slot[c], v, first, src))
+                    continue
+                slot[c] = v
 
     def need() -> set:
         return {k for k in want
-                if tuple(int(x) for x in k.split('-')) not in merged
-                or 'client_cash_pct' not in merged[tuple(int(x) for x in k.split('-'))]}
+                if any(c not in merged.get(tuple(int(x) for x in k.split('-')), {})
+                       for c in cols)}
 
     seen = set()
     for ym, url in _col_sources(cache_dir):
@@ -1348,6 +1569,29 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
             log(f'  [cdn] {name} 解析失败：{e}')
             continue
         log(f'  [cdn] {name} ok')
+
+    # ── 先吃本地已有的 EX-99.1：季频腿与 fetch/rates_schw.py 抓下来的那批就落在
+    # cache/schw_rates/，是**同一批文件**（模块 docstring「落盘」那一节写着两条腿共用）。
+    # 它们能盖住 2013-09 至今的每一个月，而下面那条网络 EDGAR 腿要先拉 submissions
+    # 清单、再逐份 index.json + 逐个 .htm 试解析，几百个请求。本地有现成的还去打几百个
+    # 请求，既慢又会撞 SEC 的速率限制（10 req/s），而撞上之后的 403 会被那条路
+    # `except Exception: continue` 静默吞掉 —— 于是「回填不全」看上去就像「源里没有」。
+    rates_dir = os.path.join(cache_dir, 'schw_rates')
+    if need() and os.path.isdir(rates_dir):
+        n0 = len(need())
+        for name in sorted(os.listdir(rates_dir), reverse=True):
+            if not name.lower().endswith(('.htm', '.html')):
+                continue
+            try:
+                with open(os.path.join(rates_dir, name), encoding='utf-8',
+                          errors='replace') as f:
+                    got = parse_edgar_monthly(f.read())
+            except FetchError as e:
+                log(f'  [本地edgar] {name} 解析失败：{e}')
+                continue
+            if got:
+                absorb(got, f'cache/schw_rates/{name}')
+        log(f'  [本地edgar] 扫 cache/schw_rates/，还缺的月份 {n0} → {len(need())}')
 
     # ── EDGAR：CDN 上 2015-09 之前一份都不剩，只能走 8-K 的 EX-99.1 ──
     # 按**从新到旧**走，每份只解析到「还缺的月份都齐了」为止就停 —— 全量扫 160 份
@@ -1408,27 +1652,36 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
     # ── 恒等式自检：(sweep + MMF) / 客户资产 应当复现官方自己印的占比 ──
     # 三个数都是官方同一张表上印的，这一步不是「算出」占比，是**核对**我们把三行
     # 各自取对了没有。容差 0.07pp：占比印到 0.1pp、两个分量各印到 0.1bn。
+    # 下标一律按 COLS 取，**不要**走 idx_of —— idx_of 只含本次要填的 cols，
+    # `idx_of.get('sweep_cash_usdbn', 0)` 在 cols 不含该列时会退化成 0，取到的是 month
+    # 那一格（'2013-09'），既过不了 `'' in (...)` 那道跳过，又会在 float() 上炸。
+    # 这四列都是 COLS 的常驻成员，跟本次填哪几列无关。2026-09-16 把 _NEW_COLS 换成
+    # 别的列时才暴露出来。
+    isw, imm, ipc = (1 + COLS.index(c) for c in
+                     ('sweep_cash_usdbn', 'mmf_usdbn', 'client_cash_pct'))
     ia = 1 + COLS.index('total_client_assets_usdbn')
-    bad = []
+    bad, cash_n = [], 0
     for r in body:
-        sw, mm, pc, ta = (r[idx_of.get('sweep_cash_usdbn', 0)], r[idx_of.get('mmf_usdbn', 0)],
-                          r[idx_of.get('client_cash_pct', 0)], r[ia])
+        sw, mm, pc, ta = r[isw], r[imm], r[ipc], r[ia]
         if '' in (sw, mm, pc, ta):
             continue
+        cash_n += 1
         d = abs((float(sw) + float(mm)) / float(ta) * 100 - float(pc))
         if d > 0.07:
             bad.append((r[0], round(d, 3)))
-    log(f'  [恒等式] (sweep+MMF)/资产 vs 官方占比：核了 '
-        f'{sum(1 for r in body if r[idx_of.get("sweep_cash_usdbn", 0)] and r[idx_of.get("mmf_usdbn", 0)] and r[idx_of.get("client_cash_pct", 0)])} '
-        f'个月，超差 {len(bad)} 个')
+    log(f'  [恒等式] (sweep+MMF)/资产 vs 官方占比：核了 {cash_n} 个月，超差 {len(bad)} 个')
     if bad:
         raise FetchError(f'(sweep+MMF)/资产 与官方印的客户现金占比对不上：{bad[:10]}')
 
+    # ── 恒等式自检 2：月度平均生息资产按季折算，应复现季报腿印的季均 ──
+    _crosscheck_quarter_iea(body, series_dir, log)
+
     log('  [填充] ' + '、'.join(f'{c} {n} 格' for c, n in filled.items()))
-    miss = sorted(k for k in want
-                  if not body[[r[0] for r in body].index(k)][idx_of['client_cash_pct']])
-    if miss:
-        log(f'  [仍缺] client_cash_pct 有 {len(miss)} 个月没填上：{miss[:6]}…{miss[-3:]}')
+    keys = [r[0] for r in body]
+    for c in cols:
+        miss = sorted(k for k in want if not body[keys.index(k)][idx_of[c]])
+        if miss:
+            log(f'  [仍缺] {c} 有 {len(miss)} 个月没填上：{miss[:6]}…{miss[-3:]}')
     if dry_run:
         log('  [dry-run] 不写盘')
         return filled
@@ -2071,12 +2324,29 @@ def backfill_quarterly(series_dir, cache_dir, verbose: bool = True,
 if __name__ == '__main__':
     import sys
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if '--check-iea' in sys.argv:
+        # 只跑恒等式自检 2（月度平均生息资产 ↔ fee_rates 季度腿），一个字节都不写、
+        # 一个请求都不发。改完解析或改完窗口常数之后拿它当闸门跑。
+        _sd = os.path.join(_root, 'series')
+        with open(os.path.join(_sd, SERIES), newline='') as _f:
+            _rows = list(csv.reader(_f))
+        _crosscheck_quarter_iea([r for r in _rows[1:] if r and r[0].strip()],
+                                _sd, lambda *a: print(*a))
+        raise SystemExit(0)
     if '--columns' in sys.argv:
         # 给已有的行补新增列（不加行）。加完新列后跑一次，之后是幂等的。
         print('backfill_columns:',
               backfill_columns(os.path.join(_root, 'series'),
                                os.path.join(_root, 'cache'),
                                dry_run='--dry-run' in sys.argv))
+        if COLRESTATEMENTS:
+            # 官方追溯重述：先写者（报告期最新的那份）已经胜出并落盘，这里只是把
+            # 「同一个月官方给过两套数」摆出来 —— 静默取新值和静默取旧值一样危险。
+            print(f'官方跨报告期重述（已取报告期最新的那份，此处仅记录）'
+                  f'{len(COLRESTATEMENTS)} 处:')
+            for ym, c, keep, drop, f1, f2 in COLRESTATEMENTS:
+                print(f'   {ym[0]:04d}-{ym[1]:02d} {c}: 取 {_fmt(c, keep)}（{f1}）'
+                      f'／弃 {_fmt(c, drop)}（{f2}）')
         raise SystemExit(0)
     if '--quarterly-backfill' in sys.argv:
         # 季频腿的一次性存量补齐（扫全部业绩 8-K）。--offline 只用本地缓存重放，
