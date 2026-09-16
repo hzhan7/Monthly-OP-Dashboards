@@ -3,20 +3,35 @@
 
 ================================ 数据源 ================================
 官方只有一个真源：Schwab Monthly Activity Report 随附的 Excel 附表，走 Akamai CDN 直链，
-文件名完全可推导，因此不需要爬列表页、不需要登录态、不需要浏览器：
+不需要爬列表页、不需要登录态、不需要浏览器：
 
     月报附表   https://content.schwab.com/web/retail/public/about-schwab/excels/
-               schw_<mon><yyyy>_table.xlsx        例：schw_may2026_table.xlsx
+               <pfx>_<mon><yyyy>_table.xlsx        例：schw_may2026_table.xlsx
     月报正文   https://content.schwab.com/web/retail/public/about-schwab/
-               schw_<mon><yyyy>_press_release.pdf （数值不从这里取，只取电头日期，见下）
+               <pfx>_<mon><yyyy>_press_release.pdf （数值不从这里取，只取电头日期，见下）
     季报附表   https://content.schwab.com/web/retail/public/about-schwab/excels/
-               schw_q<n>_<yyyy>_earnings_tables.xlsx  例：schw_q2_2026_earnings_tables.xlsx
+               <pfx>_q<n>_<yyyy>_earnings_tables.xlsx  例：schw_q2_2026_earnings_tables.xlsx
     季报正文   https://content.schwab.com/web/retail/public/about-schwab/
-               schwab_q<n>_<yyyy>_earnings_release.pdf（同上，只取电头日期）
+               <pfx>_q<n>_<yyyy>_earnings_release.pdf（同上，只取电头日期）
 
-<mon> 是小写三字母英文月份缩写（jan…dec），<yyyy> 四位年。
-注意两份 PDF 的**文件名前缀不一样**：月报是 schw_、季报是 schwab_（xlsx 两个都是 schw_）。
-照着 xlsx 的写法推季报 PDF 的名字必 404，这不是笔误，是官方自己就不一致。
+**文件名不可推导 —— 2026-09-16 订正，原话是「文件名完全可推导」，错的。**
+原话还写「<mon> 是小写三字母英文月份缩写（jan…dec）」，同样错。逐年回源实测的结果是
+<pfx> 与 <mon> 两个位置**官方都破过自己的规矩**，所以本模块对每一期试**一串**候选、
+第一个 200 的赢（候选表与全部实证见 _MON_URL / _URL_PFX，机制见 _download_any）：
+
+  · <mon>：除七月外都是三字母；**七月 2019–2025 连续七年用全拼**（schw_july2023…），
+    2026 年又改回三字母（schw_jul2026…）。除七月外没有任何月份用过全拼。
+  · <pfx>：schw_ 与 schwab_ 都在用，且**不是按年切换**是单月冒出来的 ——
+    2018-02、2019-01/02/04 是 schwab_（2019-05 起转回 schw_），而 **2025-04 又是
+    schwab_**，前后各月都是 schw_。两份 PDF 之间前缀也不一致：月报常态 schw_、
+    季报常态 schwab_ —— 照着 xlsx 的写法推季报 PDF 的名字必 404，不是笔误。
+
+这条坑与本文件 EDGAR 那两段、client_cash_pct 那一段（_CASH_PCT_FROM）是**同一种病的
+第四次发作**：解析器/管道读不到，和源里没有，长得一模一样。这次尤其隐蔽 ——
+**数据一格都没缺**：七月的值由八月那期的 13 个月滚动表顺手带进来了，所以 CSV 上看不出
+任何异常，只有「那一期自己的发布日」缺席和每年一次的白打 404。一度有人据此把
+schw_july2023_table.xlsx 判成「已从 CDN 撤下」，而那份文件恰好是 client cash 口径重述的
+首份出版物。**别拿「CSV 里有值」当「这条抓取路径是通的」的证据。**
 
 —— 为什么不用别的源 ——
 · www.aboutschwab.com（IR 站正文页）在 Akamai 后面，会按 TLS/HTTP2 指纹拦截：
@@ -56,14 +71,29 @@
     (b) 下一个月报附表的 13 个月滚动表 —— 例如 jul2026 月报的表里会带上 jun2026，
         但要等到 8 月中，比 (a) 慢一个月。
   所以「季末月漏掉」这个坑的正确解法不是特判某几个月，而是：**两个源都抓，取并集**。
-· 实测发布日（月末后第几天）：月报 13 期 12 / 13 / 13 / 14 / 14 / 14 / 14 / 15 / 15 / 15 / 15 / 16 / 16，
-  季报 4 期 16 / 16 / 21 / 21。月报 13 期电头逐期数过，**13/13 都是次月第 10 个美股交易日**：
-    may2026→06-12  jan2026→02-13  nov2019→12-13  apr2026→05-14  jul2026→08-14  oct2025→11-14
-    oct2024→11-14  aug2025→09-15  aug2023→09-15  aug2022→09-15  aug2020→09-15  aug2024→09-16
+· 实测发布日（月末后第几天）：月报 16 期 12 / 13 / 13 / 13 / 14 / 14 / 14 / 14 / 14 / 14 /
+  15 / 15 / 15 / 15 / 16 / 16，季报 4 期 16 / 16 / 21 / 21。月报 16 期电头逐期数过，
+  **16/16 都是次月第 10 个美股交易日**：
+    may2026→06-12  jan2026→02-13  nov2019→12-13  jul2021→08-13  apr2026→05-14
+    jul2026→08-14  oct2025→11-14  oct2024→11-14  jul2023→08-14  jul2025→08-14
+    aug2025→09-15  aug2023→09-15  aug2022→09-15  aug2020→09-15  aug2024→09-16
     aug2019→09-16
-  2019/2020 年电头是 SAN FRANCISCO，其余 WESTLAKE。第 17 天那一档（9/1 周六）**没有样本**：
-  aug2018 用 schw_ / schwab_ 两种前缀回源都是 404，那一档是按日历推的。
-  样本来自 series/source_dates.csv、cache 里的新闻稿与 2026-09-14 回源取的历年电头，随时可复核。
+  （后加的 jul2021 / jul2023 / jul2025 三期是 2026-09-16 修好七月拼名后第一次读到的 ——
+   **在那之前这三份文件本模块从来没打开过**，见本文件开头「数据源」一节。三个样本都落在
+   原有分布内，_LAG_DAYS 与 build/roster.py 的 LAG['schw'] 不用动。）
+  2019/2020 年电头是 SAN FRANCISCO，其余 WESTLAKE —— 而 _DATELINE 只认 WESTLAKE，
+  所以那两年的新闻稿 release_date() **读不出日期**（2026-09-16 用 jul2019 / jul2020 两份
+  实测确认：文件下得到，正则不命中）。目前无害：release_date() 只对**本次新追加**的月份
+  调用，2019/2020 早在 CSV 里，永远走不到那儿。哪天要给历史月份补发布日，这是第二道闸。
+  第 17 天那一档（9/1 周六）**仍然没有样本**，那一档是按日历推的：
+  aug2018 回源 **12 种变体全 404**（2026-09-16 复核 —— 前缀 schw_/schwab_ × 月份 aug/august
+  × 扩展名 .xlsx/.XLSX 的 8 个附表，加 4 个新闻稿），**不是拼法问题**。同期阳性对照
+  schwab_feb2018_table.XLSX 与 2018 四份季报附表都仍 200，阴性对照 schw_zzz9999 也 404，
+  所以 404 是真判定：**2018 年除 2 月外整年的月报附表与新闻稿都已从 CDN 撤下**，
+  改拼法救不回来，只能走 EDGAR。（七月的教训是「先怀疑拼法」，这一条是那个怀疑被证伪的记录 ——
+  写在这里就是免得下一个人再把这 12 个变体重探一遍。）
+  样本来自 series/source_dates.csv、cache 里的新闻稿、2026-09-14 与 2026-09-16 两次回源
+  取的历年电头，随时可复核。
 · _LAG_DAYS 与 build/roster.py 的 LAG['schw'] 都是 (17, 21)（2026-09-14 由 (14, 21) 改来）：
   常规月取**规则上界** 17、不取实测最坏 16 —— 理由同 build/roster.py LAG['spgi'] 那条：17 有出处，
   按 n=13 的最大值定，等于当还没轮到的排列不存在。原先的 14 只是「9 月以外」的上界，9 月每年越线 1-3 天。
@@ -223,11 +253,12 @@ import openpyxl
 
 # ── 常量 ────────────────────────────────────────────────────────────────
 CDN = 'https://content.schwab.com/web/retail/public/about-schwab'
-MONTHLY_URL = CDN + '/excels/schw_{mon}{year}_table.xlsx'
-QUARTER_URL = CDN + '/excels/schw_q{q}_{year}_earnings_tables.xlsx'
-# 新闻稿正文：只为取电头日期。前缀 schw_ / schwab_ 不一致是官方的，别按 xlsx 的写法改。
-PR_MONTHLY_URL = CDN + '/schw_{mon}{year}_press_release.pdf'
-PR_QUARTER_URL = CDN + '/schwab_q{q}_{year}_earnings_release.pdf'
+# 四个模板的前缀与月份都是**占位符**，不是常量：官方在这两个维度上都破过自己的规矩，
+# 实证与候选表见下方 _URL_PFX / _MON_URL。别把某一种写法硬编码回来。
+MONTHLY_URL = CDN + '/excels/{pfx}_{mon}{year}_table.xlsx'
+QUARTER_URL = CDN + '/excels/{pfx}_q{q}_{year}_earnings_tables.xlsx'
+PR_MONTHLY_URL = CDN + '/{pfx}_{mon}{year}_press_release.pdf'
+PR_QUARTER_URL = CDN + '/{pfx}_q{q}_{year}_earnings_release.pdf'
 IR_PAGE = 'https://www.aboutschwab.com/financial-reports'
 
 # CDN 只看 UA，给个普通 Chrome UA 就放行；不带 UA 或带 Python-urllib 会 403。
@@ -238,6 +269,44 @@ _MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
         'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 _MON_FULL = ['January', 'February', 'March', 'April', 'May', 'June',
              'July', 'August', 'September', 'October', 'November', 'December']
+
+# ── URL 文件名的候选写法 ───────────────────────────────────────────────
+# 官方的命名**不可推导**，在两个维度上都破过自己的规矩。写法与 _LABEL / _pfx 同构
+# （2026-09-16 的 47710ce 刚在「标签」那一层做过同一件事）：列一串候选，第一个 200 的赢。
+#
+# 维度一 —— **月份**。除七月外每个月都用三字母；**七月 2019–2025 连续七年用全拼**，
+# 2026 年又改回三字母（2026-09-16 逐个回源实测）：
+#     schw_jul2023_table.xlsx  404  │  schw_july2023_table.xlsx  200 (213,188B)
+#     schw_jul2025_table.xlsx  404  │  schw_july2025_table.xlsx  200 (208,115B)
+#     schw_jul2026_table.xlsx  200  │  schw_july2026_table.xlsx  404
+# 2019/2020/2021/2022/2024 的七月同样只有全拼命中；**除七月外没有任何月份用过全拼**
+# （2018–2025 逐月扫过，全拼变体一律 404）。所以这里只给七月列候选，不要「每个月都试全拼」
+# —— 那是每月多打 11 个必 404 的请求去换一个已知不存在的可能。
+_MON_URL: dict[int, tuple[str, ...]] = {7: ('jul', 'july')}
+
+# 维度二 —— **前缀**。`schw_` 与 `schwab_` 两种都在用，而且**不是按年切换的**，
+# 是单月冒出来的，所以不能写成「哪年用哪个」：
+#     2018-02 / 2019-01 / 2019-02 / 2019-04  →  schwab_   （2019-05 起转回 schw_）
+#     2025-04                                →  schwab_   （前后各月都是 schw_！实测
+#                                                schw_apr2025=404、schwab_apr2025=200 208,211B）
+#     2017 及更早的**季报**附表              →  schwab_   （见 _HIST_XLSX）
+# 每种 kind 的第一个候选 = 历史上更常见的那个，只影响命中顺序不影响结果。
+# 季报**正文 PDF** 反过来以 schwab_ 为常态 —— 这条官方自己就不一致，不是笔误。
+_URL_PFX: dict[str, tuple[str, ...]] = {
+    'monthly':      ('schw', 'schwab'),
+    'quarterly':    ('schw', 'schwab'),
+    'pr_monthly':   ('schw', 'schwab'),
+    'pr_quarterly': ('schwab', 'schw'),
+}
+
+# **扩展名大小写刻意不做候选维度。** 官方历史上确实发过 .XLSX（见 _HIST_XLSX），但
+# macOS 的文件系统大小写不敏感（本机实测：盘上是 schw_q1_2018_earnings_tables.XLSX，
+# os.path.exists(...'.xlsx') 照样返回 True）。把它列进候选，_download_any 的「本地已有
+# 就用」会把一个**从来没 200 过**的名字判成命中，而且从此不再回网络核对 —— 那是比
+# 少一个候选严重得多的坑。.XLSX 那几份继续由 _HIST_XLSX 那张写死的清单管。
+#
+# 命中的不是第一个候选时记在这里，由 CLI 打出来 —— 官方哪天又换写法，这是唯一的明信号。
+URL_VARIANTS: list = []
 
 # 新闻稿电头。锚在 "WESTLAKE, Texas," 上而不是只找「月 日, 年」——正文里还有一大堆日期
 # （"as of May 31, 2026"、脚注里的往期口径变更日），只匹配日期格式会抓到其中任意一个。
@@ -369,7 +438,12 @@ def _get(url: str, timeout: int = 60) -> bytes | None:
 
 def _download(url: str, cache_dir: str, reuse: bool = True,
               magic: bytes = b'PK') -> str | None:
-    """下载到 cache/，返回本地路径；404 返回 None。
+    """下载**一个确定的** URL 到 cache/，返回本地路径；404 返回 None。
+
+    名字推不出来的一般情况走 _download_any（试一串候选）。这个单 URL 版只剩一个用处：
+    backfill() 扫 _HIST_XLSX 那份写死的清单 —— 那些是实测过 200 的**死名字**
+    （含 .XLSX 大写那一维），本来就不该进候选机制。别拿它去下「推出来的」文件名，
+    那正好绕开候选、把七月那个坑原样请回来。
 
     reuse=True 时复用已落盘的文件。老月份的附表官方从不重发（已核对 apr/may 两期 12 个
     重叠月逐值相同），复用是安全的；但**最近两个月的文件可能被官方重新上传更正**，
@@ -392,6 +466,80 @@ def _download(url: str, cache_dir: str, reuse: bool = True,
     return path
 
 
+def _mon_token(m: int) -> tuple[str, ...]:
+    """月份在 **URL 文件名**里的候选写法（三字母在前）。见 _MON_URL。
+
+    只给拼 URL 用。**不要**拿它反查月份号 —— 那是 _MON 的活，而 _MON 被六处解析路径
+    当索引表/成员表用（_MON.index、`in _MON`、_URL_MONTH_RE 的构造…），
+    把它本体改成「每个元素是一串」会让其中两处**静默**返回空表、一处 import 就炸。
+    """
+    return _MON_URL.get(m, (_MON[m - 1],))
+
+
+def _url_candidates(kind: str, ym: tuple[int, int]) -> tuple[str, ...]:
+    """这一期**可能**的全部 URL，按「最可能命中」排序、去重。
+
+    kind ∈ {'monthly', 'quarterly', 'pr_monthly', 'pr_quarterly'}。
+    五月的三字母与全拼同形（may == may），去重后仍是一条，不会白打请求。
+    """
+    y, m = ym
+    tpl = {'monthly': MONTHLY_URL, 'quarterly': QUARTER_URL,
+           'pr_monthly': PR_MONTHLY_URL, 'pr_quarterly': PR_QUARTER_URL}[kind]
+    out = []
+    for pfx in _URL_PFX[kind]:
+        toks = ('',) if kind.endswith('quarterly') else _mon_token(m)
+        for tok in toks:
+            u = (tpl.format(pfx=pfx, q=(m - 1) // 3 + 1, year=y) if kind.endswith('quarterly')
+                 else tpl.format(pfx=pfx, mon=tok, year=y))
+            if u not in out:
+                out.append(u)
+    return tuple(out)
+
+
+def _download_any(urls, cache_dir: str, reuse: bool = True, magic: bytes = b'PK',
+                  what: str = '') -> tuple[str | None, str | None]:
+    """逐个试一串候选 URL，第一个拿到的赢 → (本地路径, 命中的 url)；全 404 → (None, None)。
+
+    官方的文件名**不可推导**（七月全拼、schwab_ 前缀单月复发，见 _MON_URL / _URL_PFX），
+    所以这里试一串而不是一个。已实证「一期有且只有一个名字命中」（2021–2023 的 24 个
+    命中 sha256 两两不同），因此「第一个 200 的赢」不会在两份真文件之间选错。
+
+    reuse=True 时**先把所有候选的本地文件扫一遍**，任一个已落盘就直接用。
+    不先扫的话，每一轮都会为排在前面的那个 404 候选白打一次请求 —— 一条本来能全缓存
+    命中、零请求的重放路径会永久变成网络路径（月频腿没有季频腿 --offline 那种契约兜着）。
+
+    「200 但不是目标格式」（CDN 偶尔用 200 返回 HTML 错误页）在这里**降级成换下一个候选**，
+    而不是当场抛 —— 否则排在前面的错名字吃到一张 HTML，就会在轮到正确名字之前把整轮炸掉。
+    但**全部候选都落空时要把攒下的理由一起抛出来**，不静默：形状同 _collect 的 `if not got`。
+    """
+    urls = tuple(urls)
+    if reuse:
+        for u in urls:
+            p = os.path.join(cache_dir, u.rsplit('/', 1)[-1])
+            if os.path.exists(p) and os.path.getsize(p) > 10_000:
+                return p, u
+    bad = []
+    for i, u in enumerate(urls):
+        blob = _get(u)
+        if blob is None:                      # 404：这个写法不是它，换下一个
+            continue
+        if len(blob) < 10_000 or not blob.startswith(magic):
+            bad.append(f'{u} 返回的不是 {magic.decode()} 文件（{len(blob)} bytes）')
+            continue
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, u.rsplit('/', 1)[-1])
+        with open(path, 'wb') as f:
+            f.write(blob)
+        if i:                                 # 赢的不是模板首选 → 官方又换写法了，记下来
+            URL_VARIANTS.append((what or urls[0], u))
+            print(f'  [url] {what or "候选"}：首选 {urls[0].rsplit("/", 1)[-1]} 没有，'
+                  f'命中的是 {u.rsplit("/", 1)[-1]}')
+        return path, u
+    if bad:
+        raise FetchError('候选 URL 全部落空，其中有 200 但格式不对的：' + '；'.join(bad))
+    return None, None
+
+
 def release_date(kind: str, report_ym: tuple[int, int], cache_dir: str):
     """某一期报告的官方发布日 → ('YYYY-MM-DD', 出处描述)；拿不到返回 (None, 原因)。
 
@@ -399,16 +547,16 @@ def release_date(kind: str, report_ym: tuple[int, int], cache_dir: str):
     PDF 一律 reuse：电头是印在正文里的，官方就算把文件重新上传一遍也不会改那一行，
     所以这里不像 xlsx 那样对新月份强制重取。
     """
-    y, m = report_ym
-    if kind == 'monthly':
-        url = PR_MONTHLY_URL.format(mon=_MON[m - 1], year=y)
-    else:
-        url = PR_QUARTER_URL.format(q=(m - 1) // 3 + 1, year=y)
-    name = url.rsplit('/', 1)[-1]
+    urls = _url_candidates('pr_monthly' if kind == 'monthly' else 'pr_quarterly', report_ym)
+    key = f'{report_ym[0]:04d}-{report_ym[1]:02d} 新闻稿'
 
-    path = _download(url, cache_dir, magic=b'%PDF')
+    # name 必须取**命中的那个** URL，不能取首选：写进 series/source_dates.csv 的证据串
+    # 要指向真实存在的文件，指向一个 404 的名字等于给下次复核的人埋一颗雷。
+    path, hit_url = _download_any(urls, cache_dir, magic=b'%PDF', what=key)
     if path is None:
-        return None, f'{name} 在 CDN 上是 404'
+        names = ' / '.join(u.rsplit('/', 1)[-1] for u in urls)
+        return None, f'{names} 在 CDN 上都是 404'
+    name = hit_url.rsplit('/', 1)[-1]
     try:
         import fitz                       # 延迟 import：同 openpyxl 的处理，缺它只该让
     except ImportError:                   # 发布日缺席，不该把整家的数据摄入一起拖挂
@@ -614,32 +762,42 @@ def _shift(ym: tuple[int, int], k: int) -> tuple[int, int]:
 
 
 def _candidates(back: int = 8):
-    """按时间倒序给出待探的 (kind, url, report_ym)。
+    """按时间倒序给出待探的 (kind, urls, report_ym)。
 
     月报探最近 back 个月；季报探最近 3 个季度。都探是因为季末月只有季报有，
     而季报又比「下一期月报」早一个月出来。
+
+    第二个元素是**一串**候选 URL 不是一个（见 _url_candidates）：官方的文件名不可推导，
+    七月用全拼、schwab_ 前缀会单月复发。调用方交给 _download_any 逐个试。
     """
     y, m = _today_ym()
     for k in range(back):
         yy, mm = _shift((y, m), -k)
         if mm % 3 == 0:          # 季末月没有独立月报，别浪费一次请求
             continue
-        yield 'monthly', MONTHLY_URL.format(mon=_MON[mm - 1], year=yy), (yy, mm)
+        yield 'monthly', _url_candidates('monthly', (yy, mm)), (yy, mm)
     q = (m - 1) // 3 + 1
     for k in range(3):
         qq, yy = q - k, y
         while qq <= 0:
             qq += 4
             yy -= 1
-        yield 'quarterly', QUARTER_URL.format(q=qq, year=yy), (yy, qq * 3)
+        yield 'quarterly', _url_candidates('quarterly', (yy, qq * 3)), (yy, qq * 3)
+
+
+def _kind_of(ym: tuple[int, int]) -> str:
+    """季末月没有独立月报，值在当季季报附表里。"""
+    return 'quarterly' if ym[1] % 3 == 0 else 'monthly'
 
 
 def _template_url(ym: tuple[int, int]) -> str:
-    """本模块**推**出来的那个 URL。和 _candidates 给的是同一套写法，只是按月点名取一个。"""
-    y, m = ym
-    if m % 3 == 0:                       # 季末月没有独立月报，值在当季季报附表里
-        return QUARTER_URL.format(q=(m - 1) // 3 + 1, year=y)
-    return MONTHLY_URL.format(mon=_MON[m - 1], year=y)
+    """本模块**推**出来的那个 URL —— 候选里的第一个。
+
+    候选化之后「推出来的 URL」不再是一个而是一串，这个薄壳只留给**报错文案**用
+    （_crosscheck_due_month），别拿它当真源去下载：那正好绕开了整个候选机制。
+    要下载走 _url_candidates() + _download_any()。
+    """
+    return _url_candidates(_kind_of(ym), ym)[0]
 
 
 # ── 逾期对账：拦「文件名模板过期了」这一类不出声的失败 ──────────────────
@@ -778,15 +936,17 @@ def _crosscheck_due_month(merged: dict, cache_dir: str) -> None:
 
     ym, real = newer[-1]
     raise FetchError(
-        '逾期对账失败：IR 落地页上挂着 %s 的附表，我们按文件名模板推出来的 URL 却没拿到它。\n'
+        '逾期对账失败：IR 落地页上挂着 %s 的附表，我们试过的**每一个**候选 URL 都没拿到它。\n'
         '  落地页上的真实链接：%s\n'
-        '  本模块推出来的 URL：%s\n'
+        '  本模块试过的候选：%s\n'
         '  手上最新月 %s，红线 %s（= 月末 + %s 天节奏 + %d 天余量）。\n'
-        'CDN 的命名规则或路径多半变了（史上改过：季报附表前缀 schwab_、扩展名大写 .XLSX，'
-        '见 _HIST_XLSX）。这时候静默返回 NOCHANGE，页面会一直挂着旧数据而日志上看不出'
-        '任何异常，所以这里拒绝写入：请照落地页上的真名改 MONTHLY_URL / QUARTER_URL，'
-        '再跑一次。'
-        % (f'{ym[0]:04d}-{ym[1]:02d}', real, _template_url(ym), newest_key, line,
+        'CDN 的命名规则或路径多半又变了（史上改过三次：季报附表前缀 schwab_、扩展名大写 '
+        '.XLSX，见 _HIST_XLSX；七月用月份全拼、schwab_ 前缀单月复发，见 _MON_URL / _URL_PFX）。'
+        '这时候静默返回 NOCHANGE，页面会一直挂着旧数据而日志上看不出任何异常，所以这里'
+        '拒绝写入：请照落地页上的真名把新写法补进 _MON_URL / _URL_PFX（**不要**回头去改 '
+        'MONTHLY_URL / QUARTER_URL 把某一种写法硬编码回来），再跑一次。'
+        % (f'{ym[0]:04d}-{ym[1]:02d}', real,
+           ' / '.join(_url_candidates(_kind_of(ym), ym)), newest_key, line,
            _LAG_DAYS[1] if due[1] % 3 == 0 else _LAG_DAYS[0], _OVERDUE_MARGIN_DAYS))
 
 
@@ -1019,9 +1179,10 @@ def _collect(cache_dir: str, back: int = 8) -> dict:
     origin.clear()
     RESTATEMENTS.clear()
     got = False
-    for kind, url, ym in _candidates(back):
+    for kind, urls, ym in _candidates(back):
         fresh = ym >= _shift(_today_ym(), -2)          # 最近两个月的文件不吃缓存
-        path = _download(url, cache_dir, reuse=not fresh)
+        path, _hit = _download_any(urls, cache_dir, reuse=not fresh,
+                                   what=f'{ym[0]:04d}-{ym[1]:02d} {kind}')
         if path is None:
             continue
         got = True
@@ -1327,15 +1488,22 @@ def _col_sources(cache_dir: str):
       · CDN 最近 8 个月 / 3 个季度（_candidates）→ 补上最新一期 5 月之后的月份
       · CDN 历史附表 _HIST_XLSX → 2015-09 … 2018-12
       · 再往前只有 SEC EDGAR（见下方 EDGAR 那一段）
+
+    返回 [(报告月, 候选 URL 元组)]。锚点选**五月**而不是别的月份，顺带躲过了七月那个
+    全拼坑（may 的三字母与全拼同形）—— 但躲不过前缀坑：2025-04 实测只有 schwab_ 命中，
+    同样的事哪天落在某年的五月上，这条锚点链就会整年缺一格而**不出声**
+    （need() 不空 → 掉进 EDGAR 兜底扫几百个 8-K，或者干脆补不上）。所以这里也走候选。
     """
     y_now = _today_ym()[0]
     out = []
     for y in range(2019, y_now + 1):
-        out.append(((y, 5), MONTHLY_URL.format(mon='may', year=y)))
-    for _kind, url, ym in _candidates(back=8):
-        out.append((ym, url))
+        out.append(((y, 5), _url_candidates('monthly', (y, 5))))
+    for _kind, urls, ym in _candidates(back=8):
+        out.append((ym, urls))
     for ym, name in _HIST_XLSX:
-        out.append((ym, CDN + '/excels/' + name))
+        # 写死清单里的名字是实测过 200 的**死名字**（含 .XLSX 大写那一维），
+        # 不进候选机制；包成一元元组只是为了让下游取值只有一条路径。
+        out.append((ym, (CDN + '/excels/' + name,)))
     return out
 
 
@@ -1383,18 +1551,24 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
                 or 'client_cash_pct' not in merged[tuple(int(x) for x in k.split('-'))]}
 
     seen = set()
-    for ym, url in _col_sources(cache_dir):
-        name = url.rsplit('/', 1)[-1]
-        if name in seen:
-            continue
-        seen.add(name)
+    for ym, urls in _col_sources(cache_dir):
+        key = f'{ym[0]:04d}-{ym[1]:02d}'
         try:
-            fp = _download(url, cache_dir)
+            fp, hit = _download_any(urls, cache_dir, what=key)
         except FetchError as e:
-            log(f'  [cdn] {name} 取不到：{e}')
+            log(f'  [cdn] {urls[0].rsplit("/", 1)[-1]} 取不到：{e}')
             continue
         if fp is None:
             continue
+        # 去重挡在 download 之后、parse 之前，且按**命中的**文件名。
+        # 挡在前面会挡错：_col_sources 的三条源对同一期给出的候选串**首项未必相同**
+        # （_HIST_XLSX 写死 schwab_apr2019_table.xlsx，生成侧首项是 schw_apr2019…），
+        # 按首项去重挡不住，按命中名才挡得住。而 download 到这一步是缓存命中、不花钱，
+        # parse 才是贵的那一步。谁先谁后不变，所以「先写者胜」的优先级一个字没动。
+        name = hit.rsplit('/', 1)[-1]
+        if name in seen:
+            continue
+        seen.add(name)
         try:
             absorb(parse_table(fp, ym), name)
         except FetchError as e:
