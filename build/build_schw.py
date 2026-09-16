@@ -51,10 +51,42 @@ df.loc[pd.Period('2020-10', 'M'), 'new_acct_ex'] = np.nan
 
 
 # ── 为什么 SCHW 没有「量→收入」桥 ──
-# Schwab 月报既不披露客户现金也不披露生息资产，唯一能当代理的是客户资产；
-# 但生息资产/客户资产的比值 10 个季度从 4.9% 单边降到 3.4%（趋势，不是噪音），
-# 把它当常数会造出假精度。所以这里不搭桥，改把这个比值本身画出来 —— 它本身就是
-# NII 增长受限的原因。
+# NII ≈ 净息差 × 平均生息资产。这两个因子进到本 deck 时都只有**季度腿**：它们走
+# bridge.rate_series，源是 8-K Ex-99.1 的季报附表。
+#
+# ⚠️ 这是**管道边界，不是披露边界**。原文「Schwab 月报既不披露客户现金也不披露生息
+# 资产」两个半句都是假话，2026-09-16 撤销 —— 反证与现行措辞见 build/schw.py 开头那段
+# 同名注释。本文件是那边的移植母本（build/schw.py:4「逐张移植……图注照搬原 deck」），
+# 所以这两句必须就地钉死，否则下次移植会照旧文抄回去：
+#   ·「不披露客户现金」—— fetch/schw.py「口径坑」第 7 条点名禁止再写进任何图注。月报
+#     "Client Activity" 块下的 Client Cash as a Percentage of Client Assets 每期都印，
+#     "Selected Balances" 块里还有 Transactional Sweep Cash 与 Total Money Market Funds
+#     两条月末 $bn；三列都已落 series/schw.csv。
+#   ·「不披露生息资产」—— 月报 "Selected Balances" 块里逐月印着 Average Interest-Earning
+#     Assets（脚注 (6)：average total interest-earning assets on the Company's balance
+#     sheet，与季报同口径）。**本仓的月度腿已经在了**：avg_interest_earning_assets_usdbn
+#     2026-09-16 同日进了 fetch/schw.py 的 COLS 与 series/schw.csv，现行页面
+#     build/schw.py 的 Exhibit 12 画的就是这条月度腿（季度腿只剩 Exhibit 17 的净息差）。
+#     （本条原写「本仓只有季度腿，唯一的原因是 COLS 里没写这一行」—— 写下它的那天是真的，
+#     当天另一条支线就把那一行接上了，合并时照实改掉。）
+#     **只有本 deck 仍是季度腿**，因为它走 bridge.rate_series 读 fee_rates.csv，
+#     那是另一条管道；这正是「管道边界不是披露边界」的又一个实例，不是新的披露事实。
+#   ⚠️ 这两条的起点与期数一律去现行文件现算，别在这里写死月份数 —— 占比那一行的起点
+#     2026-09-16 当天就被 47710ce 从 2014-06 回填到了 2013-09。
+#
+# 客户现金虽然按月可得，但**客户现金不是生息资产**（货基是客户表外持仓，sweep 是
+# 负债端资金来源），顶不了这个分子。所以能按月对上、又与生息资产同为余额口径的基数
+# 只剩客户资产；而这个比值不是常数，把它当常数会造出假精度。所以这里不搭桥，改把这个
+# 比值本身画出来 —— 它本身就是 NII 增长受限的原因。
+#
+# ⚠️ 原文还写着「10 个季度从 4.9% 单边降到 3.4%」，三个数全是写死的，且都已过期：
+#   · 「单边」对**全序列**不成立。4.9% 那个起点对应的是 fee_rates 当年只回溯到 2024Q1
+#     的状态；2026-09-16 实测全序列已是 2013Q4 起 51 季、6.1% → 3.4%，其中 19 个季度
+#     环比上升、高点 2020-06 的 9.2%（这几个数是当天的观测，不是活值，别再照抄 ——
+#     活值在 build/schw.py 的 _MONO13 / _UP_ALL 那几处现算）。
+#   · 更要命的是图注与图**说的不是同一段**：下面 multi_line 传 win=_WIN_BRIDGE，
+#     gsx 只画 df.iloc[-win:]。所以图注里的端点与期数一律从 _BS_WIN 现算，
+#     和实际画出来的那一段绑死；改窗口时两边自动跟着走，不会再各说各话。
 _iea = bridge.rate_series('SCHW', 'avg_interest_earning_assets', to='bn')
 _nim = bridge.rate_series('SCHW', 'net_interest_margin')
 _ca_q = df['total_client_assets_usdbn'].groupby(df.index.asfreq('Q')).mean()
@@ -63,6 +95,11 @@ _bs = pd.DataFrame({
     'iea_share': pd.Series(_ratio.values, index=pd.PeriodIndex([q.asfreq('M', 'end') for q in _ratio.index], freq='M')),
     'nim': pd.Series(_nim.reindex(_ratio.index).values, index=pd.PeriodIndex([q.asfreq('M', 'end') for q in _ratio.index], freq='M')),
 })
+# 图注描述的是「图上这条线」，所以窗口只有这一个定义处，multi_line 与 extra 共用它。
+_WIN_BRIDGE = 14
+_BS_WIN = _bs['iea_share'].iloc[-_WIN_BRIDGE:]
+if not len(_BS_WIN):             # 失败要响，别把空起点印上图注
+    raise SystemExit('生息资产/客户资产比值算不出值，Exhibit「无收入桥」的图注会印空')
 
 
 def fn(deck):
@@ -124,9 +161,23 @@ def fn(deck):
                  win=25, kind='mom')
 
     gsx.multi_line(deck, _bs, ['iea_share', 'nim'], [gsx.NAVY, gsx.RED],
-                   'Why there is no revenue bridge here', SRC, win=14, dec=2, unit='%',
+                   'Why there is no revenue bridge here', SRC, win=_WIN_BRIDGE, dec=2, unit='%',
                    names=['Interest-earning assets / client assets', 'Net interest margin'],
-                   extra='Neither client cash nor interest-earning assets is published monthly. The only monthly proxy is client assets, and that ratio fell from 4.9% to 3.4% in ten quarters — treating it as a constant would be false precision. Both series are quarterly.')
+                   extra='Interest-earning assets and net interest margin reach this deck only '
+                         'as quarterly figures, from the 8-K exhibit behind bridge.rate_series. '
+                         'The navy line divides quarterly average interest-earning assets by the '
+                         'mean of monthly client assets in the same quarter; it moved from '
+                         f'{_BS_WIN.iloc[0]:.1f}% to {_BS_WIN.iloc[-1]:.1f}% over the '
+                         f'{len(_BS_WIN)} quarters drawn here — treating it as a constant would '
+                         'be false precision. Both series are quarterly. That quarterly leg is '
+                         'this pipeline\'s boundary, '
+                         'not the disclosure boundary: the monthly report prints Average '
+                         'Interest-Earning Assets every month under "Selected Balances" (footnote '
+                         '(6), same basis as the quarterly figure), and it prints client cash '
+                         'every month too — the earlier "Neither client cash nor interest-earning '
+                         'assets is published monthly" was wrong, corrected 2026-09-16, see '
+                         'build/schw.py. Client cash is not interest-earning assets, so it cannot '
+                         'stand in for the numerator; client assets is the only monthly base left.')
 
     gsx.long_line(deck, nna, 'Core net new assets since 2018', SRC, dec=0, money='$',
                   unit='$bn', circle=3, extra=QNOTE)

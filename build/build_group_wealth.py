@@ -6,7 +6,14 @@
 
 可比性说明（决定了每张图放哪几家）：
   · 客户资产：SCHW total client assets / LPLA total client assets / IBKR client equity —— 三家都有
-  · 客户现金：LPLA client cash / IBKR client credits —— SCHW 未在月报中单列，故只两家
+  · 客户现金：LPLA client cash / IBKR client credits —— 本 deck 只接这两家，是因为它读的
+             那份 schw.csv 里没有现金列，**不是**因为 SCHW 不披露。原文「SCHW 未在月报中
+             单列，故只两家」是假话，2026-09-16 撤销：月报 Selected Balances 块里逐月印着
+             Transactional Sweep Cash 与 Total Money Market Funds 两条月末 $bn，Client
+             Activity 块下面还有一行 Client Cash as a Percentage of Client Assets。抓不到
+             只是 fetch/schw.py 的 COLS 里没写这三行（三列已落 series/schw.csv）。现行
+             build/wealth.py 已把 Schwab 接进这一族 —— 见该文件开头与 Exhibit N_CASH 上方
+             两处「那句话是错的」；家数由它的 fam_firms() 现数，本仓任何一处都不许写死。
   · 融资余额：SCHW month-end margin / IBKR margin —— LPLA 不披露
   · 日均交易：SCHW DATs / IBKR DARTs —— LPLA 不披露
   · 有机增速：SCHW core NNA / LPLA organic NNA —— IBKR 不披露净新增资产，只披露净新增账户
@@ -86,7 +93,11 @@ def fn(deck):
         (None, 'Schwab DATs', 'schw_dats', 0, False, '', False),
         (None, 'IBKR cleared DARTs', 'ibkr_darts', 0, False, '', False),
     ], f'Wealth and brokerage group — {gsx.mlab(LATEST)}', SRC,
-        extra='Schwab does not break out client cash in the monthly report and LPL discloses neither margin nor trades, so those rows carry only the two firms that publish them. IBKR reports no net new assets, so its growth line is account growth.')
+        extra='LPL discloses neither margin nor trades, so those rows carry only the firms that '
+              'do. The client cash rows carry LPL and IBKR because this deck never wired up a '
+              'Schwab cash column, not because Schwab withholds one (the earlier "Schwab does not '
+              'break out client cash in the monthly report" was wrong — corrected 2026-09-16, see '
+              'build/wealth.py). IBKR reports no net new assets, so its growth line is account growth.')
 
     gsx.indexed_lines(deck, {'Schwab': df['schw_assets'], 'LPL': df['lpla_assets'],
                              'IBKR': df['ibkr_equity']},
@@ -111,7 +122,12 @@ def fn(deck):
     gsx.multi_line(deck, df, ['lpla_cash', 'ibkr_cash'], [gsx.RED, gsx.MBLUE],
                    'Client cash: LPL vs. IBKR', SRC, win=25, dec=0, money='$', unit='$bn',
                    names=['LPL client cash', 'IBKR client credits'],
-                   extra='Schwab does not break out client cash monthly. Both are the key net-interest-revenue driver')
+                   extra='Schwab is missing here only because this deck never wired up its cash '
+                         'column: the monthly report does print Transactional Sweep Cash and Total '
+                         'Money Market Funds every month, plus a Client Cash as a Percentage of '
+                         'Client Assets line (the earlier "Schwab does not break out client cash '
+                         'monthly" was wrong — corrected 2026-09-16, see build/wealth.py). Both '
+                         'lines shown are the key net-interest-revenue driver')
 
     gsx.multi_line(deck, df, ['schw_dats', 'ibkr_darts'], [gsx.NAVY, gsx.MBLUE],
                    'Daily average trades: Schwab vs. IBKR', SRC, win=25, dec=0,
