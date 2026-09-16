@@ -41,7 +41,7 @@
 ⚠ **Schwab 曾以「月报不单列客户现金」为由被排除在客户现金两张图之外 —— 那句话是错的**
 （2026-08-19 回原件核掉）。月报 Selected Balances 块里逐月印着 Transactional Sweep Cash
 与 Total Money Market Funds 两条月末 $bn，Client Activity 块下面还有一行
-Client Cash as a Percentage of Client Assets（自 2013-09 起每期都印；2015-01-16 报送及
+Client Cash as a Percentage of Client Assets（自 2013-09 起每期都印；2015-04-15 报送及
 更早那一行没有 Client 前缀，见 `fetch/schw.py` 的 `_CASH_PCT_FROM`）。抓不到只是因为
 `fetch/schw.py` 的 `COLS` 里没写这三行。三列已补进 `series/schw.csv`
 （`python3 fetch/schw.py --columns`），两张图都已把 Schwab 接进来。
@@ -1914,7 +1914,7 @@ ex.append({
 # 不单列客户现金」—— **那句话是错的**，2026-08-19 回原件核掉：月报 Selected Balances
 # 块里逐月印着 Transactional Sweep Cash 与 Total Money Market Funds 两条月末 $bn，
 # Client Activity 块下面还有一行 Client Cash as a Percentage of Client Assets
-# （自 2013-09 起每期都印；2015-01-16 报送及更早那一行没有 Client 前缀，
+# （自 2013-09 起每期都印；2015-04-15 报送及更早那一行没有 Client 前缀，
 # 见 fetch/schw.py 的 _CASH_PCT_FROM）。抓不到只是因为 fetch/schw.py 的 COLS 里没写这三行，
 # 不是公司没披露。三列已补进 series/schw.csv（`python3 fetch/schw.py --columns`）。
 # 纵轴被 Schwab 撑开多少倍 —— 现算。写「十几倍到二十几倍」这种话当场就错了一半
