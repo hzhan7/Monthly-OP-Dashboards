@@ -121,8 +121,10 @@ mtime、下载日、构建日同理，一律不用。
    Funds 两条月末 $bn（脚注 (7) 给了 sweep 的定义），而 "Client Activity" 块下面还有
    一行 **Client Cash as a Percentage of Client Assets**（脚注 (8)：Schwab One、若干
    现金等价物、银行存款、第三方银行存款账户与货基余额占客户总资产的比重）——
-   后者自 2014-06 起每期都印。三者互相咬得住：(sweep + MMF) / Total Client Assets
-   逐月复现官方印的那个占比，19 个重叠月最大偏差 0.05pp（就是 0.1pp 印刷精度）。
+   后者自 2013-09 起每期都印（2015-01-16 报送及更早那一行**没有 Client 前缀**，
+   见 _CASH_PCT_FROM）。三者互相咬得住：(sweep + MMF) / Total Client Assets
+   逐月复现官方印的那个占比，2025-01…2026-08 共 20 个重叠月最大偏差 0.054pp
+   （就是 0.1pp 印刷精度）。
    本模块以前抓不到它们，只是因为 COLS 里没写这三行，不是公司没披露。
 4. **core NNA ≠ NNA**。序列取的是 Core Net New Assets（剔除单笔巨额流入/流出 + 表外
    Schwab Bank Retail CD 流量）。2025 年起「巨额」的门槛从 $10bn 提到 $25bn，
@@ -154,12 +156,13 @@ dats_k 整列是空的，实际只有 2018-12…2024-12 共 7 个年末的月末
     就走季频腿，这个 7 点文件在信息量上已经没有任何边际贡献。
 (c) **这 2 个点落在 TD Ameritrade 并购的另一侧 —— 仍然完全准确，别改。** 并购 2020-10
     完成，19.5 → 60.9 是资产负债表搬账不是融资需求，和第 6 条的 14,718k 是同一类假象。
-    这条现在有了新用处：它就是 build/schw.py 里季频 Exhibit 15/16 那条 TDA 断点线
+    这条现在有了新用处：它就是 build/schw.py 里季频 Exhibit 10/11 那条 TDA 断点线
     （BRK_Q_TDA = 2020Q4）的依据 —— 台阶是并表，不是杠杆周期，跨断点不可直读。
 (d) **年末单点混不进月度轴 —— 对这份 7 点文件仍成立，但只管它。** 7 个点之间是 6 段
-    12 个月的空档，直接塞进 Exhibit 9/12 会造出 66 个空月并违反 CONTRACT §5.3
+    12 个月的空档，直接塞进月度融资余额那张图（今天的 Exhibit 9）会造出 66 个空月，
+    违反 CONTRACT §5.3
     （不可比的相邻期不得画成连续序列）。**本条不管季频序列**：schw_q.csv 逐季连号、
-    画在自己的季度轴上（Exhibit 15/16），不受这条约束。
+    画在自己的季度轴上（Exhibit 10/11），不受这条约束。
 
 **下次做孤儿文件盘点的人：** 原写「不要删它 / 全仓独一份 / 管道抓不回来 / 删了就永久
 丢失」→ **三句全错**。它现在是 series/schw_q.csv 的**真子集**（7 个值 7/7 命中），那 7 个
@@ -251,6 +254,8 @@ COLS = ['core_nna_usdbn', 'total_client_assets_usdbn',
 
 # 标签前缀（小写、去空白后前缀匹配）。用前缀而不是全等，是因为官方在标签尾部挂脚注号，
 # 脚注号每期都在变（"(1,2)" → "(1,2,3)"），全等匹配必挂。
+# 一个列可以写**一串**前缀（元组）：官方给同一个 line item 改过名时，新旧写法都要认。
+# 与 fetch/rates_schw.py 的 _DEPOSIT_LABELS 同一个写法，判定见 _pfx()。
 _LABEL = {
     'core_nna_usdbn':           'core net new assets',
     'total_client_assets_usdbn': 'total client assets',
@@ -259,7 +264,15 @@ _LABEL = {
     'margin_balances_usdbn':    'margin balances at month end',
     # 客户现金三行。前缀要写全 'total money market funds'：同一张表里还有一行
     # 'Money Market Funds'（净买卖流量，$mn），前缀写短了会取到那一行。
-    'client_cash_pct':          'client cash as a percentage of client assets',
+    # 占比那一行历史上有**三种写法**，互不为前缀，所以三个都得列上（判据见 _CASH_PCT_FROM）：
+    #   'Cash as a Percentage of Client Assets'          2015-01-16 报送及更早
+    #   'Client Cash as a Percentage of Client Assets'   2015-07-16 报送起，至今
+    #   'Client Cash as Percentage of Client Assets'     少一个 "a"，只见于 2017-Q1 那一档
+    #                                                    （2017-04 报送的 EX-99.1 与
+    #                                                     schwab_q1_2017_earnings_tables.xlsx）
+    'client_cash_pct':          ('client cash as a percentage of client assets',
+                                 'client cash as percentage of client assets',
+                                 'cash as a percentage of client assets'),
     'sweep_cash_usdbn':         'transactional sweep cash',
     'mmf_usdbn':                'total money market funds',
     # 平均生息资产。写法在 25 份 xlsx + 48 份 EX-99.1 上**只有这一种**（title-case、
@@ -317,7 +330,7 @@ _SANE = {
 
 # DATs / 月末融资余额 / 月末 Transactional Sweep Cash / 月末 Total Money Market Funds
 # 这四列自 2026-01 期起披露，那一期的 13 个月滚动表回填到 2025-01。更早的月份本就没有。
-# （客户现金**占比**那一行不在此列 —— 它自 2014-06 起每期都印，见 _CASH_PCT_FROM。）
+# （客户现金**占比**那一行不在此列 —— 它自 2013-09 起每期都印，见 _CASH_PCT_FROM。）
 _DATS_MARGIN_FROM = (2025, 1)
 # **Core** Net New Assets 这一行是 2018 年初才出现在滚动表里的：实测最早带它的一份是
 # schwab_feb2018_table.XLSX（表窗 2017-02…2018-02），而 2017 年的几份季报附表（q1/q2/q3
@@ -325,14 +338,42 @@ _DATS_MARGIN_FROM = (2025, 1)
 # 两者不是一条序列（2017-06 官方同时给过 37.7 与 22.1），所以**不拼接**：
 # 2017-02 之前 core_nna_usdbn 一律留空，由 build 侧按各自序列起点画图。
 _CORE_NNA_FROM = (2017, 2)
-# 客户现金**占比**这一行的官方起点：2015-07-16 报送的 Jun-2015 月报（8-K EX-99.1）
-# 第一次印它，那张 13 个月滚动表最左是 2014-06。再往前的三期（2015-04-15 / 2015-01-16 /
-# 2014-10-15）实测整张表**没有这一行**，不是解析漏了 —— 三份 HTML 里连
-# "Client Cash as a Percentage" 这个字符串都搜不到。
-_CASH_PCT_FROM = (2014, 6)
+# 客户现金**占比**这一行的官方起点：**2014-10-15 报送的 Sep-2014 月报**（8-K EX-99.1）
+# 第一次印它，那张 13 个月滚动表最左是 2013-09（13.5%）。再往前的三期实测整张表确实
+# 没有这一行 —— 2014-01-16 / 2014-04-15 / 2014-07-16 三份（DFIN 报送、标题是
+# "Monthly **Market** Activity Report"）里 'percentage of client assets' / 'cash as a'
+# 两个字符串命中数都是 0，整表 dump 也只有客户资产、新开账户、DATs 那几行。
+#
+# 2026-09-16 更正。同 ab70cd7 那条先例的同一类错误 —— 病名写在它自己的 commit message 里
+# （「两处真回填，都是同一种病 —— 把工具的边界当成了世界的边界」），**不在 README**；
+# 讽刺的是**这段错话就是那一条 commit 写下的**，同一次改动一边治病一边又犯了一遍。
+# 原注释写「2015-07-16 那期第一次印它，最左是 2014-06；再往前三期整张表没有这一行 ——
+# 连 "Client Cash as a Percentage" 这个字符串都搜不到」。**搜不到是因为搜的是新写法。**
+# 这一行官方改过名（见 _LABEL）：2015-01-16 报送及更早印的是 "Cash as a Percentage of
+# Client Assets"（**没有 Client 前缀**），2015-07-16 报送起才改成 "Client Cash as a
+# Percentage of Client Assets"。老写法过不了原来那条单前缀，于是 2014-10-15 与
+# 2015-01-16 两期的这一行被**静默丢掉**，看上去就像官方 2015-07 才开始披露。
+# 实证（cache/schw_rates/，逐值核对）：
+#   · 000031670914000029（2014-10-15，窗 2013-09…2014-09）"Cash as a Percentage of
+#     Client Assets (3)" = 13.5 13.2 13.0 13.1 13.2 12.7 12.7 12.4 12.2 11.9 12.1 11.9 12.2
+#   · 000031670915000005（2015-01-16，窗 2013-12…2014-12）同一写法，重叠 10 个月逐值相等
+#   · 000031670915000036（2015-07-16，窗 2014-06…2015-06）起换成新写法，重叠月同样逐值相等
+# 改名发生在 2015-01-16 与 2015-07-16 两期**之间** —— 夹在中间的 2015-04-15 那期本地
+# cache 里没有，所以只界定得到区间，钉不到具体哪一期。（原注释把那一期写成「实测没有
+# 这一行」，而本地根本没有它的文件 —— 别再把「没查」写成「实测」。）
+# 两种写法是同一条序列：脚注定义同义（Schwab One®/现金等价物/银行存款/货基余额 ÷ 客户总资产），
+# 跨期重叠月无一处打架，切换前后相邻月平滑（2015-06 = 11.7%）。所以**拼接**，不像
+# _CORE_NNA_FROM 那样分家。
+#
+# 边界取 2013-09 的两重含义，别再混为一谈：
+#   · 官方侧 —— 这一行被印出来的最早月份就是 2013-09（首次刊印那期滚动表的最左列）；
+#   · 序列侧 —— series/schw.csv 本来就从 2013-09 起，再往前也无处可写。
+# cache 里最老的申报是 2014-01-16 报送那期，2013 年及更早的 8-K 没查过；真要再往前推，
+# 先去看那几期原件有没有这一行，**不要**照着现在这个常数反推「官方那时没披露」。
+_CASH_PCT_FROM = (2013, 9)
 # 平均生息资产这一行的月频起点。**这不是披露边界，是本仓能回溯到的边界**，两者的区别
-# 正是这一列被漏抓七年的教训（同 ab70cd7 / 47710ce 那两次先例）：它在**每一期**月报与
-# 每一份业绩 8-K 的 EX-99.1 里都印着，回得到 2013-09 是因为 EDGAR 上最早那份
+# 正是这一列被漏抓七年的教训（同 ab70cd7 / 47710ce / 963dc76 那三次先例）：它在**每一期**
+# 月报与每一份业绩 8-K 的 EX-99.1 里都印着，回得到 2013-09 是因为 EDGAR 上最早那份
 # （2014-10-15 报送的 Sep-2014 月报）的 13 个月滚动表最左就是 2013-09 —— 再往前的申报
 # 本仓没有取，**不是查过没有**。哪天有人把 EDGAR 窗口往左挪，这个常数就该跟着往左挪。
 _AVG_IEA_FROM = (2013, 9)
@@ -490,6 +531,14 @@ def _month_columns(ws, report_ym: tuple[int, int]) -> dict[tuple[int, int], int]
     return out
 
 
+def _pfx(want) -> tuple[str, ...]:
+    """把 _LABEL 的值归一成给 str.startswith 用的前缀元组（写一个字符串也收）。
+
+    只做归一，**不改前缀匹配的语义**：单标签的列行为与改动前逐字相同。
+    """
+    return (want,) if isinstance(want, str) else tuple(want)
+
+
 # 「标签占一行、数值在下一行」那种老版式里，下一行第一列写的就是单位说明。
 # 三种写法都见过（0 / 1 / 2 个前导空格），归一去空白后只剩这一个正则。
 # **判据必须是这一行长什么样，不能是「往下找一行」**：Schwab 的 SMART 页整张表都是
@@ -498,23 +547,27 @@ def _month_columns(ws, report_ym: tuple[int, int]) -> dict[tuple[int, int], int]
 _UNIT_ROW_RE = re.compile(r'^\(in (?:millions|billions|thousands) of dollars\)$')
 
 
-def _row_values(ws, prefix: str, cols: dict, unit_row: bool = False) -> dict | None:
+def _row_values(ws, prefix, cols: dict, unit_row: bool = False) -> dict | None:
     """按标签前缀找行，返回 {(y,m): 原始数值}；找不到该行返回 None。
+
+    prefix 可以是一个前缀，也可以是一串前缀（见 _LABEL / _pfx），命中任意一个即算。
 
     unit_row=True 时多认一种版式：标签行**一个数值格都没有**、数值落在紧邻的
     「单位说明行」上（见 _UNIT_ROW_RE）。这不是可有可无的兼容 —— 平均生息资产在
     2019 年及更早的 13 份附表里全是这种版式，而本函数对「标签匹配上、但这一行没有
     数」的处理是**继续往下扫、最终返回 None**，调用方 parse_table 又把 None 当
     「这一期没有这一行」`continue` 掉。于是整列**静默缺席**，日志里一个字都不会有。
-    这正是这一列被漏抓七年的机制：不是官方不披露，是解析器只看标签那一行。
+    这正是这一列被漏抓七年的机制：不是官方不披露，是解析器只看标签那一行 ——
+    与 _pfx 那次（老写法过不了单前缀）是同一种病的两种长相。
     默认 False，既有 8 列的行为与改动前逐字相同。
     """
+    pfx = _pfx(prefix)
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
         lab = row[0].value
         if not isinstance(lab, str):
             continue
         lab = re.sub(r'\s+', ' ', lab).strip().lower()
-        if not lab.startswith(prefix):
+        if not lab.startswith(pfx):
             continue
         for r in ([row[0].row, row[0].row + 1] if unit_row else [row[0].row]):
             if r != row[0].row:
@@ -586,7 +639,7 @@ def _required(ym: tuple[int, int]) -> list[str]:
       · 2025-01 起才有 dats_k / margin_balances_usdbn / sweep_cash_usdbn / mmf_usdbn
         （2026-01 那期月报一次新增这四列并回填到 2025-01）
       · 2017-02 起才有 core_nna_usdbn（见 _CORE_NNA_FROM）
-      · 2014-06 起才有 client_cash_pct（见 _CASH_PCT_FROM）
+      · 2013-09 起才有 client_cash_pct（见 _CASH_PCT_FROM；也是本序列的第一个月）
       · 再往前只剩客户总资产与新开经纪账户两列
 
     **别把第一段读成「公司 2025-01 前不披露这四个量」**：dats_k 与 margin_balances_usdbn
@@ -978,10 +1031,11 @@ def parse_edgar_monthly(html: str) -> dict:
         # unit_row 与 xlsx 那条路的 _row_values(unit_row=True) 是同一件事、同一个理由：
         # 这一行在 EX-99.1 里也是「标签独占一行、数值落在下面那行 (in millions of
         # dollars) 上」。实测 2014-10-15 报送的 Sep-2014 那份：标签行整行只有 1 个 cell，
-        # 值行 15 个（13 个月 + 环比/同比两格，r[1:1+len(yms)] 正好切到 13 个月）。
+        # 值行 15 个（13 个月 + 环比/同比两格，rows[j][1:1+len(yms)] 正好切到 13 个月）。
+        pfx = _pfx(prefix)
         for k, r in enumerate(rows):
             lab = re.sub(r'\s+', ' ', r[0]).strip().lower() if r else ''
-            if not lab.startswith(prefix):
+            if not lab.startswith(pfx):
                 continue
             if skip_core and lab.startswith('core'):
                 continue
@@ -1764,7 +1818,7 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
 # ================= 2020Q4 TD Ameritrade 并表：措辞红线 =================
 # 并表当季就是 2020Q4（2020-10-06 完成），本腿两列在那一季都有台阶：季度 DATs 1460 → 5796
 # （近 4 倍），季末融资余额 23.6 → 60.9。本腿**照官方原值入库、不做任何拼接调整**；
-# 画不画断点是下游的事（build/schw.py 的 BRK_Q_TDA = 2020Q4，Exhibit 15/16）。
+# 画不画断点是下游的事（build/schw.py 的 BRK_Q_TDA = 2020Q4，Exhibit 10/11）。
 # 红线：**官方从来没有「前期不重述」这句明文**，别写成「官方明说不重述」。稿里用的是前瞻
 # 纳入式措辞 —— "Results of operations and metrics are inclusive of TD Ameritrade beginning
 # October 6, 2020."，并把 TDA 当成 Q4-20 的**流入**处理（那份稿自己的脚注 (5) 记 $890.7bn
