@@ -112,15 +112,64 @@ mtime、下载日、构建日同理，一律不用。
    一行 **Client Cash as a Percentage of Client Assets**（脚注 (8)：Schwab One、若干
    现金等价物、银行存款、第三方银行存款账户与货基余额占客户总资产的比重）——
    后者自 2014-06 起每期都印。三者互相咬得住：(sweep + MMF) / Total Client Assets
-   逐月复现官方印的那个占比，19 个重叠月最大偏差 0.05pp（就是 0.1pp 印刷精度）。
+   逐月复现官方印的那个占比，20 个重叠月最大偏差 0.054pp（2025-12；就是 0.1pp 印刷精度）。
+   （2026-08-19 首次写这条时是 19 个月 / 0.05pp，此后每月自然增加一个月，容差仍是 0.07。）
    本模块以前抓不到它们，只是因为 COLS 里没写这三行，不是公司没披露。
 4. **core NNA ≠ NNA**。序列取的是 Core Net New Assets（剔除单笔巨额流入/流出 + 表外
    Schwab Bank Retail CD 流量）。2025 年起「巨额」的门槛从 $10bn 提到 $25bn，
    所以 2025 年前后的 core NNA 严格说不完全可比 —— 这是官方口径变更，不是数据错。
-5. 月报附表**不重述历史**：apr2026 与 may2026 两期文件里 12 个重叠月份的数值逐个相同。
-   但季报附表口径上是「最终版」，万一和月报打架，本模块以季报为准（见 _SOURCE_RANK）。
+5. 月报附表**大多数时候**不重述历史，但**确实重述过**，别把它当铁律。
+   原话是「月报附表**不重述历史**：apr2026 与 may2026 两期文件里 12 个重叠月份的数值
+   逐个相同」—— 那个观察本身没错，但样本只有相邻两期、一对文件，推不出全称命题。
+   2026-09-16 用 84 份出版物（51 份 8-K EX-99.1 + 33 份 CDN 附表）逐月建过全量矩阵：
+   client_cash_pct 在 2022-12…2023-06 共 **7 个月**被官方明示重述过（见第 8 条），
+   其余 7 列跨 97 份来源逐月对照 0 处不符。所以正确的说法是「重述罕见、且官方会在
+   脚注里说」，不是「不重述」。**拿两份文件相等就断定整条管道不重述，是这个坑本身。**
+   季报附表口径上是「最终版」，万一和月报打架，本模块以季报为准（见 _SOURCE_RANK）——
+   注意 _SOURCE_RANK 只在 _collect() 里生效，backfill_columns() 那条路**没有**引用它。
 6. 2020-10 的 new_brokerage_accounts_k = 14718 是 TD Ameritrade 并表的一次性搬账，
    不是当月开户量。build_schw.py 已经单独处理，这里原样入库、不做清洗。
+8. **client_cash_pct 的口径立场：取「官方现行口径」。**（2026-09-16 定；本条是这一列
+   唯一的判据，改它之前先读完。）
+
+   —— 规则 ——
+   默认取**当期原值**（该月自己那期印的数）；官方**明示重述**过的月份，经人工逐格核对后
+   采纳重述值，登记进 _RECAST（见那张表）。两句话都要，缺一句就会退回 2026-08-19 到
+   2026-09-16 之间那个状态：同一列前半段当期原值、后半段重述值，图上看不出来。
+
+   —— 唯一的一次重述 ——
+   2023-08-14 发的 **Jul-2023 月报**第一次印新口径，行标签脚注从 (5) 变成 (5,6)，新增：
+
+       (6) Beginning July 2023, client cash as a percentage of client assets excludes
+           brokered CDs issued by Charles Schwab Bank. Prior periods have been recast
+           to reflect this change.
+
+   脚注措辞自相矛盾（既说 "Beginning July 2023" 又说 "Prior periods have been recast"），
+   **以数字为准**：实测回改范围精确是 2022-12…2023-06 共 7 个月，幅度 −0.1 → −0.6pp
+   （brokered CD 余额 2023 年爬坡，楔子随之放大）；同一份文件里 2022-07…2022-11 五个月
+   两版**逐值相同**，分母 total_client_assets_usdbn 与其余 24 行也一格未动 —— 官方动的
+   只有这一行的分子。**因此「先看脚注说它管哪一段」是错的做法，要去比数字。**
+   这条脚注只在 4 份申报里出现过（2023-10-16 / 2024-01-17 / 2024-04-15 / 2024-07-16），
+   **2024-10-15 起官方把它撤了**并入主定义脚注。今天拿一份近期文件回填的人看不到任何提示，
+   这就是 2026-08-19 那次没人发现的原因 —— 别指望下次还能从脚注上看出来。
+
+   —— 为什么不取纯「当期原值」（fetch/rates_schw.py 对季度 NIM 的做法）——
+   纯原值的线在 2023-06（首印 11.0）→ 2023-07（10.2）之间有 −0.8pp 的台阶，其中约 0.5pp
+   是纯口径（同口径下是 10.5 → 10.2）。那是一道**真**口径断点，按 build/CONTRACT.md §5.2
+   必须在 wealth 页 Exhibit 13 上画 break_at 竖线。而采纳重述之后整条线单口径、无断点。
+   NIM 那边选原值有它自己的理由（并进 fee_rates.csv 现有 12 行不让老行跳变，且那边的重述
+   是 1bp 量级）；这边是 0.6pp 打在 11 上，不是一回事。**同一家公司两列两个立场是有意的，
+   不是漏改** —— fetch/cost_sec.py 里 cost_seg_q（原值）与 cost_fy（最新值）也是这样分的。
+
+   —— 为什么也不写成纯「最终重述版」——
+   够不着。13 个月滚动窗 + 首份新口径出版物 Jul-2023（窗 2022-07…2023-07）意味着
+   **2014-06…2022-06 共 97 个月从未落进任何新口径出版物的窗口**，它们不存在重述后的值。
+   所以「整列都是最终版」是句做不到的话。能做到的是「官方改过的都跟上」，而官方只改过
+   那 7 个月 —— 边界上最近的 5 个月（2022-07…2022-11）已实测两版相同，再往前是外推。
+
+   —— 采纳的代价（要一起知道）——
+   拼接点从 2023-05|06 挪到 2022-11|2022-12，残差从 0.6pp 降到 ≤0.1pp（2022-11 未被重述，
+   它自己那点 brokered CD 含量在 0.1pp 印刷精度下是 0）。**不是零，是小到看不见。**
 
 ===================== series/schw_backfill.csv：留着，但不进图 =====================
 那个文件是一次做了一半、从未接上的回填：表头承诺 dats_k 与 margin_balances_usdbn 两列，
@@ -1225,18 +1274,65 @@ def backfill(series_dir, cache_dir, verbose: bool = True) -> list:
 # 铁律（与另两条一致）：**非空单元格一个字符都不改**；重叠值不符就整次失败。
 _NEW_COLS = ('client_cash_pct', 'sweep_cash_usdbn', 'mmf_usdbn')
 
+# ── 已采纳的官方重述（口径坑第 8 条的实现）──────────────────────────────────
+# 每一条 = 一份**发布于重述之后**的附表，排在 _col_sources() 最前面，靠 absorb() 的
+# 「先写者胜」压过默认采样里那份当期原值的附表。判据写在这里而不是只留在 CSV diff 里，
+# 是因为 backfill_columns() 每次重跑都要重新裁决一遍：登记不在代码里，下一次跑就会把
+# 重述值算回原值，然后撞上「非空格不许改」整次失败。
+#
+# 往这里加一条之前，先走完同一套证据链（与 fetch/enx.py 的 ACCEPTED_RESTATEMENTS 同规矩）：
+#   ① 官方**明示**重述（脚注/表头原文，逐字抄进注释，不要转述）；
+#   ② 回改范围用**数字**量清，不要信脚注自己说的区间（Schwab 这次就写错了，见口径坑 8）；
+#   ③ 确认同一份文件里**没被重述的那些行**逐值相同 —— 排除「我们换了一份文件、于是别的
+#      列也跟着变了」这种把两件事混在一起的改动；
+#   ④ 逐格「旧值 → 新值」写进 commit message（这会覆盖既有非空单元格，属回填三条铁律
+#      里「官方重述了」那一支，必须留痕）。
+_RECAST = [
+    # 2023 年 brokered CD 剔除。首份新口径出版物 = Jul-2023 月报（新闻稿电头
+    # "WESTLAKE, Texas, August 14, 2023"），窗 2022-07…2023-07，脚注 (5,6) 原文见口径坑 8。
+    # 逐格（2026-09-16 实测 may2023 vs july2023，两份都从 CDN 现取）：
+    #   2022-12  12.3 → 12.2      2023-03  11.6 → 11.2
+    #   2023-01  11.6 → 11.5      2023-04  11.3 → 10.8
+    #   2023-02  11.7 → 11.6      2023-05  11.5 → 10.9
+    #   2023-06  首印 11.0（q2_2023 8-K）→ 10.5；这一格 2026-08-19 入库时就已经是重述值。
+    # 同期未被重述的对照：2022-07…2022-11 五个月两版逐值相同（12.0/12.1/12.9/12.2/11.5），
+    # 分母 total_client_assets_usdbn 与其余 24 行一格未动 —— 官方只动了这一行的分子。
+    #
+    # ⚠ 文件名是 'july' 不是 'jul'：官方 2019-2025 的七月档都叫 schw_july<y>_table.xlsx
+    #   （2026 年才改成 jul2026）。_MON[6] = 'jul' 拼不出它，实测 jul2023 / jul2025 都是 404、
+    #   july2023 / july2025 都是 200。这份文件一度被当成「已从 CDN 撤下」，其实只是拼错了名字
+    #   —— 与本模块 docstring 里 EDGAR 那条「解析器读不到，和源里没有，长得一模一样」同源。
+    #   _template_url() 至今仍只拼三字母缩写，所以历史上**每一个七月**它都取不到。
+    ((2023, 7), CDN + '/excels/schw_july2023_table.xlsx'),
+]
+
 
 def _col_sources(cache_dir: str):
     """列回填要覆盖 2013-09 至今**每一个月**，所以源的排法和 backfill() 不同。
 
     月报的 13 个月滚动表意味着「每 12 个月取一份」就够铺满，不必逐月下载：
+      · _RECAST → 已采纳的官方重述，必须排最前（见那张表）
       · CDN 月报 schw_may<y>_table.xlsx（y=2019…今年）→ 2018-05 … 最新一期的 5 月
       · CDN 最近 8 个月 / 3 个季度（_candidates）→ 补上最新一期 5 月之后的月份
       · CDN 历史附表 _HIST_XLSX → 2015-09 … 2018-12
       · 再往前只有 SEC EDGAR（见下方 EDGAR 那一段）
+
+    ⚠ **顺序即口径，改这个函数的排序等于改数据口径。** absorb() 是「先写者胜」，所以
+    排在前面的源赢。除 _RECAST 之外，may 块与 _HIST_XLSX 都是**升序（旧 → 新）**，于是
+    默认赢家是覆盖该月的**最老**那份文件 —— 这正是口径坑 8 要的「当期原值」，是有意的。
+    （absorb() 里原先那句「源按新→旧排」的注释是错的：它是从 _collect() 整句搬过来的，
+    在 _collect() 里成立——那边只用 _candidates()、确实是倒序——搬到这里就不成立了。）
+
+    ⚠ **「每 12 个月取一份」铺满的是月份，不是版本。** may 瓦片首尾各压一个 5 月、相邻两份
+    只重叠 1 个月，所以 13 个月里有 12 个月在整个源序列里**只有唯一一个源**，absorb() 的
+    优先级规则对它们是空转 —— 官方后来落在瓦片内部的重述在这个采样密度下**结构性不可见**。
+    2026-08-19 那次 2022-12…2023-05 六格取到重述前的值，根子就在这里，不在排序。
+    _RECAST 是对已知那一次的点名补丁，**不是**通用的检测手段：下一次官方重述若不落在
+    may 边界上，这条管道照样看不见。真要能自动发现，得把采样加密到每月两份（例如 may +
+    nov），让每个月都有 ≥2 个互相独立的见证人，那是另一件事，别顺手在这里做。
     """
     y_now = _today_ym()[0]
-    out = []
+    out = list(_RECAST)
     for y in range(2019, y_now + 1):
         out.append(((y, 5), MONTHLY_URL.format(mon='may', year=y)))
     for _kind, url, ym in _candidates(back=8):
@@ -1269,20 +1365,28 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
 
     # ── 采集 ──
     merged: dict[tuple[int, int], dict] = {}
-    prov: dict[tuple[int, int], str] = {}
+    # 逐格记出处（不是逐月）：同一个月的三列可能来自不同的源，记成逐月会把落败方的
+    # 出处安到别的列头上，那种日志比没有更坏。
+    prov: dict[tuple[tuple[int, int], str], str] = {}
+    RESTATEMENTS.clear()
 
     def absorb(got: dict, src: str):
         for ym, vals in got.items():
             keep = {c: v for c, v in vals.items() if c in cols}
             if not keep:
                 continue
-            # 先写者胜（源按「新 → 旧」排，越新的文件越权威），与 _collect 同规矩
-            if ym not in merged:
-                merged[ym], prov[ym] = keep, src
-            else:
-                for c, v in keep.items():
-                    if c not in merged[ym]:
-                        merged[ym][c] = v
+            # 先写者胜。**赢家由 _col_sources() 的排序决定，那个排序就是口径**，
+            # 判据见那个函数的 docstring 与口径坑第 8 条，不要在这里改规矩。
+            # 落败的值不能吞掉：它要么是官方重述、要么是我们取错行，两者都得有人看见。
+            # （_collect() 与 backfill() 的 absorb 一直都在记，只有这一条路以前没记，
+            #   于是 2023 年那次官方重述在 2026-08-19 入库时一行日志都没有。）
+            merged.setdefault(ym, {})
+            for c, v in keep.items():
+                if c not in merged[ym]:
+                    merged[ym][c], prov[(ym, c)] = v, src
+                elif _differs(c, merged[ym][c], v):
+                    RESTATEMENTS.append((ym, c, merged[ym][c], v,
+                                         f'{prov[(ym, c)]} 胜出 / {src} 落败'))
 
     def need() -> set:
         return {k for k in want
@@ -1301,6 +1405,12 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
             log(f'  [cdn] {name} 取不到：{e}')
             continue
         if fp is None:
+            # 404。**必须说话**：这里同时盖着两种事 ——「当季季报还没发/季末月本来就没有
+            # 月报」（正常，_col_sources 里今天就有一份：当季的 schw_q<n>_<年>）与「本该
+            # 存在的历史附表被撤下或改名」（故障）。原先这一支一行日志都没有，于是两者在
+            # 日志里完全同形，README §5.5 那句判据「失败十天和成功十天日志一样吗」答案是
+            # 「一样」。措辞沿用 backfill() 里的同类分支。
+            log(f'  [cdn] {name} 取不到（404）—— 已落盘的历史行不受影响')
             continue
         try:
             absorb(parse_table(fp, ym), name)
@@ -1414,6 +1524,13 @@ if __name__ == '__main__':
               backfill_columns(os.path.join(_root, 'series'),
                                os.path.join(_root, 'cache'),
                                dry_run='--dry-run' in sys.argv))
+        # 跨源打架必须印出来。以前这里不印，于是 2023 年那次官方重述入库时无声无息。
+        # 稳定态下这张表**不是空的**：_RECAST 每次都会把当期原值那一份比下去，
+        # 那 6 行就是口径坑第 8 条的活证据。见到别的行才是要去看的事。
+        if RESTATEMENTS:
+            print(f'跨源数值打架 {len(RESTATEMENTS)} 处（赢家由 _col_sources 排序决定）:')
+            for r in RESTATEMENTS:
+                print('  ', r)
         raise SystemExit(0)
     if '--backfill' in sys.argv:
         # 一次性的历史存量补齐，不进 monthly_run 的每日/每月主路径。
