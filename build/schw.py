@@ -2559,7 +2559,11 @@ GLOSSARY = [
      # "Selected Balances" 块里逐月印着 Average Interest-Earning Assets（脚注 (6)，
      # 与季报同口径）。本页只有季度腿，是因为 fetch/schw.py 的 COLS 没写这一列，
      # 是管道边界不是披露边界（同 ab70cd7 / 47710ce 那两次的病）。
-     # 「Schwab 不披露客户现金」同样是假话，fetch/schw.py 口径坑第 7 条点名禁止。
+     # 「Schwab 不披露客户现金」同样是假话，fetch/schw.py 的「口径坑」第 7 条点名禁止：
+     # 月报里的 Client Cash as a Percentage of Client Assets 自 2013-09 起每期都印
+     # （同文件 _CASH_PCT_FROM；2015-01-16 报送及更早那一行没有 Client 前缀，该处有实证），
+     # series/schw.csv 的 client_cash_pct 就是它。⚠️ 别写死它在哪个块下 —— 2026-01 起
+     # 官方把这一行从 Client Activity 挪进了 Selected Balances（aug2026 表 r35）。
      # 释义板是「一年到头同一段」的定义性文字，两句都不能带。
      '它存在的理由是：<b>本页的生息资产只有季度腿</b>（取自 8-K Ex-99.1；'
      '月报里那条逐月的 Average Interest-Earning Assets 本页尚未取用），'
