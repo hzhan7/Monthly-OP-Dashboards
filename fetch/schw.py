@@ -116,6 +116,32 @@ mtime、下载日、构建日同理，一律不用。
    月报脚注 (4) 是它与 `Transactional Sweep Cash (4,7)` **两行共用**的，两个半句各归各行，
    整条读给融资余额那行就会读出反的结论；short credits 由脚注 (7) 归给 sweep 那行。
    完整证据链（含 2026Q2 的逐项对账）写在季频腿「坑 2」，两条腿是同一个口径。
+8. **平均生息资产（avg_interest_earning_assets_usdbn）有三个各自独立的坑。**
+   这一列 2026-09-16 才补进来，而它在月报里**逐月印了至少十二年**（回得到 2013-09）——
+   漏抓的原因全部在解析器这一侧，与官方披露无关。这是本文件记下的**第四**次同一种病
+   （ab70cd7 → 47710ce → 963dc76 → 本次），前三次的病名都写在各自的 commit message 里。
+   · **坑 a：老版式标签行没有数。** 2019 年及更早的 13 份附表（以及 EDGAR 上每一份
+     EX-99.1）把 `Average Interest-Earning Assets (N)` 印成独占一行的分节标题，数值落在
+     紧邻下一行，那一行第一列写的是 `(in millions of dollars)`（还见过带 1 个、2 个
+     前导空格的写法）。而 `_row_values` 对「标签命中、本行无数」的处理是继续往下扫、
+     最后返回 None，`parse_table` 又把 None 当「这期没这行」跳过 —— **整列静默缺席**。
+     解法是 `_row_values(..., unit_row=True)`，判据是**下一行长什么样**（_UNIT_ROW_RE），
+     不是「无脑往下顺一行」：这张表通篇是「标题行 + 明细行」的堆叠，无条件下顺会把
+     隔壁指标的数当成本行的，而且图上完全看不出来。
+   · **坑 b：单位有三档，而且在相邻两期之间来回跳。** 同一行在 cache 的 25 份 xlsx 里
+     出现过 $mn（242584）、$bn（453）与**原始美元**（187933000000）三种量纲：
+     schwab_q1_2017 是 $mn、schwab_q2_2017 是原始美元、schwab_q3_2017 又退回 $mn；
+     schw_q2_2018 是 $mn、schw_q3_2018 是原始美元。按年份或按「月报 vs 季报」都推不出来。
+   · **坑 c：它和客户资产不在同一个单位块，所以不能挂 _MONEY。** 块头逐字：2025-11 及
+     更早是 `Selected Average Balances (in millions of dollars)`，2026-01 那期起改成
+     `Selected Balances (in billions of dollars)`；而锚点行 Total Client Assets 一直坐在
+     `Client Assets (in billions of dollars)` 里。套锚点倍率在 2026-01 之前整整错 1000 倍。
+     解法是 `_SELF_SCALED` + `_SELF_CANDS`：拿**自己这一行**的值反推倍率，由 _SANE 的
+     区间挑出唯一那一档。
+   与季频腿的关系：series/fee_rates.csv 里 SCHW 的 avg_interest_earning_assets（USD_mn，
+   2013-Q4 起，fetch/rates_schw.py 抓）是**同一个量的季频版**，两条腿由
+   `_crosscheck_quarter_iea` 逐季对账（**日历日加权**，不是算术平均，理由写在那个函数上方）。
+
 7. **「Schwab 不披露客户现金」是句流传过的假话，别再写进任何图注。** 月报的
    "Selected Balances" 块里逐月印着 Transactional Sweep Cash 与 Total Money Market
    Funds 两条月末 $bn（脚注 (7) 给了 sweep 的定义），而 "Client Activity" 块下面还有
@@ -129,8 +155,28 @@ mtime、下载日、构建日同理，一律不用。
 4. **core NNA ≠ NNA**。序列取的是 Core Net New Assets（剔除单笔巨额流入/流出 + 表外
    Schwab Bank Retail CD 流量）。2025 年起「巨额」的门槛从 $10bn 提到 $25bn，
    所以 2025 年前后的 core NNA 严格说不完全可比 —— 这是官方口径变更，不是数据错。
-5. 月报附表**不重述历史**：apr2026 与 may2026 两期文件里 12 个重叠月份的数值逐个相同。
-   但季报附表口径上是「最终版」，万一和月报打架，本模块以季报为准（见 _SOURCE_RANK）。
+5. **「月报附表不重述历史」是句被证伪的话，2026-09-16 订正。** 原话是
+   「apr2026 与 may2026 两期文件里 12 个重叠月份的数值逐个相同」—— 那个观察本身没错，
+   错在从**两期、一列**的相同推出了「月报从不重述」这条全称命题，而且这条假话被下游
+   build/schw.py 抄成了图注与释义板里的口径依据（详见那边）。
+   反例是 avg_interest_earning_assets_usdbn：官方在 2025-12 改了平均生息资产的口径
+   （月报脚注逐字：`Represents average total interest-earning assets on the Company's
+   balance sheet. Beginning in December 2025, average balances of client margin loans
+   and short credits related to certain client long/short strategies from which the
+   Company earns a fixed net yield are excluded from average interest-earning assets.
+   Prior period amounts have been adjusted accordingly.`），并**逐月改写了 2025-01…2025-11
+   已经发布过的数**。实测（旧基 → 新基，$bn）：
+     2025-01 431.5→431.4  02 424.8→424.6  03 425.2→424.9  04 430.9→430.4  05 419.6→418.7
+     06 417.8→416.5  07 418.6→416.7  08 417.2→414.4  09 423.6→419.8  10 433.6→428.3
+     11 436.3→429.1   —— 幅度逐月单调放大，最大 −7.2bn。
+   **2024-12 及更早未被改动**（431,177 在 Q3-2025 与 Q4-2025 两份里逐字相同），所以
+   拼出来的序列在 2024-12/2025-01 之间没有台阶；但这是这一次变更碰巧的性质，不是规律。
+   落地后果：`backfill_columns` 的源顺序从此**必须**按报告期从新到旧（见 _col_sources
+   的 docstring），并把跨报告期打架记进 COLRESTATEMENTS 打印出来。
+   正确的表述是**逐列**的：core_nna_usdbn 的 $10bn→$25bn 门槛变更官方确实没有回填，
+   client_cash_pct 在 2023-09 那期有过一次未回填的下修（见 backfill_columns 上方注释），
+   而平均生息资产这一次是回填的 —— 三列三种行为，没有一句话能同时罩住。
+   另：季报附表口径上是「最终版」，万一和月报打架，本模块以季报为准（见 _SOURCE_RANK）。
 6. 2020-10 的 new_brokerage_accounts_k = 14718 是 TD Ameritrade 并表的一次性搬账，
    不是当月开户量。build_schw.py 已经单独处理，这里原样入库、不做清洗。
 
