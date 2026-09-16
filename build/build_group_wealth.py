@@ -106,7 +106,7 @@ def fn(deck):
     gsx.multi_line(deck, df, ['schw_margin', 'ibkr_margin'], [gsx.NAVY, gsx.MBLUE],
                    'Margin balances: Schwab vs. IBKR', SRC, win=25, dec=0, money='$',
                    unit='$bn', names=['Schwab month-end margin', 'IBKR margin loans'],
-                   extra='LPL does not disclose margin. Schwab includes short credits, IBKR does not')
+                   extra='LPL does not disclose margin. Schwab and IBKR are both margin loans only (the earlier "Schwab includes short credits" was wrong — corrected 2026-09-16, see build/wealth.py)')
 
     gsx.multi_line(deck, df, ['lpla_cash', 'ibkr_cash'], [gsx.RED, gsx.MBLUE],
                    'Client cash: LPL vs. IBKR', SRC, win=25, dec=0, money='$', unit='$bn',

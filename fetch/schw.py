@@ -105,7 +105,17 @@ mtime、下载日、构建日同理，一律不用。
    series/schw_avg_margin.csv 就是那条已停更的老序列，它**永远停在 2025-12**，
    本模块绝不去追加它 —— 追加只会把两种口径（月均 vs 月末）混成一条假序列。
    新增的四列在 2026-01 期的 13 个月滚动表里回填到了 2025-01，所以 series 里这四列从
-   2025-01 起才有值，这是数据本身的边界，不是解析漏了。
+   2025-01 起才有值，这是**月报这条源**的边界，不是解析漏了 —— 但别一锅端成「Schwab
+   2025-01 前不披露这四个量」：
+   · dats_k 与 margin_balances_usdbn **已被季报附表证伪**：季度口径的同名量回得到
+     2012Q4（本模块季频腿 series/schw_q.csv 现取 2016Q1 起，见文件下半部「季频腿」）。
+     月频边界是真的，**量**的边界不是。
+   · sweep_cash_usdbn 与 mmf_usdbn 在季报的 `Growth in Client Assets and Accounts`
+     表里**查无此行**，对它们说「2025-01 是披露边界」目前仍然成立。
+   另：`Margin Balances at month end` **只含 margin loans、不含 short credits**。
+   月报脚注 (4) 是它与 `Transactional Sweep Cash (4,7)` **两行共用**的，两个半句各归各行，
+   整条读给融资余额那行就会读出反的结论；short credits 由脚注 (7) 归给 sweep 那行。
+   完整证据链（含 2026Q2 的逐项对账）写在季频腿「坑 2」，两条腿是同一个口径。
 7. **「Schwab 不披露客户现金」是句流传过的假话，别再写进任何图注。** 月报的
    "Selected Balances" 块里逐月印着 Transactional Sweep Cash 与 Total Money Market
    Funds 两条月末 $bn（脚注 (7) 给了 sweep 的定义），而 "Client Activity" 块下面还有
@@ -122,36 +132,41 @@ mtime、下载日、构建日同理，一律不用。
 6. 2020-10 的 new_brokerage_accounts_k = 14718 是 TD Ameritrade 并表的一次性搬账，
    不是当月开户量。build_schw.py 已经单独处理，这里原样入库、不做清洗。
 
-===================== series/schw_backfill.csv：留着，但不进图 =====================
+============ series/schw_backfill.csv：出处已查明，不进图，只留历史留痕 ============
 那个文件是一次做了一半、从未接上的回填：表头承诺 dats_k 与 margin_balances_usdbn 两列，
 dats_k 整列是空的，实际只有 2018-12…2024-12 共 7 个年末的月末融资余额。
-2026-08-05 专门评估过要不要把它接进 build/schw.py，**结论是不接**，理由按分量排列：
+2026-08-05 评估过要不要把它接进 build/schw.py，**结论仍是不接**，但当时写的四条理由里
+有两条在 2026-09-16 被推翻 —— 连同「不要删它」那几句一起订正如下，原话逐条留着：
 
-(a) **来历不可复现，而且能证明它不可能来自本管道的源。** cache/schw_may2019_table.xlsx
-    （2019 年的月报附表）里逐行查过：整张 Smart 页**没有任何融资余额行**，月均的没有、
-    月末的也没有 —— Schwab 是 2020-04 才开始披露月均融资余额（见 schw_avg_margin.csv
-    的起点）、2026-01 才开始披露月末融资余额（见上面第 3 条）。所以这 7 个数只可能来自
-    10-K / 年报或某个外部源，而文件里没记来源、没记表名、也没有任何 fetch 代码产生它。
-    本页在「口径与方法说明」里对读者写的是「无任何估算或补插」，一个连出处都指不出来的
-    序列不满足这句话；§5.5「失败要响、绝不静默上线」管的也是同一件事。
-(b) **边际信息只有 2 个点。** 2020-12 起的 5 个年末，schw_avg_margin.csv 已经**逐月**
-    覆盖（2020-04 → 2025-12），两者逐年只差 -1.7 / -0.9 / +0.3 / +1.8 / +2.3 bn，
-    符号正负都有 —— 这正是「月末 vs 月均」的基差噪音，不是新形状。真正新增的只有
-    2018-12 (19.3) 与 2019-12 (19.5) 两个点。
-(c) **这 2 个新点还落在 TD Ameritrade 并购的另一侧。** 并购 2020-10 完成，
-    19.5 → 60.9 是资产负债表搬账不是融资需求，和第 6 条的 14,718k 是同一类假象。
-    一张只有 7 个点的图，最抢眼的特征会是这个 3 倍台阶，读者读到的是并购不是杠杆周期。
-(d) **年末单点混不进月度轴。** 7 个点之间是 6 段 12 个月的空档，直接塞进 Exhibit 9/12
-    会造出 66 个空月并违反 CONTRACT §5.3（不可比的相邻期不得画成连续序列）。
-    技术上可以另开一张明确标「year-end snapshot」的图（不与月度点连线），但那张图要用
-    (a) 的无源数据、换来 (b) 的 2 个点、再给一个已经背着两条口径警告（core NNA 门槛断点、
-    月末 vs 月均不可接续）的页面加上第三条 —— 不划算。
+(a) 原写「**来历不可复现**，只可能来自 10-K / 年报或某个外部源，连出处都指不出来」
+    → **全错**。出处是季度业绩 8-K 的 EX-99.1、`Growth in Client Assets and Accounts`
+    表、`Margin loans outstanding` 行（原表印成负数，入库取的是绝对值）——
+    正是**本模块季频腿自己在抓的那批文件**（cache/schw_rates/，见下方「季频腿」）。
+    与 series/schw_q.csv 的对应季末值 **7/7 逐值相等**：2018-12=19.3 / 2019-12=19.5 /
+    2020-12=60.9 / 2021-12=87.4 / 2022-12=63.1 / 2023-12=62.6 / 2024-12=83.8。
+    当年查的是 cache/schw_may2019_table.xlsx（**月报**附表）——「月报里没有这行」是真的，
+    但那只说明它不来自月报，不说明它不来自本管道。这次推错的形态与本文件开头 EDGAR
+    那段自嘲的**一模一样**：解析器/管道读不到，和源里没有，长得一模一样；分辨这两者
+    只能去看原文，靠「能证明它不可能来自本管道」这种推理推不出来。算上 EDGAR 那两次，
+    同一类错误本文件已经记了第三笔。
+(b) 原写「**边际信息只有 2 个点**」→ **不再成立**。同一个源可取 42+ 个季末点
+    （series/schw_q.csv 现有 2016Q1…2026Q2 共 42 季，源本身到 2012Q4）。要季末融资余额
+    就走季频腿，这个 7 点文件在信息量上已经没有任何边际贡献。
+(c) **这 2 个点落在 TD Ameritrade 并购的另一侧 —— 仍然完全准确，别改。** 并购 2020-10
+    完成，19.5 → 60.9 是资产负债表搬账不是融资需求，和第 6 条的 14,718k 是同一类假象。
+    这条现在有了新用处：它就是 build/schw.py 里季频 Exhibit 15/16 那条 TDA 断点线
+    （BRK_Q_TDA = 2020Q4）的依据 —— 台阶是并表，不是杠杆周期，跨断点不可直读。
+(d) **年末单点混不进月度轴 —— 对这份 7 点文件仍成立，但只管它。** 7 个点之间是 6 段
+    12 个月的空档，直接塞进 Exhibit 9/12 会造出 66 个空月并违反 CONTRACT §5.3
+    （不可比的相邻期不得画成连续序列）。**本条不管季频序列**：schw_q.csv 逐季连号、
+    画在自己的季度轴上（Exhibit 15/16），不受这条约束。
 
-**下次做孤儿文件盘点的人：不要删它。** 它不是残留垃圾，是全仓独一份的 2018–2024 年末
-月末融资余额，管道抓不回来（见 (a)），删了就永久丢失。它的正确用途是**离线核对**：
-比如想验证某年年末的月末余额、或者判断月均序列与月末序列的基差量级时，手工翻它。
-要让它有资格进图，得先补齐两件事 —— 在文件里写清每个数出自哪份 10-K/年报的哪张表，
-并在 fetch 侧写出可复现的抓取路径；在那之前它只能停在 series/ 里当参考料。
+**下次做孤儿文件盘点的人：** 原写「不要删它 / 全仓独一份 / 管道抓不回来 / 删了就永久
+丢失」→ **三句全错**。它现在是 series/schw_q.csv 的**真子集**（7 个值 7/7 命中），那 7 个
+数一条命令就能从源重放成季末点（`python3 fetch/schw.py --quarterly-backfill`），删了不丢数。
+保留它只有一个理由：**历史留痕** —— 让下次再想「这数管道抓不回来」的人先看见 (a)。
+它当初给自己开的两个解封条件（在文件里写清每个数的出处 + 在 fetch 侧写出可复现的抓取
+路径）**现在都已满足**，但解封之后该走的路是季频腿，不是把这 7 个点接进图。
 
 ========================== 历史回填（backfill）==========================
 主流程 update() 只探最近 8 个月 / 3 个季度 —— 那是「每月往后走一格」该有的开销。
@@ -167,9 +182,28 @@ dats_k 整列是空的，实际只有 2018-12…2024-12 共 7 个年末的月末
 
 回填**不改变各列自己的披露边界**：core_nna_usdbn 仍然从 2017-02 起（_CORE_NNA_FROM），
 dats_k / margin_balances_usdbn 仍然从 2025-01 起。补出来的只是客户总资产与新开经纪账户。
+（这说的是**月频**这条路径；这两个量的**季频**历史回得到 2016Q1 甚至更早，走的是另一条腿
+series/schw_q.csv，不经过 --backfill，见下方「季频腿」。）
+
+========================= 季频腿（series/schw_q.csv）=========================
+本文件还维护**第二张 CSV**：series/schw_q.csv，键是**季**不是月，两列
+q_dats_k（季报附表 Clients' Daily Average Trades 的 Total 行，千笔/日）与
+q_margin_eop_usdbn（Growth in Client Assets and Accounts 表里 Margin loans
+outstanding 行，$bn，季末）。源只有 SEC EDGAR 的季度业绩 8-K（item 2.02）EX-99.1，
+与 fetch/rates_schw.py 读的是**同一批文件、同一份缓存**（cache/schw_rates/）。
+
+入口是月频那三条的季频对应物：update_quarterly() / backfill_quarterly()（CLI
+`--quarterly` / `--quarterly-backfill`，后者带 `--offline` 可只用本地缓存重放）。
+口径、两种版式、`Margin loans outstanding` 那个行名的坑（**只含 margin loans、不含
+short credits**；本文件 2026-09-15 那版把它写反过，订正链条写在季频腿「坑 2」）、
+窗口 2016Q1 与源能到 2012Q4、2020Q4 TDA 并表那一段的**措辞红线**，
+以及「季频止于上一个已报季度，比月频短一到两个月」，全写在文件下半部
+「季频腿」那一节的开头，别在这里找。
 
 ================================ 落盘 ================================
 所有下载文件只写 cache/（已 gitignore），文件名与官方一致，便于事后复核。
+季频腿写 cache/schw_rates/（文件名带 accession 前缀，与 fetch/rates_schw.py 一致，
+两条腿共用）；tools/prune_cache.py 把 cache/*_rates/ 列为 PROTECTED，不会清它。
 """
 from __future__ import annotations
 
@@ -181,6 +215,7 @@ import re
 import time as _time
 import urllib.error
 import urllib.request
+from html import unescape as _unescape
 
 import openpyxl
 
@@ -485,12 +520,17 @@ def parse_table(path: str, report_ym: tuple[int, int]) -> dict:
 def _required(ym: tuple[int, int]) -> list[str]:
     """该月**必须**解析出来的列。缺任何一列 → 抛，绝不写 NaN。
 
-    三段披露边界，全部是官方自己的（不是抓取能力的边界）：
+    三段**月频**披露边界（是月报这条源的边界，不是解析能力的边界）：
       · 2025-01 起才有 dats_k / margin_balances_usdbn / sweep_cash_usdbn / mmf_usdbn
         （2026-01 那期月报一次新增这四列并回填到 2025-01）
       · 2017-02 起才有 core_nna_usdbn（见 _CORE_NNA_FROM）
       · 2014-06 起才有 client_cash_pct（见 _CASH_PCT_FROM）
       · 再往前只剩客户总资产与新开经纪账户两列
+
+    **别把第一段读成「公司 2025-01 前不披露这四个量」**：dats_k 与 margin_balances_usdbn
+    的季度口径在季报附表里回得到 2012Q4（见 series/schw_q.csv 与「季频腿」那一节），
+    那是**月报**的边界不是**量**的边界；sweep_cash_usdbn / mmf_usdbn 在季报里查无此行，
+    对它们「2025-01 是披露边界」目前仍成立。
     """
     out = list(COLS)
     if ym < _DATS_MARGIN_FROM:
@@ -1405,6 +1445,629 @@ def backfill_columns(series_dir, cache_dir, cols=_NEW_COLS,
 
 
 
+# ═════════════ 季频腿：Clients' DATs 与季末融资余额（series/schw_q.csv）═════════════
+# 与上面三条月频入口（update / backfill / backfill_columns）的分工：
+#   · 它们写 series/schw.csv，键是**月**，源是 content.schwab.com 的 xlsx（+ EDGAR 兜底）。
+#   · 这一条写 series/schw_q.csv，键是**季**，源只有 SEC EDGAR 的季度业绩 8-K EX-99.1。
+# 为什么必须另开一张 CSV 而不是往 schw.csv 加两列：两条序列的**时间轴不同**（季 vs 月），
+# 塞进月度轴会造出每季 2 个空月，正好撞上 backfill() 那条「缺口会让下游 assets.diff()
+# 把两个月的变动记到一个月上」。
+#
+# ============================== 口径 ==============================
+# q_dats_k            季报附表 `Clients' Daily Average Trades` 的 **Total** 行，单位千笔/日。
+#                     注意它是**该季的日均**，不是季末值，也不是月度 dats_k 的三月平均
+#                     （官方按交易日加权，两者不会逐季相等，别拿来互相校验）。
+# q_margin_eop_usdbn  `Growth in Client Assets and Accounts` 表里 `Margin loans outstanding`
+#                     行，单位 $bn，**季末时点值**。
+#
+# ---------- 坑 1：DATs 有两种版式，取错会拿到「Revenue trades」那一行 ----------
+# · 2019 及以前：`Clients' Daily Average Trades (in thousands)` 是**小标题行**（本行没有
+#   数值），下面跟着 `Revenue trades` / `Asset-based trades` / `Other trades` / `Total`
+#   四行 —— 要取 **Total**。取到小标题下面第一行会拿到 Revenue trades，那是 Total 的一个
+#   零头（2017Q1：Revenue 305 vs Total 585），画出来是一条完全合理的曲线。
+# · 2020Q1 起：塌成单行 `Clients' Daily Average Trades (DATs) (in thousands)`，值直接在
+#   本行，下面没有明细。
+# 所以判据不是版本号也不是行号，而是「本行能不能取出 5 个数值格」：能，就是新版式；
+# 不能，本行只是小标题，往下找 `Total`（见 parse_edgar_quarterly）。
+# 那次塌行官方**没给任何脚注**（同一期另新增了 `Number of Trading Days` 行），所以不能
+# 指望源里有话告诉你版式换了。两种版式能直接接续是**逐值验过的**、不是假设：2020Q1 那份
+# 单行版印的历史比较数逐字等于旧 Total —— Q4-19 785 / Q3-19 718 / Q2-19 716 / Q1-19 777。
+#
+# ---------- 坑 2：`Margin loans outstanding` 这个行名 ----------
+# 一、**表里印成负数**（`(165.1)`）。它坐在「客户资产与账户增长」这张**流量口径**表里，
+#     融资余额对客户净资产是减项，所以带会计负号 —— 数值本身没有符号含义，落盘取绝对值。
+# 二、**这一行只含 margin loans，不含 short credits。** 本文件 2026-09-15 那版写反了
+#     （原话：「行名写的是 loans，但 2026 起这一行的内容含负债端的 short credits」），
+#     2026-09-16 逐项对账推翻。把订正链条留在这里，免得第三次又推回去：
+#     · **推错的根因是月报脚注 (4) 被两行共用**：`Margin Balances at month end (4)` 与
+#       `Transactional Sweep Cash (4,7)` 挂的是同一个 (4)，脚注正文的两个半句各归各行。
+#       把整条 (4) 读给融资余额那一行，就会读出「含 short credits」这个假结论。
+#     · short credits 归的是 sweep 那一行：脚注 (7) 明写 `Transactional sweep cash
+#       includes … short credits related to certain client long/short strategies`。
+#     · 2026Q2 逐项对账：季末 165.1 −（与客户 long/short 策略相关的）margin loans 42.1
+#       = 123.0，与同期资产负债表 `Receivables from brokerage clients — net` 的 122.8
+#       吻合；若照错版本再减掉 short credits 43.7，得 79.3，差一个数量级。
+#     · 2Q26 新闻稿正文也单独写了 "Margin loan balances increased 30% quarter-over-quarter
+#       to $165.1 billion"。
+#     → 图注/页面文案不许把它写成「融出资金 / margin lending」，只能照抄官方行名
+#       "Margin loans outstanding"；**也不许再写「含 short credits」**。真要提短仓贷记
+#       余额，它在 sweep cash 那条里（月度腿的 sweep_cash_usdbn），不在这条里。
+#     → 与月度腿的 margin_balances_usdbn（月报 "Margin Balances at month end"）是**同一个
+#       口径**（期末 margin loans），实测 6 个重叠季末（2025-03…2026-06）逐值相等。
+#       本模块仍不写「必须相等」的硬断言（两条出自不同表、不同发布节奏，季报是最终版而
+#       月报不重述，官方也可能只改一边），但某季不等**是**要人看一眼的信号 —— 不能再拿
+#       「本来就是两个口径」搪塞过去。
+#
+# ---------- 坑 3：表头行号不固定 ----------
+# 每份申报给 **5 个季度**（本季 + 前 4 季），表头形如 `Q4-16 % change` / `Q2-26 % Change`
+# （大小写官方自己都不统一）。它落在**第 1 行**还是**第 7 行**没有规律：2018Q1–2019Q2
+# 那 6 份在第 7 行，其余在第 1 行。所以扫表的前 12 行，取第一个 `Q([1-4])-(\d{2})` 命中。
+#
+# ---------- 坑 4：% change 列有三种印法，所以不能按列位置取值 ----------
+# `23%`（粘一起）/ 裸数 `46`（`%` 在独立单元格里，被 _q_cells 丢掉）/ 拆成 `(19` + `)%`
+# 两格。三种印法在同一份文件里混着出现，按「第 N 列」取值必错位。判据换成
+# **「本行末 5 个数字格」**：% change 永远排在 5 个季度值**前面**，取末 5 个就绕开了它。
+#
+# ================= 2020Q4 TD Ameritrade 并表：措辞红线 =================
+# 并表当季就是 2020Q4（2020-10-06 完成），本腿两列在那一季都有台阶：季度 DATs 1460 → 5796
+# （近 4 倍），季末融资余额 23.6 → 60.9。本腿**照官方原值入库、不做任何拼接调整**；
+# 画不画断点是下游的事（build/schw.py 的 BRK_Q_TDA = 2020Q4，Exhibit 15/16）。
+# 红线：**官方从来没有「前期不重述」这句明文**，别写成「官方明说不重述」。稿里用的是前瞻
+# 纳入式措辞 —— "Results of operations and metrics are inclusive of TD Ameritrade beginning
+# October 6, 2020."，并把 TDA 当成 Q4-20 的**流入**处理（那份稿自己的脚注 (5) 记 $890.7bn
+# 资产流入、脚注 (7) 记 14.5mn 新开户；这套编号是季报稿的，与坑 2 里月报的 (4)/(7) 无关）。
+# 同一份稿里真做了重述的三处都明写着 "Prior periods have been reclassified to reflect this
+# change."，TDA 这两条**刻意没有**这句 —— 所以「前期未重述」是从这个反差**推**出来的结论
+# （推得很稳，可以照此画断点），但它是推断、不是引文，写进图注时不许挂在官方名下。
+#
+# ============================== 窗口 ==============================
+# CSV 从 **2016Q1** 起，按 README「全站窗口取 max(序列首月, 2016-01)，只往右让不往左借」。
+# **源本身能到 2012Q4**（本机 50 份缓存实测 2012Q4 → 2026Q2 逐季无缺口），更早的 8-K
+# EDGAR 上还有。窗口往左挪时**不需要改这里的解析**，只需要处理一件事：
+#   2013–2014 年 Schwab 把 DATs 从一位小数改成整数千笔，于是同一个季度在新旧两份申报里
+#   印成 497.2 与 497.0 —— 实测 2013Q2 / 2013Q3 / 2013Q4 / 2014Q1 四个季度有此冲突，
+#   而 **2016Q1 起没有任何冲突**。挪窗口的人要先决定「同一季两个官方值取哪个」，
+#   再把结论写进这里，而不是让 _q_conflicts 那道闸随便放行。
+#
+# ============================== 节奏 ==============================
+# 季频腿**止于上一个已报季度**，所以它天生比月频腿短一到两个月：业绩 8-K 在季末后
+# 2–3 周发（Q2-2026 是 7/21），而月频腿那时已经有季末月之后一两个月的数了。
+# 举例：2026-09 中旬这一天，series/schw.csv 到 2026-08（月），series/schw_q.csv 到
+# 2026Q2（= 2026-06）。**这不是掉期**，别拿两张表的末行去互相判新鲜度。
+#
+# ============================== 三条铁律 ==============================
+# 与 backfill() 那三条逐字相同，因为坏法也相同：
+#   1. **已存在的季度一个字符都不改**（_q_merge_into_csv 只往 body 里 append）；
+#   2. **重叠季必须逐值相等**：相邻申报重叠 4 个季度，不等就**整次失败**，要人去看是
+#      解析取错了行还是官方重述了 —— 绝不静默取其一（窗口外的冲突记进 QRESTATEMENTS
+#      并打印，不落盘所以不拦；见「窗口」那一段）；
+#   3. **回填后季度必须仍逐季连号**：缺口会让下游把两个季度的变动记到一个季度上。
+#
+# ============================== 落盘与缓存 ==============================
+# 下载走本文件已有的 _edgar_get（UA 带邮箱是 EDGAR 明文条款，不是反爬），落
+# cache/schw_rates/，**文件名与 fetch/rates_schw.py 完全一致**（accession 前缀 + 原名）：
+# 两条腿读的是同一批 EX-99.1 正文（1MB 级），共用一份缓存就不必各下一遍。
+# 前缀不能省 —— 官方老申报里一堆同名的 dex991.htm，不加前缀会互相覆盖
+# （fetch/rates_schw.py 的落盘那一节记过：2010-2011 五个季度全被覆盖成同一份）。
+SERIES_Q = 'schw_q.csv'
+QCOLS = ['q_dats_k', 'q_margin_eop_usdbn']
+
+# 窗口左端（见上方「窗口」）。改它之前先读那一段。
+_Q_FROM = (2016, 1)
+
+# 回溯到哪一份申报为止。与 fetch/rates_schw.py 的 EARLIEST_FILING_DATE 同值同理由：
+# 2014-01-16 起（= 2013Q4）每一份都实测解析通过；更早的版式没有逐份核对过，
+# 不纳入无人值守路径。窗口左端 2016Q1 只需要 2016-01 那份，留两年余量是为了
+# 让重叠对账有足够样本 —— 那是这条路唯一的自检。
+_Q_EARLIEST_FILING = '2014-01-01'
+_Q_CACHE_SUBDIR = 'schw_rates'
+
+# 合理量级断言：同月频那两列共用一套上下界，理由见 _SANE 上方那段（为的是官方换单位
+# 或版式错位时立刻炸，而不是静默算错）。
+_Q_SANE = {
+    'q_dats_k': _SANE['dats_k'],                       # 千笔/日
+    'q_margin_eop_usdbn': _SANE['margin_balances_usdbn'],   # $bn
+}
+
+# 行标签。DATs 用正则是因为撇号有两种（ASCII ' 与 U+2019 ’，官方两种都用过）；
+# 尾部还挂着 "(in thousands)" / "(DATs) (in thousands)"，所以是前缀匹配不是全等。
+_Q_DAT_RE = re.compile(r"clients[’']\s*daily average trades")
+_Q_MARGIN_PREFIX = 'margin loans outstanding'
+_Q_TOTAL_LABEL = 'total'
+# 表头 `Q4-16 % change`。只认 `Q<1-4>-<两位年>`，两种大小写都过。
+_Q_HDR_RE = re.compile(r'\bQ([1-4])-(\d{2})\b')
+# 数字格。故意收得宽（允许 `(19` 这种被拆开的半截 % change）—— 真正把 % change 挡在
+# 外面的是「取末 5 个」那一步，不是这条正则（见坑 4）。
+_Q_NUM_RE = re.compile(r'^\(?\$?-?[\d,]+\.?\d*\)?$')
+_Q_HDR_SCAN_ROWS = 12
+
+# 上一次 _collect_quarterly 发现的、**窗口外**的跨申报数值打架（窗口内一律抛）。
+# 每条 ((y, q), 列名, {文件: 值}) —— 目前已知的全部四条就是 2013–2014 那次小数位变更。
+QRESTATEMENTS: list = []
+
+
+class _QFetchOffline(FetchError):
+    """offline=True 时缺缓存文件。单独一个类型，免得被当成「EDGAR 挂了」。"""
+
+
+# ── HTML 表格（与 fetch/rates_schw.py 的 _table_rows 同一套写法）─────────────
+# 不用 BeautifulSoup：bs4 不在 requirements.txt 里（全仓只有 fetch/tmx.py 依赖它），
+# 而这批文件实测**没有嵌套 <table>**（50 份缓存全扫过，最大嵌套深度 1、开闭标签数相等），
+# 所以非贪婪切表是安全的。若哪天官方改用嵌套表格，切出来的行会缺，parse 返回 {}，
+# _collect_quarterly 会点名那份文件抛错 —— 不会静默少几个季度。
+def _q_cells(tr_html: str) -> list[str]:
+    """一行 <tr> → 非空单元格文本。
+
+    丢掉 ''、'$'、'%' 三种噪音格：官方把货币符号和百分号各放进独立 <td>，留着它们会让
+    「末 5 个数字格」那条规则要多绕一层。**不要在这里丢 ')%'**：它是 `(19` + `)%` 那种
+    拆开印法的后半截，_Q_NUM_RE 本来就不认它，留着反而是一条「这行有 % change」的线索。
+    """
+    out = []
+    for td in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr_html, re.S | re.I):
+        v = _unescape(re.sub(r'<[^>]+>', ' ', td)).replace('﻿', '').replace('\xa0', ' ')
+        v = re.sub(r'\s+', ' ', v).strip()
+        if v not in ('', '$', '%'):
+            out.append(v)
+    return out
+
+
+def _q_tables(html: str) -> list[str]:
+    return re.findall(r'<table.*?</table>', html, re.S | re.I)
+
+
+def _q_rows(table_html: str) -> list[list[str]]:
+    return [_q_cells(tr) for tr in re.findall(r'<tr.*?</tr>', table_html, re.S | re.I)]
+
+
+def _q_flat(table_html: str) -> str:
+    return re.sub(r'\s+', ' ', _unescape(re.sub(r'<[^>]+>', ' ', table_html)))
+
+
+def _q_num(s: str):
+    """'11,920' → 11920.0；'(165.1)' → -165.1；'—'/'-' → None。
+
+    与 _html_num 的差别只有一处：这里**不剥尾部的 '%'**。月频那条路要剥，是因为 _glue
+    会把独立 <td> 里的百分号粘回数值；这条路不粘（见 _q_cells），% change 靠「取末 5 个」
+    甩开，所以带 % 的格一律不该被当成数字格 —— 剥了反而会把 % change 混进候选。
+    """
+    neg = s.startswith('(') and s.endswith(')')
+    t = s.strip('()$').replace(',', '')
+    if not t or t in ('-', '—', '–'):
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _q_last5(cells: list[str]) -> list[str] | None:
+    """本行末 5 个数字格 = 5 个季度值（本季 + 前 4 季）。不足 5 个返回 None。
+
+    为什么是「末 5 个」而不是「第 k 列」：见坑 4。
+    """
+    nums = [c for c in cells[1:] if _Q_NUM_RE.fullmatch(c)]
+    return nums[-5:] if len(nums) >= 5 else None
+
+
+def _q_header(rows: list[list[str]]):
+    """从 `Q4-16 % change` 这种表头取本期季度 → (year, quarter)；没有返回 None。"""
+    for r in rows[:_Q_HDR_SCAN_ROWS]:
+        for c in r:
+            m = _Q_HDR_RE.search(c)
+            if m:
+                return 2000 + int(m.group(2)), int(m.group(1))
+    return None
+
+
+def _q_prev(y: int, q: int, k: int) -> tuple[int, int]:
+    """(y, q) 往前 k 个季度。"""
+    i = y * 4 + (q - 1) - k
+    return i // 4, i % 4 + 1
+
+
+def _q_spread(vals: list[str], y: int, q: int, col: str, out: dict) -> None:
+    """把一行的 5 个季度值按「最左 = 本季、往右倒推」摊进 out。"""
+    for k, raw in enumerate(vals):
+        n = _q_num(raw)
+        if n is None:
+            continue
+        if col == 'q_margin_eop_usdbn':
+            n = abs(n)                      # 会计负号，见坑 2 第一条
+        lo, hi = _Q_SANE[col]
+        if not (lo <= n <= hi):
+            raise FetchError(f'{y}Q{q} 往前第 {k} 季 {col}={n} 超出合理区间 ({lo}, {hi})')
+        out.setdefault(_q_prev(y, q, k), {})[col] = n
+
+
+def parse_edgar_quarterly(html: str) -> dict:
+    """季度业绩 8-K EX-99.1 → {(y, q): {col: 值}}；不是这种文件返回 {}。
+
+    一份申报给 5 个季度。两张表（DATs 那张、客户资产增长那张）在不同年份的版面里有时是
+    同一张、有时分开，所以这里对**每一张**含目标行的表各自读表头、各自摊值，不假设它们
+    共用一个表头。
+    """
+    out: dict = {}
+    for tb in _q_tables(html):
+        flat = _q_flat(tb)
+        has_dat = 'Daily Average Trades' in flat
+        has_mar = 'Margin loans outstanding' in flat
+        if not (has_dat or has_mar):
+            continue
+        rows = _q_rows(tb)
+        hq = _q_header(rows)
+        if not hq:                      # 没有 Q<n>-<yy> 表头 → 不是那张 5 季对比表
+            continue
+        y, q = hq
+        if has_dat:
+            subtitle = False
+            for cells in rows:
+                if not cells:
+                    continue
+                lab = cells[0]
+                if _Q_DAT_RE.match(lab.lower()):
+                    vals = _q_last5(cells)
+                    if vals:            # 2020Q1 起的单行版式：值就在本行
+                        _q_spread(vals, y, q, 'q_dats_k', out)
+                        subtitle = False
+                        break
+                    subtitle = True     # 老版式：本行只是小标题，往下找 Total
+                    continue
+                if subtitle and lab.strip().lower() == _Q_TOTAL_LABEL:
+                    vals = _q_last5(cells)
+                    if vals:
+                        _q_spread(vals, y, q, 'q_dats_k', out)
+                    break
+        if has_mar:
+            for cells in rows:
+                if cells and cells[0].strip().lower().startswith(_Q_MARGIN_PREFIX):
+                    vals = _q_last5(cells)
+                    if vals:
+                        _q_spread(vals, y, q, 'q_margin_eop_usdbn', out)
+                    break
+    return out
+
+
+# ── EDGAR：季度业绩 8-K（item 2.02）────────────────────────────────────
+def _q_cache(cache_dir: str, name: str) -> str:
+    d = os.path.join(cache_dir, _Q_CACHE_SUBDIR)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, name)
+
+
+def _q_fetch(url: str, cache_dir: str, name: str,
+             immutable: bool = True, offline: bool = False) -> bytes:
+    """取一份 EDGAR 文件，落 cache/schw_rates/<name>。
+
+    immutable=True 走缓存（Archives 里的历史申报永不变）；申报清单每天在变，传 False。
+    offline=True 时**只读缓存**，缺文件就抛 _QFetchOffline —— 这是给「可复现性验收」用的
+    显式开关（照着本地那 50 份重放一遍，逐字节比对 CSV），**不是**网络失败时的静默兜底。
+    """
+    p = _q_cache(cache_dir, name)
+    if (immutable or offline) and os.path.exists(p) and os.path.getsize(p) > 200:
+        with open(p, 'rb') as f:
+            return f.read()
+    if offline:
+        raise _QFetchOffline(
+            f'offline=True 但 cache/{_Q_CACHE_SUBDIR}/{name} 不在本地 —— '
+            f'离线重放要求这一份已经缓存过，不会去拉 {url}')
+    blob = _edgar_get(url)
+    _time.sleep(0.15)                    # EDGAR 限速，与 backfill() 里那两处同一节拍
+    with open(p, 'wb') as f:
+        f.write(blob)
+    return blob
+
+
+def _q_earnings_8k(cache_dir: str, since: str = _Q_EARLIEST_FILING,
+                   offline: bool = False) -> list[dict]:
+    """季度业绩 8-K 清单，**新 → 旧**。→ [{'accession','date','primary'}, ...]
+
+    只认 form='8-K' 且 items 含 '2.02'（Results of Operations）。这一条与 _edgar_8k()
+    的差别就在 items 上：那个是「所有 8-K」，因为月度活动报告可以挂在任何一期后面；
+    这里要的是**业绩稿**，而业绩稿一定带 2.02，用它筛掉四分之三的请求。
+    历史分片文件名从 recent.files[] 里读，不硬编码（与 fetch/rates_schw.py 同规矩）。
+    """
+    top = json.loads(_q_fetch(EDGAR_SUB.format(cik=EDGAR_CIK), cache_dir,
+                              'submissions.json', immutable=False, offline=offline))
+    blocks = [top['filings']['recent']]
+    for f in top['filings'].get('files', []):
+        if f.get('filingTo', '9999') < since:      # 早到不需要就别下
+            continue
+        blocks.append(json.loads(_q_fetch(
+            'https://data.sec.gov/submissions/' + f['name'], cache_dir, f['name'],
+            offline=offline)))
+    out = []
+    for b in blocks:
+        for i in range(len(b['form'])):
+            if b['form'][i] != '8-K':
+                continue
+            if '2.02' not in (b['items'][i] or ''):
+                continue
+            if b['filingDate'][i] < since:
+                continue
+            out.append({'accession': b['accessionNumber'][i],
+                        'date': b['filingDate'][i],
+                        'primary': (b.get('primaryDocument') or [''] * (i + 1))[i]})
+    if not out:
+        raise FetchError('EDGAR 上没找到任何 item 2.02 的 8-K，CIK 或 API 形态可能变了')
+    out.sort(key=lambda r: (r['date'], r['accession']), reverse=True)
+    return out
+
+
+def _q_exhibit(cache_dir: str, f: dict, offline: bool = False) -> tuple[str, str]:
+    """挑出业绩新闻稿正文（Ex-99.1）→ (本地取到的 html, 它的 URL)。
+
+    不按文件名猜（官方 10 年换了 5 种写法：exhibit991.htm / a2q26exhibit991.htm /
+    schw-20161017xex99_1.htm / d758923dex991.htm …），按「排除法 + 体积」挑：去掉索引页、
+    XBRL 渲染出来的 R*.htm、8-K 壳（primaryDocument），剩下的 .htm 里最大的那个。
+    挑错了不会静默：_collect_quarterly 解析不出 5 个季度就点名抛。
+    """
+    accn = f['accession'].replace('-', '')
+    base = EDGAR_DIR.format(acc=accn)
+    idx = json.loads(_q_fetch(base + '/index.json', cache_dir, f'{accn}_index.json',
+                              offline=offline))
+    best, best_size = None, -1
+    for item in idx['directory']['item']:
+        name = item['name']
+        low = name.lower()
+        if not low.endswith(('.htm', '.html')):
+            continue
+        if 'index' in low or re.fullmatch(r'r\d+\.htm', low) or low == (f['primary'] or '').lower():
+            continue
+        try:
+            size = int(item.get('size') or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size > best_size:
+            best, best_size = name, size
+    if best is None:
+        raise FetchError(f'{f["accession"]}: index.json 里没有可用的 htm 附件')
+    url = f'{base}/{best}'
+    html = _q_fetch(url, cache_dir, f'{accn}_{best}', offline=offline).decode('utf-8', 'replace')
+    return html, url
+
+
+def _collect_quarterly(cache_dir: str, filings: list, offline: bool = False,
+                       verbose: bool = True) -> dict:
+    """下载 + 解析给定的几份业绩 8-K，合并成 {(y, q): {col: val}}。
+
+    **重叠季逐值相等**这道闸就在这里：相邻申报重叠 4 个季度，同一格来自几份文件时必须
+    印成同一个字符串（按落盘精度比，理由同 _differs 的 docstring）。窗口内不等 → 整次
+    失败；窗口外不等 → 记进 QRESTATEMENTS 并打印，取**最新那份申报**的值（它不落盘，
+    所以取谁都不改变 CSV；记下来是为了窗口往左挪的人能一眼看见 2013–2014 那次小数位变更）。
+    """
+    def log(*a):
+        if verbose:
+            print(*a)
+
+    QRESTATEMENTS.clear()
+    seen: dict = {}                     # (y, q, col) -> {文件名: 值}，按 filings 的顺序写入
+    for f in filings:
+        html, url = _q_exhibit(cache_dir, f, offline=offline)
+        name = url.rsplit('/', 1)[-1]
+        got = parse_edgar_quarterly(html)
+        if not got:
+            raise FetchError(
+                f'{f["date"]} {f["accession"]} ({name}) 里读不出季度 DATs / 融资余额表。'
+                f'「解析器读不到」和「源里没有」长得一模一样（本文件 docstring 的 EDGAR 那段记过'
+                f'同一个坑），所以这里拒绝静默跳过：请人工打开这份 EX-99.1 核对版式。')
+        for qk, vals in got.items():
+            for c, v in vals.items():
+                seen.setdefault((qk, c), {})[name] = v
+        log(f'  [q-edgar] {f["date"]} {name} → {min(got)}…{max(got)}')
+
+    merged: dict = {}
+    clash = []
+    for (qk, c), by_file in sorted(seen.items()):
+        pick = next(iter(by_file.values()))          # filings 是新→旧，第一份 = 最新
+        if len({_qfmt(v) for v in by_file.values()}) > 1:
+            if qk >= _Q_FROM:
+                clash.append((qk, c, by_file))
+            else:
+                QRESTATEMENTS.append((qk, c, dict(by_file)))
+        merged.setdefault(qk, {})[c] = pick
+    if clash:
+        for qk, c, by_file in clash[:10]:
+            log(f'    MISMATCH {qk[0]}Q{qk[1]} {c}: '
+                + '、'.join(f'{k}={v:g}' for k, v in by_file.items()))
+        raise FetchError(
+            f'窗口内有 {len(clash)} 处重叠季不等，拒绝写入。相邻申报重叠 4 个季度，'
+            f'同一季必须逐值相等 —— 不等只有两种可能：解析取错了行，或者官方重述过。'
+            f'两种都得人去看，绝不静默取其一。')
+    if QRESTATEMENTS:
+        log(f'  [q-窗口外重述] {len(QRESTATEMENTS)} 处（不落盘，仅记录）：'
+            + '、'.join(f'{k[0]}Q{k[1]} {c}' for k, c, _ in QRESTATEMENTS[:6]))
+    return merged
+
+
+# ── 落盘 ───────────────────────────────────────────────────────────────
+def _qfmt(v) -> str:
+    """落盘格式：`%g`。
+
+    这是 series/schw_q.csv 现有 42 行的写法（81 不是 81.0、616 不是 616.0），换成别的
+    写法会让整表在 git diff 里一起翻新，真正的那一行新增被淹掉。
+    与月频的 _fmt() 不同是刻意的：_fmt 把 dats_k 取整、把金额钉死一位小数，而这条腿
+    2013–2014 的 DATs 带一位小数（见「窗口」那一段），取整会静默吞掉小数位变更这条线索。
+    """
+    return '' if v is None else f'{v:g}'
+
+
+def _q_key(y: int, q: int) -> str:
+    return f'{y}Q{q}'
+
+
+def _q_parse_key(s: str) -> tuple[int, int]:
+    return int(s[:4]), int(s[5:])
+
+
+def _q_read(series_dir: str):
+    path = os.path.join(series_dir, SERIES_Q)
+    with open(path, newline='') as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        raise FetchError(f'{SERIES_Q} 是空文件')
+    header, body = rows[0], [r for r in rows[1:] if r and r[0].strip()]
+    if header != ['quarter'] + QCOLS:
+        raise FetchError(f'{SERIES_Q} 列名与预期不符：{header}')
+    return path, header, body
+
+
+def _q_merge_into_csv(series_dir: str, merged: dict, verbose: bool = True) -> list:
+    """把 merged 并进 series/schw_q.csv，返回新增季度 ['YYYYQn', ...]。
+
+    三条铁律都在这里执行（见本节开头）：已有季度一个字符不改、重叠季逐值相等、
+    写完必须逐季连号。没有新增时**一个字节都不写**（幂等，git 里看不到任何动静）。
+    """
+    def log(*a):
+        if verbose:
+            print(*a)
+
+    path, header, body = _q_read(series_dir)
+    have = {r[0]: r for r in body}
+
+    # ── 铁律 2（对既有 CSV 的那一半）：重叠季必须逐值相等 ──
+    clash, checked = [], 0
+    for qk in sorted(merged):
+        key = _q_key(*qk)
+        if key not in have:
+            continue
+        for c, v in merged[qk].items():
+            cur = have[key][1 + QCOLS.index(c)]
+            if cur == '':
+                continue
+            checked += 1
+            if cur != _qfmt(v):
+                clash.append((key, c, cur, _qfmt(v)))
+    log(f'  [q-对账] 重叠 {checked} 个 (季,指标)，不符 {len(clash)} 个')
+    if clash:
+        for x in clash[:20]:
+            log('    MISMATCH', x)
+        raise FetchError(f'解析结果与 series/{SERIES_Q} 现有值有 {len(clash)} 处不符，拒绝写入。'
+                         '要么解析取错了行，要么官方重述过 —— 两种都得人去看。')
+
+    # ── 追加 ──
+    added = []
+    for qk in sorted(merged):
+        if qk < _Q_FROM:                 # 窗口外：源里有、但本站不画（见「窗口」）
+            continue
+        key = _q_key(*qk)
+        if key in have:                  # 铁律 1：已存在的季度一个字符都不改
+            continue
+        missing = [c for c in QCOLS if merged[qk].get(c) is None]
+        if missing:
+            raise FetchError(f'{key} 解析结果缺列 {missing}，拒绝写入（不写 NaN）。'
+                             '两列印在同一份申报的两张表里，缺一列就是版式变了。')
+        body.append([key] + [_qfmt(merged[qk][c]) for c in QCOLS])
+        added.append(key)
+
+    if not added:
+        return []
+    body.sort(key=lambda r: r[0])        # 'YYYYQn' 字典序 = 时间序
+    # ── 铁律 3：逐季连号 ──
+    for i in range(1, len(body)):
+        py, pq = _q_parse_key(body[i - 1][0])
+        cy, cq = _q_parse_key(body[i][0])
+        if (cy, cq) != _q_prev(py, pq, -1):
+            raise FetchError(
+                f'写入后季度不连续：{body[i - 1][0]} → {body[i][0]}。缺口会让下游把两个'
+                f'季度的变动记到一个季度上，拒绝写入。掉得太远时先跑一次 '
+                f'`python3 fetch/schw.py --quarterly-backfill`（它扫全部历史申报）。')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(body)
+    os.replace(tmp, path)
+    log(f'  [q-写入] 新增 {len(added)} 季：{added[0]} … {added[-1]}')
+    return added
+
+
+# ── 对外接口（季频版，与 latest_month / update / backfill 一一对应）───────
+def latest_quarter(cache_dir, offline: bool = False) -> str:
+    """官方源当前最新季，"YYYYQn"。抓不到抛 FetchError。
+
+    它**必然**落后于 latest_month() 一到两个月，见本节「节奏」那一段 —— 别拿两者
+    互相判新鲜度。
+    """
+    fils = _q_earnings_8k(cache_dir, offline=offline)[:1]
+    data = _collect_quarterly(cache_dir, fils, offline=offline, verbose=False)
+    ok = [qk for qk, v in data.items() if all(c in v for c in QCOLS)]
+    if not ok:
+        raise FetchError('最新一份业绩 8-K 解析出来了，但没有任何一个季度凑齐两列')
+    return _q_key(*max(ok))
+
+
+def update_quarterly(series_dir, cache_dir, back: int = 3, verbose: bool = True) -> list:
+    """把新季度追加进 series/schw_q.csv，返回新增季度 ['YYYYQn', ...]。**增量入口。**
+
+    只探最近 `back` 份业绩 8-K —— 那是「每季往后走一格」该有的开销。每份给 5 个季度，
+    所以 back=3 已经带着 7 个季度的重叠做自检；再往前不会有新东西，只是把同样的数对一遍账。
+    网络开销：申报清单 1 个请求（每天都在变，不吃缓存）+ 每份新申报 2 个请求
+    （index.json + 正文）。已经缓存过的申报 0 个请求。
+
+    幂等：已存在的季度一律跳过（不覆盖、不重排、不改动已有行的任何字符）；
+    没有新增时不写盘。
+
+    ⚠ 掉得太远时（连着几个季度没人跑）back=3 覆盖不到缺口，`_q_merge_into_csv` 的连号
+    自检会拦下并点名让你去跑 --quarterly-backfill。**不要为此调大 back** —— 那是把
+    一次性的存量补齐摊到每一轮的开销里，正是 update()/backfill() 分家要避免的事。
+    """
+    fils = _q_earnings_8k(cache_dir)[:max(1, back)]
+    merged = _collect_quarterly(cache_dir, fils, verbose=verbose)
+    return _q_merge_into_csv(series_dir, merged, verbose=verbose)
+
+
+def backfill_quarterly(series_dir, cache_dir, verbose: bool = True,
+                       offline: bool = False) -> list:
+    """把历史季度一次性补进 series/schw_q.csv，返回新增季度。**存量入口。**
+
+    与 update_quarterly() 的关系，同 backfill() 与 update()：一个管「往后走一格」，
+    一个管「把官方还留着的老申报全扫一遍」。两者写同一个 CSV、守同一套铁律。
+    扫描范围是 _Q_EARLIEST_FILING 起的全部业绩 8-K（本机实测 50 份，覆盖 2012Q4 → 2026Q2），
+    落盘只到窗口左端 _Q_FROM 为止。
+
+    offline=True：只用 cache/schw_rates/ 里已有的申报重放一遍，**不打任何网络请求**，
+    缺文件就抛。这是可复现性验收用的开关 —— 拿它往一张只有表头的 CSV 上重跑，产物应当
+    与仓里的 series/schw_q.csv **逐字节相同**。
+    """
+    fils = _q_earnings_8k(cache_dir, offline=offline)
+    if verbose:
+        print(f'  [q-清单] {len(fils)} 份业绩 8-K：{fils[-1]["date"]} … {fils[0]["date"]}')
+    merged = _collect_quarterly(cache_dir, fils, offline=offline, verbose=verbose)
+    if not merged:
+        raise FetchError('一个季度都没解析出来 —— 不要当成「没有历史数据」，'
+                         '先人工核对 EDGAR 上 CIK 0000316709 的 item 2.02 8-K 清单。')
+    if verbose:
+        ks = sorted(merged)
+        print(f'  [q-源范围] {_q_key(*ks[0])} … {_q_key(*ks[-1])}（共 {len(ks)} 季）；'
+              f'落盘窗口自 {_q_key(*_Q_FROM)} 起')
+    return _q_merge_into_csv(series_dir, merged, verbose=verbose)
+
+
+# ══════════════ 为什么这条腿没有登记进 monthly_run.py ══════════════
+# 2026-09-16 逐条查过 monthly_run.py 里的两张登记表，**两张都容不下它**：
+#
+# 1. `SLOW_LEGS`（慢腿闸门）—— 判据是 `slow_pending()` 逐列扫 **series/<t>.csv** 的最后
+#    非空**月**。这条腿写的是另一个文件 series/schw_q.csv，`series/schw.csv` 里一列都没有：
+#    硬登记的结果是「列前缀一列都没匹配上」→ 按 fail-open 当成欠货 → schw 天天整趟下载，
+#    正好撞上那张表自己写的第二条 ⚠。而且 `_due_month()` 算的是月度应到月份，季度源一年
+#    里有八个月会被判成欠货 —— 与 cost_sec() docstring 里第 2 条是同一个形状。
+# 2. `LEG_ALERTS` / `DEGRADED`（腿级降级）—— 那是给「一家的几条腿共用一次 update()」用的
+#    报警通道，本条腿根本不在 `update()` 的调用链里（见下），暴露 DEGRADED 也没人读。
+#
+# 它该待的地方是 main() 里 cost_sec() / tsm_6k() 那一类**按家名守门的第二源步**
+# （`if 'schw' in todo: fails += schw_q()`），理由与那两条逐字相同：`one('schw')` 在
+# import fetch 之前先问 `not_due('schw')`，而那个判断读的 data_through 由**月频腿**独家
+# 推动 —— 月报一落地闸门就关死整月，而业绩 8-K 的到货日（季末后 2–3 周）**恰好全落在
+# 月频腿已经追平的日子里**，塞进 update() 当慢腿的实际效果是「永远不跑」，且长得和健康
+# 的安静日一模一样。好消息是触发器那一半已经现成：`series_fingerprint()` glob 的是
+# `series/schw*.csv`，schw_q.csv 变了就会让 /schw/ 重建，不必另写催建逻辑。
+# 那一步要改 monthly_run.py（main() + 模块 docstring 的「第二源」清单 + docs/CRON_WIRING.md），
+# 与 build/schw.py 消费这张 CSV 是同一件事，**留给接线的人一起做**；在那之前这条腿靠
+# `python3 fetch/schw.py --quarterly` 手动跑。
+
+
+
 if __name__ == '__main__':
     import sys
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1414,6 +2077,28 @@ if __name__ == '__main__':
               backfill_columns(os.path.join(_root, 'series'),
                                os.path.join(_root, 'cache'),
                                dry_run='--dry-run' in sys.argv))
+        raise SystemExit(0)
+    if '--quarterly-backfill' in sys.argv:
+        # 季频腿的一次性存量补齐（扫全部业绩 8-K）。--offline 只用本地缓存重放，
+        # 一个网络请求都不打 —— 可复现性验收就跑它。
+        print('backfill_quarterly:',
+              backfill_quarterly(os.path.join(_root, 'series'),
+                                 os.path.join(_root, 'cache'),
+                                 offline='--offline' in sys.argv))
+        if QRESTATEMENTS:
+            print('窗口外跨申报数值打架（不落盘，仅记录）:')
+            for r in QRESTATEMENTS:
+                print('  ', r)
+        raise SystemExit(0)
+    if '--quarterly' in sys.argv:
+        # 季频增量：只探最近 3 份业绩 8-K。季频止于上一个已报季度，比月频短一到两个月。
+        print('latest_quarter  :', latest_quarter(os.path.join(_root, 'cache')))
+        print('update_quarterly:',
+              update_quarterly(os.path.join(_root, 'series'), os.path.join(_root, 'cache')))
+        if QRESTATEMENTS:
+            print('窗口外跨申报数值打架（不落盘，仅记录）:')
+            for r in QRESTATEMENTS:
+                print('  ', r)
         raise SystemExit(0)
     if '--backfill' in sys.argv:
         # 一次性的历史存量补齐，不进 monthly_run 的每日/每月主路径。

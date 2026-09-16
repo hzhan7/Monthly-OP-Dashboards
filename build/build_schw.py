@@ -77,7 +77,7 @@ def fn(deck):
         (None, 'Daily average trades (k)', 'dats_k', 0, False, '', False),
         (None, 'Margin balances ($bn)', 'margin_balances_usdbn', 1, False, '$', False),
     ], f'Schwab monthly activity summary — {gsx.mlab(LATEST)}', SRC,
-        extra=QNOTE + '.  Core NNA is a flow, read through the annualised organic growth line per GS convention.  The core-NNA exclusion threshold moved from $10bn to $25bn in 2025.  Margin balances include short credits.')
+        extra=QNOTE + '.  Core NNA is a flow, read through the annualised organic growth line per GS convention.  The core-NNA exclusion threshold moved from $10bn to $25bn in 2025.  Margin balances are margin loans only (short credits sit in transactional sweep cash; the Apr-2026 monthly footnote (4) is shared by both rows — corrected 2026-09-16, see build/schw.py).')
 
     gsx.lvl_bar(deck, nna, 'Core net new assets', SRC, win=25, dec=1, money='$',
                 unit='$bn', show_mom=True, extra=QNOTE)

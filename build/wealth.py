@@ -396,6 +396,16 @@ def _xref(page_label, nums, fallback):
     return f'{page_label} Exhibit {"/".join(got)}' if got else fallback
 
 
+def _xfirst(page, needle):
+    """另一页上那张图 x 轴的**第一格标签**（'2016Q1' / 'Jan-16' …），认不出返回 None。
+
+    引用别页序列的起点时用它，不要把那个起点抄成本页的字面量 —— 那一页每月重建，
+    起点会随回补与口径修订往前走，抄一份下来就是两页各写各的。
+    """
+    xs = (_xpage(page, needle) or {}).get('xlabels') or []
+    return str(xs[0]) if xs else None
+
+
 def _x2_caliber(page, needle):
     """另一页上那张图的**次轴**口径：(编号, 'roll' | 'mono' | 'none', 次轴原标签)。
 
@@ -795,10 +805,16 @@ def plan(items):
         末点标签走 `lastFinite`）。短的那家前段留 null，**不补零、不前向填充、不外推**。
 
     为什么不像从前那样一律取「各线都有值的连续末段」：那等于**为了迁就短的那条去砍长的
-    那条**。Schwab 的月末融资余额、DATs、月末 sweep cash 与月末货基都只有 2025-01 起
-    （2026-01 期月报一次新增这四列并回填至此，见 fetch/schw.py 的 `_DATS_MARGIN_FROM`），
-    照旧判法，凡是带这批列的图窗口就都只剩十几个月，而同图 IBKR 那条有十年、
-    Robinhood 有五年，全被砍掉。
+    那条**。Schwab 的月末融资余额、DATs、月末 sweep cash 与月末货基在**月报**里都只有
+    2025-01 起（2026-01 期月报一次新增这四列并回填至此，见 fetch/schw.py 的
+    `_DATS_MARGIN_FROM`），照旧判法，凡是带这批列的图窗口就都只剩十几个月，
+    而同图 IBKR 那条有十年、Robinhood 有五年，全被砍掉。
+
+    ⚠ 上一段的「只有 2025-01 起」**只管「按月」这一个频率，而且四列要拆开说**：
+    融资余额与 DATs 在**季报附表**（8-K Ex-99.1）里回得到 2016Q1，schw 单页据此另画了
+    两张季频图（见 Exhibit N_MGN / N_DATS 上方那段注释）；sweep cash 与月末货基在那张
+    附表里**查无此行**，对它们这句话在各个频率上都成立。本页是月度页，季频的那两条
+    一条都不接进来，所以这里的窗口判法不受影响 —— 变的只是图注里那句话的说法。
     同一条理由与判法见 build/hkex.py 的 Exhibit 5（南向停发 42 个月，不砍整体 ADT）。
     """
     cols = _cols(items)
@@ -1802,6 +1818,35 @@ ex.append({
              + '两条线各比自己的存量序列晚 12 个月起画：同比要满 12 个月才有分母。' + GATE),
 })
 
+# ── schw 单页那两张季频图：编号与起点都现读那一页的 payload，不写死 ──
+# ⚠ 2026-09-16 纠正：本页从前在四处写「更早的月份公司没有印过」。那句话**只在「按月」
+#   这个限定下成立** —— 季报附表（8-K Ex-99.1）里 `Clients' Daily Average Trades` 的
+#   **Total** 行与 `Growth in Client Assets and Accounts` 的 `Margin loans outstanding`
+#   行都回得到 2016Q1（已落盘 series/schw_q.csv，schw 单页据此新增了两张季频图）。
+#   两条与本页月度线的关系**不一样**，所以下面分开写、不共用一句话：
+#     · 融资余额：季末就是该季最后一个月的月末，与本页的月末口径是**同一个量**（重叠季
+#       的逐值核对在那张图的图注里现算，本页只转述结论、不抄数）；
+#     · DATs：季度值是**整季**的（按交易日加权的）日均，与单月日均**不是同一个量**，
+#       两张图不能逐格对照。
+#   sweep cash 与月末货基在那张季报附表里**查无此行** —— 它们那两句话没有被证伪，
+#   Exhibit N_CASH 那边原样保留。
+#   频率不同的两条线本页一条都不接：本页是月度页，接一条季频线，斜率与拐点都是假的。
+SCHW_EX_QMGN = _xnum('schw', 'Quarter-end margin balances')
+SCHW_EX_QDATS = _xnum('schw', 'Daily average trades by quarter')
+SCHW_XREF_QMGN = _xref('Schwab 单页', (SCHW_EX_QMGN,), 'Schwab 单页那张季末融资余额图')
+SCHW_XREF_QDATS = _xref('Schwab 单页', (SCHW_EX_QDATS,), 'Schwab 单页那张季频日均交易图')
+SCHW_XREF_QBOTH = _xref('Schwab 单页', (SCHW_EX_QDATS, SCHW_EX_QMGN), 'Schwab 单页那两张季频图')
+XREF_LOG += [('schw:quarter-end margin (季频)', SCHW_EX_QMGN),
+             ('schw:DATs by quarter (季频)', SCHW_EX_QDATS)]
+_QF_MGN = _xfirst('schw', 'Quarter-end margin balances')
+_QF_DATS = _xfirst('schw', 'Daily average trades by quarter')
+_Q_FROM_MGN = f'回得到 {_QF_MGN}' if _QF_MGN else '回溯得远得多'
+_Q_FROM_DATS = f'回得到 {_QF_DATS}' if _QF_DATS else '回溯得远得多'
+# 两张图的起点同月就合并成一句，不同就只说「都回溯得远得多」—— 抄一个数进来充当两条的
+# 起点，正是这次要改掉的那种写法。
+_Q_FROM_BOTH = (f'都{_Q_FROM_MGN}' if _QF_MGN and _QF_MGN == _QF_DATS else
+                '都回溯得远得多，各自的起点见那两张图')
+
 # ── Exhibit N_MGN：融资余额 ──
 _IT7 = [('schw', 'schw_margin', 'Schwab month-end margin'),
         ('ibkr', 'ibkr_margin', 'IBKR margin loans'),
@@ -1821,13 +1866,30 @@ ex.append({
     **({'end_label': True, 'zero_base': True} if _k7 == 'lines' else {}),
     'series': s7,
     'note': (firms_note(inc7, exc7, 'LPL 不披露融资余额。')
-             + '三家都是客户融资余额（月末口径），但 Schwab 的数含 short credits、'
-             '另两家不含。'
+             # ⚠ 这里从前写的是「Schwab 的数含 short credits、另两家不含」——
+             #   2026-09-16 回原件核掉：那是把月报**两行共用**的脚注 (4) 整条算给了
+             #   融资余额行。脚注 (7) 明写 sweep cash "includes ... short credits related
+             #   to certain client long/short strategies"，两个半句各归各行；对账见
+             #   schw 单页那张季末融资余额图的图注（季末余额减去与 long/short 相关的
+             #   margin loans，与同期资产负债表的 Receivables from brokerage clients —
+             #   net 吻合）。⇒ 这一族三家在这一点上**同口径**，原先那句「系统性偏差」
+             #   的理由随之撤掉（页尾第 3 条与释义表「融资余额」一并改）。
+             + '三家都是客户融资余额（月末口径），而且<b>三家都只含客户的融资借款'
+             '（margin loans）本身</b>：'
+             'Schwab 的 short credits（客户<b>卖空</b>所得留在券商处的贷方余额）计在月报 '
+             f'<code>Transactional Sweep Cash</code> 那一行 —— 那是 Exhibit {N_CASH} '
+             '客户现金的分量之一，不在这一行里。'
              + (f'<b>Schwab 那条只有 {mlab(_schw_mgn0.index[0])} 起</b>：'
-                '公司自 2026-01 的月报才开始披露月末融资余额，那一期的 13 个月滚动表回溯到 '
-                f'{mlab(_schw_mgn0.index[0])} 为止，更早的月份公司就没有印过'
+                '公司自 2026-01 的月报才开始<b>按月</b>披露月末融资余额，'
+                f'那一期的 13 个月滚动表回溯到 {mlab(_schw_mgn0.index[0])} 为止，'
+                '更早的<b>月份</b>公司就没有印过'
                 '（见 <code>fetch/schw.py</code> 的 <code>_DATS_MARGIN_FROM</code>）。'
-                '<b>本图不因此把另外两条一起砍掉</b> —— 从前的判法是「取各线都有值的连续末段」，'
+                f'⚠ <b>但这只是「按月」的边界</b>：同一个量的<b>季末</b>值在季报附表'
+                f'（8-K Ex-99.1 的 <code>Margin loans outstanding</code> 行）里{_Q_FROM_MGN}，'
+                f'画在 {SCHW_XREF_QMGN} 上 —— 季末就是该季最后一个月的月末，'
+                '两边是同一个时点的同一个存量（重叠季的逐值核对由那张图现算，写在它的图注里）。'
+                '本图不把它接进来：本页是月度页，月频与季频接成一条线，斜率与拐点都是假的。'
+                '<b>本图也不因此把另外两条一起砍掉</b> —— 从前的判法是「取各线都有值的连续末段」，'
                 f'那会让 IBKR 这条 {mlab(_first("ibkr_margin"))} 起的线'
                 f'只剩 {len(_schw_mgn0)} 个月，'
                 '等于把一家的披露缺口转嫁成另一家的历史损失。' if len(_schw_mgn0) else '')
@@ -1897,8 +1959,12 @@ ex.append({
              '取任一条与另外三家并排，不是漏计就是重复计，所以它不入图。'
              '<b>三家的「客户现金」各是什么：</b>Schwab 是月报 Selected Balances 块里的 '
              'Transactional Sweep Cash 与 Total Money Market Funds 两条月末余额之和'
-             '（官方脚注：sweep 含银行扫款存款、券商现金余额、表内其它客户现金与'
-             '第三方银行存款账户，不含自有与第三方 CD）；LPL 是 client cash'
+             # 脚注 (7) 里的 short credits 这一块从前漏在这张清单外面，而 Exhibit N_MGN
+             # 的图注正是指到这一行来的 —— 两处必须对得上，否则读者跳过来会找不到它。
+             '（官方脚注：sweep 含银行扫款存款、券商现金余额、表内其它客户现金、'
+             '第三方银行存款账户与客户<b>卖空</b>所得的 short credits，'
+             f'不含自有与第三方 CD —— short credits 在这里、<b>不</b>在 Exhibit {N_MGN} '
+             '的融资余额里）；LPL 是 client cash'
              '（ICA + 货基 + DCA 合计）；IBKR 是 client credits（客户贷方余额，<b>不含货基</b>）。'
              '前两家的口径含货基、IBKR 不含，所以 IBKR 那条的水平值系统性偏低，'
              '要读的是各自的方向与拐点。这三条线都是净利息收入的核心驱动。'
@@ -1966,8 +2032,15 @@ ex.append({
              '不是账户 —— 两条线的账户口径是同一个（全部客户账户），差别在分子。'
              + _HOOD_DATS_CAL
              + (f'<b>Schwab 那条只有 {mlab(df["schw_dats"].dropna().index[0])} 起</b>：'
-                'DATs 与月末融资余额是同一批新增列，自 2026-01 的月报才开始披露、'
-                '那一期的 13 个月滚动表只回溯到这里，更早的月份公司没有印过。'
+                'DATs 与月末融资余额是同一批新增列，自 2026-01 的月报才开始<b>按月</b>披露、'
+                '那一期的 13 个月滚动表只回溯到这里，更早的<b>月份</b>公司没有印过。'
+                f'⚠ <b>季频另有一条长历史</b>：季报附表里 '
+                "<code>Clients' Daily Average Trades</code> 的 <b>Total</b> 行"
+                f'{_Q_FROM_DATS}，画在 {SCHW_XREF_QDATS} 上。'
+                '<b>那条与本图不是同一个量</b>：季度值是<b>整季</b>的日均'
+                '（按各月交易日天数加权），月度值是<b>单月</b>的日均，'
+                '同一段时间里两者本来就不相等，两张图<b>不能逐格对照</b> —— '
+                f'与 Exhibit {N_MGN} 那一对正好相反（那边季末就是月末，是同一个存量）。'
                 + f'同 Exhibit {N_MGN}，不为它砍掉 IBKR 那条 '
                   f'{mlab(_first("ibkr_dats"))} 起的线。'
                 if has('schw_dats') else '')
@@ -2065,8 +2138,9 @@ ex.append({
              + '把融资余额按各自的客户资产归一化 —— 这是横截面页真正独有的读法：'
              '绝对额只说明谁大，占比说明<b>同样一块客户资产上，谁的客户加了更多杠杆</b>。'
              f'注意分母口径三家略有差异（见 Exhibit {N_REB23} 的说明），'
-             '且 Schwab 的分子含 short credits，'
-             '所以水平值有系统性偏差，趋势与相对位次才是要看的。'
+             '所以水平值有系统性偏差，趋势与相对位次才是要看的；'
+             f'<b>分子这一侧三家反倒是同口径的</b>（都只含 margin loans，'
+             f'见 Exhibit {N_MGN} 的图注）。'
              '<b>比率的可得区间是分子分母的交集</b>：本图三条线各自从「该家融资余额与'
              '客户资产都已披露」的那个月起画 —— '
              + _MGN_PCT_START_TXT
@@ -2580,9 +2654,12 @@ notes = [
     '（client assets / client equity / platform assets）都是「客户放在这家平台上的资产」，'
     '可直接并排；但日均交易的「一笔」三家定义不同（Schwab 数成交笔数、'
     'IBKR 报的是 Total Client DARTs、含不在 IBKR 清算的客户、Robinhood 是三个市场之和），'
-    '融资余额里 Schwab 含 short credits 而另两家不含，'
     '账户口径 IBKR 数账户、Robinhood 数「有入金的客户」。'
-    '这些图的<b>水平值只能当量级读，方向与拐点才是可比的信息</b>。',
+    '这些图的<b>水平值只能当量级读，方向与拐点才是可比的信息</b>。'
+    # 这一条从前也列在差异里（「融资余额里 Schwab 含 short credits 而另两家不含」），
+    # 2026-09-16 回原件核掉 —— 详见 Exhibit N_MGN 图注上方那段注释。
+    f'<b>融资余额则不在这张差异清单上</b>：三家都只含 margin loans，'
+    f'Schwab 的 short credits 计在客户现金那一行（见 Exhibit {N_MGN} 的图注）。',
 
     '<b>流量类不算环比百分比。</b>净新增资产是流量，环比百分比的分母是上个月的流量，'
     '一个月的噪音会被放大成趋势。按 GS「LPLA monthly metrics」的规矩改用<b>年化有机增长率</b>'
@@ -2665,7 +2742,12 @@ notes = [
     '<b>缺的月份不补、不连。</b>Schwab 的月末融资余额、DATs、月末 sweep cash 与月末货基'
     '是 2026-01 那期月报<b>一次新增的同一批列</b>'
     f'（那一期的 13 个月滚动表回溯至 {mlab(_schw_mgn0.index[0]) if len(_schw_mgn0) else "2025-01"}，'
-    f'更早的月份公司没有印过），'
+    f'更早的<b>月份</b>公司没有印过）。'
+    '<b>这句话只管「按月」，而且这四列要拆开说：</b>融资余额与 DATs 在<b>季报附表</b>里'
+    f'各另有一条季频序列（{SCHW_XREF_QBOTH}，{_Q_FROM_BOTH}），'
+    'sweep cash 与月末货基在那张附表里<b>查无此行</b>、对它们这句话在各个频率上都成立。'
+    '季频的那两条本页一条都不接 —— 本页是月度页，'
+    f'而且只有融资余额那一对是同一个量（季末 = 月末），DATs 那一对不是（见 Exhibit {N_DATS}）。'
     + (f'所以 Schwab 那条线在 Exhibit {_exl(_SCHW_LATE)} 上'
        f'只占右端 {"、".join(str(c) for c in _SCHW_CELLS)} 格，左段是空的；'
        if _SCHW_BATCH else '')
@@ -2680,7 +2762,11 @@ notes = [
     '本轮改掉了：一家的披露缺口不该变成另一家的历史损失。'
     f'<b>反例在 Exhibit {N_CASHPCT}</b>：那张图的 Schwab 用的是官方自己印的现金占比'
     f'（{mlab(_first("schw_cash_pct"))} 起），反而是全图最长的一条 —— '
-    '「Schwab 的历史短」不是这家公司的性质，是逐列各自的披露边界。',
+    '「Schwab 的历史短」不是这家公司的性质，是<b>逐列 × 逐频率</b>各自的披露边界 —— '
+    '「逐频率」这一半是本轮才补上的：'
+    + (f'融资余额这一列在月报里只回到 {mlab(_schw_mgn0.index[0])}，'
+       f'在季报附表里{_Q_FROM_MGN}。' if len(_schw_mgn0) else
+       '同一列在月报与季报附表里的起点可以差十年。'),
 
     f'<b>纵轴。</b>重定基图（Exhibit {N_REB18}、{N_REB23}、{N_REB19}）沿用 deck 的自适应量程，'
     '各条线右端标出当期指数值 —— 长历史图上那是唯一的绝对水平锚点，没有它只能靠网格线目测；'
@@ -3105,8 +3191,10 @@ BRIEF = compose_brief(df, LATEST)
 #   ② 同一件事的四个官方名字 —— 客户资产、净新增资产（NNA）、客户现金、融资余额、
 #      DATs / DARTs、账户 / 客户数。这是横截面页最密集的坑：四家各印各的词，
 #      「能不能直接比大小」全看分子含不含某一块（IBKR 的 client credits 不含货基、
-#      Schwab 的融资余额含 short credits、三家的「一笔」不是同一件事、
-#      IBKR 数账户而 Robinhood 数人）。图形完全正常，偏差却是系统性的。
+#      三家的「一笔」不是同一件事、IBKR 数账户而 Robinhood 数人）。
+#      （「Schwab 的融资余额含 short credits」从前也列在这里，2026-09-16 核掉 ——
+#        它其实只含 margin loans，见 Exhibit N_MGN 图注上方那段注释。）
+#      图形完全正常，偏差却是系统性的。
 #   ③ 水平值 / 流量 / 存量的混读 —— 年化有机增速：它是**增长率的水平值不是同比**，
 #      分母是**上月末**资产，把一个月的流量乘 12。不点破，它会被当成同比去与
 #      客户资产 y/y 那张图逐月对照。
@@ -3268,11 +3356,17 @@ GLOSSARY = [
      '客户以证券作担保向券商借的钱，本页这一族是 '
      + ' / '.join(f'{NAME[t]} 的 <code>{_MGN_TERM[t]}</code>' for t in _MGN)
      + '，一律取<b>月末</b>口径。'
-     # short credits 在本页出现三次（Exhibit N_MGN / N_MGNPCT 的图注、页尾第 3 条），
-     # 三处都只用不释 —— 行内给一句通用定义就够。Schwab 具体含哪几块公司没有印，不猜。
-     + ('⚠ Schwab 那条<b>含</b> short credits（客户<b>卖空</b>所得留在券商处的贷方余额），'
-        + ' / '.join(NAME[t] for t in _MGN if t != 'schw')
-        + ' <b>不含</b> —— 水平值有系统性偏差，方向与相对位次才是可比的信息。'
+     # short credits 在本页出现几次（Exhibit N_MGN / N_CASH / N_MGNPCT 的图注、页尾第 3 条），
+     # 那几处都只用不释 —— 行内给一句通用定义就够。
+     # ⚠ 这一条从前写的是「Schwab 那条含 short credits、另两家不含 —— 水平值有系统性偏差」，
+     #   2026-09-16 回原件核掉（详见 Exhibit N_MGN 图注上方那段注释）：那是把月报**两行
+     #   共用**的脚注 (4) 整条算给了融资余额行。这一族三家其实同口径，词条现在只需说明
+     #   short credits 去了哪一行。
+     + (f'本族{_cn(len(_MGN))}家的内容是同一样东西：<b>都只含客户的融资借款'
+        '（margin loans）本身</b>；'
+        'Schwab 的 short credits（客户<b>卖空</b>所得留在券商处的<b>贷方</b>余额）'
+        f'计在月报 <code>Transactional Sweep Cash</code> 那一行，'
+        f'落在「客户现金」那一族里（见 Exhibit {N_MGN} 的图注）。'
         if 'schw' in _MGN and len(_MGN) > 1 else '')
      + 'LPL 既<b>不披露</b>融资余额也不披露交易笔数，故<b>不入</b>这一族。'),
 
