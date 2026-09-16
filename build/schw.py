@@ -249,9 +249,35 @@ LS_2025_AVG_MN = 884                           # 2026Q2 稿给的 2025 年同期
 LS_RECON = ('2026Q2', 165.1, 42.1, 122.8)      # (季, 季末余额, long/short margin loans, 资产负债表净应收)
 
 # ── 为什么 SCHW 没有「量→收入」桥 ──
-# Schwab 月报既不披露客户现金也不披露生息资产，唯一能当代理的是客户资产；
-# 但生息资产/客户资产的比值在单边下行（趋势，不是噪音），把它当常数会造出假精度。
-# 所以这里不搭桥，改把这个比值本身画出来 —— 它本身就是 NII 增长受限的原因。
+# NII ≈ 净息差 × 平均生息资产。本页拿得到的这两个因子都只有**季度腿**：它们来自
+# 8-K Ex-99.1（series/fee_rates.csv 的 SCHW 行，2013-Q4 起按季给）。
+#
+# ⚠️ 这是**管道边界，不是披露边界** —— ab70cd7 与 47710ce 两次为同一种病写过
+# 「把工具的边界当成了世界的边界」。下面两句都是假话，别往图注里写：
+#   ·「Schwab 不披露客户现金」—— fetch/schw.py 口径坑第 7 条点名禁止。占比那一行自
+#     _CASH_PCT_FROM 起每期都印，sweep 与货基两条月末金额自 _DATS_MARGIN_FROM 起也印。
+#   ·「生息资产不按月披露 / 只随季报出」—— 同样是假话。月报 "Selected Balances" 块里
+#     逐月印着 Average Interest-Earning Assets，脚注 (6) 的定义是 "average total
+#     interest-earning assets on the Company's balance sheet"，与季报同一个口径：
+#     Aug-2026 那期印的 Apr/May/Jun-2026 三个月（444.6 / 442.0 / 448.4 $bn）算术平均
+#     445.00 $bn，对上 fee_rates.csv 的 2026-Q2 = 444,982 USD_mn（差 0.02 $bn）。
+#     cache 里 2019-05 / 2025-05 / 2025-11 / 2026-08 各期月报都有这一行。
+#     本仓只有季度腿，唯一的原因是 fetch/schw.py 的 COLS 还没写它。
+#     （真要抓：2026-01 起块头单位由 $mn 改成 $bn；脚注 (6) 说 2025-12 起把某类
+#      long/short 策略的客户融资贷款与 short credits 剔出生息资产并追溯调整了前期。）
+#
+# 客户现金虽然按月可得，但**客户现金不是生息资产**（货基是客户表外持仓，sweep 是
+# 负债端资金来源），顶不了这个分子。所以本页能按月对上、又与生息资产同为余额口径的
+# 基数只剩客户资产；而这个比值不是常数（见下面现算的 _MONO13 / _UP_ALL），
+# 把它当常数会造出假精度。所以这里不搭桥，改把这个比值本身画出来 ——
+# 它本身就是 NII 增长受限的原因。
+#
+# 下面两个量只为图注/页尾现算「客户现金按月印到什么程度」。写死月份数在本仓被反复
+# 当 bug 修过（47710ce 把起点从 2014-06 回填到 2013-09，现算的几处一个字都不用改）。
+_CASHPCT = df['client_cash_pct'].dropna()
+_CASHAMT = df[['sweep_cash_usdbn', 'mmf_usdbn']].dropna(how='all')
+if not len(_CASHPCT) or not len(_CASHAMT):   # 规矩 5：失败要响，不静默把空话印上页
+    raise SystemExit('series/schw.csv 的客户现金三列读不出值，图注会印出空起点')
 _rates = pd.read_csv(os.path.join(SERIES, 'fee_rates.csv'))
 _rates = _rates[_rates['company'] == 'SCHW'].copy()
 _rates['q'] = pd.PeriodIndex(_rates['period'].str.replace('-', '', regex=False), freq='Q')
@@ -1200,7 +1226,16 @@ ex.append({
     'title': 'Daily average trades',
     'ylab': 'mn trades / day', 'ylab2': '% y/y (单月)', 'legend': 'Monthly',
     'values': L(d9.values), 'yoy': _y9,
-    'mom_txt': oval(mom_of(dm), suffix=' m/m'),
+    # 原来这里有 'mom_txt'：GS deck 的 m/m 椭圆气泡。2026-08 那个数据点把它变成了压字 ——
+    # 引擎的气泡 x 钉在 Xc(n-4)，y 却由**末月**的值定高（gs_bar 分支，搜 `ex.mom_txt`；
+    # 不写行号，先例 build/msci.py 记过「上一版写的行号复核已指偏」）。DATs 从 11.648
+    # 掉到 9.821 之后 last*1.13 正好落进柱顶标签带，白底 rect 把 Apr-26 的「10.3」整个
+    # 盖掉（visual_qa 实测 111px² @1280 / 79px² @768，两个视口都 🔴；截到 19 个月重画
+    # 则是 0px²，所以这是新账不是老账）。这不是配一个偏移量能治的 —— ALL_N 每月加一根柱，
+    # band 只会更窄。而「-16% m/m」本页已有两处：页顶 headline、汇总表的 m/m 列。
+    # 删的是重复，不是信息。engine 侧不动 —— 同 build/msci.py 与 build/ibkr.py 两次先例。
+    # ⚠️ Exhibit 9 的气泡同根同源，眼下不压纯粹是它末端单调上行把气泡顶到了标签之上，
+    #   是数据形状撞的运气不是设计保证；真治要动 charts.js 的 y 锚，不在本次范围。
     'note': ('Client DATs first appear in the Jan-2026 report; the 13-month rolling table '
              'reaches back to Jan-2025。⚠️ 这句话说的是<b>月报</b>：'
              '季报附表里的<b>整季</b>日均回得到 2016，本页画在 <b>Exhibit 10</b>，'
@@ -1252,7 +1287,9 @@ def fee_period_note(head='<b>费率期间。</b>'):
     """本页唯一用到 series/fee_rates.csv 的地方是 Exhibit 12（生息资产占比 + NIM）。
     这句话回答读者的三个问题：图上的费率是哪一季的、本页月度数据走到哪个月、
     两者错开时页面怎么处理。整句从数据现算 —— 季度号一律走 qlab()，不写死。"""
-    t = (f'{head}生息资产与净息差是<b>季度</b>披露，本图两条线取至 '
+    # 「季度腿」而不是「季度披露」：月报里逐月印着 Average Interest-Earning Assets，
+    # 说它「是季度披露」会和 Exhibit 10 的图注自相矛盾（见文件开头那段口径注释）。
+    t = (f'{head}本图的生息资产与净息差走<b>季度</b>腿，两条线取至 '
          f'{qlab(_FEE_USED_Q)} 的公司披露值（<code>series/fee_rates.csv</code>；每季取自'
          '该季自己那份 8-K Ex-99.1 业绩新闻稿的原报值，官方后来的重述不回填）；'
          f'本页月度数据截至 {mlab(LATEST)}，属 {qlab(_LATEST_Q)}。')
@@ -1301,10 +1338,20 @@ ex.append({
          'values': L(bs['iea_share'].values)},
         {'name': 'Net interest margin', 'color': 'RED', 'values': L(bs['nim'].values)},
     ],
-    'note': ('Neither client cash nor interest-earning assets is published monthly. '
-             'The only monthly proxy is client assets, and that ratio moved from '
-             f'{_r0:.1f}% to {_r1:.1f}% over {len(bs) - 1} quarters — treating it as a constant '
-             'would be false precision. Both series are quarterly。'
+    'note': ('Interest-earning assets and net interest margin reach this page only as '
+             'quarterly figures, from the 8-K exhibit behind series/fee_rates.csv. '
+             'The navy line divides quarterly average interest-earning assets by the mean '
+             f'of monthly client assets in the same quarter; it moved from {_r0:.1f}% to '
+             f'{_r1:.1f}% over {len(bs) - 1} quarters — treating it as a constant would be '
+             'false precision. Both series are quarterly。'
+             '<b>季度腿是本页管道的边界，不是公司披露的边界</b>：月报 "Selected Balances" '
+             '块里逐月印着 Average Interest-Earning Assets（脚注 (6)，与季报同口径），'
+             '本页尚未取用它 —— <code>fetch/schw.py</code> 的 COLS 里没有这一列。'
+             f'客户现金同样逐月可得：占比那一行自 {mlab(_CASHPCT.index[0])} 起每期都印'
+             f'（{len(_CASHPCT)} 个月），sweep 与货基两条月末金额自 '
+             f'{mlab(_CASHAMT.index[0])} 起也每期都印；但<b>客户现金不是生息资产</b>，'
+             '顶不了这个分子，所以能按月对上、又与生息资产同为余额口径的基数只剩客户资产。'
+             '（客户现金本页不画，画它的是 <code>build/wealth.py</code> 的横截面两图。）'
              'x 轴标的是各季<b>季末月</b>；PDF 版此处保留 2 位小数，网页图表引擎的格式器只到 '
              '1 位小数，切到「表格」视图可读到 2 位。'
              '本图不做窗口截取，画的是两条线都有值的全部季度。'
@@ -1967,8 +2014,18 @@ notes = [
     '⚠️ 别把「月报只回填 13 个月」读成「公司从未公布过更早的数」—— '
     '没有的只是<b>月度</b>的更早历史。',
 
-    '<b>这里没有「量 → 收入」桥。</b>Schwab 月报既不披露客户现金也不披露生息资产，'
-    '唯一能当代理的是客户资产；但生息资产 / 客户资产的比值在 Exhibit 12 画的 '
+    '<b>这里没有「量 → 收入」桥。</b>NII ≈ 净息差 × 平均生息资产，'
+    '而这两个因子进到本页时<b>只有季度腿</b> —— 它们来自 8-K Ex-99.1'
+    '（<code>series/fee_rates.csv</code>，2013-Q4 起按季给）。'
+    '<b>这是本页管道的边界，不是公司披露的边界</b>：月报 "Selected Balances" 块里'
+    '逐月印着 Average Interest-Earning Assets（脚注 (6) 的定义与季报同口径），'
+    '本页尚未取用它。客户现金也一样逐月可得 —— 「客户现金占客户资产的比重」自 '
+    f'{mlab(_CASHPCT.index[0])} 起每期都印（{len(_CASHPCT)} 个月），'
+    f'sweep 与货基两条月末金额自 {mlab(_CASHAMT.index[0])} 起每期都印'
+    f'（{len(_CASHAMT)} 个月）—— 但<b>客户现金不是生息资产</b>'
+    '（货基是客户表外持仓，sweep 是负债端资金来源），顶不了这个分子。'
+    '所以能按月对上、又与生息资产同为余额口径的基数只剩客户资产；'
+    '但生息资产 / 客户资产的比值在 Exhibit 12 画的 '
     f'{len(bs)} 个季度（{mlab(bs.index[0])}–{mlab(bs.index[-1])}）里从 {_r0:.1f}% '
     f'{"单边" if _MONO13 else ""}走到 {_r1:.1f}%（趋势，不是噪音），把它当常数会造出假精度。'
     f'其中 {_UP_ALL} 个季度环比上升，高点是 {mlab(_bs["iea_share"].idxmax())} 的 '
@@ -2506,13 +2563,19 @@ GLOSSARY = [
      '（average interest-earning assets），分母是<b>该季客户总资产的月度均值</b>。'
      '⚠️ 两个数一个来自季报、一个来自月报，所以这条线是<b>季度</b>腿，'
      '与本页其余月度图<b>不能逐格对照</b>。'
-     # ⚠️ 这里**只说得住「生息资产没有月度值」这一半**。「Schwab 不披露客户现金」
-     # 是句流传过的假话，fetch/schw.py 的「口径坑」第 7 条点名禁止再写进任何图注：
-     # 月报 Client Activity 块下的 Client Cash as a Percentage of Client Assets
-     # 自 2014-06 起每期都印（同文件 _CASH_PCT_FROM），series/schw.csv 的
-     # client_cash_pct 就是它。释义板是「一年到头同一段」的定义性文字，更不能带这句。
-     '它存在的理由是：<b>生息资产不按月披露</b>（只随季报出），'
-     '能按月对上的分母代理只有客户资产。'
+     # ⚠️ 这条以前写「生息资产不按月披露（只随季报出）」，那也是假话 —— 月报
+     # "Selected Balances" 块里逐月印着 Average Interest-Earning Assets（脚注 (6)，
+     # 与季报同口径）。本页只有季度腿，是因为 fetch/schw.py 的 COLS 没写这一列，
+     # 是管道边界不是披露边界（同 ab70cd7 / 47710ce 那两次的病）。
+     # 「Schwab 不披露客户现金」同样是假话，fetch/schw.py 的「口径坑」第 7 条点名禁止：
+     # 月报里的 Client Cash as a Percentage of Client Assets 自 2013-09 起每期都印
+     # （同文件 _CASH_PCT_FROM；2015-01-16 报送及更早那一行没有 Client 前缀，该处有实证），
+     # series/schw.csv 的 client_cash_pct 就是它。⚠️ 别写死它在哪个块下 —— 2026-01 起
+     # 官方把这一行从 Client Activity 挪进了 Selected Balances（aug2026 表 r35）。
+     # 释义板是「一年到头同一段」的定义性文字，两句都不能带。
+     '它存在的理由是：<b>本页的生息资产只有季度腿</b>（取自 8-K Ex-99.1；'
+     '月报里那条逐月的 Average Interest-Earning Assets 本页尚未取用），'
+     '能按季对上的分母只有客户资产。'
      '（月报里逐月印着「客户现金占客户资产的比重」这一行，'
      '但<b>客户现金不是生息资产</b>，顶不了这个分子。）'
      '而这个比值本身在长期下行 —— 把它当常数就会造出假精度，'
