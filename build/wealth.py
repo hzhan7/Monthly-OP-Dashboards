@@ -41,7 +41,8 @@
 ⚠ **Schwab 曾以「月报不单列客户现金」为由被排除在客户现金两张图之外 —— 那句话是错的**
 （2026-08-19 回原件核掉）。月报 Selected Balances 块里逐月印着 Transactional Sweep Cash
 与 Total Money Market Funds 两条月末 $bn，Client Activity 块下面还有一行
-Client Cash as a Percentage of Client Assets（自 2014-06 起每期都印）。抓不到只是因为
+Client Cash as a Percentage of Client Assets（自 2013-09 起每期都印；2015-01-16 报送及
+更早那一行没有 Client 前缀，见 `fetch/schw.py` 的 `_CASH_PCT_FROM`）。抓不到只是因为
 `fetch/schw.py` 的 `COLS` 里没写这三行。三列已补进 `series/schw.csv`
 （`python3 fetch/schw.py --columns`），两张图都已把 Schwab 接进来。
   · 三家的长历史重定基图 —— HOOD 的月度经营指标最早只到 2021-01（天花板的举证见下），
@@ -596,7 +597,7 @@ put('ibkr_cash', col('ibkr', 'credits'))
 # 张表上另印一行 Client Cash as a Percentage of Client Assets，(sweep + MMF) ÷ Total
 # Client Assets 逐月复现它 —— 下面 _SCHW_CASH_ID 就地核，超差直接停建，不带着走。
 # 两条分量 2026-01 那期月报才新增、回填到 2025-01（同 DATs / 月末融资余额，
-# 见 fetch/schw.py 的 _DATS_MARGIN_FROM）；占比那一行则自 2014-06 起每期都印。
+# 见 fetch/schw.py 的 _DATS_MARGIN_FROM）；占比那一行则自 2013-09 起每期都印。
 _schw_sweep, _schw_mmf = col('schw', 'sweep_cash_usdbn'), col('schw', 'mmf_usdbn')
 put('schw_cash', (_schw_sweep + _schw_mmf)
     if (_schw_sweep is not None and _schw_mmf is not None) else None)
@@ -635,8 +636,9 @@ for t in ('schw', 'ibkr', 'hood'):
     df[f'{t}_mgn_pct'] = df[f'{t}_margin'] / df[f'{t}_assets'] * 100
 for t in ('lpla', 'ibkr'):
     df[f'{t}_cash_pct'] = df[f'{t}_cash'] / df[f'{t}_assets'] * 100
-# Schwab 的现金占比**不现除**，取官方自己印的那一行：它自 2014-06 起每期都印，
-# 比 sweep / MMF 两条分量（2025-01 起）长十年多。能拿到 as-reported 就不要自己算 ——
+# Schwab 的现金占比**不现除**，取官方自己印的那一行：它自 2013-09 起每期都印，
+# 比 sweep / MMF 两条分量（2025-01 起）长十年以上（图注里的跨度由 yspan() 现算）。
+# 能拿到 as-reported 就不要自己算 ——
 # 自己算只会把这条线砍到分量的起点，还多担一层口径解释的责任。
 put('schw_cash_pct', col('schw', 'client_cash_pct'))
 
@@ -686,6 +688,17 @@ N_TABLE = next(_seq)                                  # 页尾核对表
 # ────────────────────────────── 格式化零件 ──────────────────────────────
 def mlab(p):
     return p.strftime('%b-%y')
+
+
+def yspan(a, b):
+    """两个月份相隔多久 → 「N 年」/「N 年多」，给图注用。
+
+    这句跨度原先写死成「长十年」，而它两端的起点都是现算的 —— 任一端的披露边界一挪
+    就成假话。2026-09-16 把 client_cash_pct 的起点从 Jun-14 更正到 Sep-13 时正是如此
+    （见 fetch/schw.py 的 _CASH_PCT_FROM）。
+    """
+    n = abs((b.year - a.year) * 12 + (b.month - a.month))
+    return f'{n // 12} 年' + ('多' if n % 12 else '')
 
 
 def comma(v, d=0):
@@ -1839,7 +1852,8 @@ ex.append({
 # 不单列客户现金」—— **那句话是错的**，2026-08-19 回原件核掉：月报 Selected Balances
 # 块里逐月印着 Transactional Sweep Cash 与 Total Money Market Funds 两条月末 $bn，
 # Client Activity 块下面还有一行 Client Cash as a Percentage of Client Assets
-# （自 2014-06 起每期都印）。抓不到只是因为 fetch/schw.py 的 COLS 里没写这三行，
+# （自 2013-09 起每期都印；2015-01-16 报送及更早那一行没有 Client 前缀，
+# 见 fetch/schw.py 的 _CASH_PCT_FROM）。抓不到只是因为 fetch/schw.py 的 COLS 里没写这三行，
 # 不是公司没披露。三列已补进 series/schw.csv（`python3 fetch/schw.py --columns`）。
 # 纵轴被 Schwab 撑开多少倍 —— 现算。写「十几倍到二十几倍」这种话当场就错了一半
 # （对 LPL 是二十倍，对 IBKR 只有六倍多），而且下个月还会变。
@@ -2098,7 +2112,8 @@ ex.append({
                'Client Cash as a Percentage of Client Assets（官方定义：Schwab One、'
                '若干现金等价物、银行存款、第三方银行存款账户与货基余额占客户总资产的比重），'
                f'自 {mlab(_first("schw_cash_pct"))} 起每期都印，'
-               f'比 Exhibit {N_CASH} 里那两条分量（{mlab(_first("schw_cash"))} 起）长十年 —— '
+               f'比 Exhibit {N_CASH} 里那两条分量（{mlab(_first("schw_cash"))} 起）'
+               f'长 {yspan(_first("schw_cash_pct"), _first("schw_cash"))} —— '
                '所以这张图取 as-reported，那张图取分量之和。'
                '另两家的分子分母见下：LPL 是 client cash ÷ total client assets，'
                'IBKR 是 client credits ÷ client equity。'
