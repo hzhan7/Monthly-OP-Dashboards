@@ -134,7 +134,7 @@ BRK_Q = BRK.asfreq('Q')                       # 2025Q1，季度图用
 # 线上只留最短的那句「谁变成了谁」。
 BRK_LABEL = '$10bn → $25bn'
 
-# ── 第二个断点：TD Ameritrade 并表（只对季频的 Exhibit 15 / 16 生效）──
+# ── 第二个断点：TD Ameritrade 并表（只对季频的 Exhibit 10 / 11 生效）──
 # 2020-10-06 完成收购，**前期未重述**：并表前后不是同一家公司的同一条序列。
 # ⚠ 「未重述」是**推断，不是引文** —— 官方从没写过这四个字，用的是前瞻纳入式措辞
 # （"Results of operations and metrics are inclusive of TD Ameritrade beginning
@@ -181,7 +181,7 @@ df['assets_tn'] = assets / 1000.0
 #   2020-10 14,718 − 14,500 = 218 （左右邻月 184 / 430）
 # 减完的读数与邻月严丝合缝，说明这两笔就是全部的一次性成分。
 # 本文件此前只处理了 2020-10、且用的是置空 —— 于是 2020-05 那 1,250k 一直当成真实开户量
-# 画在图上（Exhibit 7 的柱、Exhibit 12 那条 2020 年线都被它顶出一个假尖峰），
+# 画在图上（Exhibit 7 的柱、Exhibit 14 那条 2020 年线都被它顶出一个假尖峰），
 # 而 2020-10 在逐年对照图上是个洞。两个毛病同一个根因：把「并购搬账」当成了「开户」。
 ACQ_ACCOUNTS_K = {
     pd.Period('2020-05', 'M'): 1_100.0,     # USAA Investment Management
@@ -203,7 +203,7 @@ avgm = avgm.set_index('month').sort_index()['avg_margin_balances_usdbn'].astype(
 # 仍然读进来，是因为页尾「口径说明」要现算它的停发月份 —— 写死那个月份就是下一句假话。
 assert_monthly(avgm.index, 'series/schw_avg_margin.csv')
 
-# ── 季报附表腿：同样两个指标的**季频**长历史（Exhibit 15 / 16 专用）──
+# ── 季报附表腿：同样两个指标的**季频**长历史（Exhibit 10 / 11 专用）──
 # 月报里 DATs 与月末融资余额是 2026-01 那期才新增的两行，官方只回填 13 个月，所以
 # Exhibit 8 / 9 就只有 20 个月 —— 2014-07 至 2024-12 的月报原件上逐行核过，根本没有这两行。
 # 但**季报附表**（8-K Ex-99.1）里这两个量回得到 2016 以前，于是另开一条季频腿：
@@ -269,7 +269,7 @@ _nim = rate_series('net_interest_margin')
 _ca_q_cnt = assets.groupby(assets.index.asfreq('Q')).count()
 _ca_q = assets.groupby(assets.index.asfreq('Q')).mean()
 _ratio = (_iea / _ca_q.reindex(_iea.index) * 100).dropna()
-# ── 起点那个不满 3 个月的季度要丢掉（Exhibit 10 改画全历史之后才暴露出来）──
+# ── 起点那个不满 3 个月的季度要丢掉（Exhibit 12 改画全历史之后才暴露出来）──
 # 月度序列自 2018-05 起，所以 2018Q2 的分母只由 5/6 两个月的客户资产求均，与其余季度
 # 不是同一口径 —— 画在最左边就是一个凭空偏高/偏低的起点，而读者没有任何线索。
 # **末**季的同一问题是允许的（季报总在季末前就发），由 _FEE_Q_MONTHS 那句图注交代；
@@ -282,7 +282,7 @@ _ratio = _ratio.iloc[_R_HEAD:]
 # 变成「整条都得有」，所以在这里响，而不是等页面上出现一条塌到零的红线。
 _nim_gap = [str(q) for q in _ratio.index if not np.isfinite(_nim.reindex([q]).values[0])]
 if _nim_gap:
-    raise SystemExit(f'fee_rates.csv 缺 SCHW 净息差: {_nim_gap}（Exhibit 10 不容忍空点）')
+    raise SystemExit(f'fee_rates.csv 缺 SCHW 净息差: {_nim_gap}（Exhibit 12 不容忍空点）')
 _bs_idx = pd.PeriodIndex([q.asfreq('M', 'end') for q in _ratio.index], freq='M')
 _bs = pd.DataFrame({'iea_share': _ratio.values,
                     'nim': _nim.reindex(_ratio.index).values}, index=_bs_idx)
@@ -293,7 +293,7 @@ _bs = pd.DataFrame({'iea_share': _ratio.values,
 # 尤其当官方财报延迟、费率落后两个季度以上时。
 # 下面四个量全部现算：写死季度号的话，下一季页面上就是一句假话
 # （本文件已经为「过去 32 个季度单边降」返工过一次，同一个坑不踩第二遍）。
-_FEE_USED_Q = _ratio.index[-1]                  # Exhibit 10 实际画到的最后一季
+_FEE_USED_Q = _ratio.index[-1]                  # Exhibit 12 实际画到的最后一季
 _FEE_HAVE_Q = _iea.index.intersection(_nim.index).max()   # 表里 SCHW 两个指标都齐的最新季
 _LATEST_Q = LATEST.asfreq('Q')                  # 本页月度数据所在季
 _FEE_LAG = (_LATEST_Q - _FEE_USED_Q).n          # 费率落后本页月度数据几个季度
@@ -816,7 +816,7 @@ def xstep_for(n):
 
     所以既不能写死一个常数，也不能全页共用一个 —— 本页各图的点数并不相同
     （2026-09-16 现状：客户总资产 156 个月、核心净新增与年化有机增速各 115 个月、
-    日均交易与月末融资余额各 20 个月，三档起点全不一样；季报附表腿的 Exhibit 15 / 16
+    日均交易与月末融资余额各 20 个月，三档起点全不一样；季报附表腿的 Exhibit 10 / 11
     是 42 个季度、kind 是 qtr_bar，与同页 Exhibit 3 一样不调本函数）。
     做法是从「约 14 档」这个目标密度起往上找第一个整除 (n−1) 的步长：
     密度最多疏一点点，锚点永远对，而且数据每多一个月它自己重算。
@@ -1203,7 +1203,7 @@ ex.append({
     'mom_txt': oval(mom_of(dm), suffix=' m/m'),
     'note': ('Client DATs first appear in the Jan-2026 report; the 13-month rolling table '
              'reaches back to Jan-2025。⚠️ 这句话说的是<b>月报</b>：'
-             '季报附表里的<b>整季</b>日均回得到 2016，本页画在 <b>Exhibit 15</b>，'
+             '季报附表里的<b>整季</b>日均回得到 2016，本页画在 <b>Exhibit 10</b>，'
              '与本图是同一个量的两种频率，但<b>不可逐格对照</b>'
              '（整季日均 ≠ 单月日均，详见该图图注）。'
              f'本图画的就是这条序列的全部 {len(dm.dropna())} 个月'
@@ -1235,8 +1235,8 @@ ex.append({
              'to Jan-2025, so the y/y line starts Jan-2026。'
              '口径是<b>margin loans</b>，<b>不含</b> short credits（后者在月报的 '
              'Transactional Sweep Cash 那一行里，脚注 (4) 是两行共用的，对账见 '
-             'Exhibit 16 图注）。⚠️ 上面那句只管<b>月报</b>：'
-             '季报附表里的<b>季末</b>余额回得到 2016，本页画在 <b>Exhibit 16</b>；'
+             'Exhibit 11 图注）。⚠️ 上面那句只管<b>月报</b>：'
+             '季报附表里的<b>季末</b>余额回得到 2016，本页画在 <b>Exhibit 11</b>；'
              '季末就是该季最后一个月的月末，重叠期逐值相等（该图图注现算），'
              '所以那张与本图<b>是同一条序列</b>，可以接起来读。'
              f'本图同样画的是全部 {len(mb.dropna())} 个月，次轴同比只有最近 {_n10} 个点。'
@@ -1249,7 +1249,7 @@ ex.append({
 
 
 def fee_period_note(head='<b>费率期间。</b>'):
-    """本页唯一用到 series/fee_rates.csv 的地方是 Exhibit 10（生息资产占比 + NIM）。
+    """本页唯一用到 series/fee_rates.csv 的地方是 Exhibit 12（生息资产占比 + NIM）。
     这句话回答读者的三个问题：图上的费率是哪一季的、本页月度数据走到哪个月、
     两者错开时页面怎么处理。整句从数据现算 —— 季度号一律走 qlab()，不写死。"""
     t = (f'{head}生息资产与净息差是<b>季度</b>披露，本图两条线取至 '
@@ -1283,7 +1283,7 @@ def fee_period_note(head='<b>费率期间。</b>'):
     return t
 
 
-# ── Exhibit 10：为什么这里没有「量 → 收入」桥（季度序列，全历史）──
+# ── Exhibit 12：为什么这里没有「量 → 收入」桥（季度序列，全历史）──
 # lines_endlabels **不容忍 null**（docs/CHART_KINDS.md §1.2：首尾为 null 直接抛
 # TypeError、中间的 null 把线画塌到 0），所以窗口只能取「两条线都有值」的那一段。
 # 这也是本页唯一一张理论上能画到 2016 年的图 —— fee_rates.csv 的 SCHW 净息差回溯到
@@ -1292,7 +1292,7 @@ def fee_period_note(head='<b>费率期间。</b>'):
 bs = _bs
 _r0, _r1 = float(bs['iea_share'].iloc[0]), float(bs['iea_share'].iloc[-1])
 ex.append({
-    'n': 10, 'kind': 'lines_endlabels', 'fmt': 'pct1',
+    'n': 12, 'kind': 'lines_endlabels', 'fmt': 'pct1',
     'xlabels': [mlab(p) for p in bs.index],
     'title': f'Why there is no revenue bridge here — {qlab(_ratio.index[0])} 起',
     'ylab': '%',
@@ -1321,7 +1321,7 @@ ex.append({
 })
 
 
-# ── Exhibit 11/12/13：逐年同期对照 ──
+# ── Exhibit 13/14/15：逐年同期对照 ──
 # 逐年对照图最多画几条线。上界不是审美偏好，是调色板的物理上限：引擎把往年线摊在
 # 一条固定的蓝色明度带上（L* 约 77→24），10 条线时相邻两年差 ~6 个 L*，还分得开；
 # 客户总资产与新开经纪账户回填到 2013-09 之后是 14 条，相邻年只差 ~4 个 L*，
@@ -1358,7 +1358,7 @@ def yr_span(names):
     return f'{ys[0]}–{ys[-1]}' if ys == list(range(ys[0], ys[-1] + 1)) else '/'.join(names)
 
 
-# ── Exhibit 11：核心净新增资产逐年同期对照 ──
+# ── Exhibit 13：核心净新增资产逐年同期对照 ──
 y12 = year_series(nna)
 # 断点在这张图上不是一个 x 位置 —— x 轴是 Jan..Dec，断点分的是**线**（年份）不是月份，
 # 竖虚线画上去会被读成「某个月不可比」。所以改用 annot 把同一句话写在图内（annot 走
@@ -1366,7 +1366,7 @@ y12 = year_series(nna)
 _OLD12 = [s['name'] for s in y12 if int(s['name']) < BRK.year]
 _NEW12 = [s['name'] for s in y12 if int(s['name']) >= BRK.year]
 ex.append({
-    'n': 11, 'kind': 'year_lines', 'fmt': 'usd0', 'xlabels': MONTHS,
+    'n': 13, 'kind': 'year_lines', 'fmt': 'usd0', 'xlabels': MONTHS,
     'title': 'Core NNA path by year',
     'ylab': '$bn', 'series': y12, 'highlight': len(y12) - 1,
     'annot': f'口径断点：{yr_span(_NEW12)} 为 $25bn 门槛，{yr_span(_OLD12)} 为 $10bn',
@@ -1381,10 +1381,10 @@ ex.append({
              '跨这两组做逐年对比要扣掉这一条。'),
 })
 
-# ── Exhibit 12：新开经纪账户逐年同期对照 ──
+# ── Exhibit 14：新开经纪账户逐年同期对照 ──
 y13 = year_series(nba_ex)
 ex.append({
-    'n': 12, 'kind': 'year_lines', 'fmt': 'f0c', 'xlabels': MONTHS,
+    'n': 14, 'kind': 'year_lines', 'fmt': 'f0c', 'xlabels': MONTHS,
     'title': 'New accounts path by year',
     'ylab': 'k accounts', 'series': y13, 'highlight': len(y13) - 1,
     'note': ('画的是<b>净除并购搬账之后</b>的开户量，与 Exhibit 7 的柱同一条序列：'
@@ -1396,29 +1396,29 @@ ex.append({
              '（并购没净掉）、在 Oct 处是个洞（整月被置空），两处现在都是真实读数。'),
 })
 
-# ── Exhibit 13：日均交易笔数逐年同期对照（版式同 Exhibit 12）──
+# ── Exhibit 15：日均交易笔数逐年同期对照（版式同 Exhibit 14）──
 y14 = year_series(dm)
 _y14_pts = sum(1 for s in y14 for v in s['values'] if v is not None)
 ex.append({
     # label_fmt 必须显式给：year_lines 的末点标签兜底是 'f0c'（charts.js），
     # 那是照「k accounts」定的，套在 mn 单位上会把 11.6 印成一个「12」。
-    'n': 13, 'kind': 'year_lines', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': MONTHS,
+    'n': 15, 'kind': 'year_lines', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': MONTHS,
     'title': 'Daily average trades path by year',
     'ylab': 'mn trades / day', 'series': y14, 'highlight': len(y14) - 1,
-    'note': ('版式同 Exhibit 12：每年一条线叠在 Jan–Dec 轴上，当年红色加粗，'
+    'note': ('版式同 Exhibit 14：每年一条线叠在 Jan–Dec 轴上，当年红色加粗，'
              '画的是<b>当月的日均笔数</b>（公司披露口径本身已日均化，不再除交易日）。'
              f'本图只有 {len(y14)} 条线、共 {_y14_pts} 个点：DATs 自 2026-01 的月报才'
              f'开始披露、13 个月滚动表回溯到 {mlab(dm.dropna().index[0])}，'
              '在那之前 Schwab <b>不按月</b>公布这个数 —— 线少不是筛掉了什么，'
              '是<b>月频</b>历史就这么长。'
              f'（季报附表里这个量回得到 {qdf.index[0]}，但那是<b>整季</b>的交易日加权日均，'
-             '逐年对照图按定义要的是月点，接不进来 —— 见 Exhibit 15。）'
+             '逐年对照图按定义要的是月点，接不进来 —— 见 Exhibit 10。）'
              f'{y14[-1]["name"]} 那条线到 {MONTHS[LATEST.month - 1]} 为止，'
              '右半段是空的（还没到），不是塌到零。'
              '逐年对照图不换口径：逐月波动与季节形状就是这类图的题眼。'),
 })
 
-# ── Exhibit 14：年化有机增长率 月 x 年热力矩阵 ──
+# ── Exhibit 16：年化有机增长率 月 x 年热力矩阵 ──
 ogd = og.dropna()
 hyrs = sorted({p.year for p in ogd.index})
 matrix = []
@@ -1430,7 +1430,7 @@ for y in hyrs:
                    if p in ogd.index and np.isfinite(ogd.loc[p]) else None)
     matrix.append(row)
 ex.append({
-    'n': 14, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct1',
+    'n': 16, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct1',
     # 标题里必须写「单月」：热力矩阵按定义是逐格月度读数。
     'title': 'Annualised organic growth rate — 单月年化 (%)',
     # 热力矩阵走 drawHeat 提前 return，通用断点/annot 分支都执行不到；而且这里断点分的
@@ -1448,22 +1448,24 @@ ex.append({
              f'而年化有机增速要用上月末客户资产做分母，{mlab(ogd.index[0])} 才是第一个可算月。'
              f'行首标出各年的 core NNA 剔除门槛：{BRK.year} 年起为 $25bn，此前为 $10bn，'
              '跨这条界的上下行不可直读（矩阵图的断点在行之间，画不成竖虚线）。'
-             '本图通栏（横跨两列），但仍按图号排在 Exhibit 13 之后，图序即阅读顺序。'
+             '本图通栏（横跨两列），但仍按图号排在 Exhibit 15 之后，图序即阅读顺序。'
              '格内数字带 % 号，PDF 版是裸数字。'),
 })
 
 
-# ══════════════ Exhibit 15 / 16：季报附表腿（季频，回到 2016）══════════════
+# ══════════════ Exhibit 10 / 11：季报附表腿（季频，回到 2016）══════════════
 # 这两张与 Exhibit 8 / 9 画的是**同一个量**，换的是数据源：月报那两行 2026-01 才新增、
-# 只回填 13 个月，而季报附表里它们回得到 2016 以前。所以 Exhibit 15 挂 `section`
-# 另起一个板块 —— 不点破的话，读者会把它们当成上面那批月度图的延长线，
-# 而它们既不同源（季报 ≠ 月报）、也不同频（季 ≠ 月），逐格对照必然读错。
+# 只回填 13 个月，而季报附表里它们回得到 2016 以前。
+# ⚠ 2026-09-16 按页面所有者指令，从页尾挪到 Exhibit 9 之后，与各自的月频兄弟并排读。
+# 随之**撤掉了 `section` 板块标题**：page.js 的 section 只起标题、没有结束标记
+# （assets/page.js:195-201），夹在中间就会把后面的 Exhibit 12–16 一起圈进
+# 「季报附表腿」，而那五张是月报腿的。「不同源、不同频、不可逐格对照」这层意思
+# 改由标题里的「（季报附表口径）」、图例里的「Quarterly (季报附表)」和图注开头承担。
 _QX = [str(p) for p in qdf.index]
 _bkq = brk_idx(qdf.index, BRK_Q_TDA)
 # 用 TDA 断点（而非 core NNA 门槛断点）的图号 —— 现填，供页尾的 _BRK_DRAWN 区分两种断点。
 # 不区分的话，页尾那句「Exhibit … 的红色竖虚线 = $10bn → $25bn 门槛」会把这两张一起认领。
 _TDA_BRK_ENS = []
-QSEC = '季报附表腿：同样两个指标的季频长历史 —— 读的不是月报，回得到 2016'
 
 
 def q_ptp_yoy(s, brk=BRK_Q_TDA):
@@ -1548,7 +1550,7 @@ def q_tda_note(s, unit):
             '<b>线左右两侧不可直读</b>：既不能跨线比水平，也不能跨线算均值或趋势。')
 
 
-# ── Exhibit 15：季度日均交易笔数（季报附表，2016Q1 起）──
+# ── Exhibit 10：季度日均交易笔数（季报附表，2016Q1 起）──
 qdm = qdats / 1000.0                          # 千笔/日 → mn 笔/日，与 Exhibit 8 同尺度
 _y15, _void15 = q_ptp_yoy(qdats)              # 同比在原始单位上算，换算不影响比值
 # 与 Exhibit 8 的对账：季度值是**整季**的日均、月度值是**单月**的日均，不是同一个数，
@@ -1566,8 +1568,7 @@ if _QCHK and len(_QCHK_IN) != len(_QCHK):     # 规矩 5：对不上就响，别
     _bad = [str(c[0]) for c in _QCHK if c not in _QCHK_IN]
     raise SystemExit(f'季度 DATs 与月度 DATs 对不上（季均不在该季三个月区间内）: {_bad}')
 ex.append({
-    'n': 15, 'kind': 'qtr_bar', 'full': True, 'height': H_BAR,
-    'section': QSEC,
+    'n': 10, 'kind': 'qtr_bar', 'full': True, 'height': H_BAR,
     'fmt': 'f1', 'label_fmt': 'f2',
     'xlabels': _QX,
     'title': f'Daily average trades by quarter — {_QX[0]} 至今（季报附表口径）',
@@ -1610,7 +1611,7 @@ ex.append({
 })
 _TDA_BRK_ENS.append(ex[-1]['n'])
 
-# ── Exhibit 16：季末融资余额（季报附表，2016Q1 起）──
+# ── Exhibit 11：季末融资余额（季报附表，2016Q1 起）──
 _y16, _void16 = q_ptp_yoy(qmgn)
 # 与 Exhibit 9 的对账：季末就是该季最后一个月的月末，**同一个时点、同一个量**。
 # 重叠期必须逐值相等 —— 现算差额并把结论从数据里生成，不写死「相等」这两个字：
@@ -1629,7 +1630,7 @@ _LS_Q, _LS_EOP, _LS_DEB, _LS_BS = LS_RECON
 _OVL_EG = '、'.join(f'{p}/{mlab(p.asfreq("M", "end"))} = {money(b, 1)}bn'
                     for p, _a, b in _OVL[:3])
 ex.append({
-    'n': 16, 'kind': 'qtr_bar', 'full': True, 'height': H_BAR,
+    'n': 11, 'kind': 'qtr_bar', 'full': True, 'height': H_BAR,
     'fmt': 'usd0', 'label_fmt': 'usd0',
     'xlabels': _QX,
     'title': f'Quarter-end margin balances — {_QX[0]} 至今（季报附表口径）',
@@ -1698,6 +1699,12 @@ def tcell(v, d=1):
 # 编号写死过一次代价就够大了 —— 全站审计发现别的页把核对表写死成 'n': 15，
 # 后来在末尾追加了两张图，页面就出现「…16、17、15」而没有任何东西报错。
 # 这里改成现算 + 硬拦：追加图之后核对表自动往后挪，若中间断号直接构建失败。
+# 阅读顺序 = 图号顺序。季频那两张（Exhibit 10 / 11）紧跟月频兄弟 Exhibit 8 / 9，
+# 但它们要先有 mb / dm 才能和月度对账，所以 ex.append 的位置在文件后段。
+# page.js 是**按数组顺序**渲染的，不排就会印成「…9、12、13…16、10、11」。
+# 排序跑在下面那条连号自查之前 —— 自查读的是排完之后的顺序。
+ex.sort(key=lambda e: e['n'])
+
 _ENS = [e['n'] for e in ex]
 if _ENS != list(range(2, 2 + len(_ENS))):
     raise SystemExit(f'Exhibit 编号不连续: {_ENS}')
@@ -1774,7 +1781,7 @@ _CAL_ROWS = [t for t in (
     if _y_mb is not None else '',
 ) if t]
 
-# Exhibit 10 是不是真的单边下行、全序列有几个季度上升 —— 图注里那两句都得从数据现算。
+# Exhibit 12 是不是真的单边下行、全序列有几个季度上升 —— 图注里那两句都得从数据现算。
 # 该图现在画的就是全序列，所以窗口内与全序列是同一批点，两个判据仍分开算：
 # 窗口一旦以后又被截短，这里不用跟着改。
 _MONO13 = bool((np.diff(bs['iea_share'].values) <= 0).all())
@@ -1785,7 +1792,7 @@ _UP_ALL = int((np.diff(_bs['iea_share'].values) > 0).sum())
 # 断点反而永远在窗口内 —— 但**图号**成了新的变量（本轮就把它们整体挪了一遍），
 # 现读 payload 同时挡住了这两种漂移，所以这个写法保留，理由换了一条。
 # 本页现在有**两种**断点，页尾这两句话必须分开认领 —— 合在一起的话，那句
-# 「红色竖虚线 = core NNA 剔除门槛 $10bn → $25bn」会把 Exhibit 15/16 上的
+# 「红色竖虚线 = core NNA 剔除门槛 $10bn → $25bn」会把 Exhibit 10/11 上的
 # TD Ameritrade 并表断点也一并认领，而那是一条完全不同的线（季频、2020Q4、并表）。
 _BRK_DRAWN = '、'.join(str(e['n']) for e in ex
                       if e.get('break_at') is not None and e['n'] not in _TDA_BRK_ENS)
@@ -1821,7 +1828,7 @@ summary['note'] = (
     '表与图对不上是当时最常见的一类读者困惑。'
     '全页只剩一处口径不同：Exhibit 3 的<b>季度合计</b>同比（分母是去年同季 3 个月的合计）。'
     '⚠ 本页现在有三条绿色的右轴线，只有 Exhibit 3 那条是合计口径 —— '
-    'Exhibit 15 / 16 那两条是<b>季频的点对点</b>（本季 vs 去年同季），'
+    'Exhibit 10 / 11 那两条是<b>季频的点对点</b>（本季 vs 去年同季），'
     '与表和各图的金线同口径，只是频率从月换成了季。'
     f'当期各口径并排现算 —— {"；".join(_CAL_ROWS)}。')
 
@@ -1829,10 +1836,10 @@ notes = [
     f'<b>数据源与节奏。</b>Schwab Monthly Activity Report，次月第 10 个美股交易日发布（多为 12–14 日，9 月撞劳动节顺延到 15–17 日）；'
     f'本页数据截至 {mlab(LATEST)}，全序列自 {mlab(df.index[0])} 起。'
     '所有数值来自 <code>series/schw.csv</code>、<code>series/schw_q.csv</code>'
-    '（季报附表腿，Exhibit 15 / 16）与 <code>series/fee_rates.csv</code>，'
+    '（季报附表腿，Exhibit 10 / 11）与 <code>series/fee_rates.csv</code>，'
     '无任何估算或补插。'
     f'前者是<b>月度</b>表，<code>fee_rates.csv</code> 是<b>季度</b>表（随季报更新），'
-    f'本页只有 Exhibit 10 用它，SCHW 两个指标都齐的最新一季是 {qlab(_FEE_HAVE_Q)}；'
+    f'本页只有 Exhibit 12 用它，SCHW 两个指标都齐的最新一季是 {qlab(_FEE_HAVE_Q)}；'
     '两张表节奏不同，页面上「月度已走到哪个月、费率停在哪一季」的差随时可能出现，'
     '每张相关图的 Source 行下都写明了当期口径。',
 
@@ -1861,12 +1868,12 @@ notes = [
     f'{mlab(dm.dropna().index[0])}</b>（{len(dm.dropna())} 个月）：这两列是 2026-01 那期'
     '月报<b>新增</b>的，官方在 13 个月滚动表里回填到 2025-01 就到头 —— '
     '<b>这是月报这条源的边界，不是这两个量的披露史</b>。'
-    f'<b>(4) 同样两个量的季频长历史 → {_QX[0]}</b>（{len(_QX)} 个季度，Exhibit 15 / 16）：'
+    f'<b>(4) 同样两个量的季频长历史 → {_QX[0]}</b>（{len(_QX)} 个季度，Exhibit 10 / 11）：'
     '取自<b>季报附表</b>（8-K Ex-99.1）的 Clients&rsquo; Daily Average Trades 与 '
     'Growth in Client Assets and Accounts 两张表，落 <code>series/schw_q.csv</code>。'
     '所以 (3) 那条边界只管月频；把它读成「任何来源都补不出更早的」是错的 —— '
     '本页 2026-09-16 之前就是这么写的。'
-    f'季度费率图（Exhibit 10）随客户总资产一起回到了 {qlab(_ratio.index[0])}。'
+    f'季度费率图（Exhibit 12）随客户总资产一起回到了 {qlab(_ratio.index[0])}。'
     '此前各图用的是「从最新月倒推 25 个月 / 13 个月 / 14 个季度」的滚动窗口，现已全部取消。'
     '<b>不补零、不外推、不拿旧口径顶新口径</b>：补不出来的月份就是空的。',
 
@@ -1882,7 +1889,7 @@ notes = [
 
     '<b>流量类不算环比百分比。</b>核心净新增资产是流量，环比百分比的分母是上个月的流量，'
     '一个月的噪音会被放大成趋势。按 GS「LPLA monthly metrics」的规矩改用<b>年化有机增长率</b>'
-    '（当月净新增 × 12 ÷ 上月末客户资产），见 Exhibit 4 与 Exhibit 14。'
+    '（当月净新增 × 12 ÷ 上月末客户资产），见 Exhibit 4 与 Exhibit 16。'
     '比率序列的同比一律用<b>百分点差（pp/bp）</b>，不是「百分比的百分比变化」。',
 
     # ── 同比口径：本轮从四种收敛到两种，收敛本身就得写出来 ──
@@ -1893,7 +1900,7 @@ notes = [
     '<b>所有月度图的次轴金色折线</b>（Exhibit 2 核心净新增资产、Exhibit 4 年化有机增长率、'
     'Exhibit 6 客户总资产、Exhibit 7 新开经纪账户、Exhibit 8 日均交易笔数、'
     'Exhibit 9 月末融资余额），Exhibit 1 汇总表的 y/y 列，'
-    '页顶 brief 段里出现的全部同比读数，以及 Exhibit 14 热力矩阵的逐格读数。'
+    '页顶 brief 段里出现的全部同比读数，以及 Exhibit 16 热力矩阵的逐格读数。'
     '<b>图与表现在是同一个口径，可以互相验算</b>，这正是本轮改口径换来的东西。'
     '(2) <b>季度合计同比</b>（本季 3 个月合计 ÷ 去年同季 3 个月合计 − 1）—— '
     '仅 Exhibit 3 的右轴绿线。另有<b>环比</b>（m/m）出现在各图的气泡里，那不是同比。'
@@ -1914,7 +1921,7 @@ notes = [
        f'{len(ST2["flips"])} 个月两种口径符号相反。'
        if ST2 else '')
     + '<b>所以那条金线只作「本月对去年同月」的读数用，不作趋势判断</b>；'
-    '趋势看柱本身、看 Exhibit 3 的季度图、看 Exhibit 11–13 的逐年对照。'
+    '趋势看柱本身、看 Exhibit 3 的季度图、看 Exhibit 13–15 的逐年对照。'
     f'{YOY_NOTE}'
     + (f'存量序列（客户总资产、月末融资余额）本来就是这个口径，本轮没动。实测：'
        f'客户总资产的点对点同比标准差 {ST6["sd_m"]:,.1f}pp，'
@@ -1922,7 +1929,7 @@ notes = [
        '均值口径更平滑，但按构造滞后约半年、回答的是「去年一整年的平均水平」，'
        '不是「现在相对去年此刻」。' if ST6 else '')
     + f'当期各口径并排现算：{"；".join(_CAL_ROWS)}。'
-    '<b>热力矩阵（Exhibit 14）与逐年对照图（Exhibit 11 / 12 / 13）本来就是逐月读数</b>：'
+    '<b>热力矩阵（Exhibit 16）与逐年对照图（Exhibit 13 / 14 / 15）本来就是逐月读数</b>：'
     '逐格的月度波动与季节形状就是那几类图的题眼。',
 
     f'<b>核心净新增资产的剔除门槛在 {BRK.year} 年调过，断点已画在图上。</b>'
@@ -1933,13 +1940,14 @@ notes = [
     + (f'Exhibit {_BRK_DRAWN} 在 {BRK}（季度图为 {BRK_Q}）处有红色竖虚线，线左右不可直读，'
        '跨线的同比同样含口径差。' if _BRK_DRAWN else
        f'当前各图窗口已整段落在 {BRK} 右侧，无需画线。')
-    + 'Exhibit 11 的断点分的是年份不是月份、Exhibit 14 的断点分的是行不是列，'
+    + 'Exhibit 13 的断点分的是年份不是月份、Exhibit 16 的断点分的是行不是列，'
     '两张图画不成竖虚线，改为在图内注解与行首标签上标明门槛。'
     '窗口拉到全历史之后，断点两侧各有多少年一目了然：'
     f'左侧 {BRK.year - df.index[0].year} 年多用 $10bn 门槛，右侧用 $25bn。'
     + (f'⚠️ <b>页面上还有第二种红色竖虚线，与这条毫无关系。</b>'
        f'Exhibit {_TDA_DRAWN}（季报附表腿）的断点在 <b>{BRK_Q_TDA}</b>，画的是 '
-       '2020-10-06 的 <b>TD Ameritrade 并表</b>：官方同样不重述历史，所以线左右不是'
+       '2020-10-06 的 <b>TD Ameritrade 并表</b>：前期同样未重述（这是推断不是引文，'
+       '依据见该两图图注），所以线左右不是'
        '同一家公司的同一条序列，跨线的四个季度同比已整段作废（详见该两图图注）。'
        '两种断点只是恰好都用红色竖虚线这一种画法，<b>不要混读</b>。'
        if _TDA_DRAWN else ''),
@@ -1952,7 +1960,7 @@ notes = [
     '读者迟早会把它们拼成一条 9 年的长序列读。日均交易笔数（DATs）同理，'
     f'只有 {mlab(dm.dropna().index[0])} 起的历史。'
     f'⚠️ <b>月报之外还有一条腿：季报附表。</b>这两个量在季报附表里回得到 {_QX[0]}，'
-    f'本页 2026-09-16 起把它们单独画成 Exhibit 15 / 16（<code>series/schw_q.csv</code>，'
+    f'本页 2026-09-16 起把它们单独画成 Exhibit 10 / 11（<code>series/schw_q.csv</code>，'
     f'{len(_QX)} 个季度）并另起一个板块 —— 它们与 Exhibit 8 / 9 是<b>同一个量</b>，'
     '只是源与频率不同。融资余额那条季末值与月末值在重叠期是同一个数（该图图注现算给出），'
     'DATs 那条则是<b>整季日均 vs 单月日均</b>，不能逐格对照。'
@@ -1960,12 +1968,12 @@ notes = [
     '没有的只是<b>月度</b>的更早历史。',
 
     '<b>这里没有「量 → 收入」桥。</b>Schwab 月报既不披露客户现金也不披露生息资产，'
-    '唯一能当代理的是客户资产；但生息资产 / 客户资产的比值在 Exhibit 10 画的 '
+    '唯一能当代理的是客户资产；但生息资产 / 客户资产的比值在 Exhibit 12 画的 '
     f'{len(bs)} 个季度（{mlab(bs.index[0])}–{mlab(bs.index[-1])}）里从 {_r0:.1f}% '
     f'{"单边" if _MONO13 else ""}走到 {_r1:.1f}%（趋势，不是噪音），把它当常数会造出假精度。'
     f'其中 {_UP_ALL} 个季度环比上升，高点是 {mlab(_bs["iea_share"].idxmax())} 的 '
     f'{float(_bs["iea_share"].max()):.1f}%，所以它不是一条单调下滑线。'
-    '不搭桥，改把这个比值本身画出来（Exhibit 10）—— 它本身就是 NII 增长受限的原因。'
+    '不搭桥，改把这个比值本身画出来（Exhibit 12）—— 它本身就是 NII 增长受限的原因。'
     '该图两条线都是<b>季度</b>数据，来自季报；净息差单独回溯得更早（费率表自 2013Q4 起），'
     '但占比的分母是月度客户资产，补不出来，而 <code>lines_endlabels</code> 这个图型'
     '不容忍空点（docs/CHART_KINDS.md §1.2），所以两条线同起同止。'
@@ -1981,7 +1989,7 @@ notes = [
        if _over7 else '。')
     + '<b>并购搬账则是另一回事，走的是减法不是截轴</b>：May-2020 的 USAA 与 Oct-2020 的 '
     'TD Ameritrade 把别家的存量账户整批搬进来，官方脚注给了确切数量（1.1mn / 14.5mn 户），'
-    '所以 Exhibit 7 与 Exhibit 12 画的都是净除之后的开户量，那两根柱另画成斜纹以示不同源，'
+    '所以 Exhibit 7 与 Exhibit 14 画的都是净除之后的开户量，那两根柱另画成斜纹以示不同源，'
     '披露原值在 Exhibit 7 的图注里。'
     '<b>不这么做的后果是量化的</b>：留着 14,718k 那一根，纵轴要顶到 1,600k，'
     '2013–2019 年那一档（月度 70–165k）只占纵轴 6%，十几年的逐月差异在图上是一条平线。'
@@ -1999,14 +2007,14 @@ notes = [
     '（客户总资产 / 核心净新增 / 新开账户各一张，末 3 个月还画一个红色虚线圈）；'
     '网页版把它们全部去掉了 —— 各图窗口改成全历史之后，那几张折线与对应的柱图'
     '画的是同一条序列的同一段，只是少了次轴同比。逐月读数用 hover 与右上角「表格」视图；'
-    '（2）Exhibit 10 的 PDF 版保留 2 位小数，网页图表引擎的格式器只到 1 位，表格视图仍是 2 位；'
+    '（2）Exhibit 12 的 PDF 版保留 2 位小数，网页图表引擎的格式器只到 1 位，表格视图仍是 2 位；'
     f'（3）Exhibit 5 的纵轴网页版截在 ±{comma(BR_CAP)} $bn（PDF 不截），'
     '超界值以红色真值标出；'
     f'（4）同比的小基数剔除门槛，PDF 是「基数 &lt; 0.15 × 序列绝对值中位数」，'
     f'网页版提到 {YOY_BASE_MIN:.0%} —— 0.15 挡不住 SCHW 的结构性极小月，'
     '一个 +569% 的基数效应读数会把整条次轴压平；'
     '（5）比率的同比/环比，PDF 印整数 pp，网页版保留 1 位小数（|差| &lt; 1pp 时改印 bp）；'
-    '（6）Exhibit 3 的柱顶标签加了 $ 前缀、Exhibit 14 的格内数字加了 % 后缀，PDF 是裸数字；'
+    '（6）Exhibit 3 的柱顶标签加了 $ 前缀、Exhibit 16 的格内数字加了 % 后缀，PDF 是裸数字；'
     '（7）<b>窗口不同</b>：PDF 的 deck 用的是倒推窗口，本页改画全部可得历史，'
     '所以同一张图上网页版的点数远多于 PDF，两边的轴范围与均值不可直接对照。'
     '次轴口径两边现在一致（都是单月同比）—— 这是本轮改回来的。'
@@ -2113,7 +2121,7 @@ def compose_brief(frame=None):
     口径统一不改变本段的读法纪律：单月同比的分母是去年那一个月，拿它当「趋势」读
     正是本页反复踩过的坑（core NNA 的 Aug-24 单月 +569%，同月滚动 −13%），
     所以本段的同比只作「本月对去年同月」的读数用，落点句一律锚定「较去年同月」，
-    不作趋势断言 —— 趋势看季度图（Exhibit 3）与逐年对照（Exhibit 11–13）。
+    不作趋势断言 —— 趋势看季度图（Exhibit 3）与逐年对照（Exhibit 13–15）。
     R4 恒等式里的三个同比同样逐一标「单月」：恒等式两边必须同口径。
 
     ═══ SCHW 独有，别家不能照抄 ═══
@@ -2361,7 +2369,7 @@ def compose_brief(frame=None):
             # 括号里的口径不为省字删：「年化有机增长率」不是公司披露的字段，读者不知道
             # 它是怎么来的就没法判断它跟核心净新增是不是同一件事说两遍。「单月」也不能
             # 省：本页另有滚动 12 个月口径的有机增速（不上图，只在页尾「口径说明」里
-            # 作对照读数；Exhibit 14 的标题同样写明画的是「单月年化」）。
+            # 作对照读数；Exhibit 16 的标题同样写明画的是「单月年化」）。
             s4 = (f'{why}，融资余额/客户资产的同比读不出；改看单月年化有机增长率'
                   f'<b>{og_v[i]:.1f}%</b>（推导值：核心净新增×12÷上月末资产），'
                   f'在{len(fin)}个月里{_rank_txt(rk_og, len(fin))}，'
@@ -2409,7 +2417,7 @@ def compose_brief(frame=None):
 #   ④ 单位与披露史        DATs（公司披露的本身已日均化，别再除一次交易日；官方与核对表
 #      印「千笔/日」，图上换成 mn）、净息差（分母是平均生息资产不是客户资产）、
 #      13 个月滚动表（本页月频那三档不同长度的历史由它决定 —— 左边的空白是披露边界不是 0；
-#      第四档 Exhibit 15 / 16 是季报附表腿，不由这张滚动表决定）。
+#      第四档 Exhibit 10 / 11 是季报附表腿，不由这张滚动表决定）。
 # **有意不收**：m/m、y/y、3Y %ile、pp/bp（全站通用读图约定，summary.note 已逐条讲过）；
 # 「季末月」与「口径断点」（页尾 notes 第 2、6 条讲的就是这两件事在本页的落点，
 # 释义板再讲一遍就是两处各写一份，改一处必漏另一处 —— 门槛只在「核心净新增资产」
@@ -2474,7 +2482,7 @@ GLOSSARY = [
      f'{mlab(dm.dropna().index[0])}，更早的年份<b>月报里没有这一行</b> —— '
      'Exhibit 8 左边没有柱是<b>披露边界，不是 0</b>。'
      f'但<b>季报附表</b>里这个量回得到 {_QX[0]}（那里是<b>整季</b>的日均，不是单月的），'
-     '本页把它单独画成 Exhibit 15，与 Exhibit 8 不可逐格对照。'
+     '本页把它单独画成 Exhibit 10，与 Exhibit 8 不可逐格对照。'
      '官方与核对表的单位是「千笔/日」，图上换算成 mn。'),
 
     ('月末融资余额',
@@ -2482,12 +2490,12 @@ GLOSSARY = [
      '<b>只含 margin loans</b>。⚠️ 本页 2026-09-16 之前在这里写的是「口径含 short '
      'credits」，那是<b>错的</b>：月报脚注 (4) 是本行与 '
      '<code>Transactional Sweep Cash</code> <b>两行共用</b>的，两个半句各归各行，'
-     'short credits 归 sweep cash（脚注 (7) 明写）。对账见 Exhibit 16 图注。'
+     'short credits 归 sweep cash（脚注 (7) 明写）。对账见 Exhibit 11 图注。'
      f'⚠️ Schwab 另有一条<b>月度平均</b>口径的融资余额（{mlab(avgm.index[0])}–'
      f'{mlab(avgm.index[-1])}，官方已停发），与本页的月末口径<b>不可接续</b>，'
      '本页因此一条都不画 —— 两条口径不同的线并排摆着，迟早会被拼成一条长序列读。'
      f'月末这条与 DATs 同期新增，同样只回填到 {mlab(mb.dropna().index[0])}。'
-     f'⚠️ <b>季报附表</b>里同一个存量回得到 {_QX[0]}（Exhibit 16），那里的行名是 '
+     f'⚠️ <b>季报附表</b>里同一个存量回得到 {_QX[0]}（Exhibit 11），那里的行名是 '
      '<code>Margin loans outstanding</code>，<b>至今没有脚注</b>，口径与本条相同'
      '（同为 margin loans）；原表印成负数（客户资产的减项），本页取绝对值。'
      '季末就是该季最后一个月的月末，所以它与本条<b>是同一条序列</b>，可以接起来读；'
