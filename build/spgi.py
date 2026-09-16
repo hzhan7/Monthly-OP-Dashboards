@@ -23,14 +23,23 @@
      历史回填的取数与实测见 build/basefill/spgi_history.py。
    · 从 2025-12 起 ADV 定义剔除 event contracts，且不追溯重述早期月份 → 断点。
 
-与 PDF 版的两处有意差异（其余逐字照搬）：
+与 PDF 版的三处有意差异（其余逐字照搬）：
    1. Exhibit 2 / 3 走通栏（25 根柱塞进半栏时每柱数值标签会互相压住）；
-      热力图在 PDF 里是通栏，网页上留在半栏 —— 通栏卡片会被渲染器统一提到汇总表
-      下方，Exhibit 7 若通栏就会跑到 Exhibit 2 前面，编号顺序比宽度更重要。
+      热力图在 PDF 里是通栏，网页上留在半栏 —— 半栏放得下这张 4×12 的矩阵，
+      通栏只会把格子拉扁。（**注意**：这里原先写的理由是「通栏卡片会被渲染器统一
+      提到汇总表下方」，那条行为 assets/page.js:184-188 早就改掉了 —— 通栏图现在
+      就地挂在同一个 grid 里、靠 CSS grid-column: 1/-1 横跨两列，编号不再被打乱。
+      理由作废，结论不变，所以这一句照实重写而不是照抄。）
    2. Exhibit 5 因引擎强制「两轴零点同高」，左轴量程被右轴的负同比带到 0 以下
       （deck 的 gsx.qtr_bar 是硬写 ylim(0, max*1.32)）。ADV 恒为正，那一段是空的
       （2026-09-14 起引擎在那一段不画左轴刻度与网格线），
       但这是网页引擎的规矩不是数据，写进 NOTES 里说明，不假装没发生。
+   3. Exhibit 7（billed issuance index 的分年路径）是**网页独有**的，deck 里没有
+      这张 —— 它之后各图的编号因此比 deck 大 1。加它是所有者 2026-09-16 的指令
+      （「参照 ex6 的样子做一个季节性折线图，插在 ex6 后面」）。⚠️ 这张图的年内
+      形状不是季节性：指数每个日历月各自以自己那个月份的基期年为分母，季节因子在
+      同比里已经精确对消，年内那副驼峰是基期年自己的高低。图注按「只能竖着读」写，
+      并把各年年内形状的两两相关系数现算印出来当证据。
 
 Exhibit 2 / 3 的右轴曾经画成「Prior 12mo Avg.」水平虚线（引擎当时没有次轴 y/y）。
 那条替代线有两处硬伤：Ex3 是对本页自己宣布「跨月不可比」的链式指数做 12 个月平均
@@ -83,7 +92,7 @@ EVENT = ('From Dec-2025 the ADV definition excludes event contracts, with no res
          'of earlier months')
 
 # ADV 的口径断点。凡是把 ADV（或它的同比）画成时间轴的图都要带上这条红虚线；
-# billed issuance 不受影响，Ex3 / Ex7 不画。
+# billed issuance 不受影响，Ex3 / Ex7 / Ex8 不画。
 BRK_M = '2025-12'
 BRK_Y = int(BRK_M[:4])
 BRK_LABEL = 'ex-event contracts'
@@ -396,7 +405,7 @@ ex2 = {
              f'{mlab(BRK_M)} 起 ADV 剔除 event contracts 且不重述历史，单月口径'
              f'至少能逐月点名哪几个读数跨了口径（下面点了名）；'
              f'② <b>页内两处同比可以互相对读</b>：billed issuance 从来不给绝对面值，'
-             f'Exhibit 3/4/7 手里根本没有可加总的水平值序列，本图与它们同走单月，'
+             f'Exhibit 3/4/8 手里根本没有可加总的水平值序列，本图与它们同走单月，'
              f'全页任意两处同比才是同一种东西。'
              f'<b>代价照实说</b>：单月同比的分母是<b>去年那一个月</b>，'
              f'一次性事件与季节性会被放大。'
@@ -607,7 +616,86 @@ ex6 = {
     'src_extra': DNOTE + '.',
 }
 
-# ────────────────────────── Exhibit 7：billed issuance y/y 热力矩阵 ──────────
+# ──────────── Exhibit 7：分年 billed issuance index 路径 ────────────
+# 与 Exhibit 6 同一种画法（year_lines），画的是 Exhibit 3 那条链式指数。
+# ⚠️ 画法一样、读法不一样，差别不在图型在数据本身：指数的每个日历月各自以「自己那个
+#    月份的 BASE_Y 年 = 100」为基数，那 12 个基数是 12 个从未披露、彼此无关的绝对面值。
+#    所以本图只有**竖着读**（同一个月份、相邻两条线之间的间距）是干净的 —— 那个间距
+#    恰好等于官方披露的该月同比；**横着读**（一条线在年内的起伏）读到的是基期年各月
+#    自己的高低，不是任何一年的季节性。
+#    这不是保留意见，是能现算的：设水平值 L(y,m)=T(y)·S(m)·ε(y,m)，则同比里 S(m) 精确
+#    对消，指数 = T(y)/T(BASE_Y) · ε(y,m)/ε(BASE_Y,m) —— 季节项根本不出现。若发行量
+#    只有乘性季节性，这条指数在年内本该是平的；它不平，多出来的形状只能来自分母。
+#    所以下面把各年年内形状的两两相关系数当场算出来印进图注：几条线共用同一副驼峰，
+#    而它们唯一的共同项就是基期年。相关系数一律现算，写死一个数字下个月就是假话。
+bidx_years = sorted({int(m[:4]) for m in MONTHS if BIDX[at(m)] is not None})
+bser = []
+for y in bidx_years:
+    vals = [None] * 12
+    for m in MONTHS:
+        if int(m[:4]) == y and BIDX[at(m)] is not None:
+            vals[int(m[5:]) - 1] = r6(BIDX[at(m)])
+    bser.append({'name': str(y), 'values': vals})
+
+_RS = []
+for _i in range(len(bser)):
+    for _j in range(_i + 1, len(bser)):
+        _pair = [(a, b) for a, b in zip(bser[_i]['values'], bser[_j]['values'])
+                 if a is not None and b is not None]
+        if len(_pair) >= 3:
+            _a = np.array([p[0] for p in _pair], dtype=float)
+            _b = np.array([p[1] for p in _pair], dtype=float)
+            if _a.std() > 0 and _b.std() > 0:
+                _RS.append(float(np.corrcoef(_a, _b)[0, 1]))
+# 年内「最高是最低的几倍」：这道落差全是基数漂移，拿最脏的那一年点名。
+_AMP = []
+for _y, _s in zip(bidx_years, bser):
+    _v = [v for v in _s['values'] if v is not None]
+    if len(_v) >= 2 and min(_v) > 0:
+        _AMP.append((_y, max(_v) / min(_v)))
+_AMP_Y, _AMP_X = max(_AMP, key=lambda t: t[1]) if _AMP else (None, None)
+# 竖读的实测样例：最新月那一格上，当年线与上年线的间距 = 官方披露的该月同比。
+_BV_NOW, _BV_YAG = BIDX[at(CUR)], BIDX[at(YAG)]
+
+ex7 = {
+    # ⚠️ 图题与轴标题里**不许出现**「同比 / y/y / yoy / 变化率」：本图画的是指数水平值，
+    #    而 tools/check_yoy_caliber.py 正是按这几个词把序列登记成同比再回源复算口径
+    #    （登记条件见该文件的 _IS_YOY 与 take()）。写错一个词就会拿一条不是同比的序列
+    #    去比同比口径。竖读等于同比这件事写在图注里，不写进图题。
+    'n': 7, 'kind': 'year_lines', 'fmt': 'f0', 'label_fmt': 'f0', 'xlabels': MON,
+    'title': 'Ratings billed issuance index path by year',
+    'ylab': f'index, {BASE_Y} same month = 100',
+    'series': bser,
+    'highlight': len(bser) - 1,
+    'note': (f'与 Exhibit {ex6["n"]} 同一种画法，画的是 Exhibit 3 那条'
+             f'<b>链式指数的水平值</b>（不是累计），红线为当年。'
+             f'{LY} 年只到 {MON[LM - 1]}，其后留空而不是画成 0。'
+             f'本图画序列里全部 {len(bser)} 个有指数的日历年'
+             f'（{bidx_years[0]}–{bidx_years[-1]}）；基期年 {BASE_Y} 不在图上 —— '
+             f'它按定义恒等于 100，那是基期的产物不是数据，画成一条水平线'
+             f'会让人以为那一年真的月月一样。'
+             f'⚠️ <b>这张图只能竖着读</b>：指数的每个日历月各自以「自己那个月份的 '
+             f'{BASE_Y} 年 = 100」为基数，12 个基数是 12 个从未披露、彼此无关的绝对面值。'
+             f'<b>竖着读是干净的</b> —— 同一个月份、相邻两条线之间的间距，'
+             f'{BASE_Y} 同月基数在分子分母上精确对消，恰好等于官方披露的该月同比：'
+             f'{MON[LM - 1]} 从 {LY - 1} 年的 {_BV_YAG:,.0f} 到 {LY} 年的 {_BV_NOW:,.0f}，'
+             f'{(_BV_NOW / _BV_YAG - 1) * 100:+.0f}%，'
+             f'与官方披露的 {BIY[at(CUR)]:+.0f}% 一致。'
+             f'<b>横着读是假的</b>：一条线在年内的起伏<b>不是当年的季节性</b> —— '
+             f'季节因子在同比里会精确对消，若发行量只有乘性季节性，'
+             f'这条指数在年内本该是平的。'
+             + (f'实测各年年内形状两两相关 r = {min(_RS):+.2f}~{max(_RS):+.2f}：'
+                f'{len(bser)} 条线共用同一副驼峰，而它们唯一的共同项就是分母 {BASE_Y} 年，'
+                f'所以那副驼峰是<b>基期年自己各月的高低</b>，不是任何一年的季节性。'
+                if _RS else '')
+             + (f'失真到什么程度：{_AMP_Y} 年年内最高是最低的 {_AMP_X:.1f} 倍 —— '
+                f'发行量并没有差这么多。' if _AMP_Y else '')
+             + f'ADV 的口径断点（{mlab(BRK_M)}）不影响 billed issuance，'
+               f'本图与 Exhibit 3 一样不画断点线，也不必给各条年线分口径组。'),
+    'src_extra': INOTE + '; read vertically (same month across years) only.',
+}
+
+# ────────────────────────── Exhibit 8：billed issuance y/y 热力矩阵 ──────────
 # 只取**确实有 billed issuance 同比**的年份：ADV 比它多一年（BASE_Y 是反算出来的，
 # 那一年 billed issuance 连同比都没有）。把那一年也排进来只会多出一整行灰格，
 # 而热力图的行标签已经不需要再解释「这一行为什么是空的」。
@@ -626,8 +714,8 @@ for y in hy:
     rowlab.append(f'{y}（无 y/y）' if all(v is None for v in row) else str(y))
 BLANK_Y = [str(y) for y, row in zip(hy, matrix) if all(v is None for v in row)]
 
-ex7 = {
-    'n': 7, 'kind': 'heat_matrix', 'fmt': 'f0',
+ex8 = {
+    'n': 8, 'kind': 'heat_matrix', 'fmt': 'f0',
     'title': 'Ratings billed issuance y/y (%)',
     'rows': rowlab, 'cols': MON, 'matrix': matrix,
     'legend': 'Billed issuance y/y', 'row_head': '年', 'cell_h': 22,
@@ -650,7 +738,7 @@ ex7 = {
                      if BLANK_Y else '.')),
 }
 
-EXHIBITS = [ex2, ex3, ex4, ex5, ex6, ex7]
+EXHIBITS = [ex2, ex3, ex4, ex5, ex6, ex7, ex8]
 
 # ── 轴刻度收口（必须排在 NOTES 之前）────────────────────────────────────────
 # 轴刻度小数位：引擎默认格式器把 2.5 印成「3」、把 0.25 步长整列印成重复/错值，
@@ -671,7 +759,8 @@ YOY_KIND = {
     4: 'm',      # 两条披露 y/y
     5: 'q',      # 季度柱，次轴是 3 个月比 3 个月
     6: '-',      # 年内路径，图上没有同比
-    7: 'm',      # 同比热力矩阵
+    7: '-',      # 年内路径，图上没有同比（竖读等于同比，但图上没画那条线）
+    8: 'm',      # 同比热力矩阵
 }
 _yk_all, _ex_all = sorted(YOY_KIND), sorted(e['n'] for e in EXHIBITS)
 if _yk_all != _ex_all:
@@ -690,7 +779,9 @@ _mon_txt = '、'.join(f'Exhibit {n}' for n in MON_YOY_EX)
 _qtr_txt = '、'.join(f'Exhibit {n}' for n in QTR_YOY_EX)
 # CONTRACT §6.3 的图型豁免在本页落到哪几张 —— 按 kind 现算，不手写图号
 # （原来页尾把「Exhibit 5 是季度对照、Exhibit 7 是热力矩阵」写死在散文里，
-#  加一张同型图或换个编号就是一句没人会发现的假话）。
+#  加一张同型图或换个编号就是一句没人会发现的假话。2026-09-16 插进新的 Exhibit 7
+#  之后热力矩阵已经挪到 8 号 —— 括号里那两个号是当年那句散文的原文，不是当前状态，
+#  而这一段正因为现算才没跟着错）。
 _EXEMPT_KINDS = {'qtr_bar': '季度柱', 'heat_matrix': '热力矩阵', 'seasonality': '季节性',
                  'bridge_bar': 'bridge'}
 _EXEMPT_EX = [(e['n'], _EXEMPT_KINDS[e['kind']]) for e in EXHIBITS
@@ -699,10 +790,10 @@ _exempt_txt = '、'.join(f'<b>Exhibit {n}</b> 是{lab}' for n, lab in _EXEMPT_EX
 # 「画的是公司直接披露的同比、手里没有可加总的水平值」的那几张：billed issuance 一族。
 # 判据是「登记为单月同比、但本页拿不到它的绝对面值」——名单跟着 YOY_KIND 走，
 # 唯一手工的部分是「哪几张属于 billed issuance」，写在这里一处。
-# 已经落进 §6.3 图型豁免的（本轮是 Exhibit 7 那张热力矩阵）在这里剔掉：
+# 已经落进 §6.3 图型豁免的（本轮是那张热力矩阵，号由 _EXEMPT_EX 现算）在这里剔掉：
 # 页尾那条要一图一处，同一个编号在两条理由里各出现一次会让读者以为是两张图。
 _BILLED_EX = [n for n in MON_YOY_EX
-              if n in (3, 4, 7) and n not in {_n for _n, _lab in _EXEMPT_EX}]
+              if n in (3, 4, 7, 8) and n not in {_n for _n, _lab in _EXEMPT_EX}]
 _billed_txt = ' / '.join(f'Exhibit {n}' for n in _BILLED_EX)
 
 # 图注里「哪几张画了断点线」不许手写：断点滚出某张图的窗口时（或某张图换了窗口长度），
@@ -775,11 +866,11 @@ elif _a5 and _a5['fallback_triggered']:
     ex5['note'] += ('左右两轴零点不同高（对齐代价过大，引擎改为各自缩放），'
                     '图内那行红字就是这个意思，不是报错。')
 
-# ────────────────────────── Exhibit 8：核对表 ──────────────────────────
+# ────────────────────────── Exhibit 9：核对表 ──────────────────────────
 TN = 13
 tm = tail(MONTHS, TN)
 table = {
-    'n': 8,
+    'n': 9,
     'title': f'近 {TN} 个月月度指标核对表（官方原始单位，未换算）',
     'idx': '月份',
     'cols': [
@@ -825,7 +916,7 @@ NOTES = [
       'Exhibit 2 里没有斜纹柱。')),
     (f'⚠️ <b>口径断点 {BRK_M}</b>：从 {BRK_Y} 年 {int(BRK_M[5:])} 月起，ADV 的定义剔除 '
      'event contracts，且<b>不追溯重述</b>更早的月份。' + BRK_TXT + BRK_MORE +
-     'Ratings billed issuance（Exhibit 3 / 7）与这次变更无关，不画断点。'),
+     'Ratings billed issuance（Exhibit 3 / 7 / 8）与这次变更无关，不画断点。'),
     (f'<b>序列起点 {MONTHS[0]}，再往前官方从来没有按月披露过</b>：公司在 2023-02-09 的 '
      'Q4/FY2022 财报 8-K（SEC accession 0000064040-23-000055）「Upcoming Disclosures」'
      '一节里预先宣布，这两条月度指标「beginning with results in 2023」才开始披露；'
@@ -856,7 +947,9 @@ NOTES = [
      '一遍、不带新信息）。此前网页版用「Prior 12mo Avg.」虚线顶替，那条线在 Exhibit 3 上'
      '等于对本页自己宣布「跨月不可比」的链式指数取 12 个月平均，在 Exhibit 2 上又六比六地'
      '横跨了 2025-12 的口径断点却被当成一个单一数字引用 —— 两处都已随虚线一起删掉。'
-     '其余的顺序、编号、标题、图注、断点、窗口长度与 PDF 逐条一致。'),
+     f'其余的顺序、标题、图注、断点、窗口长度与 PDF 逐条一致，只有编号对不上：'
+     f'<b>Exhibit {ex7["n"]}（billed issuance index 的分年路径）是网页独有的</b>，'
+     f'deck 里没有这张，它之后各图的编号因此比 PDF 大 1。'),
     ('<b>双轴图的零点对齐</b>：本引擎默认把「左右两轴的零点画在同一条水平线上」，'
      '右轴同比含负值时，左轴就得跟着往下扩出一段空白 —— PDF 版的 matplotlib 不对齐零点，'
      '所以 deck 上左轴是从 0 起的。浪费超过四成画布时引擎放弃对齐、改为两轴各自缩放，'
