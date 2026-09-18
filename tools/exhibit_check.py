@@ -182,7 +182,8 @@ def _strings(node, path=''):
         yield path, node
 
 
-POS_WORD = re.compile(r'(?:下|上|前|后)[一两三]张|(?:下|上|前|后)面那[一两三]?张')
+POS_WORD = re.compile(r'(?:下|上|前|后)[一两三]张|(?:下|上|前|后)面那[一两三]?张'
+                      r'|(?:上|下)面「[^」]*」那?张|紧(?:随|跟)其后的?那?张')
 
 
 def literal_refs(payload):

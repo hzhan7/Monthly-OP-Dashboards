@@ -1315,8 +1315,8 @@ if _RATIO:
 else:
     _ratio_txt = ''
 ex.append({
-    # id：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges-apac/rolling-yoy-3y⟩ 指到这张，
-    # 本页还没迁移到顺序表（build/exhibits.py），号仍在这里手写。
+    # id（见 ORDER）：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges-apac/rolling-yoy-3y⟩
+    # 指到这张，check_yoy_caliber 的 ROLLING_OK 也按这个 id 认它。
     'n': E_ROLL3Y, 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'f1', 'yfmt': 'f0', 'xrot': 0, 'bar_labels': True,
     'title': (f'12 个月滚动合计的同比，连排三年（{mlab(_y3[0])} / {mlab(_y3[1])} / '
