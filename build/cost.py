@@ -31,6 +31,33 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits                      # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
+
+# ── 图序：挪图只改这一张表（机制见 build/exhibits.py 的模块头）──────────────
+# 排第几项就是 Exhibit 几（从 2 起；Exhibit 1 是汇总表，核对表自动接在最后）。
+# ⚠️ main() 里 bar_line_ex(2, …) / 'n': _S(4) 这些数字是**建图时的号**（exhibits.Seq，
+# 也是本文件几本登记簿的钥匙），不是页面上的图号：页面上的号由这张表决定，
+# 印进正文的一律是占位符。
+ORDER = [
+    'core-comp',        # COST Core Comp vs Reported Comp, y/y
+    'core-stack',       # COST Core Comp Growth Trends（2/3/4 年叠加）
+    'net-sales',        # Monthly Net Sales ($bn) & y/y Growth
+    'noncomp',          # Net Sales Growth: Comp vs Non-Comp Contribution
+    'wedge',            # Gas & FX Wedge by Region (reported - core)
+    'seg',              # 【SEC】Revenue mix by segment — total revenue
+    'us-comp',          # US Comp, y/y
+    'ca-comp',          # Canada Comp, y/y
+    'intl-comp',        # Other International Comp, y/y
+    'ecomm',            # E-commerce / Digitally-Enabled Comp, y/y
+    'core-by-region',   # Core Comp by Region (ex. gas & FX), since Jan-16
+    'us-stack',         # US Core Comp Growth Trends
+    'warehouses',       # Warehouse Count
+    'tkt',              # 【SEC 8-K】Comp = ticket × traffic
+    'cohort',           # Average Sales Per Warehouse by Year Opened（热力矩阵）
+    'breakeven',        # Implied Break-Even Sales per Warehouse（表）
+]
+_S = exhibits.Seq
+EX_ID = {_S(k): i for k, i in enumerate(ORDER, start=2)}   # 建图时的号 → id（缺省图序 = 建图顺序）
 import chartscale                    # Exhibit 15 现算「半栏/通栏各多宽」用的量边距算式
 import brief as B                  # 顶部 brief 的共享规则库（R1-R6），只算事实不出文字
 import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
@@ -1445,7 +1472,7 @@ def main():
 
     # Ex 2 —— 头条图：核心 comp 柱 + 报告口径线（同一 % 轴），全历史窗口
     # full: True → 渲染器把它排到汇总表下方的通栏区（127 根柱塞进半栏每根不到 3px）
-    ex.append(bar_line_ex(2, 'tc_a', 'tc_r', 'COST Core Comp vs Reported Comp, y/y',
+    ex.append(bar_line_ex(_S(2), 'tc_a', 'tc_r', 'COST Core Comp vs Reported Comp, y/y',
                           'Core Comp (ex. gas & FX)', 'Reported Comp',
                           start=HIST_START, xstep=6, full=True, cap=True,
                           src_extra='Core Comp = global SSS, ex. gas & FX；本图窗口自 '
@@ -1456,13 +1483,13 @@ def main():
                                     + COMP_REACH))
 
     # Ex 3 —— 全公司 stacks
-    ex.append(stack_ex(3, 'tc_a', 'COST Core Comp Growth Trends'))
+    ex.append(stack_ex(_S(3), 'tc_a', 'COST Core Comp Growth Trends'))
 
     # Ex 4 —— 净销售额（左轴 $bn 柱）+ 同比（右轴 % 线）：PDF 为双轴，此处照搬
     d = win()
     b4 = brk(d)
     ex4 = {
-        'n': 4, 'kind': 'bar_line_dual', 'title': 'Monthly Net Sales ($bn) & y/y Growth',
+        'n': _S(4), 'kind': 'bar_line_dual', 'title': 'Monthly Net Sales ($bn) & y/y Growth',
         'xlabels': [mlab(p) for p in d.index], 'xstep': 3, 'ylab2': 'y/y (%)',
         'src_extra': '注: 柱 = 净销售额绝对值，未按周数调整（零售月为 4 或 5 周，4-4-5 日历）；'
                      '线 = 公司报告 y/y，其基期是同样周数的上年错位窗口，与相邻柱不是同一区间。',
@@ -1484,7 +1511,7 @@ def main():
     ex.append(ex4)
 
     # Ex 5 —— 净销售额增长的 comp / 非 comp 拆分（柱线间距即非 comp 贡献）
-    ex.append(bar_line_ex(5, 'tc_r', 'ns_yoy', 'Net Sales Growth: Comp vs Non-Comp Contribution',
+    ex.append(bar_line_ex(_S(5), 'tc_r', 'ns_yoy', 'Net Sales Growth: Comp vs Non-Comp Contribution',
                           'Reported comp (y/y)', 'Net sales (y/y)', xstep=3, cap=True,
                           src_extra='恒等式轧差：非 comp 贡献 = 净销售额 y/y − 报告口径 comp，'
                                     '含新开/关闭仓库与口径残差，不是公司披露值。'))
@@ -1516,7 +1543,7 @@ def main():
                      # 不是 US+OI 的 +1.1）。只说被点名的这两条。
                      )
     ex.append({
-        'n': 6, 'kind': 'lines', 'title': 'Gas & FX Wedge by Region (reported - core), pp',
+        'n': _S(6), 'kind': 'lines', 'title': 'Gas & FX Wedge by Region (reported - core), pp',
         'yfmt': 'pp0', 'xlabels': [mlab(p) for p in d.index], 'xstep': 3, 'zero_line': True,
         'src_extra': '用公司自己披露的分地区 reported 与 core 之差做的近似归因：'
                      '美国项主要是汽油价格，国际项主要是汇率折算——不是公司拆分。'
@@ -1666,13 +1693,15 @@ def main():
     # 图注里要指认「同一页别的图」时，图号一律**现读已装配的 payload**，不写字面量。
     # 本页因为重排图序翻过车（见页尾 WINDOW_NOTE 那段的三次返工），而这张图之前的
     # 每一张都已经在 `ex` 里了，数一遍就有。指不到的就把那半句话去掉，不留一个空号。
+    # 写成「一组图」占位符 ⟨ex:a,b,c⟩（build/exhibits.py）：缺省图序下它们连号，印出来就是
+    # 「2–6」；ORDER 把其中一张挪开之后印成逐个列出，不会出现把别的图也圈进来的区间。
     _pn = [e['n'] for e in ex]
     _pre_txt = ('' if not _pn else
-                (f'本页 Exhibit {_pn[0]}–{_pn[-1]}' if len(_pn) > 1 else f'本页 Exhibit {_pn[0]}'))
+                f'本页 Exhibit ⟨ex:{",".join(EX_ID[n] for n in _pn)}⟩')
     _ns_n = next((e['n'] for e in ex if 'Monthly Net Sales' in str(e.get('title'))), None)
 
     ex.append({
-        'n': 7, 'kind': 'stacked_dual', 'full': True,
+        'n': _S(7), 'kind': 'stacked_dual', 'full': True,
         # `fmt` 与 `yfmt` 两个都给（见上面那段注释）：前者管表格视图与 tooltip，
         # 后者管纵轴刻度。只给一个就会有一路把百分比印成裸数字。
         'fmt': 'pct1', 'yfmt': 'pct0',
@@ -1761,14 +1790,14 @@ def main():
     REV_EX.append(ex[-1]['n'])      # 且是「总收入」口径（含会员费）
 
     # Ex 8-10 —— 分地区
-    ex.append(bar_line_ex(8, 'us_a', 'us_r', 'US Comp, y/y', 'Core (ex. gas & FX)', 'Reported',
+    ex.append(bar_line_ex(_S(8), 'us_a', 'us_r', 'US Comp, y/y', 'Core (ex. gas & FX)', 'Reported',
                           cap=True))
-    ex.append(bar_line_ex(9, 'ca_a', 'ca_r', 'Canada Comp, y/y', 'Core (ex. gas & FX)', 'Reported',
+    ex.append(bar_line_ex(_S(9), 'ca_a', 'ca_r', 'Canada Comp, y/y', 'Core (ex. gas & FX)', 'Reported',
                           cap=True))
     # Ex10 不截轴：其余三张图的最大值与「次极端月」差着一大截（Canada 44.0 vs 28.8），
     # 截掉一个月能换回 1/3 的纵向空间；Other Int'l 是 33.5 vs 25.7，同样规则只把上界
     # 从 ~34 挪到 30，为一成的空间多添一处红色标注不划算。轴范围本来就不是被单点定死的。
-    ex.append(bar_line_ex(10, 'oi_a', 'oi_r', 'Other International Comp, y/y',
+    ex.append(bar_line_ex(_S(10), 'oi_a', 'oi_r', 'Other International Comp, y/y',
                           'Core (ex. gas & FX)', 'Reported'))
     # 三张分地区图的图号现读，不写死：下面 Ex12（叠图）的图注要点它们的名，
     # 而图序改过一次之后那句话就成了假话（原文写死「与 Exhibit 7/8/9 是同样的三条序列」）。
@@ -1829,7 +1858,7 @@ def main():
     else:
         ec_src = ('FY26 起口径由 e-commerce 改为 Digitally-Enabled comparable sales，前后不保证可比；'
                   '该断点已滚出本图窗口，图上不再画竖虚线。' + ec_src)
-    ex.append(bar_line_ex(11, 'ec_a', 'ec_r', 'E-commerce / Digitally-Enabled Comp, y/y',
+    ex.append(bar_line_ex(_S(11), 'ec_a', 'ec_r', 'E-commerce / Digitally-Enabled Comp, y/y',
                           'E-comm Core (ex. FX)', 'Reported', start=str(ECOMM_FROM),
                           src_extra=ec_src, **ec_kw))
     _EC_N = ex[-1]['n']          # 电商 comp 那张图的图号；下面三处图注/表注现读它
@@ -1852,7 +1881,7 @@ def main():
     # 线本身（lw=1.6）会被自己的标记吃掉，变成三条虚线带。点标记的信息在这个密度下已经没有了。
     d9 = win()
     ex.append({
-        'n': 12, 'kind': 'lines', 'yfmt': 'pct0',
+        'n': _S(12), 'kind': 'lines', 'yfmt': 'pct0',
         'title': f"Core Comp by Region (ex. gas & FX), since {mlab(d9.index[0])}",
         'xlabels': [mlab(p) for p in d9.index], 'xstep': 3,
         'zero_line': True,          # PDF 里 ex_region_overlay 调了 axhline(0)，轴需含 0
@@ -1868,7 +1897,7 @@ def main():
     })
 
     # Ex 13 —— 美国 stacks
-    ex.append(stack_ex(13, 'us_a', 'US Core Comp Growth Trends'))
+    ex.append(stack_ex(_S(13), 'us_a', 'US Core Comp Growth Trends'))
 
     # Ex 14 —— 仓库数（全历史）
     # 2016-08 / 2017-08 / 2017-09 三个月的新闻稿未披露仓库数。这里不能 dropna：
@@ -1894,7 +1923,7 @@ def main():
                + (f'，因此比它早 {(pd.Period(WIN_START, "M") - wh.index[0]).n} 个月。'
                   if wh.index[0] < pd.Period(WIN_START, 'M') else '。'))
     ex.append({
-        'n': 14, 'kind': 'lines', 'title': 'Warehouse Count', 'yfmt': 'int',
+        'n': _S(14), 'kind': 'lines', 'title': 'Warehouse Count', 'yfmt': 'int',
         'xlabels': [mlab(p) for p in wh.index], 'xstep': 6,
         'annot': f'{mlab(whv.index[0])}: {v0:.0f} → {mlab(whv.index[-1])}: {v1:.0f}',
         'src_extra': wh_src,
@@ -2168,7 +2197,7 @@ def main():
 
     _bs = _rep.iloc[-1]                       # 当期那一格，标题与 annot 都引它
     ex.append({
-        'n': 15, 'kind': 'bridge_bar',
+        'n': _S(15), 'kind': 'bridge_bar',
         # 不给 full：旧版那条「必须通栏」的理由是 grouped_bars 的柱值标签不过抽稀、
         # 半栏装不下 —— 而 bridge_bar **一个数值标签都不画**，那笔账连被算的对象都没有了。
         # 一格一根柱，半栏放得下。
@@ -2819,7 +2848,7 @@ def main():
                 f'"Average Sales Per Warehouse* (Sales In Millions)" 一图'
                 f'（排在 "Item 6—Reserved" 之前），经 <code>fetch/cost_sec.py</code> 解析'
                 f'入 <code>series/cost_cohort.csv</code>。'
-                f'<b>本图与 Exhibit 17 的数据源不是月度销售新闻稿</b>（卡片下方 Source 行印的是'
+                f'<b>本图与 Exhibit ⟨ex:breakeven⟩ 的数据源不是月度销售新闻稿</b>（卡片下方 Source 行印的是'
                 f'全页共用的那一个），本页其余各图才是。')
     _COH_NOTE = (
         f'<b>除末两行外全部是公司披露值，没有一个数是我们算的</b>：'
@@ -2916,7 +2945,7 @@ def main():
         f'最新队列首年 ${_first_new}mn 与系统均店 ${_sys_avg}mn 之间的那一段就是新店爬坡。'
         # ── 末两行（盈亏平衡）不是公司披露值，必须在这里说清 ──
         f'<b>⚠️ 末两行不是公司披露值，是推导的盈亏平衡区间</b>（算法、两条假设与'
-        f'「为什么只能是区间」全部写在 Exhibit 17 的 Note 里，这里不重复一遍）：'
+        f'「为什么只能是区间」全部写在 Exhibit ⟨ex:breakeven⟩ 的 Note 里，这里不重复一遍）：'
         f'上面每一行都是 10-K 印出来的数，末两行是本页拿合并损益的三个比率'
         f'（商品毛利率 g、SG&amp;A 率 s、会员费率 m）折到同一张矩阵的口径上算出来的 —— '
         f'下沿把会员费按公司平均费率记进贡献，上沿一分都不记。'
@@ -2926,7 +2955,7 @@ def main():
         # ── 两行现在铺满 15 列，而它的输入来自**两张表、两代 XBRL 元素名** ──
         f'<b>这两行铺满 {len(_BE_YS)} 列（FY{_BE_YS[0]}–FY{_COH_LAST}），'
         f'但输入来自两张表</b>：FY{_E17_YS[0]} 起读 <code>series/cost_fy.csv</code>'
-        f'（Exhibit 17 用的同一张），FY{_BE_YS[0]}–FY{_E17_YS[0] - 1} 读回填表 '
+        f'（Exhibit ⟨ex:breakeven⟩ 用的同一张），FY{_BE_YS[0]}–FY{_E17_YS[0] - 1} 读回填表 '
         f'<code>series/cost_fy_be.csv</code> —— 老年份的净销售额 / 会员费 / 商品成本在 '
         f'XBRL 里是<b>上一代元素名</b>（<code>SalesRevenueNet</code> 那一套），'
         f'新名字无维度时指的是<b>总收入</b>而不是净销售额，两代混用会在 FY{_E17_YS[0]} '
@@ -3046,7 +3075,7 @@ def main():
                          f'别去调 row_lab_w 的公式')
 
     ex.append({
-        'n': 16, 'kind': 'heat_matrix', 'full': True,
+        'n': _S(16), 'kind': 'heat_matrix', 'full': True,
         # 队列各行与 Totals 是**公司披露值**，末两行是推导的盈亏平衡区间 ——
         # 标题里必须让这件事一眼看得见（CONTRACT §5 第 1 条），不能只写在 note 里。
         # 括号里印的是**六份 10-K 的区间**，不是某一份：写单数那一刻标题就在说假话。
@@ -3176,14 +3205,14 @@ def main():
 
     _E17_ROWS += [
         _hdr('<b>D. 「均店销售」的两个口径</b>（$mn/店·年，两者不可混用）'),
-        _row('　① 队列表 Totals 行（10-K 披露，= Exhibit 16 的 Totals 行）(D)',
+        _row('　① 队列表 Totals 行（10-K 披露，= Exhibit ⟨ex:cohort⟩ 的 Totals 行）(D)',
              lambda e: _i0(e['coh'])),
         _row('　② 合并净销售额 ÷ 期末仓店数 (A)', lambda e: _m1(e['ns_wh'])),
         _row('　②÷① − 1（口径差）(A)',
              lambda e: None if not e['coh'] else f'{e["ns_wh"] / e["coh"] - 1:+.1%}'),
 
         _hdr('<b>E. 盈亏平衡（推导值 Implied，两条假设见下方 Note）</b>'),
-        _row('　对照：当年新开队列的首年（年化）销售（Exhibit 16 对角线）(D)',
+        _row('　对照：当年新开队列的首年（年化）销售（Exhibit ⟨ex:cohort⟩ 对角线）(D)',
              lambda e: _i0(e['first'])),
         _row('　盈亏平衡 ÷ 均店销售：s/(g+m) – s/g (E)',
              lambda e: f'{e["lo"] * 100:.1f}–{e["hi"] * 100:.1f}%'),
@@ -3207,7 +3236,7 @@ def main():
     _E17_NOTE = (
         f'<b>来源不是月度新闻稿</b>：本表读 <code>series/cost_fy.csv</code>'
         f'（Costco 10-K 的合并损益、资本开支与仓店数，FY{int(list(_fyd.index)[0])}–'
-        f'FY{_E17_YS[-1]}），口径 ① 那一行读 Exhibit 16 的同一张矩阵'
+        f'FY{_E17_YS[-1]}），口径 ① 那一行读 Exhibit ⟨ex:cohort⟩ 的同一张矩阵'
         f'（那张图横跨 FY{_COH_YRS[0]}–FY{_COH_LAST}、由 {len(_COH_VS)} 份 10-K 拼成，'
         f'本表只取它右侧与本表同长的那一段）；'
         f'卡片下方的 Source 行是全页共用的那一个（月度销售新闻稿），对本表不适用。'
@@ -3228,7 +3257,7 @@ def main():
         f'收窄到今天的 {_EL["lo"]:.1%}–{_EL["hi"]:.1%}。'
         # ── 两张图的窗口不一样，必须说，不然读者会以为其中一张漏了 ──
         f'<b>⚠️ 本表的窗口是 FY{_E17_YS[0]}–FY{_E17_YS[-1]}，而<u>同一条平衡线</u>在 '
-        f'Exhibit 16 上画到了 FY{_BE_YS[0]}</b>（本期 ${_be_lo0}–{_be_hi0}mn）。'
+        f'Exhibit ⟨ex:cohort⟩ 上画到了 FY{_BE_YS[0]}</b>（本期 ${_be_lo0}–{_be_hi0}mn）。'
         f'不是其中一张漏了：平衡线只吃四个比率输入（净销售额 / 会员费 / 商品成本 / '
         f'SG&amp;A），这四个数 FY{_BE_YS[0]} 起的 XBRL 里都有（回填在 '
         f'<code>series/cost_fy_be.csv</code>，老一代元素名）；'
@@ -3255,16 +3284,16 @@ def main():
         f'${_EL["ns_wh"]:.1f}mn，比 ① 高 {_e17_dgap:.1%}）—— 因为 E 段要比的那个'
         f'「首年 ${_EL["first"]}mn」本来就活在队列口径里，拿 ② 去乘就是把两个口径的数'
         f'放在同一行比。两个口径都印在 D 段，差多少读者自己看得见；那个 {_e17_dgap:.1%} '
-        f'的缺口本身没有披露上的解释，见 Exhibit 16 的图注。'
+        f'的缺口本身没有披露上的解释，见 Exhibit ⟨ex:cohort⟩ 的图注。'
         f'<b>读出来是什么</b>：FY{_E17_YS[-1]} 的平衡带是 ${_e17_lo_usd:.0f}–'
         f'${_e17_hi_usd:.0f}mn/店·年，而公司披露的新店首年（年化）销售是 '
         f'${_EL["first"]}mn、系统均店是 ${_EL["coh"]}mn。'
         f'下沿与首年只差 ${abs(_e17_lo_usd - _EL["first"]):.1f}mn —— <b>这是算术上的巧合，'
         f'不是因果</b>：下沿本身已经是上界性质的估计（假设 1），首年那个数又是年化过的'
-        f'（Exhibit 16 的脚注原文）。能说的只有一句：新店首年落在这条带的下沿附近，'
+        f'（Exhibit ⟨ex:cohort⟩ 的脚注原文）。能说的只有一句：新店首年落在这条带的下沿附近，'
         f'离系统均店 ${_EL["coh"]}mn 还差整整一段爬坡。'
         f'<b>最大的读数陷阱</b>：均店销售把成熟店与刚开的店混在一口锅里，而新店是要爬坡的'
-        f'—— 那正是 <b>Exhibit 16</b> 那张矩阵画的东西（{_coh_newest} 年那一队 '
+        f'—— 那正是 <b>Exhibit ⟨ex:cohort⟩</b> 那张矩阵画的东西（{_coh_newest} 年那一队 '
         f'${_first_new}mn 对系统 ${_sys_avg}mn）。拿本表任何一行去回答'
         f'「新开一家店赚不赚钱」之前，先看那张图。'
         f'<b>算不出来的两件事，说在明处</b>：（1）<b>开业当年的现金平衡点</b>算不出来 —— '
@@ -3292,7 +3321,7 @@ def main():
         f'<b>也因此没有分部的盈亏平衡列</b> —— 那需要分地区的会员费，公司不披露。')
 
     ex.append({
-        'n': 17, 'kind': 'table',
+        'n': _S(17), 'kind': 'table',
         # Implied 是硬要求（CONTRACT §5 第 1 条）：公司不披露单店损益，也从不给平衡点。
         'title': (f'Implied Break-Even Sales per Warehouse: '
                   f'{_EL["lo"]:.0%}–{_EL["hi"]:.0%} of the ${_EL["coh"]}mn System Average '
@@ -3333,8 +3362,8 @@ def main():
     _EX_TKT = next((e['n'] for e in ex if 'ticket' in str(e.get('title')).lower()
                     and 'traffic' in str(e.get('title')).lower()), None)
     _GLOSS_EXN = bind_exhibits(ex, {
-        'noncomp': 5,                            # 净销售额增长的 comp / 非 comp 拆分
-        'wedge': 6,                              # 油汇楔子
+        'noncomp': _S(5),                        # 净销售额增长的 comp / 非 comp 拆分（建图时的号）
+        'wedge': _S(6),                          # 油汇楔子（建图时的号）
         'ecomm': _EC_N,                          # 电商 / Digitally-Enabled comp
         'tkt': _EX_TKT,                          # 季度客单 × 客流
         'seg': REV_EX[0] if REV_EX else None,    # 分部收入结构（总收入口径）
@@ -3363,7 +3392,7 @@ def main():
     BLANK_WHY = {
         'net_sales_bn':
             '4-4-5 零售日历下 4 周月与 5 周月混在同一段历史里，拿 5 周月去比一堆 4 周月'
-            '不是同一个量（与 Exhibit 4 红线标的是同一件事）',
+            '不是同一个量（与 Exhibit ⟨ex:net-sales⟩ 红线标的是同一件事）',
         'wh_total':
             '期末仓库数是只增不减的开店计数，几乎每月都是历史新高，分位恒在区间上端'
             '并被涂成绿色，读起来像「异常之高」，其实只是在开店',
@@ -3558,12 +3587,12 @@ def main():
     wk_txt = f'本页自动识别：{" / ".join(str(p) for p in wk_all)}'
     if wk_drawn:
         wk_txt += ('；其中 ' + ' / '.join(str(p) for p in wk_drawn) +
-                   ' 落在 Exhibit 4 的窗口内，图上画有红色竖虚线、柱用斜纹标出')
+                   ' 落在 Exhibit ⟨ex:net-sales⟩ 的窗口内，图上画有红色竖虚线、柱用斜纹标出')
         if wk_out:
             wk_txt += ('，' + ' / '.join(str(p) for p in wk_out) +
                        ' 早于图窗起点，图上没有对应的线')
     else:
-        wk_txt += '；全部早于 Exhibit 4 的图窗起点，图上没有对应的线'
+        wk_txt += '；全部早于 Exhibit ⟨ex:net-sales⟩ 的图窗起点，图上没有对应的线'
     ec_note = ('<b>E-commerce 口径</b>：FY26 起更名为 Digitally-Enabled comparable sales，历史序列直接拼接'
                + (f'，Exhibit {_EC_N} 在 {ECOMM_BREAK} 处画红色竖虚线标注该断点。'
                   if b10 is not None else
@@ -3736,7 +3765,7 @@ def main():
         ('<b>4-4-5 零售日历</b>：零售月为 4 周或 5 周（周日截止），4 周与 5 周月份的'
          '净销售额绝对值<strong>不可直接环比</strong>。'),
         ('<b>核心 comp</b> = 公司披露的「剔除汽油价格变动与汇率影响」的可比销售；'
-         '报告口径为未调整值。两者之差按地区拆开即 Exhibit 6。'),
+         '报告口径为未调整值。两者之差按地区拆开即 Exhibit ⟨ex:wedge⟩。'),
         ec_note,
         WINDOW_NOTE,
         (f'<b>53 周财年</b>造成个别 1 月的周数与上年同月不同（{wk_txt}）。'
@@ -3813,6 +3842,9 @@ def main():
     if src_date:
         payload['source_date'] = src_date
 
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, table['n'], where='build/cost')
+    payload['order'] = ORDER
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(OUT, payload, 'cost')
 
