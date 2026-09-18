@@ -44,6 +44,7 @@ sys.path.insert(0, HERE)
 import monthly_run as mr                                    # noqa: E402
 sys.path.append(os.path.join(HERE, 'build'))
 import exhibits as X                                        # noqa: E402
+from payload_guard import body_of                           # noqa: E402
 
 DATA = os.path.join(HERE, 'data')
 
@@ -302,7 +303,11 @@ def cmd_drill(argv):
         refs = {k: v for k, v in xr.items() if k.startswith(pg + '/')}
         if refs:
             fans.append((other, refs))
-    fan_txt = {o: open(os.path.join(DATA, f'{o}.js'), encoding='utf-8').read() for o, _ in fans}
+    # 横截面页（monthly_run.CROSS）读成员页的 payload：有的按标题认图、现读别页的号
+    # （build/wealth.py 的 _xnum），不走 xref，上面那张名单抓不到它们 —— 一并重建来看。
+    cross = [c for c in mr.CROSS if c != pg and c not in {o for o, _ in fans}]
+    fan_txt = {o: open(os.path.join(DATA, f'{o}.js'), encoding='utf-8').read()
+               for o in [o for o, _ in fans] + cross}
 
     tmp_m, tmp_d = tempfile.mkdtemp(prefix='drill_m_'), tempfile.mkdtemp(prefix='drill_d_')
     fails = []
@@ -374,20 +379,32 @@ def cmd_drill(argv):
                 if new != want_n:
                     fails.append(f'③ {other} 的 {ref} 兑成 {new}，应为 {want_n}')
         if not fans:
-            print('  ③ 跨页：没有别的页指向本页')
+            print('  ③ 跨页：没有别的页用 ⟨ex:' + pg + '/…⟩ 指向本页')
+        for c in cross:
+            before_c = strip_new(json.loads(json.dumps(
+                load(os.path.join(DATA, f'{c}.js')), ensure_ascii=False)))
+            build(c)
+            dd = _diff_paths(before_c, strip_new(load(os.path.join(DATA, f'{c}.js'))), cap=6)
+            if dd:
+                print(f'  ③ 横截面 {c} 跟着变了（它现读本页的号，请看一眼指得对不对）：')
+                for d in dd:
+                    print(f'       {d}')
     finally:
         # ④ 收尾
         build(pg)
-        for other, _ in fans:
+        for other in [o for o, _ in fans] + cross:
             build(other)
-        with open(path, encoding='utf-8') as f:
-            back = f.read()
-        if back != before_txt:
-            fails.append(f'④ {pg} 重建回来与演习前不一致')
-        for other, _ in fans:
-            with open(os.path.join(DATA, f'{other}.js'), encoding='utf-8') as f:
-                if f.read() != fan_txt[other]:
-                    fails.append(f'④ {other} 重建回来与演习前不一致')
+        # 比的是正文（首行是构建日期注释，演习那一轮会把它刷成今天）；正文逐字相同就把
+        # 原文件整份写回去，连首行日期一起复原 —— 演习不该在工作区留下任何改动。
+        for p_, t0 in [(path, before_txt)] + [(os.path.join(DATA, f'{o}.js'), fan_txt[o])
+                                               for o in [o for o, _ in fans] + cross]:
+            with open(p_, encoding='utf-8') as f:
+                back = f.read()
+            if body_of(back) != body_of(t0):
+                fails.append(f'④ {os.path.basename(p_)} 重建回来与演习前不一致')
+            elif back != t0:
+                with open(p_, 'w', encoding='utf-8') as f:
+                    f.write(t0)
         shutil.rmtree(tmp_m, ignore_errors=True)
         shutil.rmtree(tmp_d, ignore_errors=True)
     print(f'  ④ 收尾：{pg}' + ''.join(f'、{o}' for o, _ in fans) + ' 已重建回演习前'
