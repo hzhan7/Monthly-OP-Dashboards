@@ -39,6 +39,8 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 import monthly_run as mr                                    # noqa: E402
+sys.path.append(os.path.join(HERE, 'build'))
+import exhibits                                             # noqa: E402
 
 ROSTER = [sys.executable, os.path.join(HERE, 'build', 'roster.py')]
 
@@ -87,6 +89,19 @@ def main(argv):
         name, err = _run(t, mr.builder(t))
         if err:
             fails.append((name, err))
+    # 第二轮：跨页图号（build/exhibits.py 的 ⟨ex:页/id⟩）。成员页先于横截面页生成，
+    # 指向横截面页的引用兑的是那一页**上一轮**的号；被指向的页这一轮改了号（重排了图），
+    # 就把指过去的页再建一遍 —— 哪怕它不在本次点名的页里，否则它的正文就指错了图。
+    # 判据是各页 payload 里的 xref 记录，不是名单；两轮之内必收敛（重建只改指出去的号）。
+    for _ in range(2):
+        stale = sorted({pg for pg, *_ in exhibits.stale_xrefs(data)} - {n for n, _ in fails})
+        if not stale:
+            break
+        print(f'  跨页图号过期，补建：{" ".join(stale)}')
+        for t in stale:
+            name, err = _run(t, mr.builder(t))
+            if err:
+                fails.append((name, err))
     name, err = _run('roster', ROSTER)
     if err:
         fails.append((name, err))

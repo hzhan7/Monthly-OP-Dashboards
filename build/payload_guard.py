@@ -223,6 +223,14 @@ def write_dash(path, payload, gen):
     # 已经自己调过的生成器在这里再过一遍是零变化。
     import axisfmt
     axisfmt.fix_all(payload.get('exhibits'))
+    # 图号收口在同一个写出点（build/exhibits.py）：按 payload['order'] 编号、替换正文里的
+    # ⟨ex:…⟩ 占位符、记跨页引用。页名取输出文件名 —— single.py / mrbase.py 一个底座写好几页，
+    # 传进来的 gen 是底座名，跨页引用认的是 data/<页>.js。没有顺序表与占位符的页零变化。
+    import exhibits
+    try:
+        exhibits.resolve(payload, os.path.splitext(os.path.basename(path))[0])
+    except exhibits.ExhibitsError as e:
+        raise PayloadGuardError(f'build/{gen}.py: {e}')
     try:
         check(payload)
     except PayloadGuardError as e:
