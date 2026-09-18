@@ -81,6 +81,7 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits     # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss   # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile
@@ -112,6 +113,37 @@ MIN_COMMON = 24
 HEAT_QTRS = 24              # 季度同比矩阵的列数
 MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+# ── 图序：挪图只改这一张表（build/exhibits.py）───────────────────────────────
+# E_* 是建图时的号（exhibits.Seq；印进正文是占位符，写盘时按 ORDER 兑成最终号）。
+# rolling-yoy-3y 与 value-bridge 另有 tools/check_yoy_caliber.py 的 ROLLING_OK
+# （CONTRACT §6.2）按 id 指着 —— 这两个 id 不要改。
+_S = exhibits.Seq
+(E_CASH_IDX, E_CASH_Q, E_FX_CMP, E_ROLL3Y, E_FX_MOVE, E_QTR_HEAT, E_DERIV, E_JPX_COUNT,
+ E_NK_H2H, E_NK_RATIO, E_A50, E_TW, E_SOUTH, E_VBRIDGE, E_SHARES, E_SHARES_YOY, E_TABLE) = (
+    _S(k) for k in range(2, 19))
+ORDER = [
+    'cash-index',           # 现货成交额，定基汇率折美元后指数化
+    'cash-quarterly',       # 季度口径的长历史：现货成交额指数化
+    'fx-compare',           # 汇率口径对照：同一批数据的当期指数
+    'rolling-yoy-3y',       # 12 个月滚动合计的同比，连排三年（§6.2）
+    'fx-move',              # 那道缺口的来源：本币兑美元累计变动
+    'quarterly-yoy-heat',   # 季度同比矩阵
+    'deriv-index',          # 衍生品 ADV，各家用自己的张数指数化
+    'jpx-two-counts',       # 为什么张数不可跨所比：JPX 衍生品 ADV 的两种数法
+    'nikkei-h2h',           # 产品级头对头 ①：日经 225 期货，SGX vs 大阪
+    'nikkei-ratio',         # 产品级头对头 ②：日经 225 的分流趋势
+    'a50',                  # 产品级头对头 ③：中国 A50
+    'taiwan',               # SGX 台湾指数期货的授权迁移
+    'southbound',           # HKEX 南向 ADT ÷ 现货总 ADT
+    'value-bridge',         # 成交额的增长拆成量与价（§6.2）
+    'shares-index',         # 量本身：成交股数指数化
+    'shares-yoy',           # 量的增速：成交股数的单月同比
+]
+#: 建图时的号 → id。
+EX_ID = dict(zip((E_CASH_IDX, E_CASH_Q, E_FX_CMP, E_ROLL3Y, E_FX_MOVE, E_QTR_HEAT, E_DERIV,
+                  E_JPX_COUNT, E_NK_H2H, E_NK_RATIO, E_A50, E_TW, E_SOUTH, E_VBRIDGE,
+                  E_SHARES, E_SHARES_YOY), ORDER))
 
 # HKEX 推出 MSCI 中国 A50 互联互通期货的月份。日期来自 HKEX 官方新闻稿
 # 《HKEX Launches MSCI China A 50 Connect Index Futures》(2021-10-18)，
@@ -1057,7 +1089,7 @@ SUM_ROWS = [
      clip(CASH[k]), 3 if k == 'sgx' else 2, 'num') for k in KEYS
 ] + [
     ('group', '现货成交额同比 —— <b>单月</b>同比（%，定基汇率口径 = 本币口径；'
-              '平滑口径见 Exhibit 5）', None, None, None),
+              f'平滑口径见 Exhibit {E_ROLL3Y}）', None, None, None),
 ] + [
     ('row', f'{DISP[k]} 现货 ADT' + ('（on-market）' if k == 'asx' else '') + ' y/y（单月）',
      yoy(CASH[k]), 1, 'growth') for k in KEYS
@@ -1152,7 +1184,7 @@ def summary():
                  '（表的三列就是本月 / 上月 / 去年同月），也是全站现在的统一口径；'
                  '<b>页顶数据条打头那一串现货 y/y 与这四行是同一个数</b>（构建期逐位对账，'
                  '对不上就停机）。同一条数据条后半段还印了一串标着'
-                 '<b>「Exhibit 5 的年度口径」</b>的读数，那是 12 个月滚动合计、'
+                 f'<b>「Exhibit {E_ROLL3Y} 的年度口径」</b>的读数，那是 12 个月滚动合计、'
                  '回答的是「一整年比前一整年」—— <b>与这四行不是同一个问题，不要比高低</b>。<br>'
                  '3Y %ile = 该读数在最近 36 个月里高于多少百分比的观测，判据与留空规则'
                  '由全站唯一实现 <code>build/pctile.py</code> 给出。' + blank_txt),
@@ -1187,7 +1219,7 @@ _idx_now = {k: float(idx100(CASH[k])[CUR]) for k in KEYS}
 _rank_idx = sorted(_idx_now.items(), key=lambda kv: -kv[1])
 
 ex.append({
-    'n': 2, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
+    'n': E_CASH_IDX, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': f'现货成交额，定基汇率折美元后指数化（{mlab(BASE)} = 100）',
@@ -1199,13 +1231,13 @@ ex.append({
     'note': ('四条线比的是<b>各自相对自己基期的增长</b>，与谁的体量大无关 —— '
              '体量在汇总表里，那里的水平值也只是量级参考。'
              f'汇率锁在 {mlab(BASE)}：折算常数不随月份变，'
-             '所以这张图上<b>没有一个百分点来自汇率</b>（汇率的贡献单独画在 Exhibit 4 与 6）。'
+             f'所以这张图上<b>没有一个百分点来自汇率</b>（汇率的贡献单独画在 Exhibit {E_FX_CMP} 与 {E_FX_MOVE}）。'
              '⚠ 源列是成交金额 = 股数 × 当期价格，官方不披露成交股数，'
              '<b>标的涨跌剔不掉</b>：一轮牛市会同时抬高成交额与这条线。'),
 })
 
 ex.append({
-    'n': 3, 'kind': 'lines', 'full': True, 'height': LINE_H,
+    'n': E_CASH_Q, 'kind': 'lines', 'full': True, 'height': LINE_H,
     'xlabels': QXL, 'fmt': 'f0', 'yfmt': 'f0', 'xstep': 4, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': (f'季度口径的长历史：现货成交额指数化（{qlab(QBASE)} = 100，'
@@ -1219,7 +1251,7 @@ ex.append({
                 'values': L(idx100(QCASH[k], QBASE).reindex(QIDX).values)} for k in KEYS],
     'src_extra': (f'Quarterly averages of the monthly daily-average turnover; only quarters with '
                   f'all three months present are plotted. Rebased to 100 at {qlab(QBASE)}'),
-    'note': (f'<b>月度太吵，季度才看得出结构性趋势</b>，所以这张图与 Exhibit 2 并存而不是替代它。'
+    'note': (f'<b>月度太吵，季度才看得出结构性趋势</b>，所以这张图与 Exhibit {E_CASH_IDX} 并存而不是替代它。'
              f'跨度 <b>{qlab(QIDX[0])} – {qlab(QIDX[-1])}（{len(QIDX)} 个季度，约 {QYEARS:.1f} 年）</b>，'
              f'是四家里最长的那条能画多长就画多长（'
              # 起点逐家从数据读，不写死 —— 写死的话哪天某家补了历史，图注就成了假话
@@ -1236,7 +1268,7 @@ ex.append({
 
 _cur_idx = {k: float(idx100(CASH_CUR[k])[CUR]) for k in KEYS}
 ex.append({
-    'n': 4, 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
+    'n': E_FX_CMP, 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'f0', 'yfmt': 'f0', 'xrot': 0, 'bar_labels': True,
     'title': f'汇率口径对照：同一批数据的当期指数（{mlab(BASE)} = 100）',
     'ylab': f'指数，{mlab(BASE)} = 100',
@@ -1252,7 +1284,7 @@ ex.append({
              '所以 JPX 的当期汇率柱比定基柱矮一大截 —— '
              '<b>如果本页用当期汇率，日本市场七年半的增长会被汇率削掉一大块，'
              '而那一块并不是成交量的变化。</b>本页所有增长结论一律用左柱那一口径。'
-             '这道缺口是怎么一个月一个月累出来的，画在 <b>Exhibit 6</b>。'),
+             f'这道缺口是怎么一个月一个月累出来的，画在 <b>Exhibit {E_FX_MOVE}</b>。'),
 })
 
 # ⚠ 这三根柱是**12 个月滚动合计的同比**，不是单月同比。换口径的理由不是「平滑一点更好看」，
@@ -1285,7 +1317,7 @@ else:
 ex.append({
     # id：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges-apac/rolling-yoy-3y⟩ 指到这张，
     # 本页还没迁移到顺序表（build/exhibits.py），号仍在这里手写。
-    'n': 5, 'id': 'rolling-yoy-3y', 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
+    'n': E_ROLL3Y, 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'f1', 'yfmt': 'f0', 'xrot': 0, 'bar_labels': True,
     'title': (f'12 个月滚动合计的同比，连排三年（{mlab(_y3[0])} / {mlab(_y3[1])} / '
               f'{mlab(_y3[2])}，三段互不重叠）'),
@@ -1308,7 +1340,7 @@ ex.append({
              f'两个口径给出相反符号的月份数：'
              + '、'.join(f'{DISP[k]} {EVID[k]["flip"]}' for k in KEYS) + ' 个月。<br>'
              f'⚠ 「12 个月滚动合计」= 12 个月<b>日均值的等权合计</b>，没乘交易日 —— '
-             f'沿用本页 Exhibit 3 的做法（等权，全页一个约定；{DAYW_TXT}）。'
+             f'沿用本页 Exhibit {E_CASH_Q} 的做法（等权，全页一个约定；{DAYW_TXT}）。'
              f'分子分母都恰好 12 个月，所以「合计的同比」与「均值的同比」逐位相同；'
              f'实测代价：对有交易日列的那几家，日加权与等权的滚动同比最大差 '
              f'<b>{TTM_QW_DEV:.2f}pp</b>。<br>'
@@ -1318,19 +1350,19 @@ ex.append({
 
 _fx_cum = {k: (FX[FXCOL[k]] / FX_BASE[k] * 100 - 100).reindex(IDX) for k in KEYS}
 ex.append({
-    'n': 6, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
+    'n': E_FX_MOVE, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f1', 'zero_line': True,
     # ⚠ 这里原来写的是「上一张图那道缺口」—— 但排在 Exhibit 6 前面的是 Exhibit 5（同比图），
     # 而这张图要解释的缺口是 Exhibit 4 两根柱之间的落差。指代必须写死到图号上，
     # 「上一张 / 下一张」这种相对说法，只要中间插进任何一张图就会变成假话。
-    'title': f'Exhibit 4 那道缺口的来源：本币兑美元累计变动（vs {mlab(BASE)}）',
+    'title': f'Exhibit {E_FX_CMP} 那道缺口的来源：本币兑美元累计变动（vs {mlab(BASE)}）',
     'ylab': f'% vs {mlab(BASE)}',
     'series': [{'name': f'{DISP[k]}（{CCY[k]}/USD）', 'color': COLOR[k],
                 'values': L(_fx_cum[k].values)} for k in KEYS],
     'src_extra': 'Monthly average spot rates, series/fx.csv',
     'note': ('线在 0 以下 = 该货币相对美元比基期便宜。'
-             '<b>Exhibit 4 里「定基汇率」与「当期汇率」两根柱之间的落差，就是这四条线累出来的</b>。'
+             f'<b>Exhibit {E_FX_CMP} 里「定基汇率」与「当期汇率」两根柱之间的落差，就是这四条线累出来的</b>。'
              # ⚠️ 别写「本页唯一一处汇率会影响读数的地方」：上一张图的「当期汇率」柱
              #    按它自己的图注就是**全部来自汇率**，同一页当场把「唯一」证伪。
              #    这里只说本页主口径为什么干净 —— 那是锁基期汇率带来的，自明。
@@ -1340,7 +1372,7 @@ ex.append({
 })
 
 ex.append({
-    'n': 7, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
+    'n': E_QTR_HEAT, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
     'title': f'季度同比矩阵：四家 × 近 {len(QHEAT)} 个季度（{qlab(QHEAT[0])} – {qlab(QHEAT[-1])}）',
     'rows': [DISP[k] for k in KEYS],
     'cols': [qlab(q) for q in QHEAT],
@@ -1357,7 +1389,7 @@ ex.append({
 
 _dv_now = {k: float(idx100(DERIV[k])[CUR]) for k in KEYS}
 ex.append({
-    'n': 8, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
+    'n': E_DERIV, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': f'衍生品 ADV，各家用自己的张数指数化（{mlab(BASE)} = 100）',
@@ -1371,12 +1403,12 @@ ex.append({
              '而张数<b>不可跨所比水平值</b> —— '
              '单张合约的大小是各所自己选的产品设计参数，把合约切碎张数就上去了，'
              '市场上并没有多一分钱的风险转移。所以这张图只读<b>各条线自己的斜率</b>，'
-             '<b>不读线之间的高低</b>。下一张图把这件事在 JPX 身上直接量出来。'),
+             '<b>不读线之间的高低</b>。⟨ex:jpx-two-counts@+1:下一张图⟩把这件事在 JPX 身上直接量出来。'),
 })
 
 _JW = pd.period_range(NK_START, LATEST, freq='M')
 ex.append({
-    'n': 9, 'kind': 'lines', 'full': True, 'height': 300,
+    'n': E_JPX_COUNT, 'kind': 'lines', 'full': True, 'height': 300,
     'xlabels': [mlab(p) for p in _JW],
     'fmt': 'f0', 'yfmt': 'f0c', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0c', 'zero_base': True,
@@ -1401,7 +1433,7 @@ ex.append({
 })
 
 ex.append({
-    'n': 10, 'kind': 'lines', 'full': True, 'height': LINE_H, 'xlabels': NK_XL,
+    'n': E_NK_H2H, 'kind': 'lines', 'full': True, 'height': LINE_H, 'xlabels': NK_XL,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': (f'产品级头对头 ①：日经 225 期货，SGX vs 大阪（JPX）'
@@ -1416,7 +1448,7 @@ ex.append({
     'src_extra': ('Same underlying index, dual-listed. SGX monthly volume divided by implied '
                   'derivatives trading days (deriv_vol ÷ DDAV); JPX in large-contract equivalents'),
     'note': ('<b>这是亚太唯一真正的零和争夺：同一个指数、同一批套利者、两个挂牌地。</b>'
-             '一边多成交一张，另一边就少一张 —— 与 Exhibit 2 那种「各长各的」完全不同。'
+             f'一边多成交一张，另一边就少一张 —— 与 Exhibit {E_CASH_IDX} 那种「各长各的」完全不同。'
              f'{mlab(NK_START)} 至 {mlab(CUR)}：SGX 侧 ADV 从 {num(float(NK_SG_W.iloc[0]))} '
              f'到 {num(float(NK_SG_W[CUR]))} 张/日（{pct(float(NK_SG_W[CUR]) / float(NK_SG_W.iloc[0]) * 100 - 100)}），'
              f'大阪侧从 {num(float(NK_JP_W.iloc[0]))} 到 {num(float(NK_JP_W[CUR]))} 张/日'
@@ -1435,7 +1467,7 @@ ex.append({
 })
 
 ex.append({
-    'n': 11, 'kind': 'lines', 'full': True, 'height': 300, 'xlabels': NK_XL,
+    'n': E_NK_RATIO, 'kind': 'lines', 'full': True, 'height': 300, 'xlabels': NK_XL,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': f'产品级头对头 ②：日经 225 的分流趋势（SGX ÷ 大阪，{mlab(NK_START)} = 100）',
@@ -1459,7 +1491,7 @@ ex.append({
              '⚠ 前 11 个月没有 12 月滚动值，那条线从第 12 点起才有。'),
 })
 
-_a50 = {'n': 12, 'kind': 'lines', 'full': True, 'height': LINE_H, 'xlabels': A50_XL,
+_a50 = {'n': E_A50, 'kind': 'lines', 'full': True, 'height': LINE_H, 'xlabels': A50_XL,
         'fmt': 'f0c', 'yfmt': 'f0c', 'xstep': 6, 'xrot': 90, 'markers': False,
         'end_label': True, 'label_fmt': 'f0c', 'zero_base': True,
         'title': '产品级头对头 ③：中国 A50 —— 只有 SGX 这一侧可测',
@@ -1480,7 +1512,7 @@ if A50_BRK is not None:
     _a50['break_label'] = A50_RIVAL_TXT
 ex.append(_a50)
 
-_tw = {'n': 13, 'kind': 'lines', 'height': 260, 'xlabels': TW_XL,
+_tw = {'n': E_TW, 'kind': 'lines', 'height': 260, 'xlabels': TW_XL,
        'fmt': 'f0c', 'yfmt': 'f0c', 'xstep': 6, 'xrot': 90, 'markers': False,
        'zero_base': True,
        'title': '产品级替代长什么样：SGX 台湾指数期货的授权迁移',
@@ -1501,7 +1533,7 @@ if TW_BRK is not None:
 ex.append(_tw)
 
 ex.append({
-    'n': 14, 'kind': 'lines', 'x': 'long', 'height': 260,
+    'n': E_SOUTH, 'kind': 'lines', 'x': 'long', 'height': 260,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f1', 'zero_base': True,
     'title': 'HKEX 独有的结构变量：南向 ADT ÷ 现货总 ADT',
@@ -1585,7 +1617,7 @@ _alt = [k for k in DEC_OK if DEC[k].get('alt')]
 # 被分解的那张图的图号：现读已经建好的 exhibit（此刻 Exhibit 5 已在 `ex` 里），不手写。
 _ttm_ref = ttm_ex_txt('Exhibit 15 图注')
 _ex15 = {
-    'n': 15, 'id': 'value-bridge', 'kind': 'bridge_bar', 'xlabels': [DISP[k] for k in KEYS],
+    'n': E_VBRIDGE, 'kind': 'bridge_bar', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'pp1', 'yfmt': 'f0', 'xrot': 0, 'height': 300,
     'title': f'成交额的增长拆成量与价（{_win_lab}）',
     'ylab': '对成交额增长的贡献（百分点）',
@@ -1620,7 +1652,7 @@ _ex15 = {
                 f'两者的柱高不可直接比较。顺带说，'
                 f'{DISP[_alt[0]]} 这一列本身就是个例子：笔数贡献 '
                 f'{pp(DECOMP[_alt[0]]["vol"])}、每笔均值贡献 {pp(DECOMP[_alt[0]]["prc"])} —— '
-                f'成交被切成更多、更小的笔，与本页 Exhibit 9 讲的合约切碎是同一件事。<br>'
+                f'成交被切成更多、更小的笔，与本页 Exhibit {E_JPX_COUNT} 讲的合约切碎是同一件事。<br>'
                 if _alt else '')
              + '<b>⚠ 这里的「价」是加权平均成交价（成交额 ÷ 成交量），不是指数收益率。</b>'
              '它同时含<b>市场涨跌</b>与<b>成交结构变化</b> —— 贵的股票交易占比上升，'
@@ -1640,7 +1672,7 @@ _ex15 = {
              f'差多差少都不改结论，<b>口径要按最坏情形定，不能按当期数据碰巧好看来定</b>。<br>'
              f'<b>⚠ 口径：</b>{_scope_txt}。分解口径与本页头条口径不完全重合的地方，'
              f'同比差多少直接列出 —— {_gap_txt}。'
-             f'12 个月合计按<b>日均值等权相加</b>（与 Exhibit 3 / 5 一致；本页四家里 HKEX '
+             f'12 个月合计按<b>日均值等权相加</b>（与 Exhibit {E_CASH_Q} / {E_ROLL3Y} 一致；本页四家里 HKEX '
              f'没有交易日列，日加权在这一页做不到四家一致）。'
              f'<b>📌 跨页对账</b>：单公司页把当月总量直接相加（= 交易日加权），'
              f'所以同一家同一窗口两页读数不会逐位相同，差的是<b>聚合权重不是方法</b>。'
@@ -1660,7 +1692,7 @@ _px_txt = '、'.join(f'{DISP[k]} 约 {QTY_PX_LOC[k]:,.2f} {CCY[k]}/股 ≈ ${QTY
 _px_ratio = ((max(QTY_PX_USD.values()) / min(QTY_PX_USD.values()))
              if len(QTY_KEYS) > 1 else float('nan'))
 ex.append({
-    'n': 16, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
+    'n': E_SHARES, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'end_label': True, 'label_fmt': 'f0', 'zero_base': True,
     'title': f'量本身：成交股数指数化（{mlab(BASE)} = 100）',
@@ -1675,7 +1707,7 @@ ex.append({
              f'{_px_txt}（美元一列按锁 {mlab(BASE)} 的汇率折算）'
              + (f'，相差 <b>{_px_ratio:.0f} 倍</b>' if np.isfinite(_px_ratio) else '')
              + '。跨所比股数的水平值，等于比谁家的股票面额更碎 —— '
-               '与本页 Exhibit 9 拒绝跨所比合约张数是同一条理由。'
+               f'与本页 Exhibit {E_JPX_COUNT} 拒绝跨所比合约张数是同一条理由。'
                '所以这张图只读<b>各条线自己的斜率</b>，不读线之间的高低。<br>'
              + (f'<b>📌 画不出来的：</b>'
                 + '；'.join(f'<b>{DISP[k]}</b>：'
@@ -1689,10 +1721,9 @@ ex.append({
 })
 
 # ── Exhibit 17：股数的**单月**同比 ────────────────────────────────────────────
-# 口径见上面 6d 节。图号不手写：新图一律追加在末尾，编号 = 上一张 + 1，
-# 这样下面图注里点名的那个「Exhibit N」永远指着这张图自己（EX_CLASS 的登记表
-# 会在图号真的变了的时候当场停机）。
-_n17 = ex[-1]['n'] + 1
+# 口径见上面 6d 节。图号不手写：建图时的号是 E_SHARES_YOY（占位符），页面上排第几
+# 由 ORDER 定，下面图注里点名的那个「Exhibit N」永远指着这张图自己。
+_n17 = E_SHARES_YOY
 # 口径点名（CONTRACT.md §6.2）里滚动那一侧的图号 **现读已经建好的 exhibit**，
 # 不手写 —— 手写的图号在插图 / 换口径之后就是一句指着别人说话的假话。
 CAL_TTM_EX = ttm_ex_nums()
@@ -1739,13 +1770,13 @@ ex.append({
              '，汇总表的 y/y 四行也是单月；'
              f'<b>Exhibit {CAL_TTM_TXT}：12 个月滚动合计的同比</b> —— '
              'CONTRACT.md §6.2 点名保留滚动口径的例外之一。'
-             f'（<b>Exhibit 15 与它同在那张名单上</b>：它是 Exhibit {CAL_TTM_TXT} 最新'
+             f'（<b>Exhibit {E_VBRIDGE} 与它同在那张名单上</b>：它是 Exhibit {CAL_TTM_TXT} 最新'
              f'那根柱的量价分解，<b>窗口逐字相同</b>（{_win_lab}），所以只能跟着它走 —— '
              '分解的两侧与被分解的总量不同口径，相加就不再等于净额。'
              f'<b>⚠ 但它的菱形不是 Exhibit {CAL_TTM_TXT} 那根柱的读数</b>：'
              '为了让分子分母同口径，分解换用了更窄的底料列，'
              f'本轮两者的差在 {_gap_min:.2f}–{_gap_max:.2f}pp 之间（绝对值，'
-             f'最大那家是 {DISP[_gap_worst]}），<b>带符号的逐家读数在 Exhibit 15 的'
+             f'最大那家是 {DISP[_gap_worst]}），<b>带符号的逐家读数在 Exhibit {E_VBRIDGE} 的'
              '图注里逐家列出</b>。'
              '页顶数据条里标着「年度口径」的那一串现货 y/y 与那根柱同口径、同窗口 —— '
              '同一行打头的那一串是单月，两者在行内已分开标明。）'
@@ -1759,26 +1790,26 @@ ex.append({
              '<b>代价用这两条股数序列自己实测</b>（两种口径先对齐到都有值的月份再比）：<br>'
              + _qd_txt
              + '<br>（上面这段是全仓共用的措辞，其中「页上一条线都不画」说的是<b>折线</b>：'
-               f'本页保留的滚动读数在 Exhibit {CAL_TTM_TXT} 的柱与 Exhibit 15 的菱形上，'
-               '见本条开头的点名。这张图没有柱，与它同源的水平值在 Exhibit 16。）<br>'
+               f'本页保留的滚动读数在 Exhibit {CAL_TTM_TXT} 的柱与 Exhibit {E_VBRIDGE} 的菱形上，'
+               f'见本条开头的点名。这张图没有柱，与它同源的水平值在 Exhibit {E_SHARES}。）<br>'
              + f'<b>均价分解也在单月口径上重做</b>（{mlab(CUR)} 比 {mlab(CUR - 12)}）：'
              + f'{_qy_txt}。'
-             + (f'<b>⚠ 与 Exhibit 15 那个「一整年 vs 前一整年」的窗口（{_win_lab}）对读，'
+             + (f'<b>⚠ 与 Exhibit {E_VBRIDGE} 那个「一整年 vs 前一整年」的窗口（{_win_lab}）对读，'
                 f'会得到两套答案</b>：{_qy_vs_ttm}（这里的「滚动」是那个窗口的<b>增长率本身</b>，'
-                f'不是 Exhibit 15 的段高 —— 段高的刻度见下一段）—— '
+                f'不是 Exhibit {E_VBRIDGE} 的段高 —— 段高的刻度见下一段）—— '
                 f'这不是谁算错了，是两个不同的问题，'
                 f'要哪一个取决于你问的是这一个月还是这一整年。' if _qy_vs_ttm else '')
              + '<b>⚠ 三者是乘法关系不是减法</b>：(1+股数增长)×(1+均价增长) = (1+成交额增长)'
                f'（本轮实测残差 {MOM_DEC_MAXERR:.1e}，超 1e-9 直接拒绝出页），'
                '所以「成交额同比 − 股数同比」并不等于均价同比，那个差里含一个交叉项。'
-               'Exhibit 15 那两段柱高之所以能直接相加，是因为先取对数（ln 可加、零残差）'
+               f'Exhibit {E_VBRIDGE} 那两段柱高之所以能直接相加，是因为先取对数（ln 可加、零残差）'
                '再按总增长重标定回百分点 —— 那两段的高度<b>不等于</b>这里的任何一个读数，'
                '既不同刻度也不同窗口。<br>'
              + (f'📌 {"、".join(DISP[k] for k in _qy_no)} 本月的单月分解算不出来'
                 f'（分解列在当月或去年同月有缺），线照画，分解不印。<br>' if _qy_no else '')
              + f'⚠ 两家的股数覆盖范围本来就不一样（{_qty_scope}），'
-               '上面那个单月分解用的成交额列与 Exhibit 15 是同一批列（<b>不是本页头条列</b>，'
-               '与头条口径差多少在 Exhibit 15 的图注里逐家列出）。所以这张图同样'
+               f'上面那个单月分解用的成交额列与 Exhibit {E_VBRIDGE} 是同一批列（<b>不是本页头条列</b>，'
+               f'与头条口径差多少在 Exhibit {E_VBRIDGE} 的图注里逐家列出）。所以这张图同样'
                '<b>只比各自的斜率、不比两条线之间的高低</b>；'
                '<b>股数也剔不掉拆股与面值变更</b>（一次 1 拆 5 让股数翻五倍，成交额一分没变）。'
              + (f'<br>⚠ 近零基数自检触发：{"、".join(DISP[k] for k in QDIFF_NZ)} '
@@ -1815,7 +1846,7 @@ W13 = IDX[-TBL_MONTHS:]
 # 所以它的编号必须永远是「最后一张图 + 1」。写死数字的话，每次在末尾追加一张图，
 # 页面上就会出现「Exhibit 17 之后跟着 Exhibit 15」，而没有任何东西会报错。
 table = {
-    'n': ex[-1]['n'] + 1,
+    'n': E_TABLE,
     'title': f'近 {TBL_MONTHS} 个月原始指标核对表（各家官方原始单位与币种，未折美元、未指数化）',
     'idx': '月份',
     'cols': [[h, k] for h, k, _, _ in TBL_COLS],
@@ -1887,15 +1918,16 @@ INTRA_EX = [e['n'] for e in ex
 # ⚠️ 类目描述只讲这一类是什么，**不许点名某张图画的是哪个产品** —— 那种句子又会
 #    退回「加图就得有人记得改」的老路。
 EX_CLASS = [
-    ('横向对比', [2, 3, 4, 5, 6, 7, 8, 15, 16, 17],
+    ('横向对比', [E_CASH_IDX, E_CASH_Q, E_FX_CMP, E_ROLL3Y, E_FX_MOVE, E_QTR_HEAT, E_DERIV,
+              E_VBRIDGE, E_SHARES, E_SHARES_YOY],
      '把有数据的几家放在同一根轴上对读增长趋势 —— 汇率口径对照、汇率本身、'
      '以及把增长拆成量与价，都归在这一类'),
-    ('产品级头对头', [10, 11],
+    ('产品级头对头', [E_NK_H2H, E_NK_RATIO],
      '同一个标的在两所双挂牌，一边多一张另一边就少一张，那才是真零和'),
-    ('只有一侧可测的产品对', [12, 13],
+    ('只有一侧可测的产品对', [E_A50, E_TW],
      '对手方要么不单列这个产品的量、要么根本不在本仓，'
      '所以画的是一侧的量、<b>不是分流比例</b>，别当头对头读'),
-    ('单家的内部结构', [9, 14],
+    ('单家的内部结构', [E_JPX_COUNT, E_SOUTH],
      '整张图都在一家之内，不与别家比'),
 ]
 _cls_all = [n for _lab, ns, _d in EX_CLASS for n in ns]
@@ -1910,15 +1942,12 @@ if len(set(_cls_all)) != len(_cls_all):
 
 
 def _exrange(ns):
-    """把图号压成 2–8 这样的连续段，纯排版，不改变名单。"""
-    ns, out, i = sorted(ns), [], 0
-    while i < len(ns):
-        j = i
-        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
-            j += 1
-        out.append(f'{ns[i]}–{ns[j]}' if j - i >= 2 else '、'.join(str(x) for x in ns[i:j + 1]))
-        i = j + 1
-    return 'Exhibit ' + '、'.join(out)
+    """把图号压成 2–8 这样的连续段，纯排版，不改变名单。
+
+    压段必须按**页面上的号**压：写成一组占位符 ⟨ex:a,b,c⟩，写盘时 build/exhibits.py
+    按最终图号排序、连续三张及以上并成「2–8」（与这里原先的算法逐字相同）。
+    拿建图时的号现压，挪一张图之后就会压出一段并不连续的「2–8」。"""
+    return 'Exhibit ⟨ex:' + ','.join(EX_ID[n] for n in ns) + '⟩'
 
 
 _CLS_TXT = '；'.join(
@@ -2003,26 +2032,26 @@ NOTES = [
     f'四家的原始披露是四种货币（{"、".join(UNIT_RAW[k] for k in KEYS)}），'
     f'要放进一张图必须折美元。主口径一律用 series/fx.csv 的 {mlab(BASE)} 月均汇率，'
     '此后折算是常数 ⇒ <b>每条线的增长率与它本币口径的增长率完全相同</b>，'
-    '汇率波动一个百分点都进不了增长结论。当期汇率口径只在 Exhibit 4 做对照、Exhibit 6 做拆解，'
+    f'汇率波动一个百分点都进不了增长结论。当期汇率口径只在 Exhibit {E_FX_CMP} 做对照、Exhibit {E_FX_MOVE} 做拆解，'
     '<b>不进任何增长结论</b>。',
 
     '<b>现货主口径的硬伤：剔得掉汇率，剔不掉标的涨跌。</b>'
-    '四家的头条源列都是成交<b>金额</b>（股数 × 当期价格），主口径（Exhibit 2/3/5/7）'
+    f'四家的头条源列都是成交<b>金额</b>（股数 × 当期价格），主口径（Exhibit {E_CASH_IDX}/{E_CASH_Q}/{E_ROLL3Y}/{E_QTR_HEAT}）'
     '只做了汇率定基，价格项还在里面。这对应 <code>build/pools.py</code> 的 '
     '<code>deflator=\'fx_only\'</code>。后果：一轮牛市会同时抬高成交额与那几条增长线，'
     '<b>「成交额增长」不等于「交易活跃度增长」</b>。'
     '<br><b>但「剔不掉」四家并不一样</b>（本轮逐列核过 series/*.csv 表头，见下一条）：'
-    'JPX 与 SGX 披露成交股数，所以对这两家可以把价格项单独量出来（Exhibit 15–17）；'
+    'JPX 与 SGX 披露成交股数，所以对这两家可以把价格项单独量出来（Exhibit ⟨ex:value-bridge,shares-index,shares-yoy⟩）；'
     'HKEX 月报一列量都没有，ASX 只有成交笔数。<b>能拆的两家不改变主口径</b> —— '
     '主口径要四家可比，而只有两家能拆。',
 
-    '<b>量价分解（Exhibit 15–17）：恒等式是定义，可得性才是问题。</b>'
+    '<b>量价分解（Exhibit ⟨ex:value-bridge,shares-index,shares-yoy⟩）：恒等式是定义，可得性才是问题。</b>'
     '均价 ≡ 成交额 ÷ 成交量 ⇒「成交额 ≡ 量 × 均价」恒成立，没有模型假设。'
     '真正的约束在数据：'
     'JPX <code>adv_cash_dom_shares_mn</code>、SGX <code>sec_turnover_mnshares</code> 有股数，'
     '可以做真·量价分解；<b>HKEX 只有 <code>adt_hkdbn</code>，一列量都没有，图上留空</b>；'
     'ASX 没有股数、只有成交笔数与每笔均值，只能做「笔数 × 每笔均值」这<b>另一种</b>恒等式，'
-    '在 Exhibit 15 里用红虚线隔在右侧，与左侧两家不可直接比较。'
+    f'在 Exhibit {E_VBRIDGE} 里用红虚线隔在右侧，与左侧两家不可直接比较。'
     '<br><b>⚠ 分子分母必须同口径，否则「均价」是个混合物。</b>'
     'JPX 的头条列 <code>adt_cash_total_jpytn</code> 含 ETF/REIT'
     + (f'（占比现算：{JPX_ETF_TXT}，逐月在变）' if JPX_ETF_TXT else '（占比这一轮算不出来）')
@@ -2035,7 +2064,7 @@ NOTES = [
        f'on-market ÷ 笔数差到 <b>{ASX_PT_ONM:,.0f} 澳元</b>，贴得紧的那条才是它的分母'
        f'（这个判定翻面会当场停机）。' if np.isfinite(ASX_PT_TOT) and np.isfinite(ASX_PT_ONM)
        else '这一轮两条路都算不出来，判定留白。')
-    + '这两处与头条口径的同比差多少，Exhibit 15 图注里逐家列出。'
+    + f'这两处与头条口径的同比差多少，Exhibit {E_VBRIDGE} 图注里逐家列出。'
     '<br><b>⚠ 拆出来的「价」是加权平均成交价，不是指数收益率。</b>'
     '它同时含市场涨跌与<b>成交结构变化</b>（贵的股票交易占比上升也会抬高它），'
     '<b>不能读成「大盘涨了多少」</b>。同理股数<b>剔不掉拆股与面值变更</b>。'
@@ -2046,7 +2075,7 @@ NOTES = [
     f'会大到吃掉整个读数，把「价的贡献」污染成读不出意思的数。'
     f'<b>本页当期同向还是反向，由数据当场判、不写死</b>：{_dir_txt}；'
     f'本窗口两法最大差 {_ar_dev:.2f}pp。差多差少都不改口径 —— 口径按最坏情形定。'
-    f'算术读数仍照算并写在 Exhibit 15 图注里。'
+    f'算术读数仍照算并写在 Exhibit {E_VBRIDGE} 图注里。'
     f'<br>权重分母有下限（|ln(额比)| < {LOGW_EPS} 整根柱留空，本轮最小 {DEC_LNV_MIN:.4f}）；'
     f'汇率不变性也是算出来的：本币口径与锁 {mlab(BASE)} 汇率的美元口径各跑一遍，'
     f'每一项差 {DEC_FX_MAXDEV:.1e}pp。'
@@ -2063,13 +2092,13 @@ NOTES = [
     '<b>衍生品只能各自指数化，因为凑不齐基期价格。</b>'
     + bp_txt() +
     '而张数<b>不可跨所比水平值</b>：'
-    '单张合约的大小是各所自己选的产品设计参数。Exhibit 9 把这件事量出来了 —— '
+    f'单张合约的大小是各所自己选的产品设计参数。Exhibit {E_JPX_COUNT} 把这件事量出来了 —— '
     'JPX 同一批成交按原始张数与按大合约当量相差 '
     f'{float(DERIV["jpx"][CUR]) / float(JPX_LGEQ[CUR]):.1f} 倍。'
-    '所以 Exhibit 8 只读各条线自己的斜率，不读线之间的高低。',
+    f'所以 Exhibit {E_DERIV} 只读各条线自己的斜率，不读线之间的高低。',
 
     '<b>产品级头对头的三条口径，逐条读：</b>'
-    '<br>① <b>日经 225（Exhibit 10 / 11）</b>：SGX 与大阪双挂牌，同一个指数，真零和。'
+    f'<br>① <b>日经 225（Exhibit {E_NK_H2H} / {E_NK_RATIO}）</b>：SGX 与大阪双挂牌，同一个指数，真零和。'
     'JPX 侧用官方的<b>大合约当量</b>（large + mini/10 + micro/100）'
     + (f'—— 这条恒等式的残差现算：{NK_LGEQ_N} 个月里最大 {NK_LGEQ_MAXERR:.1e} 千张/日，'
        f'即官方印数四舍五入的量级；'
@@ -2085,15 +2114,15 @@ NOTES = [
     '本页自己不发那个请求，所以不写成「本轮实测」），那一侧仍是<b>原始张数</b>。'
     '两侧一边归一、一边没归一，所以「SGX 占两所之和」那个百分比'
     '<b>连纯张数口径都算不上，更不是名义额份额</b> —— 只能读它的<b>方向</b>，不能读水平值；'
-    '要读趋势请用 Exhibit 11 那条<b>比值指数</b>，它把两个未知/已知的乘数常数一起约掉了。'
+    f'要读趋势请用 Exhibit {E_NK_RATIO} 那条<b>比值指数</b>，它把两个未知/已知的乘数常数一起约掉了。'
     '另外 SGX 侧不含它的 Mini / USD 日经合约（CSV 无分列），SGX 被系统性低估，幅度未知。'
-    '<br>② <b>中国 A50（Exhibit 12）</b>：HKEX 2021-10 推出 MSCI 中国 A50 互联互通期货来抢这块，'
+    f'<br>② <b>中国 A50（Exhibit {E_A50}）</b>：HKEX 2021-10 推出 MSCI 中国 A50 互联互通期货来抢这块，'
     '<b>但 HKEX 不单列这个产品的量</b>，所以只有 SGX 一侧可测，不能算分流比例。'
     '<br>③ <b>铁矿石（SGX vs 大商所）没有画</b>：大商所不在本仓，只有一侧的数不构成头对头。'
-    'MSCI 亚洲系列里可测的只有 Exhibit 13 那一组（SGX 自己的授权迁移），'
+    f'MSCI 亚洲系列里可测的只有 Exhibit {E_TW} 那一组（SGX 自己的授权迁移），'
     '对手方台湾期交所同样不在本仓。',
 
-    '<b>季度图为什么与月度图并存（Exhibit 3 vs Exhibit 2）。</b>月度序列噪音大，'
+    f'<b>季度图为什么与月度图并存（Exhibit {E_CASH_Q} vs Exhibit {E_CASH_IDX}）。</b>月度序列噪音大，'
     '结构性趋势要季度才看得出来；月度图则保留了拐点的时间精度，两者互补。'
     f'季度图跨 <b>{qlab(QIDX[0])} – {qlab(QIDX[-1])}，共 {len(QIDX)} 个季度（约 {QYEARS:.1f} 年）</b>，'
     '各家有多长画多长、起点之前留空不外推。季度值 = 三个月日均的等权平均，'
@@ -2108,14 +2137,14 @@ NOTES = [
     f'<b>Exhibit {CAL_TTM_TXT}：12 个月滚动合计的同比</b> —— '
     f'CONTRACT.md §6.2 点名保留滚动口径的例外之一（另一处在 '
     f'<code>/exchanges12/</code>）。'
-    f'<b>Exhibit 15 与它同在那张名单上</b>：它是 Exhibit {CAL_TTM_TXT} 最新那根柱的'
+    f'<b>Exhibit {E_VBRIDGE} 与它同在那张名单上</b>：它是 Exhibit {CAL_TTM_TXT} 最新那根柱的'
     f'量价分解 —— 柱 = 把那根柱的命题拆成量与价，<b>窗口逐字相同</b>（{_win_lab}），'
     f'所以只能跟着它走（分解的两侧与被分解的总量不同口径，相加就不再等于净额）。'
-    f'<b>⚠ 但 Exhibit 15 的菱形不等于 Exhibit {CAL_TTM_TXT} 那根柱</b>：'
+    f'<b>⚠ 但 Exhibit {E_VBRIDGE} 的菱形不等于 Exhibit {CAL_TTM_TXT} 那根柱</b>：'
     f'为了让分子分母同口径，分解换用了更窄的底料列（逐家换的是哪一列、覆盖到哪里，'
-    f'见上一条与 Exhibit 15 图注的「⚠ 口径」一段），所以两个数只是同窗口、不是同一个数 —— '
+    f'见上一条与 Exhibit {E_VBRIDGE} 图注的「⚠ 口径」一段），所以两个数只是同窗口、不是同一个数 —— '
     f'本轮逐家差 {_gap_min:.2f}–{_gap_max:.2f}pp（绝对值，最大那家是 {DISP[_gap_worst]}），'
-    f'带符号的逐家读数在 Exhibit 15 的图注里列出。'
+    f'带符号的逐家读数在 Exhibit {E_VBRIDGE} 的图注里列出。'
     f'<b>页面抬头（页顶数据条）两种口径都印，并当场逐处标明</b>：打头那一串是'
     f'<b>单月</b>（{mlab(CUR)} 比 {mlab(YAG)}），后面那一串标着'
     f'「Exhibit {CAL_TTM_TXT} 的年度口径」的才是 12 个月滚动合计。'
@@ -2135,7 +2164,7 @@ NOTES = [
       f'<b>Exhibit {CAL_TTM_TXT} 不跟着改</b>：它的命题是「一整年 vs 前一整年」、'
       '三段窗口互不重叠、横轴根本不是月，本来就不是一条逐月的线，理由见下一条。',
 
-    '<b>Exhibit 5 连排的是三个 12 个月滚动合计的同比，不是三个单月同比。</b>'
+    f'<b>Exhibit {E_ROLL3Y} 连排的是三个 12 个月滚动合计的同比，不是三个单月同比。</b>'
     '改口径的理由不是「平滑一点好看」，而是<b>单月同比在这四家身上连方向都会反</b>：'
     + (f'{DISP[_FLIP[0]]} 的 {mlab(_FLIP[1])} 单月同比 {pct(float(_MO_YY[_FLIP[0]][_FLIP[1]]))}，'
        f'同一时点的 12 个月滚动同比却是 {pct(float(_TTM_YY[_FLIP[0]][_FLIP[1]]))} —— '
@@ -2151,14 +2180,14 @@ NOTES = [
     + f'三根柱的窗口互不重叠、各为一个完整年（'
     + '；'.join(f'{mlab(m)} 柱 = {mlab(a)}–{mlab(b)}' for m, (a, b) in TTM_WIN.items())
     + f'），全图最早触及 <b>{mlab(TTM_FIRST)}</b>。'
-    '滚动合计按<b>日均值等权相加</b>、不乘交易日（与 Exhibit 3 同一约定）。'
+    f'滚动合计按<b>日均值等权相加</b>、不乘交易日（与 Exhibit {E_CASH_Q} 同一约定）。'
     f'⚠ 这个选择从前印的理由是「四家里只有三家有交易日列」，<b>现读实测不成立</b>：'
-    f'{DAYW_TXT} —— 那句理由已撤，口径本身不动（Exhibit 5 在 CONTRACT.md §6.2 的保留'
+    f'{DAYW_TXT} —— 那句理由已撤，口径本身不动（Exhibit {E_ROLL3Y} 在 CONTRACT.md §6.2 的保留'
     f'名单上，换加权方式会动它的读数，那是页面所有者的决定）。'
     f'代价照实测并覆盖全部有交易日列的成员：日加权与等权的滚动同比最大差 {TTM_QW_DEV:.2f}pp。'
     '柱高是<b>增长率</b>不是份额，四根柱之间不构成任何加总关系。',
 
-    '<b>HKEX 南向那张图（Exhibit 14）的水平值不可信，走势可信。</b>'
+    f'<b>HKEX 南向那张图（Exhibit {E_SOUTH}）的水平值不可信，走势可信。</b>'
     'HKEX 表内注明「ADT for Stock Connect includes buy and sell trades」（南向含买卖双边），'
     '而现货总 ADT 未注明双边 ⇒ 两列计数基准不一致，比值是一个<b>上界</b>；'
     '若总 ADT 为单边计数，真实占比约为图上读数的一半。'
@@ -2581,6 +2610,9 @@ def selfcheck_page():
 def main():
     n_rebased = selfcheck_page()
     shell = write_shell()
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, E_TABLE, where='build/exchanges_apac')
+    payload['order'] = ORDER
     payload_guard.write_dash(OUT, payload, TICKER)
     print(f'指数化自检：{n_rebased} 张「= 100」图的基期格全部等于 100 ✓')
     print(f'共同最新月 {LATEST} | 各家: '
@@ -2590,7 +2622,7 @@ def main():
           f' | 日经头对头窗口 {NK_START} → {LATEST}（{len(NK_IDX)} 个月）')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张）+ '
           f'Exhibit {table["n"]} 核对表')
-    print(f'Exhibit 5 口径 = 12 个月滚动合计同比 | 三段窗口 '
+    print(f'Exhibit {E_ROLL3Y} 口径 = 12 个月滚动合计同比 | 三段窗口 '
           + '、'.join(f'{mlab(a)}–{mlab(b)}' for _m, (a, b) in TTM_WIN.items())
           + f' | 最早触及 {mlab(TTM_FIRST)} | 等权 vs 日加权最大差 {TTM_QW_DEV:.2f}pp')
     print('单月同比 → TTM 同比（标准差 / 相邻月最大跳变 / 符号相反月数）：'
