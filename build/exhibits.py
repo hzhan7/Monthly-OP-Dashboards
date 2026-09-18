@@ -23,6 +23,11 @@ rebuild.py 的第二轮补齐。
     一组图写成 `⟨ex:a,b,c⟩`：按号排序，连续三张及以上并成「13–15」，其余用「、」隔开；
     `⟨ex:a,b,c|-⟩` 用半角连字符「13-15」。别写 `⟨ex:a⟩–⟨ex:c⟩` —— 挪走中间那张之后
     它会静默少算一张。
+  · 「下一张图」「上一张」这种**按位置说话**的词，挪图之后会静默指错（里面没有数字，
+    audit 也抓不到）。写成 `⟨ex:x@+1:下一张图⟩`（x 是那张图的 id，+1 = 紧跟在本图之后，
+    -1 = 紧挨在本图之前；一组写 `⟨ex:a,b@+1:下两张⟩`）：真挨着就原样印那个词，
+    挪开了就印成「Exhibit N」。只能写在图自己的字段里（图注、标题……）——「下一张」
+    是相对那张图说的。
   · 占位符找不到 id → 构建失败。payload 里所有字符串都替换（brief / headline / notes /
     title / glossary / 表格注 / hub_line ……），不用记哪些字段能写。
   · 跨页引用在 payload 里另记一份 `xref`（{'页/id': 号}）：页面不读它，
@@ -354,10 +359,20 @@ def _ranges(ns, dash):
     return '、'.join(parts + rest)
 
 
+_POS = re.compile(r'([^@]+)@([+-]\d+):(.+)\Z', re.S)
+
+
+def _cjk(ch):
+    """位置引用退回「Exhibit N」时两侧要不要补空格：紧挨着汉字 / 字母数字才补，标点不补。"""
+    return '\u4e00' <= ch <= '\u9fff' or ch.isalnum()
+
+
 class _Resolver:
-    def __init__(self, page, local, data_dir, mark):
+    def __init__(self, page, local, data_dir, mark, index=None):
         self.page, self.local, self.data_dir, self.mark = page, local, data_dir, mark
         self.errors, self.xref = [], {}
+        self.index = index or {}      # id → 在页面上的先后（0 起），位置引用用
+        self.container = None         # 正在替换的是第几张图自己的字段（None = 页级字段）
 
     def _wrap(self, txt, ref, cross=False):
         if not self.mark:
@@ -405,12 +420,59 @@ class _Resolver:
             ns.append(self.local[i])
         return self._wrap(_ranges(ns, style or '–'), body)
 
+    def pos(self, body, path, m):
+        """⟨ex:x@+1:下一张图⟩：x 真在本图之后紧挨着就印那个词，否则印「Exhibit N」。"""
+        g = _POS.match(body)
+        if not g:
+            self.errors.append((path, f'⟨ex:{body}⟩ 的写法不对（位置引用应为 ⟨ex:id@+1:下一张图⟩）'))
+            return None
+        ids = [i.strip() for i in g.group(1).split(',')]
+        k, word = int(g.group(2)), g.group(3)
+        if self.container is None:
+            self.errors.append((path, f'⟨ex:{body}⟩：位置引用只能写在图自己的字段里'
+                                      f'（「下一张」是相对那张图说的，页级文字没有「本图」）'))
+            return None
+        bad = [i for i in ids if i not in self.index]
+        if bad or not k:
+            self.errors.append((path, f'⟨ex:{body}⟩：' + (f'{bad} 不是本页的图' if bad
+                                                          else '位移不能是 0')))
+            return None
+        ps = [self.index[i] for i in ids]
+        c = self.container
+        near = (all(b == a + 1 for a, b in zip(ps, ps[1:]))
+                and (ps[0] == c + k if k > 0 else ps[-1] == c + k))
+        if near:
+            txt = word
+        else:
+            ns = [self.local[i] for i in ids]
+            txt = 'Exhibit ' + (_ranges(ns, '–') if len(ns) > 1 else str(ns[0]))
+            s, a, b = m.string, m.start(), m.end()
+            if a > 0 and _cjk(s[a - 1]):
+                txt = ' ' + txt
+            if b < len(s) and _cjk(s[b]):
+                txt += ' '
+        return self._wrap(txt, body)
+
     def sub(self, s, path):
         def rep(m):
             body = m.group(1).strip()
-            r = self.group(body, path) if ',' in body else self.one(body, path)
+            if '@' in body:
+                r = self.pos(body, path, m)
+            else:
+                r = self.group(body, path) if ',' in body else self.one(body, path)
             return m.group(0) if r is None else r
         return PH.sub(rep, s)
+
+    def walk_payload(self, payload):
+        """整份 payload：每张图的字段带着「本图是第几张」替换（位置引用要用），其余照常。"""
+        for k, e in enumerate(payload.get('exhibits') or []):
+            self.container = k
+            self.walk(e, f'exhibits[{k}]')
+        self.container = None
+        for key in list(payload):
+            if key != 'exhibits':
+                payload[key] = self.walk(payload[key], key)
+        return payload
 
     def walk(self, node, path=''):
         if isinstance(node, dict):
@@ -473,18 +535,19 @@ def resolve(payload, page, data_dir=None):
     if T and T.get('n') is not None:
         local[TABLE_ID] = T['n']
 
+    index = {e.get('id'): k for k, e in enumerate(exs) if e.get('id')}
     audit = os.environ.get('EXHIBITS_AUDIT')
     # 已经兑过一次的 payload（底座在自己的 payload() 里先兑、write_dash 再过一遍）没有占位符，
     # 不许拿它覆盖掉第一次写下的那份带标记的审计副本。
     if audit and _has_ph(payload):
         marked = json.loads(json.dumps(payload, ensure_ascii=False))
-        _Resolver(page, local, data_dir, mark=True).walk(marked)
+        _Resolver(page, local, data_dir, mark=True, index=index).walk_payload(marked)
         os.makedirs(audit, exist_ok=True)
         with open(os.path.join(audit, f'{page}.json'), 'w', encoding='utf-8') as f:
             json.dump(marked, f, ensure_ascii=False)
 
-    r = _Resolver(page, local, data_dir, mark=False)
-    r.walk(payload)
+    r = _Resolver(page, local, data_dir, mark=False, index=index)
+    r.walk_payload(payload)
     if r.errors:
         lines = '\n'.join(f'  · {p} → {m}' for p, m in r.errors[:20])
         more = f'\n  …… 另有 {len(r.errors) - 20} 处' if len(r.errors) > 20 else ''

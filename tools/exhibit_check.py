@@ -22,6 +22,8 @@
 的 payload，把带标记的号抹掉之后，正文里还长得像图号的（Exhibit N / Ex N / 图 N）逐条印出来。
 剩下的应当只有三种，逐条过目：汇总表「Exhibit 1」、外部文件的图号（GS 报告的 Exhibit 2）、
 改版说明里的旧编号（「原 Exhibit 9」）。另外两类假阳性一眼可辨：「图 25 个月」「图 2026-09」。
+同一遍也列出没走 ⟨ex:x@+1:…⟩ 的**位置词**（「下一张图」「上一张」……）：它们里面没有数字，
+挪图之后同样会指错；「页上一张滚动图都没有」这类只是字面撞上的，一眼可辨。
 
 ## drill —— 所有者要的那种演习
 
@@ -180,12 +182,15 @@ def _strings(node, path=''):
         yield path, node
 
 
+POS_WORD = re.compile(r'(?:下|上|前|后)[一两三]张|(?:下|上|前|后)面那[一两三]?张')
+
+
 def literal_refs(payload):
-    """→ [(路径, 命中, 上下文)]：抹掉带标记的号之后，正文里还长得像图号的地方。"""
+    """→ [(路径, 命中, 上下文)]：抹掉带标记的号之后，正文里还长得像图号的地方与位置词。"""
     out = []
     for path, s in _strings(payload):
         t = _MARKED.sub('#', s)
-        for m in REF.finditer(t):
+        for m in list(REF.finditer(t)) + list(POS_WORD.finditer(t)):
             a, b = max(0, m.start() - 36), min(len(t), m.end() + 30)
             out.append((path, m.group(0), t[a:b].replace('\n', ' ')))
     return out
@@ -225,6 +230,16 @@ def _idspace(pay, nums):
 
     def rep(m):
         ref, got = m.group(2), m.group(3)
+        if m.group(1) == '\ue000' and '@' in ref:
+            # 位置引用：挨着印原词，不挨着印「Exhibit N」。换回 id 空间时把「印的是哪一种」
+            # 留在记号里 —— 演习前后翻了面就会在 △ 里露出来，请人看一眼。
+            ids, _, rest = ref.partition('@')
+            ns = [nums.get(i.strip()) for i in ids.split(',')]
+            want = 'Exhibit ' + (X._ranges(ns, '–') if len(ns) > 1 else str(ns[0]))
+            word, g = rest.split(':', 1)[1], got.strip()
+            if g not in (word, want):
+                errs.append(f'⟨ex:{ref}⟩ 兑成 {got!r}，应为 {word!r}（挨着）或 {want!r}')
+            return f'⟨{ref}→{"原词" if g == word else "图号"}⟩'
         if m.group(1) == '\ue000':
             if ',' in ref:
                 ids, _, style = ref.partition('|')
