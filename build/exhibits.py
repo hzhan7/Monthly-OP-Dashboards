@@ -27,8 +27,9 @@ rebuild.py 的第二轮补齐。
     audit 也抓不到）。写成 `⟨ex:x@+1:下一张图⟩`（x 是那张图的 id，+1 = 紧跟在本图之后，
     -1 = 紧挨在本图之前；一组写 `⟨ex:a,b@+1:下两张⟩`）：真挨着就原样印那个词，
     挪开了就印成「Exhibit N」。「上面那张」「下面那张」这种不要求紧挨的写 `@<` / `@>`
-    （`⟨ex:x@<:上面那张⟩` = x 在本图之前任意位置）。只能写在图自己的字段里（图注、
-    标题……）——「下一张」是相对那张图说的。
+    （`⟨ex:x@<:上面那张⟩` = x 在本图之前任意位置）。默认相对「本图」，所以只能写在图自己的
+    字段里（图注、标题……）；要相对另一张图说（「a 紧随其后的那张」），在 @ 后写那张图的 id：
+    `⟨ex:b@a+1:紧随其后的那张⟩`，这种页级文字里也能写。
   · 占位符找不到 id → 构建失败。payload 里所有字符串都替换（brief / headline / notes /
     title / glossary / 表格注 / hub_line ……），不用记哪些字段能写。
   · 跨页引用在 payload 里另记一份 `xref`（{'页/id': 号}）：页面不读它，
@@ -360,7 +361,7 @@ def _ranges(ns, dash):
     return '、'.join(parts + rest)
 
 
-_POS = re.compile(r'([^@]+)@([+-]\d+|[<>]):(.+)\Z', re.S)
+_POS = re.compile(r'([^@]+)@([a-z0-9][a-z0-9_-]*?)?([+-]\d+|[<>]):(.+)\Z', re.S)
 
 
 def _cjk(ch):
@@ -428,9 +429,12 @@ class _Resolver:
             self.errors.append((path, f'⟨ex:{body}⟩ 的写法不对（位置引用应为 ⟨ex:id@+1:下一张图⟩）'))
             return None
         ids = [i.strip() for i in g.group(1).split(',')]
-        rel, word = g.group(2), g.group(3)
+        anchor, rel, word = g.group(2), g.group(3), g.group(4)
         k = int(rel) if rel not in '<>' else 0
-        if self.container is None:
+        if anchor is not None and anchor not in self.index:
+            self.errors.append((path, f'⟨ex:{body}⟩：参照图 {anchor!r} 不是本页的图'))
+            return None
+        if anchor is None and self.container is None:
             self.errors.append((path, f'⟨ex:{body}⟩：位置引用只能写在图自己的字段里'
                                       f'（「下一张」是相对那张图说的，页级文字没有「本图」）'))
             return None
@@ -440,7 +444,7 @@ class _Resolver:
                                                           else '位移不能是 0')))
             return None
         ps = [self.index[i] for i in ids]
-        c = self.container
+        c = self.container if anchor is None else self.index[anchor]
         if rel == '<':
             near = all(p < c for p in ps)
         elif rel == '>':
