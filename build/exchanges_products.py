@@ -114,6 +114,7 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits                  # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss          # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用
@@ -793,10 +794,29 @@ def summary():
 ex = []
 _n = [1]
 
+# ── 图序：挪图只改这一张表（build/exhibits.py）───────────────────────────────
+# nxt() 给的是**建图时的号**（exhibits.Seq；印进正文是占位符），页面上的先后由 ORDER 定。
+# 逐池那几张的 id = 「池 id-图型」：share 池内占比 / growth 张数口径的增长图 /
+# levels 只画水平值（share='none' 的池）。池因为历史太短本轮不画时，ORDER 里列着只是跳过；
+# 新加一个池（或给某池加一种图）而不写进 ORDER，构建会失败并点名要加哪几个 id。
+ORDER = [
+    'cumulative-growth',             # Cumulative growth by product pool（自基期）
+    'pools-rebased',                 # Product pools rebased to Jan-19 = 100
+    'momentum-heat',                 # Growth momentum, single-month y/y by member
+    'top-share',                     # Top member's pool share, Jan-19 vs now
+    'rates-share', 'rates-growth',   # 利率衍生品：池内占比 / 增长（含张数口径那条腿）
+    'equity_index-share',            # 股指衍生品
+    'single_stock_etf_opt-share',    # 单股与 ETF 期权
+    'energy-share',                  # 能源商品
+    'ags-share',                     # 农产品
+    'fx_spot_ecn-share',             # FX 即期 ECN
+    'fn_index_aum-levels',           # 指数 IP 与挂钩资产（存量，只画水平值）
+]
+
 
 def nxt():
     _n[0] += 1
-    return _n[0]
+    return exhibits.Seq(_n[0])
 
 
 # ── Ex2：跨池累计增长（自基期）——规模差三个数量级，绝对值同轴读不出来，所以画增长 ──
@@ -807,7 +827,7 @@ _lvl_txt = '、'.join(
     f'{pshort(s["p"])} {float(s["tot"][BASE_P]):,.1f} → {float(s["tot"][CUR]):,.1f}'
     for s, _v in _g_rows)
 ex.append({
-    'n': nxt(), 'kind': 'grouped_bars', 'height': 300,
+    'n': nxt(), 'id': 'cumulative-growth', 'kind': 'grouped_bars', 'height': 300,
     'fmt': 'pct0', 'label_fmt': 'pct1', 'bar_labels': True,
     'xrot': CAT_ROT, 'xstep': 1,
     'title': f'Cumulative growth by product pool, {mlab(BASE_P)} → {mlab(CUR)} '
@@ -841,7 +861,8 @@ _lagr = min(_idx_now.items(), key=lambda kv: kv[1])
 _lead_st = next(s for s in BASE_POOLS if s['p']['id'] == _lead[0])
 _lagr_st = next(s for s in BASE_POOLS if s['p']['id'] == _lagr[0])
 ex.append({
-    'n': nxt(), 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': nxt(), 'id': 'pools-rebased', 'kind': 'lines', 'x': 'long', 'full': True,
+    'height': LINE_H_ENDLABEL,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90, 'markers': False,
     'zero_base': True, 'end_label': True, 'label_fmt': 'f0',
     'title': f'Product pools rebased to {mlab(BASE_P)} = 100 — where the cycles diverge',
@@ -950,7 +971,7 @@ def _mom_cost_txt():
 
 MOM_COST_TXT = _mom_cost_txt()
 ex.append({
-    'n': nxt(), 'kind': 'heat_matrix', 'full': True,
+    'n': nxt(), 'id': 'momentum-heat', 'kind': 'heat_matrix', 'full': True,
     'title': f'Growth momentum, single-month y/y by member — last {len(_hm_cols)} months',
     'rows': _hm_lab,
     'cols': [mlab(p) for p in _hm_cols],
@@ -988,7 +1009,7 @@ for st in POOL_STATE:
     _top.append((st, _m, _b0, _v))
 _top.sort(key=lambda t: -t[3])
 ex.append({
-    'n': nxt(), 'kind': 'grouped_bars', 'height': 320,
+    'n': nxt(), 'id': 'top-share', 'kind': 'grouped_bars', 'height': 320,
     'fmt': 'f0', 'label_fmt': 'f1', 'bar_labels': True, 'xrot': CAT_ROT, 'xstep': 1,
     'title': f'Top member\'s pool share, {mlab(BASE_P)} vs {mlab(CUR)} — how exclusive is it',
     'ylab': '% of pool（分母 = 各自池内可呈现成员之和）',
@@ -1028,7 +1049,8 @@ for st in POOL_STATE:
         _lvnow = [(mshort(m), float(st['ser'][m['key']].get(st['idx'][0], np.nan)),
                    float(st['ser'][m['key']][CUR])) for m, _s in st['share']]
         ex.append({
-            'n': nxt(), 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+            'n': nxt(), 'id': f'{p["id"]}-levels', 'kind': 'lines', 'full': True,
+            'height': LINE_H_ENDLABEL,
             'fmt': 'f0', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90, 'markers': False,
             'zero_base': True, 'end_label': True, 'label_fmt': 'f0',
             'xlabels': _xl,
@@ -1060,7 +1082,8 @@ for st in POOL_STATE:
     _mv = [(mshort(m), float(st['share_pct'][m['key']].get(st['idx'][0], np.nan)),
             float(st['share_pct'][m['key']][CUR])) for m, _s in st['share']]
     ex.append({
-        'n': nxt(), 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+        'n': nxt(), 'id': f'{p["id"]}-share', 'kind': 'lines', 'full': True,
+        'height': LINE_H_ENDLABEL,
         'fmt': 'f1', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90, 'markers': False,
         'zero_base': True, 'end_label': True, 'label_fmt': 'f1',
         'xlabels': _xl,
@@ -1095,7 +1118,8 @@ for st in POOL_STATE:
         _gnow = [(s['name'], next((v for v in reversed(s['values']) if v is not None), None))
                  for s in _gser]
         ex.append({
-            'n': nxt(), 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+            'n': nxt(), 'id': f'{p["id"]}-growth', 'kind': 'lines', 'full': True,
+            'height': LINE_H_ENDLABEL,
             'fmt': 'f0', 'yfmt': 'f0', 'xstep': 12, 'xrot': 90, 'markers': False,
             'zero_base': True, 'end_label': True, 'label_fmt': 'f0',
             'xlabels': _xl,
@@ -1108,7 +1132,7 @@ for st in POOL_STATE:
             'note': ('<b>这张图存在的理由就是那条张数口径的线。</b>'
                      '定基名义额 = 张数 × 常数，常数是常数 ⇒ 两种口径的<b>增长率恒等</b>，'
                      '所以它在增长图里与别人完全可比；'
-                     '而它在水平值图与占比图里一律缺席（上一张图的分母里没有它）。'
+                     f'而它在水平值图与占比图里一律缺席（⟨ex:{p["id"]}-share@-1:上一张图⟩的分母里没有它）。'
                      + caveat_txt(st)
                      + f'{mlab(CUR)} 指数：'
                      + '、'.join(f'{n} {v:,.0f}' for n, v in _gnow if v is not None) + '。'
@@ -1163,7 +1187,7 @@ for st in POOL_STATE:
         TBL_ROWS.append(raw_row(st, m, 'growth'))
 
 table = {
-    'n': _n[0] + 1,
+    'n': exhibits.Seq(_n[0] + 1),
     'title': f'近 {TBL_MONTHS} 个月原始指标核对表（各家官方原始单位与币种，未做任何换算）',
     'idx': '池 · 成员｜官方原始列（单位）',
     'cols': TBL_COLS,
@@ -1770,6 +1794,10 @@ if SOURCE_DATE:
 
 
 def main():
+    # 图号：正文里拿 e['n'] 现拼的号（⟨ex:#k⟩）换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, {e['n']: e['id'] for e in ex}, table['n'],
+                      where='build/exchanges_products')
+    payload['order'] = ORDER
     payload_guard.write_dash(OUT, payload, TICKER)
     print(f'共同最新月 {LATEST} | 全页窗口 {START} → {LATEST}（{len(IDX)} 个月）')
     print(f'可画池 {len(POOL_STATE)}/{len(PAGE_POOLS)}：'
