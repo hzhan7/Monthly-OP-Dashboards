@@ -316,11 +316,14 @@ def exhibits(ds, spec, n0, R):
     d = _load(ds)
     cur = ds.all[-1]
     lagn = _lag_note(ds, d)
-    n = [n0 - 1]
+    # n0 是底座给的 exhibits.Seq（印进正文是占位符）。先取后加，号一直是 Seq；
+    # 写成 `n0 - 1` 再加会退化成普通 int（两个号相减是位移，见 exhibits.Seq）。
+    n = [n0]
 
     def nxt():
+        k = n[0]
         n[0] += 1
-        return n[0]
+        return k
 
     def base(**kw):
         # off_window：本板块的图不进「短窗口图总账」那条页尾说明。那条讲的是
@@ -336,7 +339,7 @@ def exhibits(ds, spec, n0, R):
     cap = d['cap']
     yr = cap.groupby(cap.index.year).sum()
     ex.append(base(
-        n=nxt(), kind='bars_labeled', height=300, section=_SEC,
+        n=nxt(), id='capex-approvals', kind='bars_labeled', height=300, section=_SEC,
         title='Board-approved capital appropriations, per meeting'
               '（董事會核准資本支出，逐次会议）',
         xlabels=[mlab(p) for p in cap.index], xstep=2, xrot=90,
@@ -385,7 +388,7 @@ def exhibits(ds, spec, n0, R):
             vals[m - 1] = round(run, 4) if got else None
         yser.append({'name': str(y), 'values': vals})
     ex.append(base(
-        n=nxt(), kind='year_lines', height=300,
+        n=nxt(), id='capex-ytd', kind='year_lines', height=300,
         title='Capital appropriations approved year-to-date（年内累计，按年分线）',
         xlabels=['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
@@ -400,7 +403,7 @@ def exhibits(ds, spec, n0, R):
     nt = d['notional'].iloc[-48:]
     fx48 = ds.fx_raw.reindex(nt.index)
     ex.append(base(
-        n=nxt(), kind='bar_line_dual', height=320,
+        n=nxt(), id='fx-forwards', kind='bar_line_dual', height=320,
         title='FX forward book vs. the NT dollar（遠期外匯未平倉名目 vs 汇率）',
         xlabels=[mlab(p) for p in nt.index], xstep=3, xrot=90,
         ylab='NT$bn notional outstanding', ylab2='NTD per USD',
@@ -426,7 +429,7 @@ def exhibits(ds, spec, n0, R):
     cov = d['cover']
     _n = d['notional'].reindex(cov.index)
     ex.append(base(
-        n=nxt(), kind='gs_line', height=300,
+        n=nxt(), id='hedge-ratio', kind='gs_line', height=300,
         title='Hedge book scaled to revenue（避险强度：名目 ÷ 月均营收）',
         xlabels=[mlab(p) for p in cov.index], xstep=6, xrot=90,
         ylab='覆盖月数（名目 ÷ 月均营收）', fmt='f2', yfmt='f1',
@@ -591,7 +594,7 @@ def exhibits(ds, spec, n0, R):
     dear = aft.loc[aft['coupon_pct'].idxmax()]
     n_dec = sum(1 for p in bmo.index if p.month == 12)         # 窗口内跨过的年末数
     ex.append(base(
-        n=nxt(), kind='lines_endlabels', height=320,
+        n=nxt(), id='debt-cost', kind='lines_endlabels', height=320,
         title='Cost of NT$ debt: new issues vs. the stock（新台币债务资金成本）',
         # x 标签密度不写死：窗口长度是会变的，`xstep=3` 在 77 个月时是 26 个标签、
         # 在 179 个月时就是 60 个 —— 一堵字墙。沿用 mrwin 给长月份轴定的同一条
@@ -657,7 +660,7 @@ def exhibits(ds, spec, n0, R):
     # 而在此之前它会先印出「把 NT$0.0bn 从 X 挪到 Y」这种自我否定的句子。
     shift = [(y, a - nv) for y, a, nv in zip(yrs, act, naive) if a - nv > 0.05]
     ex.append(base(
-        n=nxt(), kind='bars_labeled', height=300,
+        n=nxt(), id='bond-wall', kind='bars_labeled', height=300,
         title='NT$ bond refinancing wall（到期墙，按实际还本时程）',
         xlabels=[str(y) for y in yrs], xstep=1, xrot=0,
         ylab='NT$bn due', fmt='f0c', label_fmt='f0c', yfmt='f0c',
@@ -698,7 +701,7 @@ def exhibits(ds, spec, n0, R):
         if _zrun > _zmax:
             _zmax, _z0, _z1 = _zrun, _oz.index[_i - _zrun + 1], _p
     ex.append(base(
-        n=nxt(), kind='gs_line', height=300,
+        n=nxt(), id='guarantees', kind='gs_line', height=300,
         title='Guarantees outstanding to subsidiaries（背書保證在外余额）',
         xlabels=[mlab(p) for p in go.index], xstep=12, xrot=90,
         ylab='NT$bn outstanding', fmt='f0c', yfmt='f0c',
@@ -726,7 +729,7 @@ def exhibits(ds, spec, n0, R):
     az = d['az'].dropna()
     azo = d['az']['outstanding'].dropna()
     ex.append(base(
-        n=nxt(), kind='lines_endlabels', height=320,
+        n=nxt(), id='arizona-guarantees', kind='lines_endlabels', height=320,
         title='Parent guarantees for TSMC Arizona（亚利桑那厂：核准 vs 实际动支）',
         xlabels=[mlab(p) for p in az.index], xstep=3, xrot=90,
         ylab='US$bn', fmt='usd1', label_fmt='usd1',

@@ -256,10 +256,15 @@ def number(exs, order, page=None, first=FIRST):
         n = (f'{base}{"abcdefghijklmnopqrstuvwxyz"[grp.index(k)]}'
              if k is not None and len(grp) > 1 else base)
         old = e.get('n')
-        if old is not None and old != n:
-            _die(where, f'图 {e["id"]!r} 已经带着 n={old!r}，顺序表算出来是 {n!r} —— '
-                        f'用了顺序表就不要再手写图号')
-        _put_first(e, 'n', n)
+        if isinstance(old, Seq):
+            # 底座建图时的临时号（mrbase 那种把 'n' 追加在 dict 末尾的写法）：就地换成最终号，
+            # 键的位置不动 —— 迁移前后的 data/*.js 逐字可比。
+            e['n'] = n
+        else:
+            if old is not None and old != n:
+                _die(where, f'图 {e["id"]!r} 已经带着 n={old!r}，顺序表算出来是 {n!r} —— '
+                            f'用了顺序表就不要再手写图号')
+            _put_first(e, 'n', n)
         out[e['id']] = n
     return out
 
@@ -410,9 +415,12 @@ def resolve(payload, page, data_dir=None):
         if T:
             ints = [_int_part(n) for n in local.values()]
             tn = max([i for i in ints if i is not None], default=FIRST - 1) + 1
-            if T.get('n') is not None and T['n'] != tn:
-                _die(where, f'核对表带着 n={T["n"]!r}，按顺序表应为 {tn} —— 用了顺序表就别手写')
-            _put_first(T, 'n', tn)
+            if isinstance(T.get('n'), Seq):
+                T['n'] = tn                  # 底座建图时的临时号：就地换，键位不动（同上）
+            else:
+                if T.get('n') is not None and T['n'] != tn:
+                    _die(where, f'核对表带着 n={T["n"]!r}，按顺序表应为 {tn} —— 用了顺序表就别手写')
+                _put_first(T, 'n', tn)
     else:
         # 没有顺序表、但图带了 id（只为了让别的页能指过来）：号照生成器自己写的。
         local = {}

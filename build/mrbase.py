@@ -135,6 +135,7 @@ import pandas as pd
 import axisfmt
 import brief as B
 import chartscale
+import exhibits                   # 图号：slug 即 id、spec['order'] 定图序、正文 ⟨ex:…⟩ 占位符
 import glossary as gloss           # 名词释义的版式层与护栏，与 single.py 共用
 import mrwin                       # 窗口左端与排版的裁决层（可单测：python3 build/mrwin.py）
 import payload_guard
@@ -395,6 +396,11 @@ _TOP = {
                       #      给了 summary_extra 就**必须**给它：底座那句
                       #      「All figures derived from the single officially disclosed
                       #      field」在多了别的申报表之后是假话，validate 里硬校验。
+    'order',          #  list[str] 整页图序（2026-09-19 加，可选）。id = 标准图的 slug（_SLUGS），
+                      #      本家专属板块各张的 id 由 extra_exhibits 自己给（tsm 见 mrspecs/_tsm_extra.py）。
+                      #      不给 = 缺省排法（_SLUGS 的先后，专属板块接在最后）；给了就照它排，
+                      #      排第几就是 Exhibit 几。正文里的「Exhibit N」全是占位符，挪完不用改。
+                      #      机制见 build/exhibits.py；当前图序看 data/<t>.js 里各图的 n 与 id。
     'extra_exhibits', #  callable(ds, spec, n0, R) -> list[dict]  追加在标准图之后。
                       #      n0 = 本板块第一张的编号（底座算好传进来），
                       #      R(slug) 查标准图的编号。返回的 dict 自带 'n'。
@@ -463,6 +469,9 @@ def _chk(d, allowed, what):
 
 def validate(spec):
     _chk(spec, _TOP, 'SPEC')
+    if 'order' in spec and not (isinstance(spec['order'], (list, tuple))
+                                and all(isinstance(i, (str, list, tuple)) for i in spec['order'])):
+        raise SpecError("SPEC['order'] 应当是 id 列表（标准图的 id 就是 _SLUGS 里的 slug）")
     for k in ('ticker', 'name', 'title', 'tracker', 'source', 'source_zh', 'csv',
               'value', 'window', 'format_source'):
         if not spec.get(k):
@@ -1949,8 +1958,10 @@ def build_exhibits(ds, spec, breaks):
              if s not in skip
              and (has_fx or s not in _FX_SLUGS)
              and (has_seg or s != 'mix')]
-    EX = {s: i + 2 for i, s in enumerate(order)}
-    n_table = len(order) + 2
+    # 建图时的号是 exhibits.Seq：照常当整数用（查表、排序、相加），印进正文是 ⟨ex:#k⟩ 占位符，
+    # build() 写盘前换成各图的 id、再按 spec['order']（缺省 = 这里的先后）编成最终号。
+    EX = {s: exhibits.Seq(i + 2) for i, s in enumerate(order)}
+    n_table = exhibits.Seq(len(order) + 2)
 
     def R(slug):
         return f'Exhibit {EX[slug]}'
@@ -1980,6 +1991,7 @@ def build_exhibits(ds, spec, breaks):
 
     def push(slug, d, months):
         d['n'] = EX[slug]
+        d['id'] = slug
         if slug in _NO_BREAKS:
             ex.append(d)
             return
@@ -2193,6 +2205,7 @@ def build_exhibits(ds, spec, breaks):
             if qp in qidx and qidx.index(qp) > 0:
                 qbrk.append({'month': qp, 'zh': b['zh']})
         d['n'] = EX['qtr']
+        d['id'] = 'qtr'
         hits = apply_breaks(d, list(qsum.index), qbrk)
         if hits:
             ctx['brk_drawn']['qtr'] = hits
@@ -2718,6 +2731,7 @@ def build_exhibits(ds, spec, breaks):
         #    tsm 的 breaks 为空，走不到这条分支，所以三道闸门全绿也照样漏；
         #    日月光 / 联电 / 联发科 / 南亚科都有 breaks，都会踩到。
         d['n'] = EX['heat']
+        d['id'] = 'heat'
         ex.append(d)
 
     # ── 版面收口：两列网格里不许留「孤零零的半栏卡」──────────────────────
@@ -2759,14 +2773,43 @@ def build_exhibits(ds, spec, breaks):
             raise SpecError(
                 f'SPEC[extra_exhibits] 返回的编号是 {_got}，应当是 {_want} —— '
                 f'编号断档会让页内互指与核对表编号对不上')
+        _noid = [e.get('title', '') for e in _extra if not e.get('id')]
+        if _noid:
+            raise SpecError(f'SPEC[extra_exhibits] 返回的图要各带一个 id（spec[\'order\'] 按它排）：'
+                            f'{_noid}')
         ex += _extra
         # 核对表跟着往后挪。`n_table = len(order) + 2`（上面那行）是标准图的唯一
         # 编号权威，不动它；这里只在它之上加本板块的长度。
         ctx['n_table'] = n_table + len(_extra)
 
+    # ── 最终图序：spec['order'] 覆盖缺省排法（重排演习的钩子也在这一步生效）。
+    #    必须排在 `_pack_full` 之前：两列网格里谁落单、谁升通栏，看的是**页面上的**先后。
+    #    页尾几处「Exhibit a–b」这种区间写法也按最终先后现判（见 `_span`）。
+    built = [e['id'] for e in ex]
+    ctx['seq2id'] = {int(e['n']): e['id'] for e in ex}
+    ctx['order_ids'] = list(spec.get('order') or built)
+    final = exhibits.final_ids(built, ctx['order_ids'], spec['ticker'])
+    ctx['fpos'] = {i: k for k, i in enumerate(final)}
+    ex.sort(key=lambda e: ctx['fpos'][e['id']])
+
     _strip_lay(ex)
     _pack_full(ex)
     return ex, EX, ctx
+
+
+def _span(seqs, ctx, pre=''):
+    """几张图（建图时的号）→「a–b」或「a、b、c」：**按最终图序**连成一段才写区间。
+
+    缺省排法下它们本来就连号，产出与改之前的「Exhibit 2–9」逐字相同；spec['order']
+    把它们拆开之后自动改成逐个列出，不会出现一个把别的图也圈进来的区间。"""
+    fp, s2i = ctx['fpos'], ctx['seq2id']
+    ss = sorted(seqs, key=lambda k: fp[s2i[int(k)]])
+    if len(ss) == 1:
+        return f'{pre}{ss[0]}'
+    p = [fp[s2i[int(k)]] for k in ss]
+    if p == list(range(p[0], p[0] + len(p))):
+        return f'{pre}{ss[0]}–{pre}{ss[-1]}'
+    return '、'.join(f'{pre}{k}' for k in ss)
 
 
 def _pack_full(ex):
@@ -2948,7 +2991,7 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
     # 收窄主语，别在别处补一句「不过某几张除外」。判据用「不在 EX 里」——
     # 本板块的图正是没有 slug 的那些。
     _xn = sorted(e['n'] for e in ex if e['n'] not in set(EX.values()))
-    _scope = (f'Exhibit 2–{max(EX.values())} 与核对表' if _xn else '本页各图与两张表')
+    _scope = (f'Exhibit {_span(list(EX.values()), ctx)} 与核对表' if _xn else '本页各图与两张表')
     notes.append('<b>数据源</b>：主线是' + spec['source_zh'] + '。'
                  + ('除 ' + R('fx_rate') + ' 外，' if has('fx_rate') else '')
                  + _scope + '全部由' + _fld
@@ -2963,7 +3006,7 @@ def build_notes(ds, spec, ex, EX, ctx, blanked):
                      else '加一条月均汇率序列')
                     if fx_used(EX) else '')
                  + '派生，不引入任何券商预测或外部估计。'
-                 + (f'<b>Exhibit {_xn[0]}–{_xn[-1]} 与汇总表下半张不在此列</b>：'
+                 + (f'<b>Exhibit {_span(_xn, ctx)} 与汇总表下半张不在此列</b>：'
                     '它们读的是公司另外几张月度申报表，与月营收没有派生关系，'
                     '各自的出处印在那张图自己的 Exhibit source 一行上。'
                     if _xn else '')
@@ -3247,12 +3290,11 @@ def _window_note(ds, spec, ex, EX, ctx):
         xl = e.get('xlabels') or []
         if not xl:
             continue
-        nums.append(int(e['n']))
+        nums.append(e['n'])
         rows.append(f'Exhibit {e["n"]}（{e["kind"]}）自 {xl[0]} 起，{len(xl)} 格')
     # 「Ex2–Ex6」这个范围原来是写死的：TSM 有汇率腿，短窗口图正好是 Ex2…Ex6，
     # 但没有汇率腿的家只有 Ex2–Ex4，写死的那一段就把两张长历史/矩阵图算了进去。
-    span = (f'Ex{nums[0]}' if len(nums) == 1 else
-            f'Ex{min(nums)}–Ex{max(nums)}') if nums else '短窗口'
+    span = _span(nums, ctx, pre='Ex') if nums else '短窗口'
     # 「拉到 X 起」只有在 spec 真给了一个短窗口起点时才是实话。`x_from` 显式 None 的家
     # （= 用序列自己的起点）没有任何一张图被「拉」过，写成「统一拉到」是把一个不存在的
     # 动作说成发生过；而窗口起点落在序列之前被 `_first_at_or_after()` 钳到序列首月的家，
@@ -3509,14 +3551,23 @@ def build(spec, out_dir=None, quiet=False):
     if sd:
         payload['source_date'] = sd
 
+    # 图号：正文里的 ⟨ex:#k⟩（建图时的号）换成各图的 id，交出顺序表，write_dash 编号兑号
+    # （build/exhibits.py）。它就地改 payload —— 返回给 guc 薄壳的已经是最终号。
+    # 各图的 'n' 仍是建图时的 Seq，write_dash 就地换成最终号（键位不动）。
+    # ⚠️ 这里只能动 `payload`：上面 md2b_deep 已经换了一份新结构，`ex` / `table` 是旧的那份。
+    exhibits.bind_seq(payload, {**ctx['seq2id'],
+                                int(payload['table']['n']): exhibits.TABLE_ID},
+                      where=f'[{spec["ticker"]}]')
+    payload['order'] = ctx['order_ids']
     path = os.path.join(out_dir or DATA, f'{spec["ticker"]}.js')
     payload_guard.write_dash(path, payload, spec['ticker'])
     if not quiet:
         print(f'[{spec["ticker"]}] 窗口 {ALL[0]} → {ALL[-1]}（{len(ALL)} 个月）'
               f'· 季度 {ds.qsum.index[0]} → {ds.qsum.index[-1]}')
-        print(f'[{spec["ticker"]}] Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}'
-              f'（{len(ex)} 张）+ Exhibit {table["n"]} 核对表；'
-              f'编号表 {EX}')
+        _pe = payload['exhibits']
+        print(f'[{spec["ticker"]}] Exhibit 1 汇总表 + Exhibit {_pe[0]["n"]}-{_pe[-1]["n"]}'
+              f'（{len(_pe)} 张）+ Exhibit {payload["table"]["n"]} 核对表；'
+              f'编号表 { {e["id"]: e["n"] for e in _pe if e["id"] in EX} }')
         print(f'[{spec["ticker"]}] {headline}')
         print(f'[{spec["ticker"]}] 写出 {path} ({os.path.getsize(path) / 1024:.1f} KB)')
     return payload
