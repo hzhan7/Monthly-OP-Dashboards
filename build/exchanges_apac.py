@@ -1283,7 +1283,9 @@ if _RATIO:
 else:
     _ratio_txt = ''
 ex.append({
-    'n': 5, 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
+    # id：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges-apac/rolling-yoy-3y⟩ 指到这张，
+    # 本页还没迁移到顺序表（build/exhibits.py），号仍在这里手写。
+    'n': 5, 'id': 'rolling-yoy-3y', 'kind': 'grouped_bars', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'f1', 'yfmt': 'f0', 'xrot': 0, 'bar_labels': True,
     'title': (f'12 个月滚动合计的同比，连排三年（{mlab(_y3[0])} / {mlab(_y3[1])} / '
               f'{mlab(_y3[2])}，三段互不重叠）'),
@@ -1583,7 +1585,7 @@ _alt = [k for k in DEC_OK if DEC[k].get('alt')]
 # 被分解的那张图的图号：现读已经建好的 exhibit（此刻 Exhibit 5 已在 `ex` 里），不手写。
 _ttm_ref = ttm_ex_txt('Exhibit 15 图注')
 _ex15 = {
-    'n': 15, 'kind': 'bridge_bar', 'xlabels': [DISP[k] for k in KEYS],
+    'n': 15, 'id': 'value-bridge', 'kind': 'bridge_bar', 'xlabels': [DISP[k] for k in KEYS],
     'fmt': 'pp1', 'yfmt': 'f0', 'xrot': 0, 'height': 300,
     'title': f'成交额的增长拆成量与价（{_win_lab}）',
     'ylab': '对成交额增长的贡献（百分点）',

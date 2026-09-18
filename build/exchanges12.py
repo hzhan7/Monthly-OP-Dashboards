@@ -1827,7 +1827,9 @@ def build_payload(raw, specs, fx, kconst):
     # 是唯一一个对精确家与区间家含义都成立的排序键。取中点排序会隐含一个不存在的中心估计。
     ord4 = sorted(MEM_KEYS, key=lambda k: -float(TYOYLO[k][CUR]))
     ex.append({
-        'n': 4, 'kind': 'range_band', 'full': True, 'height': 320,
+        # id：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges12/…⟩ 指到这张与下面两张，
+        # 本页还没迁移到顺序表（build/exhibits.py），号仍在这里手写。
+        'n': 4, 'id': 'rolling-yoy-band', 'kind': 'range_band', 'full': True, 'height': 320,
         'xlabels': [DISP[k] for k in ord4], 'xrot': CAT_XROT,
         'fmt': 'pct1', 'label_fmt': 'pct1', 'ylab': f'% y/y ({TTM}-mo rolling sum)',
         'title': f'Constant-basis notional, {TTM}-month rolling-sum y/y — all 12 ({mlab(CUR)}); '
@@ -2011,7 +2013,8 @@ def build_payload(raw, specs, fx, kconst):
         m_gap_txt = '、'.join(f'{DISP[k]} 单月 {pp(float(m_gap[k][CUR]))}'
                              f' / 滚动 {pp(float(gap[k][CUR]))}' for k in ord7)
         ex.append({
-            'n': ex[-1]['n'] + 1, 'kind': 'grouped_bars', 'full': True, 'height': 300,
+            'n': ex[-1]['n'] + 1, 'id': 'contracts-vs-notional', 'kind': 'grouped_bars',
+            'full': True, 'height': 300,
             'xlabels': [DISP[k] for k in ord7], 'xrot': CAT_XROT,
             'fmt': 'pct1', 'label_fmt': 'pct1', 'bar_labels': True,
             'ylab': f'% y/y ({TTM}-mo rolling sum)',
@@ -2037,7 +2040,8 @@ def build_payload(raw, specs, fx, kconst):
                      + WHY_TTM + TTM_UNIT_NOTE + flat_txt),
         })
         ex.append({
-            'n': ex[-1]['n'] + 1, 'kind': 'grouped_bars', 'full': True, 'height': 300,
+            'n': ex[-1]['n'] + 1, 'id': 'contract-shrink', 'kind': 'grouped_bars',
+            'full': True, 'height': 300,
             'xlabels': [DISP[k] for k in ord7], 'xrot': CAT_XROT,
             'fmt': 'pp1', 'label_fmt': 'pp1', 'bar_labels': True,
             'ylab': 'pp（张数 y/y − 名义额 y/y）',

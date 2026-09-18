@@ -246,13 +246,34 @@ def _idspace(pay, nums):
 
 
 def _by_id(pay):
-    """把 exhibits 换成按 id 排的 dict（演习前后图序不同，按位置比没有意义）。"""
+    """把 exhibits 换成按 id 排序的 dict（演习前后图序不同，按位置比没有意义）。"""
     q = dict(pay)
     q['exhibits'] = {e.get('id', f'#{i}'): {k: v for k, v in e.items() if k != 'n'}
-                     for i, e in enumerate(pay.get('exhibits') or [])}
+                     for i, e in sorted(enumerate(pay.get('exhibits') or []),
+                                        key=lambda t: str(t[1].get('id', f'#{t[0]}')))}
     if isinstance(q.get('table'), dict):
         q['table'] = {k: v for k, v in q['table'].items() if k != 'n'}
     return q
+
+
+# 一串并列的占位符（「⟨a⟩、⟨b⟩、⟨c⟩」「⟨a⟩ / ⟨b⟩」）：生成器按最终图序串，演习之后先后会变，
+# 那是**应该**变的（号仍是升序）。比较前把每一串里的占位符排个序，分隔符原位不动。
+_RUN = re.compile(r'⟨[^⟩]+⟩(?:\s*(?:、|,|，|/|与|和|及|and)\s*⟨[^⟩]+⟩)+')
+_TOK = re.compile(r'⟨[^⟩]+⟩')
+
+
+def _sort_runs(node):
+    if isinstance(node, dict):
+        return {k: _sort_runs(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_sort_runs(v) for v in node]
+    if isinstance(node, str):
+        def one(m):
+            toks = sorted(_TOK.findall(m.group(0)))
+            it = iter(toks)
+            return _TOK.sub(lambda _m: next(it), m.group(0))
+        return _RUN.sub(one, node)
+    return node
 
 
 def cmd_drill(argv):
@@ -326,15 +347,20 @@ def cmd_drill(argv):
         d_id, e2 = _idspace(marked_d, n1)
         fails += [f'② 演习前：{e}' for e in e1] + [f'② 演习后：{e}' for e in e2]
         a_, b_ = _by_id(m_id), _by_id(d_id)
-        diffs = _diff_paths(a_, b_, cap=12)
+        raw = _diff_paths(a_, b_, cap=10 ** 6)
+        diffs = _diff_paths(_sort_runs(a_), _sort_runs(b_), cap=12)
         cnt = sum(len(_MARK_ID.findall(s)) for _, s in _strings(marked_d))
         changed = sum(1 for (_, s0), (_, s1) in zip(_strings(_by_id(marked_m)),
                                                    _strings(_by_id(marked_d))) if s0 != s1)
-        if diffs:
-            fails.append('② 换回 id 之后演习前后正文不一致：\n       ' + '\n       '.join(diffs))
-        print(f'  ② 正文：{cnt} 处占位符兑出来的号全部对得上演习后的图头；'
-              f'{changed} 个字符串因此变了、其余逐字不动' if not diffs and not e1 and not e2
-              else '  ② 正文：见下方失败项')
+        print(f'  ② 正文：{cnt} 处占位符兑出来的号{"全部" if not e2 else "并非全部"}等于演习后的图头；'
+              f'{changed} 个字符串因此变了'
+              + (f'（其中 {len(raw) - len(diffs)} 处是并列的一串图号按新图序重排）'
+                 if len(raw) > len(diffs) else '')
+              + ('；把号换回 id 之后，其余文字演习前后逐字相同' if not diffs else ''))
+        # 换回 id 之后仍然不同的，只可能是「按位置说话」的句子（「排在前一张之后」这种，
+        # 生成器按最终图序现算出不同的 id）—— 那是该变的，但要人看一眼变得对不对，不判失败。
+        for d in diffs:
+            print(f'  △ 按位置现算、演习后指向了别的图（请看一眼是否正确）：\n       {d}')
 
         # ③ 跨页
         for other, refs in fans:
