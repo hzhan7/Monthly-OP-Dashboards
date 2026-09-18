@@ -155,7 +155,7 @@ unit_is_ratio = SG.unit_is_ratio
 # `exchanges-apac` Ex5 与 `exchanges12` Ex4/7/8 是所有者改口径那一轮直接点名的；
 # `exchanges-apac` Ex15 是由那个回答**推出来的**（它是 Ex5 那根柱的量价分解，
 # 两侧与被分解的总量必须同口径），所以它是名单上最先该被重新审的一条。
-# 写成 (页, exhibit 号) 的白名单而不是「凡是 grouped_bars / range_band 就放行」——
+# 写成 (页, 图的 id) 的白名单而不是「凡是 grouped_bars / range_band 就放行」——
 # 图型不是理由：同样是 grouped_bars，别的页画滚动同比仍然该报。
 # 名单要跟着 CONTRACT §6.2 那张表走，改一处要改两处；漏改的后果是判据放行一张
 # 不该放行的图（假阴性），所以宁可写窄。
@@ -169,12 +169,16 @@ unit_is_ratio = SG.unit_is_ratio
 # HKEX 在 Ex15 上是空的（月度披露只有成交金额，拆不出量价）。差的不是窗口是**底料**：
 # Ex15 为了让分子分母同口径换了更窄的列。**差多少不写在这里** —— 它随每月数据变，
 # 由 Ex15 图注现算逐家列出（`build/exchanges_apac.py`），这里只说「不相等」。
+#
+# 2026-09-19 起按 **(页, 图的 id)** 记，不按图号：图号由那一页的顺序表（ORDER）现排，
+# 挪一张图就整段位移，而 id 跟着图走（build/exhibits.py）。按号记的话，所有者挪一次图，
+# 名单就指到别的图上 —— R1 放行错的那张、R5 报原来那张「不见了」。行尾的 Ex 号是写这行时的号。
 ROLLING_OK = {
-    ('exchanges-apac', 5),      # 三年连排的分组柱，「一整年 vs 前一整年」
-    ('exchanges-apac', 15),     # Ex5 最新那根柱的量价分解桥：窗口逐字相同，但**菱形不等于那根柱**
-    ('exchanges12', 4),         # 定基名义额的滚动合计同比 + 区间带
-    ('exchanges12', 7),         # 张数 vs 名义额，两侧必须同口径
-    ('exchanges12', 8),         # 张数 − 名义额的差值，同上
+    ('exchanges-apac', 'rolling-yoy-3y'),         # Ex5：三年连排的分组柱，「一整年 vs 前一整年」
+    ('exchanges-apac', 'value-bridge'),           # Ex15：Ex5 最新那根柱的量价分解桥：窗口逐字相同，但**菱形不等于那根柱**
+    ('exchanges12', 'rolling-yoy-band'),          # Ex4：定基名义额的滚动合计同比 + 区间带
+    ('exchanges12', 'contracts-vs-notional'),     # Ex7：张数 vs 名义额，两侧必须同口径
+    ('exchanges12', 'contract-shrink'),           # Ex8：张数 − 名义额的差值，同上
 }
 
 
@@ -1074,7 +1078,7 @@ def check_payload(payload, page, idx):
             # 存量列走 ttm_mean_yoy 时数值与滚动合计同比逐点相等（Σ12/Σ12′ ≡ 均值比），
             # 所以这里会连存量的「12 个月滚动均值同比」一起命中。那也该报：
             # §6.1 第 2 条把存量的默认口径定成**点对点**，滚动均值那条线同样撤了。
-            if m['caliber'] == 'ttm' and (page, n) not in ROLLING_OK:
+            if m['caliber'] == 'ttm' and (page, ex.get('id')) not in ROLLING_OK:
                 findings.append(dict(
                     lvl='🔴', rule='R1_rolling_outside_exception_list', page=page, n=n,
                     title=title,
@@ -1087,7 +1091,7 @@ def check_payload(payload, page, idx):
                          f'并按 §6.1 第 3 条把单月口径的代价印进图注'
                          f'（<code>yoy.describe(yoy.caliber_diff(...))</code> 现成可用）。'
                          f'确实该保留滚动的，先改 CONTRACT §6.2 那张表，再把 '
-                         f'({page!r}, {n}) 加进本文件的 ROLLING_OK。')))
+                         f'({page!r}, {ex.get("id")!r})（页, 图的 id）加进本文件的 ROLLING_OK。')))
                 continue
 
             # R4 用了单月但标题没写明（存量 / 比率同样豁免，理由同 R1）。
@@ -1189,7 +1193,7 @@ def check_ratio_pp(page, ex, s, m):
       · 显式 `ratio: False` 而 ②③ 都命中的列 → R7 会误报一次。
     今天全仓没有任何一个 spec 写过 `'ratio'`（只有 `build/specs/miax.py:838-844`
     在注释里把它留作后路），所以第二种情形现在不存在。真出现了，别改这条规则的判据去将就它 ——
-    在这里加一份 `(页, 图号)` 的例外名单，并像 `ROLLING_OK` 那样在 CONTRACT 里留一份
+    在这里加一份 `(页, 图的 id)` 的例外名单，并像 `ROLLING_OK` 那样在 CONTRACT 里留一份
     对应的表；无名单的沉默和有名单的沉默，在输出上要分得开。
     """
     if m['caliber'] != 'mom' or m.get('pp') or m['kind'] != Y.RATIO:
@@ -1444,12 +1448,12 @@ def check_whitelist_pages(scanned_pages):
     """
     out = []
     for pg in sorted({p for p, _ in ROLLING_OK} - set(scanned_pages)):
-        ns = sorted(n for p, n in ROLLING_OK if p == pg)
+        ns = sorted(i for p, i in ROLLING_OK if p == pg)
         out.append(dict(
             lvl='🔴', rule='R5_whitelist_page_missing', page=pg, n=None,
             title='（CONTRACT §6.2 名单）',
             msg=(f'`ROLLING_OK` 与 CONTRACT §6.2 的名单上有 `{pg}` 页的 '
-                 f'Exhibit {ns}，但这一轮**整页都没扫到** —— `data/{pg}.js` 不存在。'
+                 f'{ns}（图的 id），但这一轮**整页都没扫到** —— `data/{pg}.js` 不存在。'
                  f'页被删了、还是页名改了（本轮扫到的是 {sorted(scanned_pages)}）？'
                  f'两种都要把名单跟着改。'
                  f'⚠️ 这一条不响的话，那几张图的口径**没有任何东西看着**：'
@@ -1495,20 +1499,21 @@ def check_whitelist(payload, page):
     两个方向，缺一个就有一整类改动没人看着。
     """
     out = []
-    ns = {ex.get('n'): ex for ex in (payload.get('exhibits') or [])}
-    for pg, n in sorted(ROLLING_OK):
+    ids = {ex.get('id'): ex for ex in (payload.get('exhibits') or []) if ex.get('id')}
+    for pg, i in sorted(ROLLING_OK):
         if pg != page:
             continue
-        ex = ns.get(n)
+        ex = ids.get(i)
         if ex is None:
             out.append(dict(
-                lvl='🟡', rule='R5_whitelist_exhibit_missing', page=page, n=n,
+                lvl='🟡', rule='R5_whitelist_exhibit_missing', page=page, n=None,
                 title='（CONTRACT §6.2 名单）',
-                msg=(f'`ROLLING_OK` 与 CONTRACT §6.2 的名单上有 ({page}, Exhibit {n})，'
-                     f'但本页 payload 里没有这个图号（现有 {sorted(x for x in ns if x)}）。'
-                     f'图被删了、还是图号整体位移了？两种都要把名单跟着改 —— '
+                msg=(f'`ROLLING_OK` 与 CONTRACT §6.2 的名单上有 ({page}, id {i!r})，'
+                     f'但本页 payload 里没有这张图（现有 id {sorted(ids)}）。'
+                     f'图被删了、还是 id 改了？两种都要把名单跟着改 —— '
                      f'名单指着一张不存在的图，等于对某个口径的豁免落在了别的图上。')))
             continue
+        n = ex.get('n')
         sig = _txt(ex.get('title'), ex.get('ylab'), ex.get('ylab2'), ex.get('legend'),
                    *[str((x or {}).get('name') or '') for x in (ex.get('series') or [])],
                    *[str((x or {}).get('name') or '') for x in (ex.get('groups') or [])],
@@ -1655,8 +1660,8 @@ def check_page_mix(payload, page, items):
             mom_ns.add(it['n'])
         elif c == 'ttm':
             ttm_ns.add(it['n'])
-    present = {ex.get('n') for ex in (payload.get('exhibits') or [])}
-    ttm_ns |= {n for pg, n in ROLLING_OK if pg == page and n in present}
+    id2n = {ex.get('id'): ex.get('n') for ex in (payload.get('exhibits') or []) if ex.get('id')}
+    ttm_ns |= {id2n[i] for pg, i in ROLLING_OK if pg == page and i in id2n}
     if not (mom_ns and ttm_ns):
         return []
     named = set()
@@ -1775,16 +1780,17 @@ def selftest(idx):
     # **名单上的**滚动图不被报，而「不被报」和「R1 整条坏了」在输出上一模一样 ——
     # 所以再要一对：同一张图，页名 / 图号在名单内 → 必须**不**报；挪到名单外的
     # 页名（sgx）→ 必须报。少了任何一半，这个白名单都可能是死的而没人知道。
-    # 用 ('exchanges12', 4)：Ex7 / Ex8 也在名单上，补两个自称滚动的桩件，
+    # 用 ('exchanges12', 'rolling-yoy-band')（Ex4）：Ex7 / Ex8 也在名单上，补两个自称滚动的桩件，
     # 免得 R5 顺带报 missing 把输出搅浑（R5 自己另有专门的用例）。
-    def _wl_stub(n, name):
-        return {'n': n, 'kind': 'grouped_bars', 'xlabels': ['CME', 'ICE'],
+    def _wl_stub(n, name, i=None):
+        return {'n': n, **({'id': i} if i else {}), 'kind': 'grouped_bars', 'xlabels': ['CME', 'ICE'],
                 'title': f'{name}（12 个月滚动合计的同比）', 'ylab': '% y/y',
                 'groups': [{'name': f'{name} y/y（12 个月滚动合计）',
                             'values': [1.0, 2.0]}]}
 
-    wl_payload = {'exhibits': [rolling_sgx_ex(4), _wl_stub(7, 'Two units'),
-                               _wl_stub(8, 'Contract-shrink')],
+    wl_payload = {'exhibits': [dict(rolling_sgx_ex(4), id='rolling-yoy-band'),
+                               _wl_stub(7, 'Two units', 'contracts-vs-notional'),
+                               _wl_stub(8, 'Contract-shrink', 'contract-shrink')],
                   'notes': []}
     expect_silent('R1_rolling_outside_exception_list', wl_payload, 'exchanges12',
                   why='(exchanges12, Ex4) 在 ROLLING_OK 上 → 白名单必须压住 R1')
@@ -1822,7 +1828,8 @@ def selftest(idx):
         return {'exhibits': [
             yoy_ex(17, 'sgx.csv', 'sec_turnover_sgdmn', 'mom', w,
                    title='量的增速（单月同比）', note='本图用单月同比。'),
-            _wl_stub(5, 'Three years'), _wl_stub(15, 'Price-volume bridge')],
+            _wl_stub(5, 'Three years', 'rolling-yoy-3y'),
+            _wl_stub(15, 'Price-volume bridge', 'value-bridge')],
             'notes': notes}
 
     # B-1：note 谈了滚动，但一个图号都没点 → 必须报
@@ -1873,15 +1880,15 @@ def selftest(idx):
     # 而「不响」正是这条规则要防的那种失明，用例自己踩进去就白写了。
     # R5 判的是自述不是数值，所以这两个用例里的 values 是什么无关紧要。
     expect('R5_whitelist_no_longer_declares_rolling', {
-        'exhibits': [{'n': 4, 'kind': 'range_band', 'xlabels': ['CME', 'ICE'],
+        'exhibits': [{'n': 4, 'id': 'rolling-yoy-band', 'kind': 'range_band', 'xlabels': ['CME', 'ICE'],
                       'title': 'Constant-basis notional, y/y — all 12',
                       'ylab': '% y/y', 'actual': [1.0, 2.0],
                       'note': '口径见页尾。'},
-                     {'n': 7, 'kind': 'grouped_bars', 'xlabels': ['CME', 'ICE'],
-                      'title': 'Two units, y/y', 'ylab': '% y/y',
+                     {'n': 7, 'id': 'contracts-vs-notional', 'kind': 'grouped_bars',
+                      'xlabels': ['CME', 'ICE'], 'title': 'Two units, y/y', 'ylab': '% y/y',
                       'groups': [{'name': '张数口径 y/y', 'values': [1.0, 2.0]}]},
-                     {'n': 8, 'kind': 'grouped_bars', 'xlabels': ['CME', 'ICE'],
-                      'title': 'Contract-shrink effect, y/y', 'ylab': 'pp',
+                     {'n': 8, 'id': 'contract-shrink', 'kind': 'grouped_bars',
+                      'xlabels': ['CME', 'ICE'], 'title': 'Contract-shrink effect, y/y', 'ylab': 'pp',
                       'groups': [{'name': '差值', 'values': [1.0, 2.0]}]}],
         'notes': []}, 'exchanges12', lvl='🟡')
     # 逐图那两条钉 🟡（与上面整页那条的 🔴 成对）：契约明写这两条不跟着升 ——
