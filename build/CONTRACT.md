@@ -537,13 +537,15 @@ with open(f'data/{t}.js', 'w', encoding='utf-8') as f:
 
 | 页 / 图 | 图型 | 为什么留 |
 |---|---|---|
-| `exchanges-apac` Exhibit 5 | `grouped_bars` | 每根柱是「一整年 vs 前一整年」，三段互不重叠。它的横轴不是月，命题本身就是年度增速，换成单月无从对齐 |
-| `exchanges-apac` Exhibit 15 | `bridge_bar` | **推论，非所有者原话**（见上）。它是 Exhibit 5 最新那根柱的量价分解，**滚动窗口逐字相同**（Aug-25–Jul-26 vs Aug-24–Jul-25），横轴是交易所不是月。分解的两侧与被分解的总量必须同口径，否则相加不等于净额 —— 所以它只能跟着 Exhibit 5 走。⚠️ **菱形不等于 Ex5 那根柱**（实测 JPX 67.7 vs 66.4、SGX 36.4 vs 36.4、ASX 22.8 vs 21.0）：差的不是窗口是**底料** —— 为了让分子分母同口径，Ex15 改用了更窄的列（JPX 用 `adt_cash_stocks_jpytn`、ASX 用含场外报告的总额）。这个差由 Ex15 图注逐家列出，别在别处写成「菱形就是那根柱」 |
-| `exchanges12` Exhibit 4 / 7 / 8 | `range_band` / `grouped_bars` | 整页命题就是「定基名义额的 12 个月滚动合计同比」，含区间带与「张数 − 名义额」差值图；两侧必须同口径才是结构差 |
+| `exchanges-apac` Exhibit 5（id `rolling-yoy-3y`） | `grouped_bars` | 每根柱是「一整年 vs 前一整年」，三段互不重叠。它的横轴不是月，命题本身就是年度增速，换成单月无从对齐 |
+| `exchanges-apac` Exhibit 15（id `value-bridge`） | `bridge_bar` | **推论，非所有者原话**（见上）。它是 Exhibit 5 最新那根柱的量价分解，**滚动窗口逐字相同**（Aug-25–Jul-26 vs Aug-24–Jul-25），横轴是交易所不是月。分解的两侧与被分解的总量必须同口径，否则相加不等于净额 —— 所以它只能跟着 Exhibit 5 走。⚠️ **菱形不等于 Ex5 那根柱**（实测 JPX 67.7 vs 66.4、SGX 36.4 vs 36.4、ASX 22.8 vs 21.0）：差的不是窗口是**底料** —— 为了让分子分母同口径，Ex15 改用了更窄的列（JPX 用 `adt_cash_stocks_jpytn`、ASX 用含场外报告的总额）。这个差由 Ex15 图注逐家列出，别在别处写成「菱形就是那根柱」 |
+| `exchanges12` Exhibit 4 / 7 / 8（id `rolling-yoy-band` / `contracts-vs-notional` / `contract-shrink`） | `range_band` / `grouped_bars` | 整页命题就是「定基名义额的 12 个月滚动合计同比」，含区间带与「张数 − 名义额」差值图；两侧必须同口径才是结构差 |
 
 ⚠️ **例外只按「所有者点名 + 命题本身不是月度」两条同时成立来给，不是按图型给。**
 同样是 `bridge_bar`，别的页若拿它画月度刻度的同比，仍然要改；同样是 `grouped_bars`，
-别的页画滚动同比仍然报 🔴。判据侧的名单是 `tools/check_yoy_caliber.py` 的 `ROLLING_OK`，
+别的页画滚动同比仍然报 🔴。判据侧的名单是 `tools/check_yoy_caliber.py` 的 `ROLLING_OK`
+（按「页 + 图的 id」记：图号由那一页的顺序表现排、挪图就变，id 跟着图走 —— 见 `build/exhibits.py`；
+表里的 Exhibit 号是写这张表时的号），
 **与本表是同一份名单的两个副本** —— 改一处必须改两处，漏改的后果是判据放行一张
 不该放行的图（假阴性，不会响）。
 

@@ -369,17 +369,20 @@ def _venue_gap():
 
 _GAP = _venue_gap()
 
+# 「前一张」= 三盘口合计那张（位置引用：真紧挨在本图之前才印「前一张」，挪开了印图号）。
+_PREV = '⟨ex:bar-vol_us_cash_matched_mnsh@-1:前一张⟩'
+
 _NOTE_VS_PREV = (
-    '<b>⚠️ 这张图与它前一张（三盘口合计的 matched 成交股数）不是同一条序列，'
+    '<b>⚠️ 这张图与⟨ex:bar-vol_us_cash_matched_mnsh@-1:它前一张⟩（三盘口合计的 matched 成交股数）不是同一条序列，'
     '差别只有一处：分子里有没有 NTX 与 PSX。</b>'
-    '前一张是 <code>vol_us_cash_matched_mnsh</code>（Nasdaq + NTX + PSX <b>三个</b>盘口相加，'
+    + _PREV + '是 <code>vol_us_cash_matched_mnsh</code>（Nasdaq + NTX + PSX <b>三个</b>盘口相加，'
     + (f'且是拼接列：{_SPLICE_AT} 起 IR 原值、更早为 nasdaqtrader 三盘口和'
        if _SPLICE_AT else '且是拼接列') +
     '）；本张是 <code>vol_us_cash_matched_nasdaq_sh</code>（<b>只有</b> The Nasdaq Stock Market '
     '一个盘口，整条单一来源'
-    + (f'，{_from_zh(_B0)} {_BN} 个月，比前一张长' if _B0 and _BN else '') +
+    + (f'，{_from_zh(_B0)} {_BN} 个月，比{_PREV}长' if _B0 and _BN else '') +
     '）。两张的窗口、次轴口径（单月同比）与配色完全一样，'
-    + (f'<b>柱高更是几乎分不出来</b>：两条序列在 CSV 里量纲不同（前一张百万股/月、'
+    + (f'<b>柱高更是几乎分不出来</b>：两条序列在 CSV 里量纲不同（{_PREV}百万股/月、'
        f'本张裸股数/月，各自的轴标题由构建期按量级自动加换算说明），'
        f'换算到同一个单位后 {_GAP[2]} 分别是 <b>{_GAP[5]:,.2f}</b> 与 '
        f'<b>{_GAP[6]:,.2f}</b> 十亿股/月 —— 只差 {_GAP[3]:.1f}%（{_GAP[4]:.2f} 十亿股，'
@@ -388,7 +391,7 @@ _NOTE_VS_PREV = (
        if _GAP else
        '柱高也几乎分不出来（两条序列在 CSV 里量纲不同，换算到同一个单位后量级相同）——'
        '本轮算不出两者的差幅，请查 CSV。') +
-    '⇒ <b>两张都要看的理由</b>：前一张是本页「Nasdaq 在美股撮合了多少」的完整口径，'
+    '⇒ <b>两张都要看的理由</b>：' + _PREV + '是本页「Nasdaq 在美股撮合了多少」的完整口径，'
     '本张是其中<b>单一盘口、单一来源、历史最长</b>的那条，接缝与口径拼接都与它无关，'
     '所以它是判断长期趋势时该信的那根。'
 )

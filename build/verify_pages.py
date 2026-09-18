@@ -771,6 +771,14 @@ def main():
     files = sorted(f for f in os.listdir(DATA) if f.endswith('.js') and f != 'roster.js')
     for f in files:
         check_payload(os.path.join(DATA, f))
+    # 跨页图号（build/exhibits.py 的 ⟨ex:页/id⟩）：正文里兑出来的号 ≠ 被指向那一页此刻的号。
+    # 只记 WARN、不拦发布 —— 与上面「exhibit 编号不连号」同一条理由：被指向的页按数据可得性
+    # 跳了一张图、指过来的页这一轮又没重建，就是这个样子；为一句导航停整站，方向反了。
+    # 补法是重建指过来的那一页（tools/rebuild.py 会自动补这一轮）。
+    import exhibits
+    for pg, ref, old, now in exhibits.stale_xrefs(DATA):
+        warn(f'data/{pg}.js', f'跨页图号 ⟨ex:{ref}⟩ 在正文里兑成 {old}，那张图现在是 '
+                              f'{now if now is not None else "（已不存在）"} —— 重建 {pg} 即可')
     for t in pages:
         if not os.path.exists(os.path.join(DATA, f'{t}.js')):
             warn(f'data/{t}.js', '尚未生成 —— 本页只有壳，打开会显示「缺少 data/*.js」')

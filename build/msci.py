@@ -31,6 +31,26 @@ import brief as B    # 顶部 brief 的规则库（R1-R6），只算事实、不
 import glossary as gloss  # 名词释义的版式层与护栏，全站共用
 import numpy as np   # 只用于口径对照那一段的统计量（标准差 / 相邻月跳变）
 import payload_guard
+import exhibits      # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
+
+# ── 图序：挪图只改这一张表（机制见 build/exhibits.py 的模块头）──────────────
+# 排第几项就是 Exhibit 几（从 2 起；Exhibit 1 是汇总表，核对表自动接在最后）。
+# ⚠️ main() 里 'n': _S(2) 这些是**建图时的号**（exhibits.Seq），不是页面上的图号；
+# 页面上的号由这张表决定，印进正文的一律是占位符。
+ORDER = [
+    'aum',            # Month-end AUM in MSCI-linked ETFs
+    'aum-mom',        # Month-end AUM, m/m change
+    'aum-history',    # Full AUM history since Dec-08
+    'aum-q',          # Quarterly average AUM (fee-relevant basis)
+    'aum-years',      # AUM path by year
+    'abf',            # Implied asset-based fee revenue
+    'abf-q',          # Implied asset-based fee by quarter
+    'fee-rate',       # Effective asset-based fee rate
+    'fee-vs-aum',     # Implied fee revenue vs. average AUM, y/y
+    'aum-heat',       # Month-end AUM m/m change（热力矩阵）
+]
+_S = exhibits.Seq
+EX_ID = {_S(k): i for k, i in enumerate(ORDER, start=2)}   # 建图时的号 → id（缺省图序 = 建图顺序）
 import pctile        # 3Y %ile 的唯一实现，全站共用（各写各的正是同一序列两页判定相反的原因）
 import yoy as Y      # 同比口径的唯一实现（build/yoy.py）：本页的口径选择要拿它实测出来
 
@@ -652,7 +672,7 @@ def main():
         # 通栏：窗口拉到 2016 之后是 127 根柱，半栏（≈455px 绘图区）每根不到 2.1px，
         # 柱图退化成一片竖纹。通栏（≈1056px）每根 5px 上下，柱高才重新读得出来。
         # 同页 Exhibit 3 跟着通栏，它俩是「柱看水平 / 线看动能」的一对，不能一宽一窄。
-        'n': 2, 'kind': 'gs_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': XLM,
+        'n': _S(2), 'kind': 'gs_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': XLM,
         'full': True, 'xstep': MSTEP, 'xrot': 90,
         'title': (f'Month-end AUM in MSCI-linked ETFs — ${f(EOP[LATEST], 0)}bn in {mlab(LATEST)}, '
                   f'{pp_txt(yoy2)} YoY and {pp_txt(mom2)} MoM'),
@@ -674,12 +694,12 @@ def main():
 
     # ══════════════════════════ Exhibit 3：月末 AUM m/m ══════════════════════════
     ex.append(add_brk({
-        'n': 3, 'kind': 'gs_line', 'fmt': 'pct1', 'xlabels': XLM,
+        'n': _S(3), 'kind': 'gs_line', 'fmt': 'pct1', 'xlabels': XLM,
         'full': True, 'xstep': MSTEP, 'xrot': 90,     # 与 Exhibit 2 同宽，见那里的说明
         'title': (f'Month-end AUM, m/m change — {mlab(LATEST)} {sgn_pct(mom[LATEST])}, '
                   f'{XLM[0]} 以来 {len(WM)} 个月里 {sum(1 for k in WM if mom[k] > 0)} 个月为正'),
         'ylab': '% m/m', 'values': RL([mom[k] for k in WM]),
-        'note': ('与 Exhibit 2 成对：柱看水平、线看动能。'
+        'note': ('与 Exhibit ⟨ex:aum⟩ 成对：柱看水平、线看动能。'
                  '月末快照的环比含市场涨跌与净流入两部分，本序列不拆分。'),
     }, WM, BRK, BRK_CN_M))
 
@@ -688,7 +708,7 @@ def main():
     # 本页这张长历史图画的是**全序列**，2019-04 只要还在 CSV 里就一定在窗口内；
     # 会滚出去的是取尾窗的图（lpla 就是在这种守卫上硬失败的），所以这里不抛异常。
     ex4 = {
-        'n': 4, 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
+        'n': _S(4), 'kind': 'lines', 'x': 'long', 'full': True, 'height': 300,
         'fmt': 'f0c', 'label_fmt': 'f0c', 'xstep': max(1, len(months) // 14), 'xrot': 90,
         # zero_base：不给的话引擎走 y0 = min − 极差×5%，那是一次没有标注的隐性截轴，
         #   在长历史图上会凭空放大增幅（同 gsx.long_line 的 set_ylim(0, max*1.16)）。
@@ -721,7 +741,7 @@ def main():
         q_yoy.append((qavg[q] / qavg[p] - 1) * 100 if p and qavg[p] else None)
     n_last_q = len(qmap[QW[-1]])
     ex.append(add_brk({
-        'n': 5, 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': QW,
+        'n': _S(5), 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': QW,
         'xstep': QSTEP, 'xrot': 90,
         'title': (f'Quarterly average AUM (fee-relevant basis) — {QW[-1]} ${f(qavg[QW[-1]], 0)}bn, '
                   f'{q_yoy[-1]:+.0f}% YoY'),
@@ -746,7 +766,7 @@ def main():
     cy = years[-1]
     cy_last = max(int(k[5:]) for k in months if k[:4] == cy)
     ex.append({
-        'n': 6, 'kind': 'year_lines', 'fmt': 'f0c', 'label_fmt': 'f0c',
+        'n': _S(6), 'kind': 'year_lines', 'fmt': 'f0c', 'label_fmt': 'f0c',
         'xlabels': MON, 'series': yseries, 'highlight': len(years) - 1,
         'title': (f'AUM path by year — {cy} 年 {cy_last} 月末 ${f(EOP[LATEST], 0)}bn，'
                   f'较 {years[-2]} 年同月 {pp_txt(yoy(EOP, LATEST))}'),
@@ -769,7 +789,7 @@ def main():
         # 与 Exhibit 2 同一个问题、同样走通栏：柱数 = len(WMa)，窗口一放宽就是三位数，
         # 半栏每根摊不到 3px。（原注释写死「91 根柱」，窗口拉到 2016 之后已经不是这个数 ——
         # 具体每根几 px 由 mrwin 按实测算式复算，别在这里再写死一个新数。）
-        'n': 7, 'kind': 'gs_bar', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': XLMa,
+        'n': _S(7), 'kind': 'gs_bar', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': XLMa,
         'full': True, 'xstep': MSTEP, 'xrot': 90,
         'title': (f'Implied asset-based fee revenue — {mlab(LATEST)} ${abf[LATEST]:.1f}mn, '
                   f'{yoy7:+.0f}% YoY'),
@@ -798,7 +818,7 @@ def main():
         aq_yoy.append((aqsum[q] / aqsum[p] - 1) * 100 if p and aqsum[p] else None)
     n_last_aq = len(aq[AQW[-1]])
     ex.append(add_brk({
-        'n': 8, 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': AQW,
+        'n': _S(8), 'kind': 'qtr_bar', 'fmt': 'f0c', 'label_fmt': 'f0c', 'xlabels': AQW,
         'xstep': QSTEP, 'xrot': 90,
         'title': (f'Implied asset-based fee by quarter — {AQW[-1]} ${f(aqsum[AQW[-1]], 0)}mn'
                   + (f'，实际披露 ${REV_Q[AQW[-1]]:.0f}mn'
@@ -834,7 +854,7 @@ def main():
         # （assets/charts.js 的 FMT 表里有 f2，搜 `f2:`；不写行号 —— 上一版写的 :105
         # 本轮复核已指偏，那里是字号缩放的注释）。f1 会把 3.984/4.022/3.995/3.956 四个季度全印成
         # 「4.0」、3.747/3.722 全印成「3.7」，而这张图的全部信息量就是这 0.7bp 的压缩。
-        'n': 9, 'kind': 'gs_bar', 'fmt': 'f2', 'label_fmt': 'f2', 'xlabels': XLbp,
+        'n': _S(9), 'kind': 'gs_bar', 'fmt': 'f2', 'label_fmt': 'f2', 'xlabels': XLbp,
         'xstep': QSTEP, 'xrot': 90,
         'title': (f'Effective asset-based fee rate — {last_q} {last_bp:.3f}bp, '
                   f'{yoy8:+.2f}bp YoY（近 {len(QS8)} 个季度 {bpq[0]:.2f}bp → {bpq[-1]:.2f}bp）'),
@@ -883,7 +903,7 @@ def main():
         # （实测半栏下「10.5%」压刻度「20」5.9px），而 lines_endlabels 的端点标签有
         # 自己的一列（引擎给 M.l 多留了 30px），这条冲突从结构上就没有了。
         # 通栏保留：127 个点 × 2 条线，半栏挤不开。
-        'n': 10, 'kind': 'lines_endlabels', 'fmt': 'pct1',
+        'n': _S(10), 'kind': 'lines_endlabels', 'fmt': 'pct1',
         'xlabels': [mlab(k) for k in yw],
         'full': True, 'xstep': MSTEP, 'xrot': 90,
         # 标题里的「单月同比 / single-month」不是修辞：tools/check_yoy_caliber.py 的 R4
@@ -906,7 +926,7 @@ def main():
                       + FEE_Q_EN),
         'note': ('<b>两条线的垂直距离就是有效费率那一项</b>：本页的核心算术是'
                  '「费收 ≈ 平均 AUM × 有效费率」，所以深蓝（费收同比）低于中蓝（平均 AUM 同比）'
-                 '多少，就是费率压缩吃掉了多少增长（费率本身见 Exhibit 9）。'
+                 '多少，就是费率压缩吃掉了多少增长（费率本身见 Exhibit ⟨ex:fee-rate⟩）。'
                  '两条线同窗口、同口径（都是点对点单月同比），可以逐格相减。'
                  # 口径本身不用在这里辩护：CONTRACT.md §6 定的是全站一律单月，本图两条线
                  # 都在这个口径上（§6.1 第 3 条还明令图注该说代价、不许替口径讲理由）。
@@ -932,7 +952,7 @@ def main():
                  f'精确的费率同比是两条曲线的<b>比值</b>而不是差 —— {mlab(LATEST)} 为 '
                  f'{((1 + yv[-1] / 100) / (1 + av[-1] / 100) - 1) * 100:+.1f}%，'
                  f'而图上看到的垂直缺口是 {gap[-1]:+.1f}pp。缺口用来看趋势（在扩大还是收敛），'
-                 '要精确的费率读数请看 Exhibit 9。'
+                 '要精确的费率读数请看 Exhibit ⟨ex:fee-rate⟩。'
                  f'窗口内缺口从 {gap[0]:+.1f}pp 走到 {gap[-1]:+.1f}pp，'
                  f'{sum(1 for g in gap if g < 0)}/{len(gap)} 个月为负（即费收跑输 AUM）。'
                  f'本图自 {mlab(yw[0])} 起，与本页其余短窗口图同起点：隐含序列自 '
@@ -946,7 +966,7 @@ def main():
     hyears = [y for y in sorted({k[:4] for k in mom}) if y >= WIN0[:4]]
     matrix = [[R(mom.get(f'{y}-{m:02d}')) for m in range(1, 13)] for y in hyears]
     ex.append({
-        'n': 11, 'kind': 'heat_matrix', 'full': True,
+        'n': _S(11), 'kind': 'heat_matrix', 'full': True,
         'title': (f'Month-end AUM m/m change (%) — {mlab(LATEST)} {sgn_pct(mom[LATEST])}；'
                   f'{hyears[0]}–{hyears[-1]} 共 '
                   f'{sum(1 for r in matrix for v in r if v is not None and v > 0)} 个月为正、'
@@ -997,7 +1017,7 @@ def main():
             'abf': f(abf[k], 1) if k in abf else None,
         })
     table = {
-        'n': 12, 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
+        'n': _S(12), 'title': '近 13 个月月度指标核对表（官方原始单位，未换算）', 'idx': '月份',
         'cols': [['月末 AUM（$bn）', 'eop'], ['当月平均 AUM（$bn）', 'avg'],
                  ['月末 − 月均（$bn）', 'diff'], ['月末 AUM m/m（%）', 'mom'],
                  ['有效费率（bp，季度值）', 'rate'], ['隐含 ABF（$mn，推导）', 'abf']],
@@ -1090,11 +1110,11 @@ def main():
         '<b>这不是 MSCI 的营收。</b>本页画的是<b>第三方</b>挂钩 MSCI 指数的 ETF 资产规模（客户端产品）；'
         '它由 MSCI 官方按月披露，且直接决定 asset-based fee 收入，故可用作月度抢跑季报的高频量。',
         'Average AUM 才是费率相关口径：asset-based fee 按<b>平均</b>资产计提，不是月末快照。'
-        'Exhibit 5 因此用季度平均而非期末值。'
+        'Exhibit ⟨ex:aum-q⟩ 因此用季度平均而非期末值。'
         # 本页原来有两张画月均的图（月均全历史线、月末 vs 月均双线），都已删。
         # 删完必须交代月均这条口径现在在哪儿看，否则读者会以为本页只有月末一条口径。
-        f'<b>月均这条口径去哪儿看</b>：Exhibit 5 的季度平均（{QW[0]} 起 {len(QW)} 季，'
-        'asset-based fee 就计提在它上面）、Exhibit 10 的中蓝线（月均的<b>同比</b>，'
+        f'<b>月均这条口径去哪儿看</b>：Exhibit ⟨ex:aum-q⟩ 的季度平均（{QW[0]} 起 {len(QW)} 季，'
+        'asset-based fee 就计提在它上面）、Exhibit ⟨ex:fee-vs-aum⟩ 的中蓝线（月均的<b>同比</b>，'
         '与隐含费收同比并排），以及汇总表与核对表的「当月平均 AUM」列。'
         f'<b>月末与月均的差</b>请读汇总表的「月末 − 月均（$bn）」一行、核对表同名列，'
         '以及页顶数据总结的第三句（两者环比反向的月份它会点名）—— 本页不再单画这个差：'
@@ -1107,15 +1127,15 @@ def main():
         '月均值是 4/1–4/25 Bloomberg 加 4/26–4/30 Refinitiv 拼的，2019-05 起才全程 Refinitiv。'
         + ('断点线因此画在 2019-04（引擎语义：从这一期起与左侧不可比）。'
            '短窗口图的起点钉到 2016 之后，这条断点第一次落进它们的窗口里 —— 凡是窗口跨过它的图'
-           '<b>都画了这条红色竖虚线</b>：月度图 Exhibit 2 / 3 / 7 / 10 画在 2019-04，'
-           f'季度图 Exhibit 5 / 8 / 9 画在 {BRK_Q}（缝合月所在的季度），'
-           '外加全历史图 Exhibit 4。'
-           'Exhibit 6 是逐年路径图（x 轴 Jan–Dec，没有连续时间轴），断点落在图外的早期年份；'
+           '<b>都画了这条红色竖虚线</b>：月度图 Exhibit ⟨ex:aum⟩ / ⟨ex:aum-mom⟩ / ⟨ex:abf⟩ / ⟨ex:fee-vs-aum⟩ 画在 2019-04，'
+           f'季度图 Exhibit ⟨ex:aum-q⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-rate⟩ 画在 {BRK_Q}（缝合月所在的季度），'
+           '外加全历史图 Exhibit ⟨ex:aum-history⟩。'
+           'Exhibit ⟨ex:aum-years⟩ 是逐年路径图（x 轴 Jan–Dec，没有连续时间轴），断点落在图外的早期年份；'
            '判据只有一处：窗口两侧都要有数据才画，不是逐图人肉判断；'
            if brk_i is not None else
            '该月已不在任何一张图的窗口内，本次没有画出断点线；')
-        + 'Exhibit 11 的热力矩阵没有连续 x 轴，画不了这条线，读 2019 那一行请自行留意。',
-        '<b>桥的假设（Exhibit 7 / 8 / 10）</b>：月度 asset-based fee = 当月平均 AUM × 有效费率 ÷ 12。'
+        + 'Exhibit ⟨ex:aum-heat⟩ 的热力矩阵没有连续 x 轴，画不了这条线，读 2019 那一行请自行留意。',
+        '<b>桥的假设（Exhibit ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-vs-aum⟩）</b>：月度 asset-based fee = 当月平均 AUM × 有效费率 ÷ 12。'
         f'有效费率是从季报披露的 asset-based fee 收入反解出来的，所以<b>已收官季度是分摊而不是估计</b>；'
         f'最新已知季度（{last_q} = {last_bp:.3f}bp）之后的月份沿用该值，那一段才是真正的估计 —— '
         + (f'本次有 {n_ffill} 个月落在这一段。' if n_ffill else
@@ -1134,33 +1154,33 @@ def main():
         + '既有季度的数值一格未动。',
         # 核对表（Exhibit 12）的渲染器只吃 cols/rows，挂不上 note；它的「有效费率」列
         # 里同一季的三个月是同一个数，读者最容易把它误读成月度披露值 —— 所以这条必须在。
-        '<b>费率的期间口径（Exhibit 7 / 8 / 9 / 10 与核对表的「有效费率」列）</b>：' + FEE_Q_BODY
-        + f'Exhibit 9 的最右一根柱就是 {last_q}；核对表里同属一个季度的月份填的是<b>同一个</b>'
+        '<b>费率的期间口径（Exhibit ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-rate⟩ / ⟨ex:fee-vs-aum⟩ 与核对表的「有效费率」列）</b>：' + FEE_Q_BODY
+        + f'Exhibit ⟨ex:fee-rate⟩ 的最右一根柱就是 {last_q}；核对表里同属一个季度的月份填的是<b>同一个</b>'
         '费率值（季度值下挂到月，不是月度披露）。判据本身也是现算的：费率最新可得季度比'
         '「数据月所在季度的上一季」还老，就在上面这段里加一句过期提示。',
         f'<b>桥的真实不确定性在费率而不是 AUM。</b>{qs[0]}–{last_q} 这 {len(qs)} 个季度里 AUM 复利上行，'
-        f'但有效费率从 {BP_Q[qs[0]]:.2f}bp 压到 {BP_Q[qs[-1]]:.2f}bp（Exhibit 9 画的就是这 {len(QS8)} 季，'
+        f'但有效费率从 {BP_Q[qs[0]]:.2f}bp 压到 {BP_Q[qs[-1]]:.2f}bp（Exhibit ⟨ex:fee-rate⟩ 画的就是这 {len(QS8)} 季，'
         f'即 {QS8[0]} 的 {bpq[0]:.2f}bp → {QS8[-1]} 的 {bpq[-1]:.2f}bp）；'
         f'公司另行披露的期末 ETF 基点费率 '
         f'{DISC_Q[last_q]:.2f}bp 更低，因为它还覆盖非 ETF 的授权收入，两个口径不可互换。',
-        '凡标题带 <b>Implied</b> 的都不是公司披露值（Exhibit 7 / 8 / 10）。Exhibit 8 的图注里逐季列了'
+        '凡标题带 <b>Implied</b> 的都不是公司披露值（Exhibit ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-vs-aum⟩）。Exhibit ⟨ex:abf-q⟩ 的图注里逐季列了'
         '「隐含 vs 实际披露」的偏差，用来看桥搭得准不准 —— 看那组数，不看嘴上说。',
         f'<b>窗口：短窗口图一律自 {WIN0} 起</b>（日历常量，右端跟着数据最新月走，'
         f'所以窗口随时间自然变长，不是忘了倒推）。本轮月度图 {mlab(WM[0])} – {mlab(LATEST)} 共 '
         f'{len(WM)} 个月，季度图 {QW[0]} – {QW[-1]} 共 {len(QW)} 季。'
         '改这个口径的理由：25 个月装不下一个完整周期 —— 2018 回撤、2020 疫情坑、2022 熊市'
         '全在旧窗口之外，读者拿到的同比没有可比的历史坐标。'
-        '<b>两张不适用</b>：Exhibit 4 本来就画全历史（'
-        f'{mlab(months[0])} 起 {len(months)} 个月），Exhibit 6 是逐年路径图（x 轴是 Jan–Dec，'
+        '<b>两张不适用</b>：Exhibit ⟨ex:aum-history⟩ 本来就画全历史（'
+        f'{mlab(months[0])} 起 {len(months)} 个月），Exhibit ⟨ex:aum-years⟩ 是逐年路径图（x 轴是 Jan–Dec，'
         '窗口由「最近 6 年」定义，没有连续时间轴）。'
-        f'<b>费率派生的四张也够到了</b>：Exhibit 7 / 8 / 9 / 10 由有效费率派生，费率序列原先'
+        f'<b>费率派生的四张也够到了</b>：Exhibit ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-rate⟩ / ⟨ex:fee-vs-aum⟩ 由有效费率派生，费率序列原先'
         f'只回溯到 2019Q1，这四张只能从 2019 起。本轮把 SEC 8-K 的抓取起点下压到 2016-04 并'
-        f'补上老版式解析，费率序列现自 {qs[0]} 起共 {len(qs)} 季，于是 Exhibit 7 自 '
-        f'{mlab(WMa[0])}、Exhibit 8 / 9 自 {QS8[0]}、Exhibit 10 自 {mlab(yw[0])} 起 —— '
+        f'补上老版式解析，费率序列现自 {qs[0]} 起共 {len(qs)} 季，于是 Exhibit ⟨ex:abf⟩ 自 '
+        f'{mlab(WMa[0])}、Exhibit ⟨ex:abf-q⟩ / ⟨ex:fee-rate⟩ 自 {QS8[0]}、Exhibit ⟨ex:fee-vs-aum⟩ 自 {mlab(yw[0])} 起 —— '
         f'与其余各图同起点。{qs[0]}–{qname(qi(QWIN0) - 1)} 那几季不画但要留着：'
-        'Exhibit 8 / 9 的同比往前借 4 季、Exhibit 10 的同比借 12 个月，'
+        'Exhibit ⟨ex:abf-q⟩ / ⟨ex:fee-rate⟩ 的同比往前借 4 季、Exhibit ⟨ex:fee-vs-aum⟩ 的同比借 12 个月，'
         '没有它们窗口开头会空一年。'
-        f'热力矩阵（Exhibit 11）同口径取 {hyears[0]}–{hyears[-1]} 共 {len(hyears)} 个年度行；'
+        f'热力矩阵（Exhibit ⟨ex:aum-heat⟩）同口径取 {hyears[0]}–{hyears[-1]} 共 {len(hyears)} 个年度行；'
         '核对表仍是最近 13 个月的相对窗口 —— 它是「最近一年逐月核对」的工具，不是趋势图。'
         f'月度图的 x 轴每 {MSTEP} 格标一次（每年 1 月）、季度图每 {QSTEP} 格标一次（每年 Q1），'
         '逐格标必然叠成一团。',
@@ -1169,8 +1189,8 @@ def main():
          + (f'季度图（Exhibit {_QTR_EX_TXT}）是当季对去年同季 —— 都是「同一个位置对'
             f'上一年的同一个位置」，不是滚动' if QTR_EX else '本页本轮没有季度图')
          + f'；费率那条取基点差），'
-         f'<b>没有一张图用 {Y.TTM_WIN} 个月滚动口径</b> —— Exhibit 2 / 5 / 7 / 8 / 10 的同比线、'
-         f'Exhibit 9 的基点差、Exhibit 3 / 11 的 m/m 与汇总表、核对表，以及页顶 brief 段的'
+         f'<b>没有一张图用 {Y.TTM_WIN} 个月滚动口径</b> —— Exhibit ⟨ex:aum⟩ / ⟨ex:aum-q⟩ / ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-vs-aum⟩ 的同比线、'
+         f'Exhibit ⟨ex:fee-rate⟩ 的基点差、Exhibit ⟨ex:aum-mom⟩ / ⟨ex:aum-heat⟩ 的 m/m 与汇总表、核对表，以及页顶 brief 段的'
          f'环比与同比（句中同比已标「单月」）全部同口径，'
          f'所以本页任意两处的读数可以直接互相对读。'
          f'<b>这就是全站的口径，不是本页的偏离</b>：CONTRACT.md §6 规定全站同比一律单月 —— '
@@ -1182,8 +1202,8 @@ def main():
          f'（{Y.TTM_WIN} 个月滚动<b>均值</b>同比对存量在数值上完全正确 —— '
          f'Σ12 ÷ Σ12′ 恒等于均值比 —— 不许说的只是把它叫「合计」：'
          f'12 个月末的 AUM 快照相加不指代任何真实的量）：<br>'
-         f'① <b>月末／月均 AUM（Exhibit 2 / 5 / 6）是期末存量</b>。'
-         f'两种口径在 Exhibit 2 画出来的那 {_CAL_AUM["n"]} 个共同月份上实测：'
+         f'① <b>月末／月均 AUM（Exhibit ⟨ex:aum⟩ / ⟨ex:aum-q⟩ / ⟨ex:aum-years⟩）是期末存量</b>。'
+         f'两种口径在 Exhibit ⟨ex:aum⟩ 画出来的那 {_CAL_AUM["n"]} 个共同月份上实测：'
          f'点对点逐月标准差 {_CAL_AUM["sd_mom"]:.2f}pp、'
          f'{Y.TTM_WIN} 个月均值同比 {_CAL_AUM["sd_ttm"]:.2f}pp'
          f'（放大 {_CAL_AUM["sd_mom"] / _CAL_AUM["sd_ttm"]:.2f} 倍），'
@@ -1211,10 +1231,10 @@ def main():
          + f'存量比的是两个时点的资产，不含「今年这个月比去年多开几天市」这类日历效应，'
          f'而本页真正要回答的是「AUM 相对去年这个月是多少」；'
          f'噪声用轴范围解决，不换口径。<br>'
-         f'② <b>隐含费收（Exhibit 7 / 8 / 10）是流量</b>，按 §6.1 第 1 条走单月同比 —— '
+         f'② <b>隐含费收（Exhibit ⟨ex:abf⟩ / ⟨ex:abf-q⟩ / ⟨ex:fee-vs-aum⟩）是流量</b>，按 §6.1 第 1 条走单月同比 —— '
          f'与本页那几条存量落在同一个式子上（本月 ÷ 去年同月），'
-         f'而<b>两者同口径正是 Exhibit 10 能成立的前提</b>：'
-         f'本页的核心算术是「费收 ≈ 平均 AUM × 有效费率」，而 Exhibit 10 把费收同比与'
+         f'而<b>两者同口径正是 Exhibit ⟨ex:fee-vs-aum⟩ 能成立的前提</b>：'
+         f'本页的核心算术是「费收 ≈ 平均 AUM × 有效费率」，而 Exhibit ⟨ex:fee-vs-aum⟩ 把费收同比与'
          f'平均 AUM 同比<b>画在同一张图上</b>（{mlab(LATEST)} {sgn_pct(yv[-1])} vs '
          f'{sgn_pct(aum_yoy)}，缺口 {gap[-1]:+.1f}pp），两条线的垂直距离就是这条算术的读数 ——'
          f'读者要能逐格相减，前提就是两条线同口径。'
@@ -1232,18 +1252,18 @@ def main():
             f'⚠️ 有 {len(_CAL_ABF["opp"])} 个月方向相反，同样是窗口拉长后拐点进了实测区间'
             f'（最早 {_CAL_ABF["opp"][0][0]}），不是本月的新情况；'
             '那几个月单看一个读数能把方向读反，读线时要连着相邻月一起看。<br>')
-         + f'③ <b>有效费率（Exhibit 9）是比率</b>，同比只能是基点差；'
+         + f'③ <b>有效费率（Exhibit ⟨ex:fee-rate⟩）是比率</b>，同比只能是基点差；'
          f'滚动合计与滚动均值对比率都没有意义（要「一年的平均费率」得用 AUM 加权，'
          f'即 Σ费收 ÷ Σ平均 AUM，那要两条序列）。<br>'
-         f'④ <b>Exhibit 11 是热力矩阵</b>，按 §6.3 的图型豁免本就不在此列'
+         f'④ <b>Exhibit ⟨ex:aum-heat⟩ 是热力矩阵</b>，按 §6.3 的图型豁免本就不在此列'
          f'（每一格就是一个月，逐格波动正是这类图的题眼）；'
          f'<b>两张表的 y/y 列</b>必须恒等于表内算术，读者拿相邻两列去除要能得到同一个数。'),
-        '<b>柱图的右轴金色线是同比，不是滚动均线</b>（Exhibit 2 / 7 / 9）：均线只是把柱子再平滑一遍、'
+        '<b>柱图的右轴金色线是同比，不是滚动均线</b>（Exhibit ⟨ex:aum⟩ / ⟨ex:abf⟩ / ⟨ex:fee-rate⟩）：均线只是把柱子再平滑一遍、'
         '不带新信息，同比才回答「相对去年这个月是好是坏」，这也是原 deck（gsx.lvl_bar）的画法。'
         '开了同比线的图不再画那条 12 个月均线虚线，也不再另给同比气泡。'
-        'Exhibit 9 的右轴单位是<b>基点差（bp）</b>而不是百分比：该序列的刻度本身就是 bp。',
+        'Exhibit ⟨ex:fee-rate⟩ 的右轴单位是<b>基点差（bp）</b>而不是百分比：该序列的刻度本身就是 bp。',
         '标题里的当期数字（YoY / MoM / 倍数 / 分位）全部随最新月重算，没有写死的字面量；'
-        '有效费率（Exhibit 9）以 bp 为刻度，其同比一律用<b>基点差（bp）</b>的绝对差，'
+        '有效费率（Exhibit ⟨ex:fee-rate⟩）以 bp 为刻度，其同比一律用<b>基点差（bp）</b>的绝对差，'
         '不用「百分比的百分比变化」，也不写成百分点（1pp = 100bp）。'
         '四舍五入后等于零的负数一律写成 0（不写「-0」，那是格式化产物不是数据）。',
         '汇总表的「月末 − 月均」一行会在零附近变号，百分比变化无意义，故其 m/m 与 y/y 用绝对额（$bn）；'
@@ -1251,9 +1271,9 @@ def main():
         '（回放近 24 个月，≥70% 的月份分位钉在 100 或 0 就留空），本页不再自带一份分位逻辑 —— '
         '同一条序列在两页判定相反，根因就是各写各的。',
         '<b>与原 deck 仍有的两处差距（网页引擎的能力缺口，不是笔误）</b>：一是数值标签的 '
-        '「$ + 千分位」这一档格式器 charts.js 没有，所以 Exhibit 2 / 5 / 6 / 7 与 Exhibit 4 的'
+        '「$ + 千分位」这一档格式器 charts.js 没有，所以 Exhibit ⟨ex:aum⟩ / ⟨ex:aum-q⟩ / ⟨ex:aum-years⟩ / ⟨ex:abf⟩ 与 Exhibit ⟨ex:aum-history⟩ 的'
         '末点标签写作 <code>2,818</code> 而非 <code>$2,818</code>，单位由纵轴标题（$bn / $mn）交代；'
-        '二是 deck 在 Exhibit 4 的最近 3 个点外圈了一个红色虚线椭圆（"最近三个月在这里"），'
+        '二是 deck 在 Exhibit ⟨ex:aum-history⟩ 的最近 3 个点外圈了一个红色虚线椭圆（"最近三个月在这里"），'
         '网页没有这个图元，改由末点数值标注承担「最新一点在哪」的作用。',
     ]
 
@@ -1305,6 +1325,9 @@ def main():
     }
 
     out = os.path.join(ROOT, 'data', 'msci.js')
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, table['n'], where='build/msci')
+    payload['order'] = ORDER
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(out, payload, 'msci')
 

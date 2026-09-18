@@ -469,6 +469,19 @@ _QP_LO, _QP_HI, _QP_NQ, _QP_NB = _quarter_pulse(
 _QP_BLO, _QP_BHI = _band(_QP_LO, _QP_HI, 1)
 _QP_ZH = ('%.1f–%.1f 倍' % (_QP_BLO, _QP_BHI)) if _QP_BLO is not None else None
 
+def _eu_has_bridge():
+    """欧洲横截面页那张量价分解图（id trades-bridge）现在在不在 data/exchanges-eu.js 里。
+
+    那张图按数据可得性出不出（build/exchanges_eu.py 的 HAS_VP）。跨页占位符指着一张没出的图
+    兑不出来，会让**本页**构建失败 —— 所以先看一眼：没这张图就只说名字（与 exchanges_eu
+    自己「有图报真号，没图改说名字」同一个规矩）。"""
+    import exhibits
+    try:
+        return 'trades-bridge' in exhibits.load_page('exchanges-eu')
+    except (KeyError, ValueError):
+        return False
+
+
 _NO_DECOMP_NOTE = (
     '📌 <b>本页刻意不画量价分解图。</b>数据条件是够的（'
     # ⚠ 这里原先还写着「是全仓最长的一对」。那是一句**跨页**的最高级断言：判据散在
@@ -478,7 +491,9 @@ _NO_DECOMP_NOTE = (
         if (_VN and (_VN, _VM0, _VGAP) == (_TN, _TM0, _TGAP)) else
         '成交额 ADV 与成交笔数 ADV 逐月成对'))
     + '），欧洲横截面页 '
-    '<code>build/exchanges_eu.py</code> 的 Exhibit 15 就用这一对画了'
+    '<code>build/exchanges_eu.py</code> '
+    + ('的 Exhibit ⟨ex:exchanges-eu/trades-bridge⟩ 就' if _eu_has_bridge() else '的成交额分解图就')
+    + '用这一对画了'
     '「成交额 = 笔数 × 每笔均值」的对数分解。但那张图的结论是'
     '<b>「增长率分解成立、绝对水平不可读」</b>：官方同一张表里金额列<b>单边计</b>、'
     '笔数列<b>买卖双边计</b>，两者相除得到的不是每笔真实成交额，'

@@ -1503,6 +1503,15 @@ def _live_tickers(exclude=()):
     return out
 
 
+def _default_layout(spec):
+    """spec 的深拷贝，去掉 `order`：拿活的 spec 测底座开关（stock_inline / at_end /
+    headline_style …）在缺省排法下的效果。所有者用 `order` 另排图序是他明写的决定，
+    不该让「当时那几条指令」的测试替他否决。"""
+    sp = copy.deepcopy(spec)
+    sp.pop('order', None)
+    return sp
+
+
 def _page_payload(spec, series_dir=None):
     """spec（深拷贝）→ (page, payload)。门槛没到直接判失败：夹具是全历史，不存在「等数据」。"""
     import single as S
@@ -2531,7 +2540,10 @@ class TestSgxOwnerLayout(unittest.TestCase):
         # 恒等式护栏抛的都是裸 SystemExit，spec 哪天加了 brief 就会走到那一支。
         try:
             cls.spec = single.load_spec('sgx')
-            out = single.build(copy.deepcopy(cls.spec), out_dir=cls.tmp, quiet=True)
+            # 测的是底座那几个开关在**缺省排法**下的效果（所有者当时的指令）。spec 若写了
+            # `order`（build/exhibits.py：整页图序由它说了算），这里照旧拿掉它再建 ——
+            # 否则所有者下一次挪图就得连这组测试一起改，挪图又回到改一堆地方的老路。
+            out = single.build(_default_layout(cls.spec), out_dir=cls.tmp, quiet=True)
             if out:
                 with open(out, encoding='utf-8') as fh:
                     m = re.search(r'window\.DASH = (.*);\n?$', fh.read(), re.S)
@@ -2785,7 +2797,10 @@ class TestMiaxOwnerLayout(unittest.TestCase):
         # 接 SystemExit 而不只是 SpecError，理由见 TestSgxOwnerLayout.setUpClass。
         try:
             cls.spec = single.load_spec('miax')
-            out = single.build(copy.deepcopy(cls.spec), out_dir=cls.tmp, quiet=True)
+            # 测的是底座那几个开关在**缺省排法**下的效果（所有者当时的指令）。spec 若写了
+            # `order`（build/exhibits.py：整页图序由它说了算），这里照旧拿掉它再建 ——
+            # 否则所有者下一次挪图就得连这组测试一起改，挪图又回到改一堆地方的老路。
+            out = single.build(_default_layout(cls.spec), out_dir=cls.tmp, quiet=True)
             if out:
                 with open(out, encoding='utf-8') as fh:
                     m = re.search(r'window\.DASH = (.*);\n?$', fh.read(), re.S)
@@ -3015,7 +3030,10 @@ class TestNdaqOwnerLayout(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix='tg_ndaq_')
         try:
             cls.spec = single.load_spec('ndaq')
-            out = single.build(copy.deepcopy(cls.spec), out_dir=cls.tmp, quiet=True)
+            # 测的是底座那几个开关在**缺省排法**下的效果（所有者当时的指令）。spec 若写了
+            # `order`（build/exhibits.py：整页图序由它说了算），这里照旧拿掉它再建 ——
+            # 否则所有者下一次挪图就得连这组测试一起改，挪图又回到改一堆地方的老路。
+            out = single.build(_default_layout(cls.spec), out_dir=cls.tmp, quiet=True)
             if out:
                 with open(out, encoding='utf-8') as fh:
                     m = re.search(r'window\.DASH = (.*);\n?$', fh.read(), re.S)

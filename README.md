@@ -155,6 +155,17 @@ python3 tools/gate.py                  # 下面全部校验一次跑完（约 30
 文件里不插冲突标记 —— 不要手挑哪边，跑 `tools/rebuild.py` 再 `git add data/`。
 轴刻度的小数位由 `build/payload_guard.write_dash` 统一过一遍 `axisfmt.fix_all`，生成器不用再各自记得调。
 
+**挪图 = 改一张顺序表**（2026-09-19 起，机制在 `build/exhibits.py` 文件头）。已迁移的页每张图带固定 `id`，
+页头一张 `ORDER`（single.py / mrbase 的页写在 spec 的 `order` 里）决定先后，写盘时从 2 起编号、核对表接最后；
+正文里的图号一律写占位符 `⟨ex:id⟩`（本页）/ `⟨ex:页/id⟩`（别的页）/ `⟨ex:table⟩`（核对表），兑不出来就构建失败。
+所以「把 X 图挪到 Y 图后面」= 在 ORDER 里挪一行 → `tools/rebuild.py` → `tools/gate.py`，不用找任何一处「Exhibit N」。
+「下一张图」「上一张」「上面那张」这种位置词也要写成占位符 `⟨ex:x@+1:下一张图⟩`（`-1` 前一张、`@<` / `@>` 上面 / 下面任意位置）：
+真挨着就原样印那个词，挪开了自动印成「Exhibit N」。条件图（按数据可得性出不出的）只能在同一判据下面点名，否则构建失败。
+当前图序：手写生成器看页头 ORDER；spec 页跑 `python3 build/single.py <t> --order` 现印（整段抄进 spec 再挪）。
+验收工具 `tools/exhibit_check.py`：`compare`（改前后 payload 逐字比）、`audit`（找没走占位符的图号）、
+`drill <页>`（不改文件地对调两张图重建，查图头、正文、跨页引用，再复原）。
+哪些页已迁移：`python3 tools/exhibit_check.py status`（现读 data/*.js，名单不写死在这里；2026-09-19 除 ice 外全部迁移）。
+
 改过生成器或引擎之后，五条校验各管一层，谁都替代不了谁（`tools/gate.py` 就是把它们并起来跑）：
 
 ```bash

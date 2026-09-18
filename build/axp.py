@@ -33,6 +33,33 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits                         # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
+
+# ── 图序：挪图只改这一张表（机制见 build/exhibits.py 的模块头）──────────────
+# 排第几项就是 Exhibit 几（从 2 起；Exhibit 1 是汇总表，核对表自动接在最后）。
+# ⚠️ 下文 gs_bar_ex(2, …) 这类调用里的数字是**建图时的号**（exhibits.Seq），不是页面上的图号；
+# 页面上的号由这张表决定，印进正文的一律是占位符。
+ORDER = [
+    'consumer-bal',       # 【新口径】U.S. Consumer Card balances
+    'consumer-credit',    # 【新口径】U.S. Consumer delinquency and write-off
+    'smb-bal',            # 【新口径】U.S. Small Business Card balances
+    'smb-credit',         # 【新口径】U.S. Small Business delinquency and write-off
+    'nii',                # 【新口径】Implied U.S. card net interest income
+    'nii-yield',          # 【新口径】Net interest yield on card balances
+    'trust-spread',       # 【Lending Trust】Trust excess spread
+    'trust-yield',        # 【Lending Trust】Trust portfolio yield and payment rate
+    'trust-loss',         # 【Lending Trust】Loss rate: trust pool vs. 8-K
+    'trust-dq',           # 【Lending Trust】Delinquency: trust pool vs. 8-K
+    'old-consumer-loans', # 【旧口径】U.S. Consumer loans and y/y growth
+    'old-wo-season',      # 【旧口径】Write-off rate vs. same-month norm
+    'old-wo-years',       # 【旧口径】Consumer write-off rate by year
+    'old-dq-season',      # 【旧口径】Delinquency vs. same-month norm
+    'old-smb-wo-years',   # 【旧口径】Small Business write-off rate by year
+    'old-wo-heat',        # 【旧口径】Consumer net write-off rate（热力矩阵）
+    'old-smb-wo-heat',    # 【旧口径】Small Business net write-off rate（热力矩阵）
+]
+_S = exhibits.Seq
+EX_ID = {_S(k): i for k, i in enumerate(ORDER, start=2)}   # 建图时的号 → id（缺省图序 = 建图顺序）
 import brief as B
 import glossary as gloss     # 名词释义的版式层与护栏，全站共用
 import mrwin                            # 窗口左端 / 通栏 / x 标签抽稀的裁决层，与 single.py 共用
@@ -821,26 +848,26 @@ ex = []
 # 所以 wn() 算出来就是序列自己的长度 —— 「窗口左端 2016-01」在这里等价于「画满」。
 _W_NEW = wn(new['consumer_balance_usdbn'])
 ex.append(gs_bar_ex(
-    2, SEC_A + 'U.S. Consumer Card balances', new['consumer_balance_usdbn'],
+    _S(2), SEC_A + 'U.S. Consumer Card balances', new['consumer_balance_usdbn'],
     win=_W_NEW, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
     note=yoy_step_note(new['consumer_balance_usdbn'], win=_W_NEW),
     src_extra=SRC_N + '.  ' + BASIS_N))
 
 _e3, _ = multi_line_ex(
-    3, SEC_A + 'U.S. Consumer delinquency and write-off', new,
+    _S(3), SEC_A + 'U.S. Consumer delinquency and write-off', new,
     ['consumer_dq30_pct', 'consumer_nco_pct'], ['MBLUE', 'RED'],
     ['30+ days past due', 'Net write-off (principal)'],
     win=wn(new.index), src_extra=SRC_N + '.  ' + JUN_NOTE)
 ex.append(_e3)
 
 ex.append(gs_bar_ex(
-    4, SEC_A + 'U.S. Small Business Card balances', new['sbs_balance_usdbn'],
+    _S(4), SEC_A + 'U.S. Small Business Card balances', new['sbs_balance_usdbn'],
     win=_W_NEW, yfmt='usd0', fmt='usd1', ylab='$bn', yoy_yfmt='pct1',
     note=yoy_step_note(new['sbs_balance_usdbn'], win=_W_NEW),
     src_extra=SRC_N + '.  ' + BASIS_N))
 
 _e5, _ = multi_line_ex(
-    5, SEC_A + 'U.S. Small Business delinquency and write-off', new,
+    _S(5), SEC_A + 'U.S. Small Business delinquency and write-off', new,
     ['sbs_dq30_pct', 'sbs_nco_pct'], ['MBLUE', 'RED'],
     ['30+ days past due', 'Net write-off (principal)'],
     win=wn(new.index), src_extra=SRC_N + '.  ' + JUN_NOTE)
@@ -872,7 +899,7 @@ _NII_FEW = (f'（可比月为什么这么少：这条序列自 {_nii_s.index[0]}
             f'分子分母各含一次季度费率假设（最新季之后那一档是冻住的），'
             f'只读方向，不读小数位。')
 ex.append(gs_bar_ex(
-    6, SEC_A + 'Implied U.S. card net interest income' + _MOM_T, avgbal['implied_nii_usdmn'],
+    _S(6), SEC_A + 'Implied U.S. card net interest income' + _MOM_T, avgbal['implied_nii_usdmn'],
     win=_W_NII, yfmt='f0c', fmt='f0c', ylab='$mn / month', yoy_yfmt='pct1',
     note=NII_NOTE + '　' + FEE_PERIOD_NOTE + '　'
          + mom_cost_note(avgbal['implied_nii_usdmn'], win=_W_NII, why_few=_NII_FEW),
@@ -898,7 +925,7 @@ if _niy_const:
     _niy_note = (
         f'费率是<b>季度阶梯</b>（同一季度三个月同值），窗口内每一季都恰好比去年同季高 '
         f'{_niy_yy_set[0]:+.2f}pp —— 同比是个<b>常数</b>，不带任何信息。'
-        f'其余同类图（Exhibit 2/4/6/8）都按原 deck 画次轴同比线，只有这一张不画：'
+        f'其余同类图（Exhibit ⟨ex:consumer-bal⟩/⟨ex:smb-bal⟩/⟨ex:nii⟩/⟨ex:trust-spread⟩）都按原 deck 画次轴同比线，只有这一张不画：'
         f'常数同比会让次轴量程塌成一个点，刻度被四舍五入成一列重复读数，'
         f'末点读数又必然压在轴的最高刻度上。这里改画 12 个月均线'
         f'（{_niy_avg:.2f}%，费率看「当前 vs 过去一年均值」才有参考意义）。')
@@ -909,7 +936,7 @@ else:
         f'故本图按原 deck 画次轴同比线（同比恒定时这张图会改画 12 个月均线，'
         f'因为常数同比会让次轴量程塌成一个点）。')
 ex.append(gs_bar_ex(
-    7, SEC_A + 'Net interest yield on card balances' + _MOM_T, avgbal['niy'],
+    _S(7), SEC_A + 'Net interest yield on card balances' + _MOM_T, avgbal['niy'],
     win=_W_NIY, yfmt='pct1', fmt='pct1', ylab='% annualised', pct_series=True,
     no_yoy=_niy_const,
     note=_niy_note +
@@ -945,7 +972,7 @@ _ES_READ = (
     f'<b>逐月的变化仍请读次轴那条金色同比线</b>')
 _es_d = 0 if _ES_UNIT == 'bp' else 2
 ex.append(gs_bar_ex(
-    8, SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
+    _S(8), SEC_T + 'Trust excess spread', trust['excess_spread_pct'],
     win=_TW, yfmt='pct1', fmt='pct1', ylab='%', pct_series=True,
     note=f'<b>超额利差 ＝ 组合收益率 − 净核销 − 服务费 − 票息</b>，也就是信托收上来的钱付完'
          f'所有成本之后剩下的那一层，债券持有人被打到之前先由它吸收损失。这是 ABS 交易里'
@@ -1032,19 +1059,19 @@ else:
                  f'（弱于 {CAL_R_MIN:+.1f} 的判据），逐月锯齿另有来源，仍建议读趋势而非单月。')
 
 _e9, _W9 = multi_line_ex(
-    9, SEC_T + 'Trust portfolio yield and payment rate', trust,
+    _S(9), SEC_T + 'Trust portfolio yield and payment rate', trust,
     ['portfolio_yield_pct', 'payment_rate_pct'], ['NAVY', 'MBLUE'],
     ['Portfolio yield', 'Payment rate'], win=_TW,
     note=f'<b>两条线口径不同，不是一组可比对照，各读各的。</b>'
          f'<b>Portfolio yield（组合收益率）</b>＝池子当月收到的利息与各项费用，年化后占本金'
-         f'应收的比例，即这个池子的毛收入率；Exhibit 8 的超额利差就是从它身上逐层扣出来的'
+         f'应收的比例，即这个池子的毛收入率；Exhibit ⟨ex:trust-spread⟩ 的超额利差就是从它身上逐层扣出来的'
          f'（窗口内 {_py_w.min():.1f}%–{_py_w.max():.1f}%，当期 {_py_w.iloc[-1]:.1f}%）。'
          f'<b>Payment rate（还款率）</b>＝持卡人当月还掉了多少存量余额'
          f'（窗口内 {_pr_w.min():.1f}%–{_pr_w.max():.1f}%，当期 {_pr_w.iloc[-1]:.1f}%）。'
          f'AXP 的还款率结构性地高 —— 客群以每月全额还清的 transactor 为主 —— '
          f'所以<b>绝对水平不能拿去跟别家发卡行比，只看它自己的走向</b>。'
          f'<b>还款率是本板块唯一的领先指标</b>：它掉头意味着持卡人开始还不满、转向循环，'
-         f'通常比逾期率（Exhibit 11）早几个月出现，更早于核销（Exhibit 10）。　' + _cal_note,
+         f'通常比逾期率（Exhibit ⟨ex:trust-dq⟩）早几个月出现，更早于核销（Exhibit ⟨ex:trust-loss⟩）。　' + _cal_note,
     src_extra=TRUST_SRC + '.  Payment rate is how fast cardholders repay; a falling payment '
               'rate is an early warning that shows up months before delinquency does')
 ex.append(mark_pool_add(_e9, _W9))
@@ -1085,7 +1112,7 @@ def basis_split_note(col):
             f'不是信用在那个月改善了。深蓝那条 trust 线全程同一口径、'
             f'{old.index[0].year} 年至今没断过，是本图唯一可以从头读到尾的序列。')
 _e10, _W10 = multi_line_ex(
-    10, SEC_T + 'Loss rate: trust pool vs. 8-K', trust,
+    _S(10), SEC_T + 'Loss rate: trust pool vs. 8-K', trust,
     ['nco_pct', 'consumer_nco_pct_old', 'consumer_nco_pct'], ['NAVY', 'GRAY', 'RED'],
     ['Trust: annualised default rate, net of recoveries',
      '8-K old basis (Card Member loans): U.S. Consumer net write-off',
@@ -1100,7 +1127,7 @@ _e10, _W10 = multi_line_ex(
 ex.append(mark_pool_add(_e10, _W10))
 
 _e11, _W11 = multi_line_ex(
-    11, SEC_T + 'Delinquency: trust pool vs. 8-K', trust,
+    _S(11), SEC_T + 'Delinquency: trust pool vs. 8-K', trust,
     ['dq30_pct', 'consumer_dq30_pct_old', 'consumer_dq30_pct'], ['NAVY', 'GRAY', 'RED'],
     ['Trust: total 30+ days delinquent',
      '8-K old basis (Card Member loans): U.S. Consumer 30+ days past due',
@@ -1118,7 +1145,7 @@ ex.append(mark_pool_add(_e11, _W11))
 # `xstep` 不再手写 2 —— mrwin.layout_all() 会按 charts.js 的量边距算式实测决定。
 _W12 = wn(old['consumer_balance_usdbn'])
 ex.append(bar_yoy_ex(
-    12, SEC_O + 'U.S. Consumer loans and y/y growth', old['consumer_balance_usdbn'],
+    _S(12), SEC_O + 'U.S. Consumer loans and y/y growth', old['consumer_balance_usdbn'],
     win=_W12, yfmt='usd0', ylab='$bn', bar_color='NAVY', bar_name='Reported',
     src_extra=SRC_O + '.  ' + BASIS_O))
 
@@ -1128,7 +1155,7 @@ ex.append(bar_yoy_ex(
 # Mar-2017，2016 那一档明明有数却吃不进去。窗口（画几根柱）与常态深度（平均几年）是两件事，
 # 拉长的是后者 —— 序列覆盖几个日历年就取几年。
 SEAS_YEARS = int(old.index[-1].year - old.index[0].year)
-e13, y13 = seasonality_ex(13, SEC_O + 'Write-off rate vs. same-month norm',
+e13, y13 = seasonality_ex(_S(13), SEC_O + 'Write-off rate vs. same-month norm',
                           old['consumer_nco_pct'], win=WIN_SEASON, years=SEAS_YEARS,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e13)
@@ -1137,16 +1164,16 @@ ex.append(e13)
 # n_years=6 是**可读性**上限，不是窗口：一条线一个日历年，11 条叠在 12 格上分不出谁是谁
 # （颜色也不够用）。长历史由 Exhibit 17/18 的热力矩阵承担，那两张才跟 WIN_FROM 走。
 ex.append(year_lines_ex(
-    14, SEC_O + 'Consumer write-off rate by year', old['consumer_nco_pct'], n_years=6,
+    _S(14), SEC_O + 'Consumer write-off rate by year', old['consumer_nco_pct'], n_years=6,
     src_extra=SRC_O + '.  Each line is one calendar year; red = current year.  ' + BASIS_O))
 
-e15, y15 = seasonality_ex(15, SEC_O + 'Delinquency vs. same-month norm',
+e15, y15 = seasonality_ex(_S(15), SEC_O + 'Delinquency vs. same-month norm',
                           old['consumer_dq30_pct'], win=WIN_SEASON, years=SEAS_YEARS,
                           src_extra=SRC_O + '.  ' + BASIS_O)
 ex.append(e15)
 
 ex.append(year_lines_ex(
-    16, SEC_O + 'Small Business write-off rate by year', old['sbs_nco_pct'], n_years=6,
+    _S(16), SEC_O + 'Small Business write-off rate by year', old['sbs_nco_pct'], n_years=6,
     src_extra=SRC_O + '.  Each line is one calendar year; red = current year.  ' + BASIS_O))
 
 # JPM Fig 4：月 x 年热力矩阵（信用指标：低=好，故反转配色）
@@ -1155,11 +1182,11 @@ ex.append(year_lines_ex(
 # 会报错。年数一律现算 = 序列里 >= WIN_FROM 的日历年个数。
 _HEAT_Y = len({p.year for p in old.index if p >= WIN_FROM})
 ex.append(heat_ex(
-    17, SEC_O + 'Consumer net write-off rate (%)', old['consumer_nco_pct'], n_years=_HEAT_Y,
+    _S(17), SEC_O + 'Consumer net write-off rate (%)', old['consumer_nco_pct'], n_years=_HEAT_Y,
     src_extra=SRC_O + '.  Green = lower write-off rate (better).  ' + BASIS_O))
 
 ex.append(heat_ex(
-    18, SEC_O + 'Small Business net write-off rate (%)', old['sbs_nco_pct'], n_years=_HEAT_Y,
+    _S(18), SEC_O + 'Small Business net write-off rate (%)', old['sbs_nco_pct'], n_years=_HEAT_Y,
     src_extra=SRC_O + '.  Green = lower write-off rate (better).  ' + BASIS_O))
 
 
@@ -1206,7 +1233,7 @@ for p in TB_WIN:
     })
 
 table = {
-    'n': 19,
+    'n': _S(19),
     'title': f'近 13 个月月度指标核对表（{mlab(TB_WIN[0])} → {mlab(TB_WIN[-1])}，官方原始单位，未换算）',
     'idx': '月份', 'cols': tb_cols, 'rows': tb_rows,
 }
@@ -1381,7 +1408,7 @@ GLOSSARY = [
      f'AXP 自 2026 年 5 月起改用的<b>合并</b>口径：Card Member loans（计息的循环余额）'
      f'＋ receivables，把到期<b>全额还清</b>（pay-in-full）的那部分并了进来。'
      f'公司在 2026-05-15 的 8-K Exhibit 99.1 里按新口径重述了历史，本页'
-     f'【新口径】各图（Exhibit 2-7）画的就是这段重述序列。'
+     f'【新口径】各图（Exhibit ⟨ex:consumer-bal,consumer-credit,smb-bal,smb-credit,nii,nii-yield|-⟩）画的就是这段重述序列。'
      f'⚠️ 它<b>不只是换个名字，分母变大了</b>：两套口径并存的 {len(_G_OV)} 个月里，'
      f'Consumer 余额平均比旧口径高 <b>{_G_GAP_C:.1f}%</b>、Small Business 高 '
      f'<b>{_G_GAP_S:.1f}%</b>（本页现算）—— 逾期率与核销率的分母跟着变大，'
@@ -1389,7 +1416,7 @@ GLOSSARY = [
 
     ('Card Member loans',
      '2026 年 5 月之前的旧口径，<b>只含循环（计息）余额</b>，不含 pay-in-full。'
-     '本页【旧口径】各图（Exhibit 12-18）与长历史、季节性用的都是它；序列'
+     '本页【旧口径】各图（Exhibit ⟨ex:old-consumer-loans,old-wo-season,old-wo-years,old-dq-season,old-smb-wo-years,old-wo-heat,old-smb-wo-heat|-⟩）与长历史、季节性用的都是它；序列'
      '<b>刻意截到改口径前最后一个月</b>，新口径的数字不会被接到它尾巴上，'
      '免得画出一条纯由换口径造出来的假曲线。'),
 
@@ -1401,7 +1428,7 @@ GLOSSARY = [
     ('30+ days past due',
      f'逾期 <b>30 天以上</b>的余额占总余额的比例。本页有<b>两条</b>：8-K 的 '
      f'Consumer / SBS，和信托池那一条。两条是<b>同一个概念、两个池子</b> —— '
-     f'Exhibit 11 里那道持续存在的缺口是池子差异，<b>不是</b>数据错，也<b>不能</b>'
+     f'Exhibit ⟨ex:trust-dq⟩ 里那道持续存在的缺口是池子差异，<b>不是</b>数据错，也<b>不能</b>'
      f'当成同一个数的两次测量去解释。信托那条在 10-D 里是四档账龄之和'
      f'（31–60 / 61–90 / 91–120 / 120+，本页现算逐月相符，最大差 {_G_DQ_D:.2f}pp，'
      f'即申报自身的取整）。'),
@@ -1416,21 +1443,21 @@ GLOSSARY = [
     # ② 同一件事的两个数 ──────────────────────────────────────────────────────
     ('月均余额 / 期末余额',
      f'8-K 同一张表里的<b>两个</b>余额口径，别用混：Total Card balances 是<b>月末'
-     f'时点</b>数（Exhibit 2 / 4 的柱、汇总表余额行、页顶头条都是它）；'
-     f'Average Card balances 是当月<b>平均</b>数，乘进 Exhibit 6 隐含 NII 的是它'
-     f'（利息是按整月余额生的，拿月末点当基数会读偏；核对表 Exhibit 19 也把这两段的'
+     f'时点</b>数（Exhibit ⟨ex:consumer-bal⟩ / ⟨ex:smb-bal⟩ 的柱、汇总表余额行、页顶头条都是它）；'
+     f'Average Card balances 是当月<b>平均</b>数，乘进 Exhibit ⟨ex:nii⟩ 隐含 NII 的是它'
+     f'（利息是按整月余额生的，拿月末点当基数会读偏；核对表 Exhibit ⟨ex:table⟩ 也把这两段的'
      f'平均余额逐月印出来供核对）。两者<b>不能互相替代</b>：'
      f'本页现算的 {_G_BAL_N} 个可比月里，两者的 m/m 有 <b>{_G_BAL_OPP} 个月符号相反</b>。'),
 
     # ③ 推导值 vs 披露值 ──────────────────────────────────────────────────────
     ('隐含净利息收入',
-     'Exhibit 6 的 Implied NII：<b>不是公司披露的数</b>，是本页轧出来的 —— '
+     'Exhibit ⟨ex:nii⟩ 的 Implied NII：<b>不是公司披露的数</b>，是本页轧出来的 —— '
      '<code>月度 NII ＝（Consumer ＋ Small Business 月均余额）× 当季净利息收益率 ÷ 12</code>。'
      '公司<b>不按月披露</b> NII，所以这张图<b>无从对账</b>；而且分子的余额只有美国卡'
      '两段、乘上去的收益率却是全公司口径，两者总体不一致 ⇒ <b>只读方向，不读小数位</b>。'),
 
     ('净利息收益率',
-     f'公司披露的 Net interest yield，<b>按季</b>给，所以 Exhibit 7 画出来是一道'
+     f'公司披露的 Net interest yield，<b>按季</b>给，所以 Exhibit ⟨ex:nii-yield⟩ 画出来是一道'
      f'<b>季度阶梯</b>（同一季三个月同值，最新季之后沿用最后一档、冻住不动）。'
      f'两处要当心：(1) 它是<b>全公司</b>口径，含非美卡与其它贷款，而本页乘上它的余额'
      f'只有美国 Consumer ＋ Small Business 卡；(2) 官方是按<b>实际天数</b>年化的'
@@ -1443,14 +1470,14 @@ GLOSSARY = [
      '发 ABS 的信托，按月报 Form 10-D（CIK 0001003509），与 8-K <b>同日报送</b>。'
      '⚠️ 它是<b>另一个池子，不是 8-K 的子集</b>：池内只有 revolve-eligible（可循环）'
      '余额，所以组合收益率、逾期率、违约率都系统性异于 8-K 那半页的同名指标，'
-     'Exhibit 10 / 11 里那道缺口正是池子差异。'),
+     'Exhibit ⟨ex:trust-loss⟩ / ⟨ex:trust-dq⟩ 里那道缺口正是池子差异。'),
 
     ('本金应收',
      f'10-D 行名 Ending Principal Receivables：信托池月末的<b>本金</b>余额，也就是'
-     f'「池子多大」这个量。⚠️ Exhibit 8-11 的比率<b>不是都拿它做分母</b>：本页现算，'
-     f'Exhibit 10 的年化违约率与回收率拿它做分母逐月严丝合缝'
+     f'「池子多大」这个量。⚠️ Exhibit ⟨ex:trust-spread,trust-yield,trust-loss,trust-dq|-⟩ 的比率<b>不是都拿它做分母</b>：本页现算，'
+     f'Exhibit ⟨ex:trust-loss⟩ 的年化违约率与回收率拿它做分母逐月严丝合缝'
      f'（<code>违约额 × 365 ÷ 当月天数 ÷ 期末本金应收</code>，{len(tfull)} 个月最大差 '
-     f'{_G_PR_DEF:.3f}pp），而 Exhibit 11 的信托 30+ 逾期率分母是 10-D 另印的'
+     f'{_G_PR_DEF:.3f}pp），而 Exhibit ⟨ex:trust-dq⟩ 的信托 30+ 逾期率分母是 10-D 另印的'
      f'<b>总应收</b>（现算最大差 {_G_DQ_TR:.3f}pp，即申报自身的取整；换成本金应收则 '
      f'{_G_DQ_PR:.3f}pp 且单边偏高）。两者之差正是<b>不含</b>在本金里的那部分 —— '
      f'已计提未收的利息与费用应收（finance charge receivables），本页现算占总应收'
@@ -1461,7 +1488,7 @@ GLOSSARY = [
      f'即这个池子的<b>毛</b>收入率 —— 超额利差就是从它身上逐层扣出来的。'
      f'⚠️ 它的逐月锯齿主要是<b>当月天数</b>造成的日历假象，不是经营波动'
      f'（10-D 逐期印出当月天数，本页 {len(tfull)} 个月里有 {_G_DAYS} 天四种）：'
-     f'<b>要比就比天数相同的月份</b>，Exhibit 9 的图注里有本页实测的相关系数。'),
+     f'<b>要比就比天数相同的月份</b>，Exhibit ⟨ex:trust-yield⟩ 的图注里有本页实测的相关系数。'),
 
     ('还款率',
      'Payment rate：持卡人当月还掉了多少存量余额。AXP 的还款率<b>结构性地高</b>'
@@ -1474,7 +1501,7 @@ GLOSSARY = [
      '付完所有成本之后剩下的那一层，债券持有人被打到之前先由它吸收损失。'
      '这是 ABS 交易里最被盯的一个数 —— 跌到 <b>0</b> 附近会触发提前摊还'
      '（early amortization）：投资人本金被提前还回，AXP 失去这条融资渠道。'
-     '所以 Exhibit 8 是用来<b>确认没事</b>的，不是用来找信号的。'
+     '所以 Exhibit ⟨ex:trust-spread⟩ 是用来<b>确认没事</b>的，不是用来找信号的。'
      '⚠️ 10-D 按 series 逐个列出，本页取的是 <b>Group 1</b>（由 B 段的花名册认组，'
      '不按「哪个数字出现得多」取众数——两组人数换边时众数会静默倒向 Group 2）。'),
 
@@ -1489,7 +1516,7 @@ GLOSSARY = [
      '本页对 <b>U.S. Small Business Card</b>（美国小型企业卡）的简写，页顶头条与'
      '汇总表分组里都是它，与 U.S. Consumer Card 并列。8-K Item 7.01 那张表'
      '<b>只报这两段美国业务</b>：公司卡与美国以外的卡不在那张表的任何一行里。'
-     '本页唯一的例外是 Exhibit 6 / 7 乘上去的那个收益率 —— 它是<b>全公司</b>口径、'
+     '本页唯一的例外是 Exhibit ⟨ex:nii⟩ / ⟨ex:nii-yield⟩ 乘上去的那个收益率 —— 它是<b>全公司</b>口径、'
      '含非美卡与其它贷款（见「净利息收益率」那条）。'),
 ]
 
@@ -1900,16 +1927,16 @@ NOTES = [
     f'<b>两套口径不可连比。</b>AXP 自 2026 年 5 月起把 Card Member loans 与 receivables 合并披露为'
     f' "Card balances"（含 pay-in-full 余额），并在 2026-05-15 的 8-K Exhibit 99.1 里重述了 24 个月历史。'
     f'原 PDF 分两页呈现，网页版没有分页概念，改用标题里的板块小标题分组：'
-    f'<b>{SEC_A}</b>为 Exhibit 2-7（{new.index[0]} 起），'
-    f'<b>{SEC_O}</b>为 Exhibit 12-18（{old.index[0]} → {old.index[-1]}）。'
+    f'<b>{SEC_A}</b>为 Exhibit ⟨ex:consumer-bal,consumer-credit,smb-bal,smb-credit,nii,nii-yield|-⟩（{new.index[0]} 起），'
+    f'<b>{SEC_O}</b>为 Exhibit ⟨ex:old-consumer-loans,old-wo-season,old-wo-years,old-dq-season,old-smb-wo-years,old-wo-heat,old-smb-wo-heat|-⟩（{old.index[0]} → {old.index[-1]}）。'
     f'跨这两组读同一条指标是错的 —— 合并口径的余额里多了不计息的 pay-in-full 部分，'
     f'分母变大会把逾期率与核销率整体压低。',
 
     f'<b>旧口径序列刻意截到 {old.index[-1]}</b>（改口径前最后一个月），只用于长历史与季节性；'
     f'{new.index[0]} 之后的新口径数字不会被接到旧序列尾巴上，避免画出一条假的连续曲线。',
 
-    f'<b>⚠️ {JUN_NOTE}。</b>受影响的是 Exhibit 3 / 5 的 {mlab(ONEOFF_M)} 那一点、'
-    f'Exhibit 10 的 8-K 线在 {mlab(ONEOFF_M)} 的读数'
+    f'<b>⚠️ {JUN_NOTE}。</b>受影响的是 Exhibit ⟨ex:consumer-credit⟩ / ⟨ex:smb-credit⟩ 的 {mlab(ONEOFF_M)} 那一点、'
+    f'Exhibit ⟨ex:trust-loss⟩ 的 8-K 线在 {mlab(ONEOFF_M)} 的读数'
     + (f'，以及汇总表与 headline 里 Consumer / SBS 两行的净核销 m/m 与 y/y'
        if CUR == ONEOFF_M else '（当期已不是该月，汇总表的 m/m 不再受它影响，'
                                f'y/y 要到 {mlab(ONEOFF_M + 12)} 才滚出比较基数）')
@@ -1925,7 +1952,7 @@ NOTES = [
     f'从这一期起池子换了成分，与左侧不可比。加池发生在<b>月中</b>，分母（期末余额）当月'
     f'就整个变大而分子（当月收款）只反映了一部分，所以 {mlab(POOL_ADD)} 这一点的比率被'
     f'机械性地压下去（超额利差 17.38% → 15.57% → 次月 18.72%，组合收益率 21.84% → '
-    f'19.42% → 23.26%）；<b>Exhibit 8 窗口内的最低点正是这一格，那不是一次信用事件。</b>'
+    f'19.42% → 23.26%）；<b>Exhibit ⟨ex:trust-spread⟩ 窗口内的最低点正是这一格，那不是一次信用事件。</b>'
     f'这条线是本轮把 trust 序列回补到 {trust.index[0]} 之后才进到图里的 —— '
     f'原来 25 个月的窗口根本够不着 2018 年。'
     f'　<b>2026-05 那次 8-K 口径切换反而没有线</b>，这也是刻意的：它发生在'
@@ -1936,31 +1963,31 @@ NOTES = [
     f'（首页「怎么读这个看板」把「AXP 2026-05 合并 Card balances」列成红色竖虚线的例子，'
     f'与本页实际渲染不符，以本页为准。）',
 
-    f'<b>Exhibit 6 是推导值，标了 Implied。</b>{NII_NOTE} 净利息收益率是公司整体口径（含非美卡与其他贷款），'
+    f'<b>Exhibit ⟨ex:nii⟩ 是推导值，标了 Implied。</b>{NII_NOTE} 净利息收益率是公司整体口径（含非美卡与其他贷款），'
     f'而余额只取美国 Consumer + Small Business 卡，两者总体不一致；季度费率按「当季各月同值、'
-    f'最新季之后沿用」摊到月度（Exhibit 7 画的就是这条阶梯）。公司不按月披露 NII，因此这张图无从对账。'
+    f'最新季之后沿用」摊到月度（Exhibit ⟨ex:nii-yield⟩ 画的就是这条阶梯）。公司不按月披露 NII，因此这张图无从对账。'
     f'　{FEE_PERIOD_NOTE}',
 
-    f'Exhibit 6 / 7 的序列比其余新口径图短两个月：{new.index[0]} 与 {new.index[0] + 1} 落在 '
+    f'Exhibit ⟨ex:nii⟩ / ⟨ex:nii-yield⟩ 的序列比其余新口径图短两个月：{new.index[0]} 与 {new.index[0] + 1} 落在 '
     f'{_niy.index[0]} 之前，没有可用的新口径净利息收益率，按「缺列就没有那个点」处理，不做外推。',
 
-    f'<b>Lending Trust（Exhibit 8-11）是另一个池子，不是 8-K 的子集。</b>{TRUST_NOTE}；'
+    f'<b>Lending Trust（Exhibit ⟨ex:trust-spread,trust-yield,trust-loss,trust-dq|-⟩）是另一个池子，不是 8-K 的子集。</b>{TRUST_NOTE}；'
     f'信托池只含 revolve-eligible 余额，所以组合收益率、违约率、逾期率都系统性低于/异于 8-K 口径，'
-    f'Exhibit 10 / 11 里那条持续存在的缺口是池子差异，不是数据错。{SAME_DAY_NOTE}，'
+    f'Exhibit ⟨ex:trust-loss⟩ / ⟨ex:trust-dq⟩ 里那条持续存在的缺口是池子差异，不是数据错。{SAME_DAY_NOTE}，'
     f'所以两份材料一次到手。',
 
     f'<b>汇总表把原 deck 的两张表合并成了一张。</b>原 PDF 的 Exhibit 1（8-K 指标）与 Exhibit 8'
     f'（Trust 月报）是两张独立的汇总表，网页版只有一个汇总表位，两者最新月同为 {mlab(LATEST)}、'
     f'列口径也完全一致，故合并并用板块分隔条区分；其后各图顺延一位编号（PDF 的 Fig 9-19 = 本页的 '
-    f'Exhibit 8-18）。',
+    f'Exhibit ⟨ex:trust-spread,trust-yield,trust-loss,trust-dq,old-consumer-loans,old-wo-season,old-wo-years,old-dq-season,old-smb-wo-years,old-wo-heat,old-smb-wo-heat|-⟩）。',
 
     f'比率类指标的变化一律用百分点：|差| &lt; 1pp 写 bp，否则写 pp，不用「百分比的百分比变化」；'
     f'四舍五入到零的变化写「0bp」而不是「+0bp」／「-0bp」—— 舍入后的零没有方向。'
     f'逾期率、核销率、信托违约率按「越低越好」着色（下降为绿）。' + PCT_NOTE,
 
-    f'Exhibit 13 / 15 的灰柱是<b>过去 {y13} 年同一日历月的均值</b>（不是滚动均值），'
-    f'用来把季节性从水平值里剥掉；Exhibit 14 / 16 每条线是一个日历年，红线为当前年（{old.index[-1].year} 年'
-    f'只到 {MONTHS[old.index[-1].month - 1]}）。Exhibit 17 / 18 的热力矩阵配色已反转：'
+    f'Exhibit ⟨ex:old-wo-season⟩ / ⟨ex:old-dq-season⟩ 的灰柱是<b>过去 {y13} 年同一日历月的均值</b>（不是滚动均值），'
+    f'用来把季节性从水平值里剥掉；Exhibit ⟨ex:old-wo-years⟩ / ⟨ex:old-smb-wo-years⟩ 每条线是一个日历年，红线为当前年（{old.index[-1].year} 年'
+    f'只到 {MONTHS[old.index[-1].month - 1]}）。Exhibit ⟨ex:old-wo-heat⟩ / ⟨ex:old-smb-wo-heat⟩ 的热力矩阵配色已反转：'
     f'<b>绿 = 核销率低（好）</b>，色标取全部有限值的 5/95 分位，一两个离群月不会把整表压平。',
 
     f'<b>与原 PDF 的四处有意差异。</b>(1) 原 deck 的 <code>lvl_bar</code>'
@@ -1975,11 +2002,11 @@ NOTES = [
     + f'这两串编号由本页 payload 现读（谁挂了 <code>yoy</code>、谁挂了 '
     f'<code>avg12</code>），不是写死的说明文字 —— 哪张图改了口径，这句话会自己跟着改。'
     f'此前用的 <code>bar_line_dual</code> 形态对、但丢了'
-    f'「每柱数值」那一层，而 Exhibit 7 / 8 的全部信息恰好就在那一层。'
-    f'Exhibit 12 来自 <code>rev_bar_yoy</code> 而非 <code>lvl_bar</code>，柱是深色 NAVY'
+    f'「每柱数值」那一层，而 Exhibit ⟨ex:nii-yield⟩ / ⟨ex:trust-spread⟩ 的全部信息恰好就在那一层。'
+    f'Exhibit ⟨ex:old-consumer-loans⟩ 来自 <code>rev_bar_yoy</code> 而非 <code>lvl_bar</code>，柱是深色 NAVY'
     f'（图例 "Reported"），<code>gs_bar</code> 的柱色写死在引擎里的浅蓝，故仍留 '
     f'<code>bar_line_dual</code>。'
-    f'(2) <b>Exhibit 7 的次轴画什么，由数据当场决定</b>：费率是季度阶梯（同一季三个月同值），'
+    f'(2) <b>Exhibit ⟨ex:nii-yield⟩ 的次轴画什么，由数据当场决定</b>：费率是季度阶梯（同一季三个月同值），'
     + (f'本轮窗口内它的同比<b>恒为 {_niy_yy_set[0]:+.2f}pp</b> —— 一个常数、不带信息，'
        f'而常数同比的次轴必然退化（量程塌成一个点、刻度舍成一列重复读数、'
        f'末点读数压在最高刻度上），所以这一张<b>改画 12 个月均线</b>'
@@ -1993,8 +2020,8 @@ NOTES = [
     f'那是常态不是异常，生成器自己在两种画法之间切换，本条说明跟着切。'
     f'(2.5) 本页<b>没有任何一条同比线用 {Y.TTM_WIN} 个月滚动口径</b>，全部是'
     f'<b>点对点同比</b>（当月对去年同月；比率序列取百分点差）——'
-    f'Exhibit {"/".join(_YOY_EX)} 的次轴、Exhibit 12 的右轴线、'
-    f'Exhibit 13/15 的季节性基准、Exhibit 17/18 的热力矩阵、两张表的 y/y 列，'
+    f'Exhibit {"/".join(_YOY_EX)} 的次轴、Exhibit ⟨ex:old-consumer-loans⟩ 的右轴线、'
+    f'Exhibit ⟨ex:old-wo-season⟩/⟨ex:old-dq-season⟩ 的季节性基准、Exhibit ⟨ex:old-wo-heat⟩/⟨ex:old-smb-wo-heat⟩ 的热力矩阵、两张表的 y/y 列，'
     f'以及页顶 brief 段里出现的任何同比读数（句中已标「单月」）全部同口径，'
     f'所以本页任意两处的同比读数可以直接互相对读。'
     f'<b>口径是定下来的，不是本页挑的</b>：页面所有者要求全站同比一律用单月，'
@@ -2005,8 +2032,8 @@ NOTES = [
     f'（{Y.TTM_WIN} 个月滚动<b>均值</b>同比对存量在数值上完全正确，'
     f'不许说的只是把它叫「合计」）—— 它只是<b>不上图</b>，'
     f'在本页只以下面这些对照数字的形式出现：'
-    f'① <b>余额类（Exhibit 2/4/12）是期末存量</b>，用本页自己的序列实测'
-    f'（取 Exhibit 12 那条旧口径 Consumer 余额，<b>只量图上真画出来的 {_W12} 个月</b> —— '
+    f'① <b>余额类（Exhibit ⟨ex:consumer-bal⟩/⟨ex:smb-bal⟩/⟨ex:old-consumer-loans⟩）是期末存量</b>，用本页自己的序列实测'
+    f'（取 Exhibit ⟨ex:old-consumer-loans⟩ 那条旧口径 Consumer 余额，<b>只量图上真画出来的 {_W12} 个月</b> —— '
     f'图外的历史读者根本看不到；新口径只有 {len(new)} 个月，'
     f'重叠样本太少算不出可信的标准差）：'
     f'{_CAL_BAL["n"]} 个两种口径都有值的月份上，'
@@ -2035,14 +2062,14 @@ NOTES = [
        f'{_CAL_ALL["opp"][0][0]}–{_CAL_ALL["opp"][-1][0]} 的疫情 V 型段里、'
        f'早已滚出本图窗口 —— 拿它当判据就是报图外的问题。）'
        if _CAL_ALL['opp'] and not _CAL_BAL['opp'] else '')
-    + f'② <b>比率类（Exhibit 7/8 与逾期率、核销率）</b>的同比只能是百分点差，'
+    + f'② <b>比率类（Exhibit ⟨ex:nii-yield⟩/⟨ex:trust-spread⟩ 与逾期率、核销率）</b>的同比只能是百分点差，'
     f'滚动合计与滚动均值对比率都没有意义（要「一年的平均费率」得用余额加权）；'
-    f'③ <b>Exhibit 6（隐含净利息收入）是流量</b>，走单月同比（§6.1 第 1 条），'
+    f'③ <b>Exhibit ⟨ex:nii⟩（隐含净利息收入）是流量</b>，走单月同比（§6.1 第 1 条），'
     f'标题里已写明「次轴：单月同比」。<b>本页只有这一张欠「逐图印代价」那笔账</b>'
     f'（§6.1 第 3 条只管流量：①的存量与②的比率都不欠），'
-    f'而那段实测<b>写在 Exhibit 6 自己的图注里、不在这儿</b> —— '
+    f'而那段实测<b>写在 Exhibit ⟨ex:nii⟩ 自己的图注里、不在这儿</b> —— '
     f'页尾这一条管的是点名口径，代价得让读者盯着那条金线时够得到才算数；'
-    f'④ <b>Exhibit 13/15/17/18</b> 是季节性与热力矩阵，按 CONTRACT.md §6.3 本就豁免'
+    f'④ <b>Exhibit ⟨ex:old-wo-season⟩/⟨ex:old-dq-season⟩/⟨ex:old-wo-heat⟩/⟨ex:old-smb-wo-heat⟩</b> 是季节性与热力矩阵，按 CONTRACT.md §6.3 本就豁免'
     f'（逐格逐月的波动正是这两类图的题眼）；'
     f'⑤ <b>两张表的 y/y 列</b>必须恒等于「本月 ÷ 去年同月」的表内算术，'
     f'读者拿第一列除第三列要能得到同一个数 —— 表内自相矛盾比口径混用更糟。'
@@ -2099,6 +2126,9 @@ def main():
     out_dir = os.path.join(ROOT, 'data')
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'axp.js')
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, payload['table']['n'], where='build/axp')
+    payload['order'] = ORDER
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(path, payload, 'axp')
 
