@@ -259,6 +259,7 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits     # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss   # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用
@@ -1178,7 +1179,44 @@ if HAS_VP:
 #   「Exhibit 2-14 + Exhibit 15 核对表」，而 NOTES 同时在说「Exhibit 15 做的是成交额
 #   分解」「因此 Exhibit 15 / 16 未生成」，Exhibit 13 的图注还在指一张不存在的
 #   Exhibit 16。所以：**有图报真号，没图改说名字**，一个错号都不留。
-VP_N_DEC, VP_N_TRD = (15, 16) if HAS_VP else (None, None)
+#
+# 2026-09-19 起全页的图号走 build/exhibits.py：每张图一个 id，**页面上的先后由 ORDER 定**，
+# 下面的 E_* 是建图时的号（exhibits.Seq；印进正文是占位符，写盘时兑成最终号）。
+# 按数据可得性出不出的图（4、9–13、15、16）本轮没出时 ORDER 里列着只是跳过，后面的号
+# 自动前移（从前是留空号）。**有图报真号，没图改说名字**仍是规矩：占位符指着一张没出的图
+# 会让构建失败，所以正文里点名条件图一律用 EX_* 这几个字符串，或者放在同一个判据下面。
+_S = exhibits.Seq
+(E_SHARE_M, E_SHARE_Q, E_SAME_MONTH, E_SHARE_CHG, E_GROWTH, E_FX2, E_FXCHK, E_NORDIC,
+ E_DENOM, E_ATHENS, E_SCOPE, E_YOY_HEAT, E_YOY, E_VP_DEC, E_VP_TRD, E_TABLE) = (
+    _S(k) for k in range(2, 18))
+ORDER = [
+    'share-monthly',        # Pool share of European cash-equity turnover（月度堆叠）
+    'share-quarterly',      # Pool share, quarterly and volume-weighted
+    'same-month',           # Same month, N years — seasonality removed
+    'share-change',         # Change in pool share (pp)
+    'growth-usd',           # Turnover growth, base-locked USD notional
+    'fx-two-bases',         # Pool total in USD, two FX bases
+    'fx-selfcheck',         # Self-check: the two-basis gap = the EUR/USD move
+    'nordic-absolute',      # Nasdaq Nordic vs the three, in absolute terms（HAS_NDAQ）
+    'denominators',         # Why the two "European market shares" cannot be compared（HAS_NDQ）
+    'euronext-ex-athens',   # Euronext: headline vs like-for-like ex-Athens（HAS_ATH）
+    'dbag-scope',           # What the Deutsche Börse scope compromise costs（HAS_NAR_WIN）
+    'yoy-heat',             # SINGLE-MONTH y/y 热力矩阵
+    'yoy-lines',            # Turnover growth, SINGLE-MONTH y/y
+    'trades-bridge',        # Euronext 成交额 = 笔数 × 每笔均值 的分解（HAS_VP；/enx/ 按这个 id 指过来）
+    'trades-monthly',       # Euronext cash trades: monthly count and y/y（HAS_VP）
+]
+#: 建图时的号 → id。
+EX_ID = {E_SHARE_M: 'share-monthly', E_SHARE_Q: 'share-quarterly', E_SAME_MONTH: 'same-month',
+         E_SHARE_CHG: 'share-change', E_GROWTH: 'growth-usd', E_FX2: 'fx-two-bases',
+         E_FXCHK: 'fx-selfcheck', E_NORDIC: 'nordic-absolute', E_DENOM: 'denominators',
+         E_ATHENS: 'euronext-ex-athens', E_SCOPE: 'dbag-scope', E_YOY_HEAT: 'yoy-heat',
+         E_YOY: 'yoy-lines', E_VP_DEC: 'trades-bridge', E_VP_TRD: 'trades-monthly'}
+VP_N_DEC, VP_N_TRD = (E_VP_DEC, E_VP_TRD) if HAS_VP else (None, None)
+# 另外三张条件图在不受同一判据保护的句子里被点名，照 EX_DEC 的规矩给一个没图时的说法。
+EX_NORDIC = f'Exhibit {E_NORDIC}' if HAS_NDAQ else 'Nasdaq 北欧绝对值那张图'
+EX_DENOM = f'Exhibit {E_DENOM}' if HAS_NDQ else '分母对撞那张图'
+EX_SCOPE = f'Exhibit {E_SCOPE}' if HAS_NAR_WIN else 'Deutsche Börse 宽窄口径那张图'
 EX_DEC = f'Exhibit {VP_N_DEC}' if HAS_VP else '成交额分解图'
 EX_TRD = f'Exhibit {VP_N_TRD}' if HAS_VP else '成交笔数图'
 EX_VP2 = (f'Exhibit {VP_N_DEC} / {VP_N_TRD}' if HAS_VP
@@ -1330,7 +1368,7 @@ DENOM_TXT = ('<b>分母 = 本池三家之和</b>（Euronext + Cboe Europe + Deut
 # 免得各处走样）。数字全部来自 DIAG（= yoy.caliber_diff），即本页自己这三条序列的实测，
 # 不是从别的页搬来的。
 _sd_lo, _sd_hi = min(SD_RATIO.values()), max(SD_RATIO.values())
-_MOM_WHERE = ('Exhibit 13 的热力矩阵与 Exhibit 14 的四条线（建在<b>日均</b>成交额上）'
+_MOM_WHERE = (f'Exhibit {E_YOY_HEAT} 的热力矩阵与 Exhibit {E_YOY} 的四条线（建在<b>日均</b>成交额上）'
               + (f'、{EX_TRD} 的右轴线（建在<b>当月合计</b>笔数上，好让线与柱严格对应；'
                  f'两种底料差多少，那张图的图注里单量了一遍）' if HAS_VP else ''))
 YOY_TXT = (
@@ -1474,12 +1512,12 @@ def summary():
                  '换个单位给人看量级。' + DENOM_TXT +
                  '⚠ 三家的<b>涵盖范围并不一致</b>：Euronext 与 Cboe Europe 逐字同口径'
                  '（股票 ADNV、单边计），Deutsche Börse 这条含 ETP / 结构化产品 / 债券 / 基金，'
-                 '比另两家宽 —— 高估幅度已实测，见 Exhibit 12。'
+                 f'比另两家宽 —— 高估幅度已实测，见 {EX_SCOPE}。'
                  + YOY_TXT +
                  '📌 <b>「本月 vs 上月」「本月 vs 去年同月」两列是本行自己那三个读数之间的'
                  '算术</b>（本行的三个数相除，运营监控要的就是这个）。'
                  '在<b>成交额那一组行</b>上，「本月 vs 去年同月」与下面「现货成交额同比」'
-                 '那一组行、与 Exhibit 13 / 14 <b>是同一个数</b>（都是当月 ÷ 去年同月 − 1，'
+                 f'那一组行、与 Exhibit {E_YOY_HEAT} / {E_YOY} <b>是同一个数</b>（都是当月 ÷ 去年同月 − 1，'
                  '都建在日均上）—— 那一列只印最新一个月，同比那一组行还带上月 / 去年同月的'
                  '同比读数与 3Y %ile。'
                  '在<b>占比行、汇率行与同比那一组行</b>上这两列则不是同比，是 <b>pp 差</b>'
@@ -1507,7 +1545,7 @@ def rebase(s, base=None):
 # ── Exhibit 2：月度池内占比堆叠带 ──
 _db1_share_max = float(SHARE['db1'].max())
 ex.append({
-    'n': 2, 'kind': 'stacked_dual', 'full': True, 'height': 340,
+    'n': E_SHARE_M, 'kind': 'stacked_dual', 'full': True, 'height': 340,
     'fmt': 'f2', 'xstep': 6, 'xrot': 90,
     'xlabels': XL_LONG,
     'title': f'Pool share of European cash-equity turnover, {mlab(START)} – {mlab(LATEST)}',
@@ -1529,7 +1567,7 @@ ex.append({
              f'与圣灵降临节休市，窗口内 {DAYS_N - DAYS_SAME}/{DAYS_N} 个月 Deutsche Börse 的'
              '交易日比 Euronext 少 1–2 天，而 ADV = 成交额 ÷ 各自交易日 —— 照 ADV 算占比'
              f'等于给休市多的那家加权，实测最大虚高 <b>{SHARE_ADV_MAXGAP:.2f}pp</b>（落在 12 月，'
-             '每年复发一次，看上去像季节性规律）。本图与 Exhibit 3 的季度线同一条链，'
+             f'每年复发一次，看上去像季节性规律）。本图与 Exhibit {E_SHARE_Q} 的季度线同一条链，'
              '重叠处严格自洽。'
              + DENOM_TXT +
              f'{mlab(START)} → {mlab(CUR)}：'
@@ -1543,7 +1581,7 @@ ex.append({
              '⚠ 本卡的「表格」视图里堆叠段被<b>引擎写死成整数</b>'
              '（<code>charts.js</code> 对 stacked_dual 的段固定用 f0c，payload 改不了），'
              '所以那里读到的是 40 / 38 / 22 而不是两位小数 —— '
-             '要两位小数请看 Exhibit 1 汇总表，要长期走向请看 Exhibit 3 的季度线。'
+             f'要两位小数请看 Exhibit 1 汇总表，要长期走向请看 Exhibit {E_SHARE_Q} 的季度线。'
              + (f'红色竖虚线 = Euronext 的口径断点（{"、".join(ENX_BRK_TXT)}），'
                 '线右侧与左侧不可比；断点月份来自 <code>series/enx_breaks.csv</code>'
                 '（官方脚注的机器可读副本），不是代码里写死的。'
@@ -1554,7 +1592,7 @@ ex.append({
 # ── Exhibit 3：季度口径的长历史份额（本页最该被读到的一张）──
 _q0, _q1 = QIDX[0], QIDX[-1]
 ex.append({
-    'n': 3, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': E_SHARE_Q, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 2, 'xrot': 90, 'markers': False,
     'zero_base': True, 'end_label': True, 'label_fmt': 'f1',
     'xlabels': QLAB,
@@ -1594,7 +1632,7 @@ if len(_yy_years) >= 3:
         f'{SHORT[k]} ' + ' → '.join(f'{float(SHARE[k][p]):.1f}%' for p in _yy_years)
         for k in KEYS)
     ex.append({
-        'n': 4, 'kind': 'grouped_bars', 'height': 300,
+        'n': E_SAME_MONTH, 'kind': 'grouped_bars', 'height': 300,
         'fmt': 'f1', 'label_fmt': 'f1', 'bar_labels': True, 'xrot': 0, 'xstep': 1,
         'title': f'Same month, {len(_yy_years)} years — seasonality removed',
         'ylab': '% of pool',
@@ -1609,7 +1647,7 @@ if len(_yy_years) >= 3:
                  f'{mlab(_yy_years[0])} → {mlab(_yy_years[-1])}：{_yy_note_rows}。'
                  f'<b>只画 {len(_yy_years)} 年是引擎的硬上限</b> —— grouped_bars 的组色循环'
                  '只有 4 个，第 5 组开始与第 1 组撞色，读者分不出哪根是哪年。'
-                 '更长的历史看 Exhibit 3 的季度线。'
+                 f'更长的历史看 Exhibit {E_SHARE_Q} 的季度线。'
                  + DENOM_TXT),
     })
 
@@ -1617,7 +1655,7 @@ if len(_yy_years) >= 3:
 _dsh = sorted(((k, float(QSHARE[k].iloc[-1]) - float(QSHARE[k].iloc[0])) for k in KEYS),
               key=lambda kv: -kv[1])
 ex.append({
-    'n': 5, 'kind': 'grouped_bars', 'height': 300,
+    'n': E_SHARE_CHG, 'kind': 'grouped_bars', 'height': 300,
     'fmt': 'pp1', 'label_fmt': 'pp1', 'bar_labels': True, 'xrot': 0, 'xstep': 1,
     'title': f'Change in pool share, {qlab(_q0)} → {qlab(_q1)} (pp)',
     'ylab': 'pp',
@@ -1633,7 +1671,7 @@ ex.append({
              '（「油汇顺风 / 油汇拖累」）写死在图例与表格列名里，'
              '交易所页上会凭空冒出「油汇」两个字（详见 <code>docs/CHART_KINDS.md</code> §3.4）；'
              '按变化降序排之后，正负分界一眼就在，不靠颜色。'
-             '两端取的是<b>季度</b>值（Exhibit 3 的首尾），不是单月，免得端点撞上一个噪音月。'),
+             f'两端取的是<b>季度</b>值（Exhibit {E_SHARE_Q} 的首尾），不是单月，免得端点撞上一个噪音月。'),
 })
 
 # ── Exhibit 6：定基名义额指数化增长对比 ──
@@ -1641,7 +1679,7 @@ _idx_now = {k: float(rebase(ADV[k], BASE_P)[CUR]) for k in KEYS}
 _lead = max(_idx_now.items(), key=lambda kv: kv[1])
 _lagr = min(_idx_now.items(), key=lambda kv: kv[1])
 ex.append({
-    'n': 6, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': E_GROWTH, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f0', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'zero_base': True, 'end_label': True, 'label_fmt': 'f0',
     'title': f'Turnover growth, base-locked USD notional — rebased to {mlab(BASE_P)} = 100',
@@ -1672,7 +1710,7 @@ ex.append({
 _g_base = (float(BASE_USD[CUR]) / float(BASE_USD[START]) - 1) * 100
 _g_curr = (float(CURR_USD[CUR]) / float(CURR_USD[START]) - 1) * 100
 ex.append({
-    'n': 7, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': E_FX2, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'zero_base': True, 'end_label': True, 'label_fmt': 'f1',
     'title': 'Pool total in USD, two FX bases — the gap IS the currency effect',
@@ -1697,7 +1735,7 @@ ex.append({
 
 # ── Exhibit 8：汇率恒等式自检 ──
 ex.append({
-    'n': 8, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': E_FXCHK, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f2', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'zero_line': True, 'end_label': True, 'label_fmt': 'f1',
     'title': 'Self-check: the two-basis gap must equal the EUR/USD move, exactly',
@@ -1723,7 +1761,7 @@ if HAS_NDAQ:
     _xl_nd = [mlab(p) for p in W_ND]
     _nd_now, _cb_now = float(NORD_EUR[_ND_OK[-1]]), float(MONTHLY_EUR['cboe'][_ND_OK[-1]])
     ex.append({
-        'n': 9, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+        'n': E_NORDIC, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
         'fmt': 'f0', 'yfmt': 'f0', 'xstep': 2, 'xrot': 90, 'markers': False,
         'zero_base': True, 'end_label': True, 'label_fmt': 'f0',
         'xlabels': _xl_nd,
@@ -1736,7 +1774,10 @@ if HAS_NDAQ:
         'src_extra': ('Monthly totals, not ADV: Nasdaq publishes a month total and does not '
                       'publish Nordic trading days, so a daily average cannot be derived'),
         'note': (ND_WIN_NOTE +
-                 '<b>Nasdaq 北欧只出现在这张图与下一张，绝不进本页任何份额的分子或分母。</b>'
+                 # 「下一张」= 分母对撞那张（HAS_NDQ 才画）：位置引用，挪开了印图号，没画就只说这张。
+                 '<b>Nasdaq 北欧只出现在'
+                 + ('这张图与⟨ex:denominators@+1:下一张⟩' if HAS_NDQ else '这张图')
+                 + '，绝不进本页任何份额的分子或分母。</b>'
                  '它的可比性只有一层：绝对值。'
                  f'{mlab(_ND_OK[-1])}：Nasdaq 北欧 €{_nd_now:,.0f}bn/月，'
                  f'Cboe Europe €{_cb_now:,.0f}bn/月 —— 前者是后者的 '
@@ -1756,7 +1797,7 @@ if HAS_NDAQ:
 # ── Exhibit 10：分母对撞 —— 为什么两家的「份额」不可并排 ──
 if HAS_NDQ:
     ex.append({
-        'n': 10, 'kind': 'grouped_bars', 'full': True, 'height': 340,
+        'n': E_DENOM, 'kind': 'grouped_bars', 'full': True, 'height': 340,
         'fmt': 'f0', 'label_fmt': 'f0', 'bar_labels': False, 'xrot': 90, 'xstep': 1,
         'title': 'Why the two "European market shares" cannot be compared: the denominators',
         'ylab': 'US$bn/季（当期汇率）',
@@ -1782,7 +1823,7 @@ if HAS_NDQ:
                  'include cash equities exchanges of Sweden, Denmark, Finland, and Iceland"；'
                  'Cboe Europe 的份额是<b>泛欧</b>口径。两个分母是两个不同的宇宙。'
                  '<b>把这两个百分数并排放，会得出「Nasdaq 是 Cboe 的三倍」这个完全反的结论</b>'
-                 '（实际关系见 Exhibit 9：Nasdaq 北欧只有 Cboe 的四分之一上下）。'
+                 f'（实际关系见 {EX_NORDIC}：Nasdaq 北欧只有 Cboe 的四分之一上下）。'
                  '所以本页的规矩是：Nasdaq 的<b>绝对值可比、份额不可比</b>，'
                  '它一个字都不进本页的份额图。'),
     })
@@ -1801,7 +1842,7 @@ if HAS_ATH:
                    f'剔除 Athens 后 {_b:.1f}%（{pp(_a - _b)}）—— '
                    '并表把占比抬高了这么多，而不是成交多了这么多。')
     ex.append({
-        'n': 11, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+        'n': E_ATHENS, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
         'fmt': 'f2', 'yfmt': 'f1', 'xstep': 3, 'xrot': 90, 'markers': False,
         'zero_base': True, 'end_label': True, 'label_fmt': 'f2',
         'title': 'Euronext: headline vs like-for-like ex-Athens (€bn/day)',
@@ -1836,7 +1877,7 @@ if HAS_ATH:
 if HAS_NAR_WIN:
     _xl_nar = [mlab(p) for p in W_NAR]
     ex.append({
-        'n': 12, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
+        'n': E_SCOPE, 'kind': 'lines', 'full': True, 'height': LINE_H_ENDLABEL,
         'fmt': 'f2', 'yfmt': 'f1', 'xstep': 2, 'xrot': 90, 'markers': False,
         'zero_base': True, 'end_label': True, 'label_fmt': 'f2',
         'xlabels': _xl_nar,
@@ -1869,7 +1910,7 @@ if HAS_NAR_WIN:
                     if NAR_SHARE_NOW else '')
                  + '⇒ <b>本页 Deutsche Börse 的占比是上界，Euronext 与 Cboe Europe 的是下界</b>。'
                  '增长率不受影响（宽口径只是整条线乘一个近似常数），'
-                 '所以 Exhibit 6 与 Exhibit 14 照读。'),
+                 f'所以 Exhibit {E_GROWTH} 与 Exhibit {E_YOY} 照读。'),
     })
 
 # ── Exhibit 13：单月同比矩阵 —— 与 Exhibit 14 同一口径、同一批数，只是换个读法 ──
@@ -1887,22 +1928,22 @@ if _hm_flat:
     _hm_p95 = float(np.percentile(_hm_flat, 95))
     _hm_neg = sum(1 for v in _hm_flat if v < 0)
     ex.append({
-        'n': 13, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
-        'title': (f'SINGLE-MONTH y/y (%), last {len(_hm)} months — same basis as Exhibit 14, '
+        'n': E_YOY_HEAT, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
+        'title': (f'SINGLE-MONTH y/y (%), last {len(_hm)} months — same basis as Exhibit {E_YOY}, '
                   f'read cell by cell'),
         'rows': [SHORT[k] for k in KEYS], 'cols': [mlab(p) for p in _hm],
         'matrix': _hm_mat,
-        'legend': '现货成交额 单月同比（%）—— 与 Exhibit 14 同一口径、同一批数',
+        'legend': f'现货成交额 单月同比（%）—— 与 Exhibit {E_YOY} 同一口径、同一批数',
         'cell_h': 26, 'row_lab_w': 108,
         'row_head': '交易所',
-        'src_extra': ('Single-month y/y, the same basis as Exhibit 14 and as every y/y on this '
+        'src_extra': (f'Single-month y/y, the same basis as Exhibit {E_YOY} and as every y/y on this '
                       'page. No rolling 12-month-total line is drawn anywhere here'),
-        'note': ('<b>这张矩阵与 Exhibit 14 是同一条序列的两种画法</b>：口径同为单月同比'
-                 '（当月 ÷ 去年同月 − 1，建在日均上），逐格的数与 Exhibit 14 的线'
+        'note': (f'<b>这张矩阵与 Exhibit {E_YOY} 是同一条序列的两种画法</b>：口径同为单月同比'
+                 f'（当月 ÷ 去年同月 − 1，建在日均上），逐格的数与 Exhibit {E_YOY} 的线'
                  '<b>在同一个月上完全相同</b>，矩阵只是把最近 '
                  + f'{len(_hm)} 个月摊开、把「哪几个月异常」摆到台面上。'
                  '⚠ 仍然<b>不要沿着横轴把这张矩阵读成趋势</b> —— 单月读数逐格跳，'
-                 '整段走势看 Exhibit 14 那条线（同一批数，只是画法不同）。'
+                 f'整段走势看 Exhibit {E_YOY} 那条线（同一批数，只是画法不同）。'
                  + YOY_TXT +
                  '<b>这张图本轮为什么口径没跟着改：它本来就是单月的。</b>'
                  '热力矩阵的读法就是<b>逐格比较</b>，换成滚动口径后相邻格几乎相同，'
@@ -1930,7 +1971,7 @@ _y1_rank = sorted(_y1_now.items(), key=lambda kv: -kv[1])
 YOY_FIRST = {k: (YOY[k].dropna().index[0] if YOY[k].notna().any() else None) for k in KEYS}
 YOY_TOT_FIRST = YOY_TOT.dropna().index[0] if YOY_TOT.notna().any() else None
 ex.append({
-    'n': 14, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
+    'n': E_YOY, 'kind': 'lines', 'x': 'long', 'full': True, 'height': LINE_H_ENDLABEL,
     'fmt': 'f1', 'yfmt': 'f0', 'xstep': 6, 'xrot': 90, 'markers': False,
     'zero_line': True, 'end_label': True, 'label_fmt': 'f1',
     'title': 'Turnover growth, SINGLE-MONTH y/y (this month vs. the same month a year earlier)',
@@ -1976,9 +2017,7 @@ if HAS_VP:
                     '它带来的笔数比金额多，所以那一列的形状里有一块是<b>抬笔数、压每笔均值</b>的'
                     '并表效应，不是 Euronext 自身的结构变化。')
     ex.append({
-        # id：/enx/ 的页尾按 ⟨ex:exchanges-eu/trades-bridge⟩ 指到这张（build/exhibits.py）；
-        # 本页还没迁移到顺序表，号仍在这里手写。
-        'n': VP_N_DEC, 'id': 'trades-bridge', 'kind': 'bridge_bar', 'full': True, 'height': 320,
+        'n': VP_N_DEC, 'kind': 'bridge_bar', 'full': True, 'height': 320,
         'fmt': 'f1', 'label_fmt': 'f1', 'xrot': 0, 'xstep': 1,
         'xlabels': VP_LAB,
         'title': ('Euronext cash turnover growth split into trade count and average trade value '
@@ -2022,7 +2061,7 @@ if HAS_VP:
                     if HAS_VP_TTM else '）')
                  + '，不用点对点单月 —— 这张图的横轴是<b>年</b>，问的是「这一年比上一年多出来的'
                  '成交额里，多少来自笔数、多少来自每笔均值」，拿单月当端点等于让一个异常月替'
-                 '一整年发言。⚠ 别把它与 Exhibit 14 的单月同比混起来：那张图逐月画读数，'
+                 f'一整年发言。⚠ 别把它与 Exhibit {E_YOY} 的单月同比混起来：那张图逐月画读数，'
                  '这张图年对年做分解，两者问的不是同一个问题。'
                  f'<b>算法：</b>用<b>对数（LMDI）分解</b>。{_cr_txt}'
                  f'算术（Bennet）分解照样算了，两路的贡献值最大差 <b>{VP_AL_MAX:.1f}pp</b>；'
@@ -2094,7 +2133,7 @@ if HAS_VP:
                  f'中位 {VP_N_DAYGAP_MED:.1f}pp（最大发生在 {mlab(VP_N_DAYGAP_AT)}）。'
                  f'本图仍取当月合计口径，是为了让线与柱严格对应 —— 换成日均口径，'
                  f'线就不再是这些柱的同比，而图上完全看不出来。'
-                 f'（Exhibit 14 的四条线相反，画的是<b>日均</b>口径的单月同比：'
+                 f'（Exhibit {E_YOY} 的四条线相反，画的是<b>日均</b>口径的单月同比：'
                  f'那张图上没有柱可对，日历效应剔掉更干净。）'
                  '⚠ <b>双轴的代价</b>：右轴的同比要跨零，而引擎默认把两轴零点画在同一高度，'
                  '所以左轴零线以下会空出一段（<code>docs/CHART_KINDS.md</code> §4）。'
@@ -2115,8 +2154,8 @@ if HAS_VP:
 #   ② 成交笔数图的线 = 柱自己的同比（CONTRACT §6.1 第 1 条要的那个「拿这根柱除以 12 根柱
 #      之前那根，就是线上这一点」）。容差取 1e-5pp：payload 里的数经 L() 取到小数点后 6 位，
 #      实测这一项的残差在 5e-7pp 量级，而任何真的换错口径都会差出以 pp 计的量。
-_e13 = next((e for e in ex if e['n'] == 13), None)
-_e14 = next((e for e in ex if e['n'] == 14), None)
+_e13 = next((e for e in ex if e['n'] == E_YOY_HEAT), None)
+_e14 = next((e for e in ex if e['n'] == E_YOY), None)
 if _e13 and _e14:
     _pos = {m: i for i, m in enumerate(XL_LONG)}
     for _r, _nm in enumerate(_e13['rows']):
@@ -2125,7 +2164,7 @@ if _e13 and _e14:
             _a, _b = _e13['matrix'][_r][_c], _ln['values'][_pos[_mo]]
             if _a != _b:
                 raise SystemExit(
-                    f'Exhibit 13 与 Exhibit 14 在 {_nm} {_mo} 上不是同一个数'
+                    f'单月同比热力矩阵（yoy-heat）与四条单月同比线（yoy-lines）在 {_nm} {_mo} 上不是同一个数'
                     f'（{_a} vs {_b}）—— 两张图的图注都写着它们同口径同一批数，'
                     f'先把那句话改掉，或者把口径改回来，再跑。')
 if HAS_VP:
@@ -2162,7 +2201,7 @@ _fxrow = {str(p): fxr('EUR', p) for p in W13}
 table = {
     # 表号跟着最后一张图走，不写死：Exhibit 15 / 16 是有条件生成的
     # （Euronext 那一对列没通过判据就整块不画），写死会在页面上留下 15、16 两个空号。
-    'n': ex[-1]['n'] + 1,
+    'n': E_TABLE,
     'title': f'近 {TBL_MONTHS} 个月原始指标核对表（各家官方原始单位与币种，未做任何换算）',
     'idx': '月份',
     'cols': [[h, k] for h, k, _, _, _, _ in TBL_COLS] + [['EUR/USD 月均（ECB）', 'fx']],
@@ -2273,11 +2312,11 @@ NOTES = [
         f'只有 {len(_NAR_OK)} 个月（{mlab(W_NAR[0])}–{mlab(W_NAR[-1])} 逐月连续）')
        if HAS_NAR_WIN else '历史极短')
     + '，用窄口径本页的长历史份额图就没有了。'
-    + (f'代价已实测并画在 Exhibit 12：宽 ÷ 窄 = {SCOPE_MIN:.2f}–{SCOPE_MAX:.2f} 倍，'
+    + (f'代价已实测并画在 Exhibit {E_SCOPE}：宽 ÷ 窄 = {SCOPE_MIN:.2f}–{SCOPE_MAX:.2f} 倍，'
        f'折成池内占比 Deutsche Börse 被高估 {SH_GAP_MIN:.1f}–{SH_GAP_MAX:.1f}pp。'
        if HAS_NAR_WIN else '')
     + '⇒ <b>本页 Deutsche Börse 的占比读作上界，Euronext 与 Cboe Europe 的读作下界。</b>'
-      '增长率与同比不受影响（宽口径只是整条线乘一个近似常数），Exhibit 6 与 Exhibit 13 照读。'
+      f'增长率与同比不受影响（宽口径只是整条线乘一个近似常数），Exhibit {E_GROWTH} 与 Exhibit {E_YOY_HEAT} 照读。'
       '⚠ 另一处更细的差异：Cboe Europe 是<b>泛欧 MTF</b>，撮合的正是 Euronext 与 Xetra 上市的'
       '那批股票；Xetra 只覆盖德国上市。三家<b>争的确实是同一批订单流</b>（MiFID II 之下'
       '任何欧洲股票可在任何场所交易），这也正是欧洲页可以算占比、而亚太页不可以的原因。',
@@ -2293,10 +2332,10 @@ NOTES = [
       'Cboe Europe 的份额是泛欧口径。两个分母是两个不同的宇宙：'
     + (f'把它自己的成交额除以它自己的份额，反推出来的整个「欧洲市场」分母，'
        f'比 Cboe Europe <b>一家</b>还小 {ND_QR_MED:.1f} 倍'
-       f'（窗口内 {ND_QR_MIN:.1f}–{ND_QR_MAX:.1f} 倍，Exhibit 10）。' if HAS_NDQ else '')
-    + '⇒ 本页把 Nasdaq 北欧放进 Exhibit 9（绝对值）与 Exhibit 10（分母对撞），'
+       f'（窗口内 {ND_QR_MIN:.1f}–{ND_QR_MAX:.1f} 倍，Exhibit {E_DENOM}）。' if HAS_NDQ else '')
+    + f'⇒ 本页把 Nasdaq 北欧放进 {EX_NORDIC}（绝对值）与 {EX_DENOM}（分母对撞），'
       '<b>不进任何份额的分子或分母</b>。'
-      '另外它官方只发当月合计且<b>不给北欧交易日</b>，所以 Exhibit 9 用「€bn/月」'
+      f'另外它官方只发当月合计且<b>不给北欧交易日</b>，所以 {EX_NORDIC} 用「€bn/月」'
       '而不是日均 —— 硬转 ADV 需要一个我们没有的日历。',
 
     '<b>季度份额是量加权的，不是三个月份额的平均。</b>'
@@ -2307,28 +2346,30 @@ NOTES = [
     '（不同的那几个月差 1–2 天，集中在 12 月与 10 月）；'
     'Deutsche Börse 的月度总额本来就是官方原生列，不经这个权重。'
     '窗口两端不满三个月的残季一律不画、不年化。'
-    f'月度图（Exhibit 2）保留 —— 它答的是「这个月发生了什么」；'
-    f'季度图（Exhibit 3）答的是「结构在往哪走」，{len(QIDX)} 个季、约 {QSPAN_Y:.1f} 年。'
-    '同比同月图（Exhibit 4）再把季节性彻底固定住：同一个日历月的连续几年并排。',
+    f'月度图（Exhibit {E_SHARE_M}）保留 —— 它答的是「这个月发生了什么」；'
+    f'季度图（Exhibit {E_SHARE_Q}）答的是「结构在往哪走」，{len(QIDX)} 个季、约 {QSPAN_Y:.1f} 年。'
+    # 同比同月图要凑够 3 个年份才画（见 Exhibit E_SAME_MONTH 那一段）；没画就不点它的名。
+    + (f'同比同月图（Exhibit {E_SAME_MONTH}）再把季节性彻底固定住：同一个日历月的连续几年并排。'
+       if len(_yy_years) >= 3 else ''),
 
     '<b>同比口径。</b>'
     + YOY_TXT
     + f'逐处点名（口径这件事不许靠读者自己猜，所以把每一处写全）：'
-      f'<b>单月同比（当月 ÷ 去年同月 − 1）</b> —— <b>Exhibit 13</b> 的热力矩阵、'
-      f'<b>Exhibit 14</b> 的四条线'
+      f'<b>单月同比（当月 ÷ 去年同月 − 1）</b> —— <b>Exhibit {E_YOY_HEAT}</b> 的热力矩阵、'
+      f'<b>Exhibit {E_YOY}</b> 的四条线'
     + (f'、<b>{EX_TRD}</b> 的右轴线' if HAS_VP else '')
     + f'、汇总表「现货成交额同比」那一组行、抬头的 y/y。'
-      f'其中 <b>Exhibit 14</b>'
+      f'其中 <b>Exhibit {E_YOY}</b>'
     + (f'、<b>{EX_TRD}</b>' if HAS_VP else '')
     + f'、汇总表那一组行与抬头是<b>本轮改的</b>（原为 12 个月滚动合计同比）；'
-      f'<b>Exhibit 13 本来就是单月</b>，口径一格没动，改的只是它周围那些'
-      f'「本页唯一一处单月同比 / 留着当反面教材」的话 —— 那些话在 Exhibit 14 换口径的'
+      f'<b>Exhibit {E_YOY_HEAT} 本来就是单月</b>，口径一格没动，改的只是它周围那些'
+      f'「本页唯一一处单月同比 / 留着当反面教材」的话 —— 那些话在 Exhibit {E_YOY} 换口径的'
       f'当天就成了假话，标题、图例、来源行、图注逐处改写过。'
       f'<b>不是同比、不要拿去与上面并排读的</b> —— (a) 汇总表的「本月 vs 上月」'
       f'「本月 vs 去年同月」两列是那一行自己三个读数之间的算术（表头已从 m/m / y/y '
       f'改成中文全称）：在成交额行上「本月 vs 去年同月」与同比那一组行是同一个数，'
       f'在占比行与汇率行上则是 pp 差，不是同比。'
-      f'(b) <b>指数化图（Exhibit 6 / 7 / 8）不是同比</b>，它们画的是相对定基月的累计变动。'
+      f'(b) <b>指数化图（Exhibit {E_GROWTH} / {E_FX2} / {E_FXCHK}）不是同比</b>，它们画的是相对定基月的累计变动。'
       f'(c) <b>{EX_DEC} 的年度分解端点是 12 个月合计</b>，那是「一年对一年」，横轴是年，'
       f'不是这里说的任何一种月度同比。'
       f'(d) 抬头里的<b>季度口径</b>那一段是占比的季度对比（pp），也不是同比。',
@@ -2369,9 +2410,9 @@ NOTES = [
     '<b>汇率：本页几乎用不上它，这一点本身是结论。</b>'
     '三家全部以欧元披露 ⇒ 占比与同比里<b>一分钱汇率都没有</b>。'
     f'定基名义额（锁 {mlab(BASE_P)} 月均 EUR/USD = {EURUSD_BASE:.4f}）只在把水平值折成美元时'
-    '才起作用，而那个常数对每一家都一样，所以指数化图（Exhibit 6）与直接画欧元的图逐点相同。'
-    'Exhibit 7 给出两种汇率口径的池合计，两者之差就是汇率贡献；'
-    f'Exhibit 8 把「这个差<b>恒等于</b> EUR/USD 自身的累计变动」画出来自检，'
+    f'才起作用，而那个常数对每一家都一样，所以指数化图（Exhibit {E_GROWTH}）与直接画欧元的图逐点相同。'
+    f'Exhibit {E_FX2} 给出两种汇率口径的池合计，两者之差就是汇率贡献；'
+    f'Exhibit {E_FXCHK} 把「这个差<b>恒等于</b> EUR/USD 自身的累计变动」画出来自检，'
     f'实测最大偏差 {FX_IDENT_MAX:.2e} pp（浮点舍入量级）。'
     '若哪天这两条线分开，说明池里混进了非欧元成员，那时所有占比图都必须停掉。'
     + (f'换算公式已与 <code>series/contract_specs.csv</code> 的 {len(FX_CHECK)} 个欧元金额类'
@@ -2384,7 +2425,7 @@ NOTES = [
        + '、'.join(f'Exhibit {n}（{c} 条）' for n, c in _BRK_EX)
        + '，语义是「从这一期起与左侧不可比」；条数不等是因为各图的横轴窗口不一样，'
        '只有落进窗口的断点才画得出来。'
-       '⚠ 断点会污染同比：<b>Exhibit 14</b> 本轮改成单月同比之后，一次并表污染的是红线'
+       f'⚠ 断点会污染同比：<b>Exhibit {E_YOY}</b> 本轮改成单月同比之后，一次并表污染的是红线'
        '右侧<b>连续 12 个读数</b>（当月比去年同月，而去年同月还在并表之前），'
        '红线右侧这一年的同比一律不能当自然增长读。'
        '（这比原先的滚动口径少一半 —— 那时要滚 12 个月再回看 12 个月，一次断点污染'
@@ -2396,7 +2437,7 @@ NOTES = [
       '⚠ 有一处必须澄清：口传里的「2019 年并入 Oslo Børs」指的是<b>股指衍生品</b>列'
       '（官方脚注 since July 2019）；<b>现货</b>列的 Oslo 断点在 <b>2018-01</b>。'
       '以 enx_breaks.csv 为准，不照抄口传。'
-    + ('其中 2025-11 的 Athens 并表可以<b>定量还原</b>（官方给了备注列），见 Exhibit 11；'
+    + (f'其中 2025-11 的 Athens 并表可以<b>定量还原</b>（官方给了备注列），见 Exhibit {E_ATHENS}；'
        '2021-05 的 Borsa Italiana 没有备注列，只能标不能还原。' if HAS_ATH else '')
     + 'RED 在这套配色里是<b>断点与截轴离群值的专用色</b>，一律不做数据色。',
 
@@ -2405,7 +2446,7 @@ NOTES = [
     '（油汇拖累）」，表格视图列名固定「Reported − Core」，<code>ex.legend</code> 被忽略'
     '（<code>assets/charts.js</code> 第 1437 / 1522–1523 行；详见 '
     '<code>docs/CHART_KINDS.md</code> §3.4）。交易所份额页上会凭空出现「油汇」两个字。'
-    '引擎不能动（14 页共用，改一行要重新验收 14 页），所以 Exhibit 5 改用'
+    f'引擎不能动（14 页共用，改一行要重新验收 14 页），所以 Exhibit {E_SHARE_CHG} 改用'
     '<b>只放一个 group 的 grouped_bars</b>：图例名与表格列名都能自定义，'
     '纵轴照样容纳负柱。代价是正负不分色 —— 按变化降序排之后分界一眼就在，损失有限。'
     '不能用 <code>bars_labeled</code> 代替：它强制零基线，负柱会被画到画布外。',
@@ -2442,9 +2483,9 @@ NOTES = [
     f'<b>核对表（Exhibit {table["n"]}）用各家官方披露的原始计量单位与币种，一个换算都不做。</b>'
     '这张表存在的唯一理由是让人拿它与官方新闻稿逐位对账：'
     'Deutsche Börse 那两列是<b>月度总额</b>（其余各家是日均），所以并排给了现货交易日，'
-    '日均 = 总额 ÷ 交易日；窄口径的 Xetra 股票列也列出来，让人自己复算 Exhibit 12 的比值；'
+    f'日均 = 总额 ÷ 交易日；窄口径的 Xetra 股票列也列出来，让人自己复算 {EX_SCOPE} 的比值；'
     'Nasdaq 北欧那列是<b>美元当月合计</b>，配一列 ECB 月均 EUR/USD，'
-    '让人自己复算 Exhibit 9 的欧元读数。'
+    f'让人自己复算 {EX_NORDIC} 的欧元读数。'
     + (f'最后两列是 {EX_VP2} 用的那一对（<code>{VP_VAL_COL}</code> 全部现货金额、'
        f'<code>{VP_TRD_COL}</code> 成交笔数），让人自己复算分解的分子分母；'
        f'注意<b>金额单边计、笔数双边计</b>，两者相除得到的每笔均值'
@@ -2734,7 +2775,7 @@ payload = {
                + '<b>所有占比的分母 = 本池三家之和，不含 SI、暗池与本池之外的场所，'
                  '因此系统性高估三家的合计比重；这不是市场份额</b>'
                  '（为什么拿不到泛欧合并分母，见口径说明第 2 条）· '
-                 'Deutsche Börse 的口径比另两家宽，其占比读作上界（Exhibit 12 给出实测幅度）· '
+                 f'Deutsche Börse 的口径比另两家宽，其占比读作上界（{EX_SCOPE} 给出实测幅度）· '
                  'charts only, no commentary · personal research use'),
 }
 if SOURCE_DATE:
@@ -2742,6 +2783,9 @@ if SOURCE_DATE:
 
 
 def main():
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, E_TABLE, where='build/exchanges_eu')
+    payload['order'] = ORDER
     payload_guard.write_dash(OUT, payload, TICKER)
     print(f'共同最新月 {LATEST} | 各家: '
           + ', '.join(f'{SHORT[k]}={latest_each[k]}' for k in KEYS))
