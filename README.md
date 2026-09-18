@@ -144,7 +144,18 @@ python3 monthly_run.py --dry-run       # 抓取与生成都做，但不 commit/p
 python3 monthly_run.py --force         # 数据没变也重建并推送（改了图表代码后用）
 ```
 
-改过生成器或引擎之后，五条校验各管一层，谁都替代不了谁：
+**日常只需要两条命令**（2026-09-19 起）：
+
+```bash
+python3 tools/rebuild.py               # 离线重建全站 data/*.js（约 4 秒）；合并分支之后必跑
+python3 tools/gate.py                  # 下面全部校验一次跑完（约 30 秒），末行 GATE OK / FAILED
+```
+
+`data/*.js` 在 `.gitattributes` 里是 `merge=binary`：两边都重建过同一页时，合并会停在 unmerged、
+文件里不插冲突标记 —— 不要手挑哪边，跑 `tools/rebuild.py` 再 `git add data/`。
+轴刻度的小数位由 `build/payload_guard.write_dash` 统一过一遍 `axisfmt.fix_all`，生成器不用再各自记得调。
+
+改过生成器或引擎之后，五条校验各管一层，谁都替代不了谁（`tools/gate.py` 就是把它们并起来跑）：
 
 ```bash
 python3 build/verify_pages.py          # 结构层：payload 契约 + 页面引用，0 ERROR 才算过
