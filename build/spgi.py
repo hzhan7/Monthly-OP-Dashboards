@@ -59,6 +59,24 @@ import axisfmt
 import brief as B
 import glossary as gloss   # 名词释义的版式层与护栏，全站共用
 import payload_guard
+import exhibits         # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
+
+# ── 图序：挪图只改这一张表（机制见 build/exhibits.py 的模块头）──────────────
+# 排第几项就是 Exhibit 几（从 2 起；Exhibit 1 是汇总表，核对表自动接在最后）。
+# ⚠️ 下文 ex2…ex8 与 YOY_KIND 里的 2…8 是**建图时的号**（exhibits.Seq，也是本文件里
+# 登记簿的钥匙），不是页面上的图号；页面上的号由这张表决定，印进正文的一律是占位符。
+ORDER = [
+    'etd-adv',          # SPDJI average daily volume of ETDs
+    'issuance',         # Ratings billed issuance index
+    'yoy-pair',         # The two disclosed y/y series side by side
+    'etd-adv-q',        # SPDJI ADV by quarter
+    'etd-adv-years',    # SPDJI ADV path by year
+    'issuance-years',   # Ratings billed issuance index path by year
+    'issuance-heat',    # Ratings billed issuance y/y (%)
+]
+_S = exhibits.Seq
+EX_ID = {_S(2): 'etd-adv', _S(3): 'issuance', _S(4): 'yoy-pair', _S(5): 'etd-adv-q',
+         _S(6): 'etd-adv-years', _S(7): 'issuance-years', _S(8): 'issuance-heat'}
 import pctile
 import yoy as Y        # 同比口径的唯一实现（build/yoy.py）；本页不再自己写滞后 12 期的除法
 
@@ -335,7 +353,7 @@ summary = {
              '不对应任何可解释的量，分位同理是拿苹果比橘子。'
              f'该行只有 y/y 可读 —— {BASE_Y} 年同月基数在分子分母上对消，'
              f'{num(BIDX[at(CUR)], 1)} / {num(BIDX[at(YAG)], 1)} 恰好等于官方披露的 '
-             f'{BIY[at(CUR)]:+.0f}%（上一行）。相邻两列的水平值仍照 Exhibit 3 列出供核对，'
+             f'{BIY[at(CUR)]:+.0f}%（上一行）。相邻两列的水平值仍照 Exhibit ⟨ex:issuance⟩ 列出供核对，'
              '但不可相减。'),
 }
 
@@ -386,7 +404,7 @@ mark_i = [i for i, m in enumerate(m2) if DERIVED[at(m)] == 1]
 mark_y = sorted({m2[i][:4] for i in mark_i})
 
 ex2 = {
-    'n': 2, 'kind': 'gs_bar', 'full': True, 'fmt': 'f1', 'xlabels': xl2,
+    'n': _S(2), 'kind': 'gs_bar', 'full': True, 'fmt': 'f1', 'xlabels': xl2,
     'title': 'SPDJI average daily volume of ETDs（右轴 = 单月同比 / single-month y/y）',
     'ylab': 'mn contracts / day', 'ylab2': '% y/y（单月）',
     'legend': 'Monthly ADV',
@@ -405,7 +423,7 @@ ex2 = {
              f'{mlab(BRK_M)} 起 ADV 剔除 event contracts 且不重述历史，单月口径'
              f'至少能逐月点名哪几个读数跨了口径（下面点了名）；'
              f'② <b>页内两处同比可以互相对读</b>：billed issuance 从来不给绝对面值，'
-             f'Exhibit 3/4/8 手里根本没有可加总的水平值序列，本图与它们同走单月，'
+             f'Exhibit ⟨ex:issuance⟩/⟨ex:yoy-pair⟩/⟨ex:issuance-heat⟩ 手里根本没有可加总的水平值序列，本图与它们同走单月，'
              f'全页任意两处同比才是同一种东西。'
              f'<b>代价照实说</b>：单月同比的分母是<b>去年那一个月</b>，'
              f'一次性事件与季节性会被放大。'
@@ -451,7 +469,7 @@ idxy_n = len(idxy_at)
 idxy_from = mlab(tail(idx_months, W3)[idxy_at[0]]) if idxy_at else None
 
 ex3 = {
-    'n': 3, 'kind': 'gs_bar', 'full': True, 'fmt': 'f0', 'xlabels': xl3,
+    'n': _S(3), 'kind': 'gs_bar', 'full': True, 'fmt': 'f0', 'xlabels': xl3,
     'title': 'Ratings billed issuance index（右轴 = 单月同比 / single-month y/y）',
     'ylab': f'index, {BASE_Y} same month = 100', 'ylab2': '% y/y（单月）',
     'legend': 'Monthly index',
@@ -499,7 +517,7 @@ b4 = brk_idx(m4)
 n4_mixed = len(m4) - b4 if b4 is not None else 0
 
 ex4 = {
-    'n': 4, 'kind': 'lines_endlabels', 'fmt': 'f0', 'xlabels': [mlab(m) for m in m4],
+    'n': _S(4), 'kind': 'lines_endlabels', 'fmt': 'f0', 'xlabels': [mlab(m) for m in m4],
     'title': 'The two disclosed y/y series side by side',
     'ylab': '% y/y',
     'series': [
@@ -542,7 +560,7 @@ qy = qyoy[-QN:]
 q_brk = [i for i, k in enumerate(qk) if k == (2025, 4)]
 
 ex5 = {
-    'n': 5, 'kind': 'qtr_bar', 'fmt': 'f1', 'label_fmt': 'f1',
+    'n': _S(5), 'kind': 'qtr_bar', 'fmt': 'f1', 'label_fmt': 'f1',
     'xlabels': [f'{k[0]}Q{k[1]}' for k in qk],
     'title': 'SPDJI ADV by quarter',
     'ylab': 'mn contracts / day', 'ylab2': '% y/y',
@@ -599,7 +617,7 @@ for _lab, _sel in (('旧口径', [y for y in years if y < BRK_Y]),
         CAL_GRP.append('、'.join(str(y) for y in _sel) + ' ' + _lab)
 
 ex6 = {
-    'n': 6, 'kind': 'year_lines', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': MON,
+    'n': _S(6), 'kind': 'year_lines', 'fmt': 'f1', 'label_fmt': 'f1', 'xlabels': MON,
     'title': 'SPDJI ADV path by year',
     'ylab': 'mn contracts / day',
     'series': yser,
@@ -662,12 +680,12 @@ ex7 = {
     #    而 tools/check_yoy_caliber.py 正是按这几个词把序列登记成同比再回源复算口径
     #    （登记条件见该文件的 _IS_YOY 与 take()）。写错一个词就会拿一条不是同比的序列
     #    去比同比口径。竖读等于同比这件事写在图注里，不写进图题。
-    'n': 7, 'kind': 'year_lines', 'fmt': 'f0', 'label_fmt': 'f0', 'xlabels': MON,
+    'n': _S(7), 'kind': 'year_lines', 'fmt': 'f0', 'label_fmt': 'f0', 'xlabels': MON,
     'title': 'Ratings billed issuance index path by year',
     'ylab': f'index, {BASE_Y} same month = 100',
     'series': bser,
     'highlight': len(bser) - 1,
-    'note': (f'与 Exhibit {ex6["n"]} 同一种画法，画的是 Exhibit 3 那条'
+    'note': (f'与 Exhibit {ex6["n"]} 同一种画法，画的是 Exhibit ⟨ex:issuance⟩ 那条'
              f'<b>链式指数的水平值</b>（不是累计），红线为当年。'
              f'{LY} 年只到 {MON[LM - 1]}，其后留空而不是画成 0。'
              f'本图画序列里全部 {len(bser)} 个有指数的日历年'
@@ -691,7 +709,7 @@ ex7 = {
              + (f'失真到什么程度：{_AMP_Y} 年年内最高是最低的 {_AMP_X:.1f} 倍 —— '
                 f'发行量并没有差这么多。' if _AMP_Y else '')
              + f'ADV 的口径断点（{mlab(BRK_M)}）不影响 billed issuance，'
-               f'本图与 Exhibit 3 一样不画断点线，也不必给各条年线分口径组。'),
+               f'本图与 Exhibit ⟨ex:issuance⟩ 一样不画断点线，也不必给各条年线分口径组。'),
     'src_extra': INOTE + '; read vertically (same month across years) only.',
 }
 
@@ -715,7 +733,7 @@ for y in hy:
 BLANK_Y = [str(y) for y, row in zip(hy, matrix) if all(v is None for v in row)]
 
 ex8 = {
-    'n': 8, 'kind': 'heat_matrix', 'fmt': 'f0',
+    'n': _S(8), 'kind': 'heat_matrix', 'fmt': 'f0',
     'title': 'Ratings billed issuance y/y (%)',
     'rows': rowlab, 'cols': MON, 'matrix': matrix,
     'legend': 'Billed issuance y/y', 'row_head': '年', 'cell_h': 22,
@@ -754,13 +772,13 @@ axisfmt.fix_all(EXHIBITS)
 # 判据分两层：季度与否由 kind 现算（qtr_bar 就是季度柱），其余每一张必须在
 # YOY_KIND 里登记到底带不带同比 —— 漏登记当场 raise。
 YOY_KIND = {
-    2: 'm',      # 次轴 y/y
-    3: 'm',      # 次轴 y/y
-    4: 'm',      # 两条披露 y/y
-    5: 'q',      # 季度柱，次轴是 3 个月比 3 个月
-    6: '-',      # 年内路径，图上没有同比
-    7: '-',      # 年内路径，图上没有同比（竖读等于同比，但图上没画那条线）
-    8: 'm',      # 同比热力矩阵
+    _S(2): 'm',      # 次轴 y/y
+    _S(3): 'm',      # 次轴 y/y
+    _S(4): 'm',      # 两条披露 y/y
+    _S(5): 'q',      # 季度柱，次轴是 3 个月比 3 个月
+    _S(6): '-',      # 年内路径，图上没有同比
+    _S(7): '-',      # 年内路径，图上没有同比（竖读等于同比，但图上没画那条线）
+    _S(8): 'm',      # 同比热力矩阵
 }
 _yk_all, _ex_all = sorted(YOY_KIND), sorted(e['n'] for e in EXHIBITS)
 if _yk_all != _ex_all:
@@ -810,10 +828,10 @@ if _yoy_ex:
     _more.append('Exhibit ' + '、'.join(str(n) for n in _yoy_ex) +
                  ' 里断点右侧的每一个 ADV 同比读数，都是「新口径的当月 ÷ 旧口径的去年同月」')
 if q_brk:
-    _more.append(f'Exhibit 5 的 {qk[q_brk[0]][0]}Q{qk[q_brk[0]][1]} 那根柱'
+    _more.append(f'Exhibit ⟨ex:etd-adv-q⟩ 的 {qk[q_brk[0]][0]}Q{qk[q_brk[0]][1]} 那根柱'
                  '季内两个月旧、一个月新，是全页最脏的一根')
 if BRK_Y in years:
-    _more.append(f'Exhibit 6 的 x 轴是 1–12 月、画不了竖线，改在图注里说明 {BRK_Y} '
+    _more.append(f'Exhibit ⟨ex:etd-adv-years⟩ 的 x 轴是 1–12 月、画不了竖线，改在图注里说明 {BRK_Y} '
                  '那条年线自身就是混口径')
 BRK_MORE = ('受影响的不只是柱本身：' + '；'.join(_more) + '。') if _more else ''
 
@@ -870,7 +888,7 @@ elif _a5 and _a5['fallback_triggered']:
 TN = 13
 tm = tail(MONTHS, TN)
 table = {
-    'n': 9,
+    'n': _S(9),
     'title': f'近 {TN} 个月月度指标核对表（官方原始单位，未换算）',
     'idx': '月份',
     'cols': [
@@ -897,7 +915,7 @@ NOTES = [
     ('<b>公司每月只给两个数</b>：Ratings billed issuance 的 y/y 百分比、SPDJI 交易所交易衍生品的 ADV。'
      '本页比其他标的薄不是漏做，是披露就这么多 —— 没有收入、没有 AUM、没有分部拆分。'),
     ('⚠️ <b>Billed issuance 没有绝对面值</b>：官方只披露同比百分比，从不给面值。'
-     f'Exhibit 3 的指数是把这些百分比链式接到「{BASE_Y} 年同月 = 100」上构造的，'
+     f'Exhibit ⟨ex:issuance⟩ 的指数是把这些百分比链式接到「{BASE_Y} 年同月 = 100」上构造的，'
      f'<b>指数本身不是公司披露值</b>；每个月各自以自己的 {BASE_Y} 同月为基数，'
      f'跨月比较会混进基期年的季节性，指数的 m/m 不可当趋势读。'
      f'链现在跨 {LY - BASE_Y} 年，各月基数的漂移已经大到能主导同一年内各月的高低 —— '
@@ -908,15 +926,15 @@ NOTES = [
       f'「\'{str(DERIVED_Y0 + 1)[2:]} v. \'{str(DERIVED_Y0)[2:]} % Change」反算得到 —— '
       '这是对披露数据的算术推导，不是估计，但精度受官方那个百分比的四舍五入限制'
       '（官方那一列只存到 0.1 个百分点，反算值可信到小数点后第二位，第三位不要当真）。'
-      'Exhibit 2 里这些月份画成斜纹柱。'
+      'Exhibit ⟨ex:etd-adv⟩ 里这些月份画成斜纹柱。'
       f'（2026-08 回填之前 2024 年也是反算的；那一年现在改用 Dec-2024 工作簿里公司'
       '<b>直接披露</b>的绝对值，两者最大差 0.056%。）')
      if DERIVED_Y0 else
      ('<b>本页当前没有反算月份</b>：所有月份的 ADV 都是公司直接披露的绝对值，'
-      'Exhibit 2 里没有斜纹柱。')),
+      'Exhibit ⟨ex:etd-adv⟩ 里没有斜纹柱。')),
     (f'⚠️ <b>口径断点 {BRK_M}</b>：从 {BRK_Y} 年 {int(BRK_M[5:])} 月起，ADV 的定义剔除 '
      'event contracts，且<b>不追溯重述</b>更早的月份。' + BRK_TXT + BRK_MORE +
-     'Ratings billed issuance（Exhibit 3 / 7 / 8）与这次变更无关，不画断点。'),
+     'Ratings billed issuance（Exhibit ⟨ex:issuance⟩ / ⟨ex:issuance-years⟩ / ⟨ex:issuance-heat⟩）与这次变更无关，不画断点。'),
     (f'<b>序列起点 {MONTHS[0]}，再往前官方从来没有按月披露过</b>：公司在 2023-02-09 的 '
      'Q4/FY2022 财报 8-K（SEC accession 0000064040-23-000055）「Upcoming Disclosures」'
      '一节里预先宣布，这两条月度指标「beginning with results in 2023」才开始披露；'
@@ -931,7 +949,7 @@ NOTES = [
      '非官方口径的替代品（第三方数据商，或拿 CME / Cboe 的合约量去凑 SPDJI 的 ADV），'
      '本仓只用公司一手披露，那条路不走。取数与逐条实测见 '
      '<code>build/basefill/spgi_history.py</code>。'),
-    ('<b>Exhibit 5 的季度值是月度 ADV 的简单平均</b>，不是合计 —— ADV 已是日均口径，'
+    ('<b>Exhibit ⟨ex:etd-adv-q⟩ 的季度值是月度 ADV 的简单平均</b>，不是合计 —— ADV 已是日均口径，'
      '相加会得到一个没有单位含义的数。右轴 y/y 用 4 个季度前作分母，前 4 个季度留空；'
      '未满季时引擎会强制作废该季 y/y（拿 2 个月比上年完整 3 个月必然砸出假坑）。'),
     ('<b>汇总表的比率行用 pp / bp</b>：两条 y/y 本身就是比率，它们的变化只能用百分点差表示'
@@ -942,10 +960,10 @@ NOTES = [
      f'本页三行都不是死列，所以都出了数；两条 y/y 与指数序列自 {mlab(BIY_FROM)} 起'
      f'共 {N_BIY} 个观测，'
      + ('分位窗口已经填满。' if N_BIY >= 36 else '仍不足 36 个月，分位只能当粗略刻度。')),
-    ('<b>与 PDF 版的差异</b>：Exhibit 2/3 已回到 PDF 的原型 —— 浅蓝柱 + 右轴金色 y/y 折线，'
+    ('<b>与 PDF 版的差异</b>：Exhibit ⟨ex:etd-adv⟩/⟨ex:issuance⟩ 已回到 PDF 的原型 —— 浅蓝柱 + 右轴金色 y/y 折线，'
      '<b>不画 12 个月均线</b>（deck 的 <code>gsx.lvl_bar</code> 原话：均线只是把柱子再平滑'
-     '一遍、不带新信息）。此前网页版用「Prior 12mo Avg.」虚线顶替，那条线在 Exhibit 3 上'
-     '等于对本页自己宣布「跨月不可比」的链式指数取 12 个月平均，在 Exhibit 2 上又六比六地'
+     '一遍、不带新信息）。此前网页版用「Prior 12mo Avg.」虚线顶替，那条线在 Exhibit ⟨ex:issuance⟩ 上'
+     '等于对本页自己宣布「跨月不可比」的链式指数取 12 个月平均，在 Exhibit ⟨ex:etd-adv⟩ 上又六比六地'
      '横跨了 2025-12 的口径断点却被当成一个单一数字引用 —— 两处都已随虚线一起删掉。'
      f'其余的顺序、标题、图注、断点、窗口长度与 PDF 逐条一致，只有编号对不上：'
      f'<b>Exhibit {ex7["n"]}（billed issuance index 的分年路径）是网页独有的</b>，'
@@ -982,7 +1000,7 @@ NOTES = [
      + (f'(2) {_exempt_txt}，按 §6.3 的图型豁免本就不在此列。' if _EXEMPT_EX else '')
      + f'(3) 两张表的 y/y 列必须恒等于表内算术，读者拿相邻两列去除'
      f'要能得到同一个数 —— 表内自相矛盾比口径混用更糟（§6.3 也把这两列列为豁免）。'
-     f'(4) <b>Exhibit 2</b> 是全页唯一有绝对水平值、算得出对照侧的一张，'
+     f'(4) <b>Exhibit ⟨ex:etd-adv⟩</b> 是全页唯一有绝对水平值、算得出对照侧的一张，'
      f'但它同样给不出干净的对照：这 {W2} 个月的窗口里单月能画 {MOM_HAVE} 个月、'
      f'{Y.TTM_WIN} 个月滚动只画得出 {TTM_HAVE} 个月，其中 {_ttm_after_brk} 个落在 '
      f'{mlab(BRK_M)} 的口径断点之后 —— 滚动窗口把那次变更一次抹到 {Y.TTM_WIN} 个月上，'
@@ -991,7 +1009,7 @@ NOTES = [
      f'2026-08 的历史回填之后早够画滚动口径了 —— 那半句从前写在这里，现在照实撤掉。）'
      f'单月口径的代价照实说：分母是<b>去年那一个月</b>，一次性事件与季节性会被放大，'
      f'跨 {mlab(BRK_M)} 断点的那几个月还叠着「新口径的分子 ÷ 旧口径的分母」，'
-     f'Exhibit 2 的图注逐月点了名。'
+     f'Exhibit ⟨ex:etd-adv⟩ 的图注逐月点了名。'
      f'断点滚出全序列、或官方开始披露 billed issuance 的绝对面值之后，'
      f'本页就补得上 §6.1 第 3 条要的那份实测对照 —— 补的是<b>对照数字</b>，'
      f'不是换口径：页上画什么由 §6 定，不由本页选。'),
@@ -1428,6 +1446,9 @@ if _pub:
 
 
 def main():
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, table['n'], where='build/spgi')
+    payload['order'] = ORDER
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(OUT, payload, 'spgi')
     print(f'spgi: 数据截至 {LATEST}，Exhibit 1 汇总表 + '
