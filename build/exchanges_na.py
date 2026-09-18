@@ -81,6 +81,7 @@ import numpy as np
 import pandas as pd
 
 import axisfmt
+import exhibits                  # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss          # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile        # 3Y %ile 的唯一实现，全站共用
@@ -817,34 +818,38 @@ CAT_XROT = 0
 # ── 图号：符号引用，不写死数字 ─────────────────────────────────────────────
 # 正文里到处是「见 Exhibit 13」这种交叉引用。以前它们是硬编码的整数，删一张图就得
 # 手工改十几处散文 —— 而漏改**不报错**，读者点过去看到的是另一张图。
-# 现在一律写 `X('selfcheck')`，落成占位符 `§selfcheck§`，全部图追加完之后由
-# `subst_refs()` 统一替换成真数字；引用了不存在的图 id 会 KeyError 当场炸。
-REF = {}
+# 本页原先自带一套 §id§ 占位符（add() 按追加顺序给号、subst_refs() 最后统一替换）；
+# 2026-09-19 并进全站那一份（build/exhibits.py）：正文写 ⟨ex:id⟩（或 X('id')），
+# **图的先后由下面的 ORDER 定**，写盘时 write_dash 编号、兑号；引用了不存在的图 id
+# 构建失败，不会静默留一个占位符在页面上。条件图（box、两张季度图、cash_long_small）
+# 本轮没出时 ORDER 里列着只是跳过。
+ORDER = [
+    'cash_stack', 'cash_se', 'cash_delta', 'cash_bridge',   # 现货池：堆叠带 / 起止 / Δ / 归因桥
+    'opt_se', 'opt_delta', 'opt_bridge',                    # 期权池：起止 / Δ / 归因桥
+    'unit_check',                                           # 张数口径 vs 名义额口径的实测校验
+    'opt_long', 'cash_long',                                # 月度长历史份额
+    'selfcheck',                                            # 与 ICE 自报份额的逐月残差
+    'heat',                                                 # NYSE 现货份额 月 × 年
+    'box',                                                  # BOX（TMX 控股）季度对照
+    'opt_q', 'cash_q',                                      # 季度长历史份额
+    'cash_long_small',                                      # 小成员按自己的量程重画
+]
+REF = {}     # id → 建图时的号（exhibits.Seq），只用来查重；页面上的号由 ORDER 现排
 
 
 def add(eid, obj):
-    """把一张图追加进 ex，顺序即图号（Exhibit 1 是汇总表，所以从 2 起）。"""
+    """把一张图追加进 ex，带上 id。建图时的号按追加顺序给，页面上的号由 ORDER 定。"""
     if eid in REF:
         raise SystemExit(f'图 id 重复：{eid}')
-    obj['n'] = len(ex) + 2
+    obj['n'] = exhibits.Seq(len(ex) + 2)
+    obj['id'] = eid
     REF[eid] = obj['n']
     ex.append(obj)
     return obj
 
 
 def X(eid):
-    return f'§{eid}§'
-
-
-def subst_refs(o):
-    """递归把 payload 里的 §id§ 换成真图号。未知 id 直接 KeyError（不许静默留占位符）。"""
-    if isinstance(o, str):
-        return re.sub(r'§([a-z_0-9]+)§', lambda m: str(REF[m.group(1)]), o)
-    if isinstance(o, list):
-        return [subst_refs(v) for v in o]
-    if isinstance(o, dict):
-        return {k: subst_refs(v) for k, v in o.items()}
-    return o
+    return f'⟨ex:{eid}⟩'
 
 
 # ── 4 年同月窗口：起止对照 / Δ / 归因桥三张图的取数口径 ──────────────────────
@@ -932,7 +937,7 @@ class Win(object):
                 + '<b>这不引入任何误差</b> —— 桶 = 官方行业总量 − 图上其余各家，'
                   '加总仍然恒等；代价只是它在这张图上不单独拆出来。'
                 + f'原因：{why}。'
-                + '它自己的读数在 §opt_long§、§opt_q§ 与 Exhibit 1 汇总表里都在。')
+                + '它自己的读数在 ⟨ex:opt_long⟩、⟨ex:opt_q⟩ 与 Exhibit 1 汇总表里都在。')
 
 
 def win_span(w):
@@ -983,7 +988,7 @@ def share_stack(pool, xl, xstep):
                  f'{pool.df["other_s"].iloc[-1]:.1f}%。'
                  '段内不标数值（引擎的段内标签写死 6.6px，白字压在深色段上会糊成白斑）：'
                  '逐月读数请切本卡右上角的「表格」视图，当月两位小数见 Exhibit 1 汇总表，'
-                 f'{WIN_YEARS} 年同月的带标签柱见下一张图。'),
+                 f'{WIN_YEARS} 年同月的带标签柱见⟨ex:{pool.pid}_se@+1:下一张图⟩。'),
     }
 
 
@@ -1045,7 +1050,7 @@ def start_end_bars(pool):
                  '柱与柱之间的差就是结构性变化，还能看出份额是单调走的还是中途拐过弯'
                  '（两点对比看不出这一层）。'
                  '<b>颜色表示年份</b>（图例从旧到新），首尾两色沿用期初 GRAY / 期末 NAVY，'
-                 '与下两张 Δ 图、桥图的窗口完全同锚。'
+                 f'与⟨ex:{pool.pid}_delta,{pool.pid}_bridge@+1:下两张⟩ Δ 图、桥图的窗口完全同锚。'
                  + win_span(pool)
                  + f'期初池总量 {num(float(pool.df["pool"].iloc[0]) / pool.unit_div)} → '
                  + f'期末 {num(float(pool.df["pool"].iloc[-1]) / pool.unit_div)} {pool.unit_lab}'
@@ -1164,7 +1169,7 @@ add('cash_bridge', bridge(WIN_CASH))
 # ── 期权块 ──
 # **没有月度堆叠带。** 期权池的共同窗口只有 19 个月（Nasdaq 的 IR 报表自 2025-01 起），
 # 一条 19 个月的堆叠带既看不出趋势、又和现货那条 68 个月的带不可并读；
-# 它的长历史份额在 §opt_long§（月度折线）与 §opt_q§（季度折线）上各有一张，
+# 它的长历史份额在 ⟨ex:opt_long⟩（月度折线）与 ⟨ex:opt_q⟩（季度折线）上各有一张，
 # 那两张不要求四家齐全，信息比一条短带强得多。
 add('opt_se', start_end_bars(WIN_OPT))
 add('opt_delta', delta_bars(WIN_OPT))
@@ -1228,7 +1233,7 @@ add('opt_long', {
                             for d, n, v in _shallow_opt)
                 + ' —— 它们的月度披露起步晚，画上去只是右端一小截，反而遮住这张图要说的'
                   '十几年趋势；它们在最新月的读数见 Exhibit 1 汇总表，'
-                  '4 年同月的起止对照见 §opt_se§。' if _shallow_opt else '')
+                  '4 年同月的起止对照见 ⟨ex:opt_se⟩。' if _shallow_opt else '')
              + f'纵轴从 0 起（<code>zero_base</code>），不做隐性截轴。'),
 })
 
@@ -1253,8 +1258,8 @@ _ds_nz = _deep_sum.dropna()
 
 # ── 谁在这根共用轴上被压平了：判据是**比值**，不是名字 ────────────────────────
 # 去掉「四家合计」那条派生线（2026-08-06）只把量程从 0–60 收回 0–30，成员之间的量级差
-# 一分没动 —— 那个差是数据本身的。这里把它量出来，供下面 §cash_long§ 的图注与全页末尾
-# 那张「按自己量程重画」的图（§cash_long_small§）共用同一套判据。
+# 一分没动 —— 那个差是数据本身的。这里把它量出来，供下面 ⟨ex:cash_long⟩ 的图注与全页末尾
+# 那张「按自己量程重画」的图（⟨ex:cash_long_small⟩）共用同一套判据。
 #
 # 阈值的来历：取各成员长历史份额的**峰值**与全池峰值之比，本轮实测四家是
 # 1.00 / 1.24 / 1.39 / 11.83（见构建日志），1.39 与 11.83 之间是一段很宽的空档；
@@ -1291,14 +1296,14 @@ add('cash_long', {
              f'（{mlab(_ds_nz.index[0])} {_ds_nz.iloc[0]:.1f}% → '
              f'{mlab(_ds_nz.index[-1])} {_ds_nz.iloc[-1]:.1f}%），'
              '比最高的成员线还高一倍，画上去（纵轴从 0 起）上界就得翻一倍，'
-             '每条真实序列的垂直分辨率随之减半 —— 合计的走势见 §cash_stack§ 的堆顶与右轴残差，'
+             '每条真实序列的垂直分辨率随之减半 —— 合计的走势见 ⟨ex:cash_stack⟩ 的堆顶与右轴残差，'
              '当月两位小数见 Exhibit 1 汇总表。'
              f'<b>{_small.disp} 是轴上最矮的一条</b>'
              f'（{mlab(_small_nz.index[0])} 起，全程 {_small_nz.min():.2f}–'
              f'{_small_nz.max():.2f}%，{mlab(LATEST)} {_small_nz.iloc[-1]:.2f}%）—— '
              f'本图最高的一条峰值 {_cash_top:.1f}%，两者差 '
              f'{_cash_top / _cash_peak[_small.key]:.1f} 倍，同一根从 0 起的轴上它必然接近贴零。'
-             + (f'<b>它自己那一档量程的图在 Exhibit §cash_long_small§</b>（同一批数、只换纵轴），'
+             + (f'<b>它自己那一档量程的图在 Exhibit ⟨ex:cash_long_small⟩</b>（同一批数、只换纵轴），'
                 '逐月读数也可以切本卡右上角的「表格」视图。'
                 if _small_set else '逐月读数请切本卡右上角的「表格」视图。')
              + ('未画：'
@@ -1349,7 +1354,7 @@ add('heat', {
     'legend': 'NYSE Group matched share (%)', 'cell_h': 20, 'row_lab_w': 38, 'row_head': '年',
     'src_extra': ('Green = higher share. Colour scale is the 5th–95th percentile of this '
                   'matrix\'s own cells'),
-    'note': ('把 §cash_long§ 里 NYSE 那条线摊成月 × 年，看份额是<b>趋势性</b>下移还是几个'
+    'note': ('把 ⟨ex:cash_long⟩ 里 NYSE 那条线摊成月 × 年，看份额是<b>趋势性</b>下移还是几个'
              '异常月拉出来的。色标取本矩阵自己有效格的 5/95 分位，'
              '<b>只在本图内部可比</b>。'),
 })
@@ -1427,8 +1432,8 @@ QSHARE = {(p.pid, m.key): qshare(LONG_NUM[(p.pid, m.key)],
                                  LONG_DEN[p.pid]).reindex(QIDX[p.pid])
           for p in POOLS for m in p.members}
 
-# MIAX 拼接的接缝季。季度长历史图（§opt_q§）是本页唯一画出 MIAX 拼接段的时间序列图 ——
-# 月度长历史图（§opt_long§）用的是各家自己的月度披露（MIAX 走 IR 报表列、不拼接，
+# MIAX 拼接的接缝季。季度长历史图（⟨ex:opt_q⟩）是本页唯一画出 MIAX 拼接段的时间序列图 ——
+# 月度长历史图（⟨ex:opt_long⟩）用的是各家自己的月度披露（MIAX 走 IR 报表列、不拼接，
 # 不够 60 个月就不画）。季度份额是三个月量加权，所以这张图上那一级台阶由接缝季
 # （IR 报表第一个齐三个月的季度）「按报表算 − 按 API 算」决定，不是拼接点那一个月
 # （2026-09 实测：Jan-25 那一格约 5bp，2025Q1 这一季约 7bp，同季的 Feb-25 那一格约 12bp）。
@@ -1595,8 +1600,8 @@ def quarterly_share_lines(pool):
                  '2018-01 起才是实际口径。'
                  f'<b>残差桶（{pool.other_lab}）这张图不画</b> —— 它要 100 减去四家之和，'
                  '而四家齐全只有窗口右端那一小段；'
-                 + ('残差的完整走势见 §cash_stack§ 的右轴。' if pool.pid == 'cash'
-                    else '期权池的残差在 §opt_se§ / §opt_bridge§ 上单列一格。')
+                 + ('残差的完整走势见 ⟨ex:cash_stack⟩ 的右轴。' if pool.pid == 'cash'
+                    else '期权池的残差在 ⟨ex:opt_se⟩ / ⟨ex:opt_bridge⟩ 上单列一格。')
                  + '纵轴从 0 起（<code>zero_base</code>），不做隐性截轴。'),
     }
 
@@ -1616,11 +1621,11 @@ for _p in POOLS:
 
 # ── 全页最后一张：在共用轴上被压平的成员，换它自己的量程重画一遍 ────────────────
 # **为什么必须追加在末尾。** 本页图号由 add() 按追加顺序生成，正文交叉引用走 X('id')
-# 占位符、最后由 subst_refs() 统一替换 —— 插在 §cash_long§ 后面会让其后每一张图的号
-# 整体位移；追加在末尾一处不动，而且照样能被 §cash_long§ 的图注反过来引用
+# 占位符、最后由 subst_refs() 统一替换 —— 插在 ⟨ex:cash_long⟩ 后面会让其后每一张图的号
+# 整体位移；追加在末尾一处不动，而且照样能被 ⟨ex:cash_long⟩ 的图注反过来引用
 # （前向引用由 subst_refs 一起解析）。
 #
-# **为什么不在 §cash_long§ 上就地解决。** 三条路都比拆图差：
+# **为什么不在 ⟨ex:cash_long⟩ 上就地解决。** 三条路都比拆图差：
 #   · 给最矮那条加一根右轴 —— 两条线的单位相同、刻度不同，读者的默认假设是
 #     「同一张图上同一个单位就是同一根尺子」，那才是真的骗人；
 #   · 把纵轴改成对数 —— 引擎没有 log 轴（docs/CHART_KINDS.md §0 的 17 种里没有），
@@ -1658,7 +1663,7 @@ if _small_set:
                    for m in _small_set],
         'src_extra': ('Same numerators and same official denominator as the long-history chart; '
                       'only the vertical scale differs'),
-        'note': (f'<b>与 Exhibit §cash_long§ 是同一批数，只换了纵轴。</b>那张图四条线共用一根从 0 起的轴，'
+        'note': (f'<b>与 Exhibit ⟨ex:cash_long⟩ 是同一批数，只换了纵轴。</b>那张图四条线共用一根从 0 起的轴，'
                  f'上界由最高的一条（峰值 {_cash_top:.1f}%）定；'
                  f'{_sm_names} 全程只有 {_sm_lo:.2f}–{_sm_hi:.2f}%，'
                  f'在那根轴上整条线的起伏只占图高 <b>{_sm_before:.1f}%</b>，'
@@ -1672,12 +1677,12 @@ if _small_set:
                  + '、'.join(f'{m.disp} {_cash_top / _cash_peak[m.key]:.1f}×' for m in _deep_cash)
                  + f'，故本轮只有 {_sm_names} 达标；'
                  + (f'{"、".join(m.disp for m in _sm_rest)} 与最高的一条同一个量级，'
-                    f'在 Exhibit §cash_long§ 上本来就读得出来，不重复画。'
+                    f'在 Exhibit ⟨ex:cash_long⟩ 上本来就读得出来，不重复画。'
                     if _sm_rest else '')
                  + f'<b>横轴只画到 {mlab(_sm_idx[0])} 起</b>：再往左这几条没有数，'
                  f'画上去只是三分之二张空白。'
                  f'分母与全页一致（Tape A+B+C 合并成交量，含场外 TRF 内化），'
-                 f'所以这张图的读数与 Exhibit §cash_long§、Exhibit §cash_stack§、Exhibit 1 汇总表逐格同源。'),
+                 f'所以这张图的读数与 Exhibit ⟨ex:cash_long⟩、Exhibit ⟨ex:cash_stack⟩、Exhibit 1 汇总表逐格同源。'),
     })
 
 
@@ -1702,9 +1707,8 @@ for _p in _w13:
         'osh_c': num(o_sh, 1) + '%', 'csh_c': num(c_sh, 3) + '%',
         'd_c': pp(c_sh - o_sh),
     })
-REF['recon_table'] = ex[-1]['n'] + 1
 table = {
-    'n': REF['recon_table'],
+    'n': exhibits.Seq(len(ex) + 2),     # 写盘时换成「最后一张图 + 1」（build/exhibits.py）
     'title': f'近 {TBL_MONTHS} 个月对账表 —— 官方自报份额 vs 本页自算（原始单位，未换算）',
     'idx': '月份',
     'cols': [['期权行业 ADV（张/日）', 'ind'], ['NYSE 期权 ADV（张/日）', 'nyo'],
@@ -1735,7 +1739,7 @@ _MIAX_WIN_SAME_SIGN = bool(
 # ── 断点线到底画了几条：现扫 ex，不靠记忆断言 ────────────────────────────────
 # ⚠ 原文这条口径说明的开头是「<b>没有口径断点，全页也确实一条断点线都没画。</b>……
 #   故 payload 里没有任何 <code>break_at</code>」。**同一份 payload 当场证伪**：
-#   §opt_q§ / §cash_q§ 两张季度长历史图各带 break_at=[12, 28] 两条红色形式数断点线
+#   ⟨ex:opt_q⟩ / ⟨ex:cash_q⟩ 两张季度长历史图各带 break_at=[12, 28] 两条红色形式数断点线
 #   （PROFORMA 那两条），而**本页上一条口径说明自己就写着「两张图上各有两条红色形式数
 #   断点线」** —— 两条 note 正面打架，读者往下滚一屏就能抓到。
 #   真正成立的是收窄之后的那句：**两个池各自的共同窗口内**没有断点。所以这里现扫。
@@ -1827,7 +1831,7 @@ NOTES = [
     '份额印到小数点后 3 位），不是算法分歧。'
     '<b>本文件把 0.5pp 设成硬阈值，超过就抛异常拒绝出页</b> —— '
     '份额算法与交易所不一致时，本页所有图都不该存在。'
-    f'逐月残差见 §selfcheck§，近 {TBL_MONTHS} 个月的逐格对账见末尾对账表。',
+    f'逐月残差见 ⟨ex:selfcheck⟩，近 {TBL_MONTHS} 个月的逐格对账见末尾对账表。',
 
     f'<b>自校验（锚点 B）：两家公司各自独立披露的行业分母对得上。</b>'
     f'MIAX 在自己的 IR 报表里也报全行业 equity & ETF 期权 ADV'
@@ -1849,7 +1853,7 @@ NOTES = [
      '（官方不拆），而行业分母不含 —— 若这块污染很大，本页算出的 Nasdaq 份额'
      '会明显高于它自报的市占；实测两者对得上，说明在这个量级上可以直读，'
      '但读者仍应把 Nasdaq 那一格<b>当作上界</b>。'
-     f'BOX（TMX 控股）见 §box§：{BOX_HIT}/{BOX_N} 个季度与 TMX 自报整数一致。'
+     f'BOX（TMX 控股）见 ⟨ex:box⟩：{BOX_HIT}/{BOX_N} 个季度与 TMX 自报整数一致。'
      if A_NDAQ else '<b>锚点 C 不可用</b>：series/ndaq_q.csv 缺季度市占列。'),
 
     # ⚠ 这里原先还接着三句 —— 「北美四家披露都快」「所以本页不存在被慢成员拖住的问题」
@@ -1882,16 +1886,16 @@ NOTES = [
     #   一律走 len(p.idx)：两处写死过 19 / 68，每个月 +1，隔一期就会与上面自相矛盾。
     + f'<b>期权池因此没有月度堆叠带</b> —— {len(POOL_OPT.idx)} 个月的带既看不出趋势，'
     + f'又与现货那条 {len(POOL_CASH.idx)} 个月的带不可并读；它的长历史份额在 '
-      '§opt_long§（月度）与 §opt_q§（季度）上各有一张。'
-      '<b>月度长历史图（§opt_long§ / §cash_long§）只画有深度的成员</b>，'
+      '⟨ex:opt_long⟩（月度）与 ⟨ex:opt_q⟩（季度）上各有一张。'
+      '<b>月度长历史图（⟨ex:opt_long⟩ / ⟨ex:cash_long⟩）只画有深度的成员</b>，'
       '而不是把短序列拉成一小截塞进十五年的月度轴里；'
-      '<b>季度长历史图（§opt_q§ / §cash_q§）反过来，四家全画、短的那几家前段留空断线</b> —— '
+      '<b>季度长历史图（⟨ex:opt_q⟩ / ⟨ex:cash_q⟩）反过来，四家全画、短的那几家前段留空断线</b> —— '
       '季度轴上只有 60 来个点，一小截也读得清（下一条）。',
 
-    (f'<b>季度长历史份额（§opt_q§ / §cash_q§）：为什么再画一遍、以及聚合方式。</b>'
-     f'月度堆叠带（§cash_stack§）有两个限制：一是只能画到「四家齐全」的那段，'
+    (f'<b>季度长历史份额（⟨ex:opt_q⟩ / ⟨ex:cash_q⟩）：为什么再画一遍、以及聚合方式。</b>'
+     f'月度堆叠带（⟨ex:cash_stack⟩）有两个限制：一是只能画到「四家齐全」的那段，'
      f'二是逐月读数噪声大 —— 各月交易日数不同、有到期周与假期月。'
-     f'§opt_q§ / §cash_q§ 把口径换成季度：'
+     f'⟨ex:opt_q⟩ / ⟨ex:cash_q⟩ 把口径换成季度：'
      f'<b>份额 = Σ(当季各月成交量) ÷ Σ(当季各月官方行业分母)</b>，'
      f'月成交量 = 该月 ADV × 该月美股交易日数。'
      f'<b>这是量加权，不是把三个月的月份额简单平均</b> —— 源列全是日均值，'
@@ -1918,7 +1922,7 @@ NOTES = [
        'purposes」回填到了全部期间（docs/verify/verify_ice.md §5.6），'
        '所以 2013Q4 及以前那段讲的是被收购前 NYSE Euronext 的份额；'
        'Cboe 2017-02 完成对 Bats 的收购，2017 全年为 Bats pro-forma combined。'
-       '这两条断点在月度堆叠带 §cash_stack§ 上不存在（那张图的窗口本来就在断点右边），'
+       '这两条断点在月度堆叠带 ⟨ex:cash_stack⟩ 上不存在（那张图的窗口本来就在断点右边），'
        '是把跨度拉到十五年之后才浮出来的。'),
 
     (f'<b>{WIN_YEARS} 年窗口为什么必须取同一个月份（Jul vs Jul），不能随便挑期初月。</b>'
@@ -1954,7 +1958,7 @@ NOTES = [
     + (f'实测反例：{JPX_TXT} —— 同一段窗口两种口径<b>符号相反</b>。' if JPX_TXT else '')
     + '而北美这两个池<b>池内规格完全统一</b>：多重挂牌股票/ETF 期权全行业 '
       f'{POOL_OPT.mult_lab}，现货本来就以股计。乘数与基期价格对池内每一家都是同一个常数，'
-      '⇒ <b>份额与增长率在两种口径下恒等</b>。§unit_check§ 把两条曲线画在同一张图上做了'
+      '⇒ <b>份额与增长率在两种口径下恒等</b>。⟨ex:unit_check⟩ 把两条曲线画在同一张图上做了'
       f'实测校验（偏离 {OPT_DIDX:.2e}，阈值 1e-9，超过即抛异常）。'
       '这也是本页敢直接用张数做份额的唯一理由。',
 
@@ -1969,7 +1973,7 @@ NOTES = [
       '受影响的只有「这个市场折成美元有多大」这一个问题，而本页不回答它。',
 
     '<b>分母含场外，这是现货池最容易读错的一点。</b>Tape A/B/C 的 consolidated volume '
-    '<b>包含场外（TRF）内化成交</b>，所以现货池的残差桶（§cash_stack§ 右轴那条线、'
+    '<b>包含场外（TRF）内化成交</b>，所以现货池的残差桶（⟨ex:cash_stack⟩ 右轴那条线、'
     f'{mlab(CUR)} = {POOL_CASH.df["other_s"][CUR]:.1f}%）里主要不是别的交易所，'
     '而是券商与做市商在自己内部撮合掉的单子。'
     '期权池没有这个问题：美股期权必须在交易所成交，'
@@ -2001,18 +2005,18 @@ NOTES = [
        + '（形式数断点，来龙去脉见上面「季度长历史份额」那一条）。'
        if _BRK else '本轮 payload 里没有任何 <code>break_at</code>。')
     + f'<b>期权池的月度共同窗口</b>（{len(POOL_OPT.idx)} 个月）只用 MIAX 的 IR 报表口径，不拼接。'
-    f'但 <b>{WIN_YEARS} 年同月窗口与季度长历史图（§opt_q§）必须拼接</b>：'
+    f'但 <b>{WIN_YEARS} 年同月窗口与季度长历史图（⟨ex:opt_q⟩）必须拼接</b>：'
     f'{mlab(WIN_OPT.start)} 那一头 IR 报表根本不存在，只有官网 API。'
     '两个源的落差是本文件实测的，不是引用：'
     f'{MIAX_SPL_N} 个重叠月里 API 比报表{"一律偏低" if MIAX_SPL_ALL_LOW else "互有高低"}，'
     f'相对差最大 {MIAX_SPL_REL:.2f}%，换算成份额 ≤<b>{MIAX_SPL_BP:.1f}bp</b>'
     f'（{MIAX_SPL_BP / 100:.3f}pp，最大那一格在 {mlab(MIAX_SPL_WORST)}）。'
     + (f'<b>方向是已知的，不是不确定性</b>：期初走 API（偏低）、期末走报表，'
-       f'所以 §opt_se§ 里 MIAX 那段 {WIN_YEARS} 年涨幅'
+       f'所以 ⟨ex:opt_se⟩ 里 MIAX 那段 {WIN_YEARS} 年涨幅'
        f'（{_MIAX_WIN_D:+.2f}pp）被<b>高估</b>至多 {_MIAX_WIN_ERR:.2f}pp，'
        f'真值不低于 {_MIAX_WIN_D - _MIAX_WIN_ERR:+.2f}pp —— '
        if MIAX_SPL_ALL_LOW else
-       f'§opt_se§ 里 MIAX 那段 {WIN_YEARS} 年涨幅（{_MIAX_WIN_D:+.2f}pp）'
+       f'⟨ex:opt_se⟩ 里 MIAX 那段 {WIN_YEARS} 年涨幅（{_MIAX_WIN_D:+.2f}pp）'
        f'的误差在 ±{_MIAX_WIN_ERR:.2f}pp 以内 —— ')
     + ('结论不变，但读者有权知道。' if _MIAX_WIN_SAME_SIGN
        else '这个误差足以改变涨跌方向，读数只作量级参考。')
@@ -2041,7 +2045,7 @@ NOTES = [
     #   都只能靠人肉维护，而人肉维护的断言在这一条上已经连错三轮。规矩因此收死 ——
     #   这一条不写现算不出来的东西，也就等于不写。
     #   删掉不损失真信息：官方行业分母与「真份额 vs 成员之和占比」的区别在 NOTES 第 1 条，
-    #   份额零和写在 §cash_delta§ / §opt_delta§ 两张图自己的图注里（「N 根柱之和恒为 0」）。
+    #   份额零和写在 ⟨ex:cash_delta⟩ / ⟨ex:opt_delta⟩ 两张图自己的图注里（「N 根柱之和恒为 0」）。
 ]
 
 # ────────────────────────────── 11. 抬头与 payload ──────────────────────────────
@@ -2121,7 +2125,7 @@ SOURCE_DATE = _load_source_dates().latest_of(
 #
 # ━━ 2026-09 复审改掉的三处（都是「释义比页面既有 notes 说得更满」）━━
 #   ① 「形式数断点」原来写「月度那几张图的窗口本来就落在断点右边，一条都没有」——
-#      **同一份 payload 当场证伪**：§opt_long§ / §cash_long§ 的横轴自 Jan-11 起，
+#      **同一份 payload 当场证伪**：⟨ex:opt_long⟩ / ⟨ex:cash_long⟩ 的横轴自 Jan-11 起，
 #      NYSE 线跨 2013-11 回填、Cboe 线跨 2017 全年 Bats 形式数，窗口根本不在断点右边；
 #      它们没有断点线只是「payload 没给 break_at」。notes[11] 的措辞本来是对的
 #      （只说**共同窗口内**那几张没有并表），释义把这个限定丢了就成了假解释。
@@ -2156,7 +2160,7 @@ GLOSSARY = [
      '<b>官方发布的行业总量</b>。它<b>不是</b>「池内四家之和里的占比」—— 那种算法的分母'
      '随成员名单变，池里少列一家，其余各家的「份额」就集体上升；真份额的分母与本页'
      '画不画谁完全无关，所以同一个池里各家的份额变动<b>之和恒为 0</b>'
-     '（§cash_delta§ 与 §opt_delta§ 那两张 Δ 图的柱就是这条性质：'
+     '（⟨ex:cash_delta⟩ 与 ⟨ex:opt_delta⟩ 那两张 Δ 图的柱就是这条性质：'
      '一家的上升必然对应另一家的下降）。'
      '全仓十二家交易所里只有北美这两个池拿得到官方分母，这也是本页存在的理由。'),
 
@@ -2226,7 +2230,7 @@ GLOSSARY = [
      '<b>份额转移</b> = 份额变动 × 期末池总量（真正抢来或真正丢掉的那份）。两项相加'
      '<b>精确</b>等于净变化，<b>没有残差项</b>（交叉项已并入第二项）；全部成员的'
      '「份额转移」相加<b>恒为 0</b>，所以末列「池合计」只剩池扩大一块 —— 那一列就是'
-     ' §cash_bridge§ / §opt_bridge§ 这两张图自带的算术校验。'),
+     ' ⟨ex:cash_bridge⟩ / ⟨ex:opt_bridge⟩ 这两张图自带的算术校验。'),
 
     ('季度份额（量加权）',
      '季度长历史那两张图的聚合方式：<code>Σ 当季各月成交量 ÷ Σ 当季各月官方行业分母</code>，'
@@ -2241,13 +2245,13 @@ GLOSSARY = [
      '理由是<b>张数不可跨产品比较</b> —— 乘数是交易所自选的产品设计。<b>北美这两个池是它的'
      f'退化情形</b>：多重挂牌期权全行业统一 {SHARES_PER_CONTRACT:g} 股/张、现货本来就以股计，'
      '乘数与基期价格对池内每一家都是<b>同一个常数</b> ⇒ 份额与增长率在两种口径下<b>恒等</b>。'
-     '§unit_check§ 那张图把两条曲线画在一起做实测校验（纵轴是<b>指数化</b>的，'
+     '⟨ex:unit_check⟩ 那张图把两条曲线画在一起做实测校验（纵轴是<b>指数化</b>的，'
      '窗口首月 = 100），超差即抛异常拒绝出页。' + _GL_NOTIONAL),
 
     ('自校验（锚点）',
      '本页把「我算得对不对」变成可复算的证据：ICE 在同一张月度表里既印<b>分子分母</b>、'
      '又印<b>它自己算好的份额</b>；本页用分子分母重算一遍再减去它的答案，'
-     '§selfcheck§ 那张图画的就是这条逐月差值。残差不为零<b>不是算法分歧</b> —— 官方把分子分母'
+     '⟨ex:selfcheck⟩ 那张图画的就是这条逐月差值。残差不为零<b>不是算法分歧</b> —— 官方把分子分母'
      '都印成整数，一个印刷舍入落在分子上就是几个 bp。偏离一旦超过本文件设的硬阈值就'
      '<b>抛异常拒绝出页</b>，因为那意味着本页的份额与交易所自己说的不是同一件事。'
      '另有三条锚点（MIAX 独立披露的分母、Nasdaq 与 TMX 自报的市占）在页尾口径说明里。'),
@@ -2255,9 +2259,9 @@ GLOSSARY = [
     ('形式数断点',
      '图上的<b>红色竖虚线</b>：线<b>左侧</b>那一段是<b>形式数</b>（pro-forma）—— 并购完成'
      '之前的历史被官方按合并<b>之后</b>的口径回填或重述，讲的不是当时那家公司自己的份额。'
-     '⇒ <b>断点两侧不可比</b>，不要跨线读趋势。⚠️ 本页把这条线画出来的只有 §opt_q§ / '
-     '§cash_q§ 这两张季度长历史图，但<b>图上没画线不等于那一段可比</b> —— 月度长历史图'
-     '（§opt_long§ / §cash_long§）的横轴同样跨过这两处并表。真正「窗口内没有并表」的是'
+     '⇒ <b>断点两侧不可比</b>，不要跨线读趋势。⚠️ 本页把这条线画出来的只有 ⟨ex:opt_q⟩ / '
+     '⟨ex:cash_q⟩ 这两张季度长历史图，但<b>图上没画线不等于那一段可比</b> —— 月度长历史图'
+     '（⟨ex:opt_long⟩ / ⟨ex:cash_long⟩）的横轴同样跨过这两处并表。真正「窗口内没有并表」的是'
      '月度堆叠带与同月窗口那几张图，逐张的落点见页尾口径说明。'),
 ]
 
@@ -2311,9 +2315,12 @@ payload = {
 if SOURCE_DATE:
     payload['source_date'] = SOURCE_DATE
 
-# 图号占位符 → 真数字。放在最后一步，所有图都追加完之后统一替换；
-# 引用了不存在的图 id 会在这里 KeyError 当场炸，不会静默留一个 §xxx§ 在页面上。
-payload = subst_refs(payload)
+# 图号：交出顺序表；write_dash 按它编号、把正文里的 ⟨ex:id⟩ 兑成号
+# （引用了不存在的图 id 构建失败，不会静默留一个占位符在页面上）。
+# 有几处句子是拿图的 'n' 现拼的（f'Exhibit {e["n"]}'），印出来是建图时的号的占位符
+# ⟨ex:#k⟩；这里按 REF 换成 ⟨ex:id⟩，写盘时同样按 ORDER 兑号。
+exhibits.bind_seq(payload, {int(v): k for k, v in REF.items()}, where='build/exchanges_na')
+payload['order'] = ORDER
 
 
 def main():
