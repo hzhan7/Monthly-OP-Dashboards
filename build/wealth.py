@@ -93,6 +93,7 @@ import pandas as pd
 
 import axisfmt                      # 引擎 ticks() 的 Python 复算，只调用不修改（Exhibit N_ORG 截轴用）
 import brief as B                   # 顶部 brief 的规则库（R1-R6），只算事实、不产文字
+import exhibits                     # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss            # 名词释义的版式层与护栏，全站共用
 import mrwin                        # 窗口/排版的边界裁决，只调用不修改（DENSE 集合、layout_all）
 import payload_guard
@@ -385,10 +386,17 @@ def _xpage(page, needle):
     return None
 
 
+def _xph(page, e):
+    """别页那张图的号 → 跨页占位符 ⟨ex:页/id⟩。写盘时按那一页的 data/<page>.js 兑号
+    （与这里现读的是同一份），并记进 payload['xref'] —— 那一页以后改了号，
+    tools/rebuild.py 据此回头补建本页。那一页还没迁移（图不带 id）就照旧给号。"""
+    return f'⟨ex:{page}/{e["id"]}⟩' if e.get('id') else e.get('n')
+
+
 def _xnum(page, needle):
-    """另一页上那张图的 Exhibit 编号（int），认不出来返回 None。"""
+    """另一页上那张图的 Exhibit 编号（跨页占位符，见 _xph），认不出来返回 None。"""
     e = _xpage(page, needle)
-    return e.get('n') if e else None
+    return _xph(page, e) if e else None
 
 
 def _xref(page_label, nums, fallback):
@@ -419,8 +427,8 @@ def _x2_caliber(page, needle):
         return None, 'unknown', ''
     y2 = str(e.get('ylab2') or '')
     if not y2:
-        return e.get('n'), 'none', ''
-    return e.get('n'), ('roll' if re.search('roll|滚动', y2, re.I) else 'mono'), y2
+        return _xph(page, e), 'none', ''
+    return _xph(page, e), ('roll' if re.search('roll|滚动', y2, re.I) else 'mono'), y2
 
 
 def _roll_axes(page):
@@ -436,9 +444,10 @@ def _roll_axes(page):
         for k in ('ylab', 'ylab2'):
             v = str(e.get(k) or '')
             if re.search('roll|滚动', v, re.I) and re.search('y/y|yoy|同比', v, re.I):
-                out.append(e.get('n'))
+                out.append(_xph(page, e))
                 break
-    return sorted(n for n in out if n)
+    # 那一页的 exhibits 本来就按号排好（写盘时按顺序表排序），照页面先后即升序。
+    return [n for n in out if n]
 
 
 def _hit(idx, events):
@@ -676,7 +685,9 @@ def _live(cname):
     return cname in df.columns and bool(np.isfinite(df[cname].values.astype(float)).any())
 
 
-_seq = iter(range(2, 99))
+# 2026-09-19 起这里给的是**建图时的号**（exhibits.Seq：值照常参与比较与下面的连号检查，
+# 印进正文是占位符）；页面上的图号由下面的 ORDER 决定，写盘时兑成最终号。
+_seq = iter(exhibits.Seq(k) for k in range(2, 99))
 N_REB18 = next(_seq)                                  # 三家长历史重定基（基期现算）
 N_REB23 = next(_seq)                                  # 四家同基期重定基（基期现算 = HOOD 首月）
 N_YOY = next(_seq)                                    # 客户资产 y/y
@@ -693,6 +704,41 @@ N_CASHPCT = next(_seq)                                # 客户现金 / 客户资
 N_HEAT = {t: next(_seq) for t in ('schw', 'lpla', 'ibkr', 'hood')
           if t in HAS and _live(f'{t}_yoy')}
 N_TABLE = next(_seq)                                  # 页尾核对表
+
+# ── 图序：挪图只改这一张表 ─────────────────────────────────────────────────
+# 某家缺席、那张图本轮没出时，ORDER 里列着也只是跳过（build/exhibits.py）。
+ORDER = [
+    'assets-rebased-long',   # Client assets since Jan-16, rebased to 100（三家长历史）
+    'assets-rebased-4',      # Client assets since Jan-21, rebased to 100 —— 四家同基期
+    'assets-yoy',            # Client asset growth, y/y
+    'organic',               # Annualised organic growth: Schwab vs. LPL
+    'organic-hood',          # Annualised organic growth: Robinhood
+    'accounts',              # Account growth, y/y: IBKR vs. Robinhood
+    'margin',                # Margin balances
+    'cash',                  # Client cash
+    'dats',                  # Daily average trades
+    'balance-rebased',       # Balance-sheet items since Jan-16, rebased to 100
+    'margin-pct',            # Margin balances as % of client assets
+    'cash-pct',              # Client cash as % of client assets
+    'heat-schw', 'heat-lpla', 'heat-ibkr', 'heat-hood',   # 各家客户资产 y/y 热力矩阵
+]
+#: 建图时的号 → id（本轮没出的图不登记）。
+EX_ID = {n: i for n, i in [
+    (N_REB18, 'assets-rebased-long'), (N_REB23, 'assets-rebased-4'), (N_YOY, 'assets-yoy'),
+    (N_ORG, 'organic'), (N_ORG_HOOD, 'organic-hood'), (N_ACCT, 'accounts'),
+    (N_MGN, 'margin'), (N_CASH, 'cash'), (N_DATS, 'dats'), (N_REB19, 'balance-rebased'),
+    (N_MGNPCT, 'margin-pct'), (N_CASHPCT, 'cash-pct'),
+] + [(n, f'heat-{t}') for t, n in N_HEAT.items()] if n is not None}
+#: 各图在页面上的先后（含 EXHIBITS_DRILL 演习钩子）。列举一串图号的句子按它排。
+_PAGE_POS = {i: p for p, i in enumerate(
+    exhibits.final_ids(list(EX_ID.values()), ORDER, 'wealth'))}
+
+
+def _pg(ns):
+    """一串图号按页面先后排：挪图之后列举顺序跟着页面走。本页的号（Seq）按 ORDER；
+    别页的号（跨页占位符，见 _xph）排在后面、保持原序。"""
+    return sorted(ns, key=lambda n: (_PAGE_POS[EX_ID[n]] if isinstance(n, exhibits.Seq)
+                                     else len(_PAGE_POS)))
 
 
 # ────────────────────────────── 格式化零件 ──────────────────────────────
@@ -885,7 +931,7 @@ def _assert_no_placeholder(obj):
 
 
 def _join_n(ns):
-    return '、'.join(str(n) for n in ns)
+    return '、'.join(str(n) for n in _pg(ns))
 
 
 def win_note(idx, kind, late, nser=0):
@@ -2318,6 +2364,9 @@ _fill_kind_mix(ex)
 _NS = [1] + [e['n'] for e in ex] + [N_TABLE]
 if _NS != list(range(1, len(_NS) + 1)):
     raise SystemExit(f'Exhibit 编号不连续：{_NS} —— 有图被跳过而编号没跟着回收')
+# 建图时的号连上了：ex 按 ORDER 排成页面上的先后，后面按图列举的句子照这个先后点名
+# （写盘时 write_dash 按同一张表编号，两边一致）。
+ex.sort(key=lambda e: _PAGE_POS[EX_ID[e['n']]])
 
 # ── 排版裁决：通栏 / x 标签抽稀，一律交给 mrwin ────────────────────────────
 # 窗口从 25 个月放到 125 个月之后，「半栏放不放得下」不再是显然的：125 期塞进半栏卡片
@@ -2352,7 +2401,7 @@ if LP_RANK_TXT:
         # 「登记了几笔」与「这一轮真画出来几笔」是两件事：最早那两笔的月份早于本页
         # 多数图的窗口起点，登记在册却未必条条都画得出来。写「这几次并表都画了线」
         # 会在窗口一变时当场变成假话，所以只说 `drawn_for()` 真数出来的那几张图。
-        + (f'其中落在各图窗口内的那几笔在 Exhibit {"、".join(str(n) for n in _LPL_DRAWN)} '
+        + (f'其中落在各图窗口内的那几笔在 Exhibit {_join_n(_LPL_DRAWN)} '
            '上画了红色竖虚线（客户资产与客户现金两族图都受影响）；'
            if _LPL_DRAWN else '')
         + f'剔并购后的有机口径见 Exhibit {N_ORG}。')
@@ -2402,7 +2451,7 @@ _v = _v0                         # 同一件事只留一份实现
 
 
 def _exl(ns):
-    return '、'.join(str(n) for n in ns)
+    return '、'.join(str(n) for n in _pg(ns))
 
 
 # 「本页各图的左端」从建好的 payload 现读。写死「本页一律从 2016-01 起」这类**全称断言**
@@ -3471,6 +3520,9 @@ def main():
     # 写出前先扫占位符（回填不到就停机，见 _assert_no_placeholder），
     # 再过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在后者里面。
     _assert_no_placeholder(payload)
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, N_TABLE, where='build/wealth')
+    payload['order'] = ORDER
     payload_guard.write_dash(path, payload, 'wealth')
     print(f'共同最新月 {LATEST}（短板 {"/".join(NAME[t] for t in LAGGARDS)}）'
           f' | 各家: ' + ', '.join(f'{t}→{LATEST_EACH[t]}' for t in sorted(RAW))
@@ -3479,8 +3531,11 @@ def main():
           f' + Exhibit {table["n"]} 核对表')
     # 跨页引用是**不出声的失败**的重灾区：认不出图时整句会退回不带编号的说法，页面照常
     # 出，谁也不会发现引用没了。所以每轮把解析结果打出来，认不出的那几条前面加 ⚠。
+    _xr = payload.get('xref') or {}
+    _xn = (lambda n: re.sub(r'⟨ex:([^⟩]*)⟩', lambda m: str(_xr.get(m.group(1), m.group(0))),
+                            str(n)))
     print('跨页引用（按标题现读那一页的 payload）：'
-          + '；'.join(('' if n else '⚠ 认不出 ') + f'{lab}={n}'
+          + '；'.join(('' if n else '⚠ 认不出 ') + f'{lab}={_xn(n)}'
                       for lab, n in dict(XREF_LOG).items()))
     print(f'写出 data/wealth.js  ({os.path.getsize(path) / 1024:.1f} KB)')
     print(headline)
