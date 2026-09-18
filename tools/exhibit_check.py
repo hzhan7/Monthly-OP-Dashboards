@@ -5,6 +5,7 @@
     python3 tools/exhibit_check.py compare DIR [页 …]        # 与基线逐页比 payload
     python3 tools/exhibit_check.py audit [页 …]              # 找没走占位符的图号字面量
     python3 tools/exhibit_check.py drill 页 [id1,id2|reverse] # 重排演习（默认对调头两张）
+    python3 tools/exhibit_check.py status                    # 哪些页已迁移（每张图都带 id）
 
 末行是总状态（…OK / …FAILED），与 rebuild / gate 同一种读法。
 
@@ -418,9 +419,26 @@ def cmd_drill(argv):
     return 0
 
 
+def cmd_status(argv):
+    """逐页：几张图、几张带 id、跨页引用几处。全带 id 的页挪图只改顺序表。"""
+    full, part, none = [], [], []
+    for pg in argv or pages_all():
+        p = load(os.path.join(DATA, f'{pg}.js'))
+        exs = p.get('exhibits') or []
+        k = sum(1 for e in exs if e.get('id'))
+        xr = len(p.get('xref') or {})
+        tag = '已迁移' if exs and k == len(exs) else ('部分 id' if k else '未迁移')
+        (full if tag == '已迁移' else part if k else none).append(pg)
+        print(f'  {tag:<4} {pg:<20} {k:>2}/{len(exs):<2} 张带 id'
+              + (f'，指向别页 {xr} 处' if xr else ''))
+    print(f'STATUS 已迁移 {len(full)} 页；部分 id {len(part)} 页（{" ".join(part)}）；'
+          f'未迁移 {len(none)} 页（{" ".join(none)}）')
+    return 0
+
+
 def main(argv):
     cmds = {'snapshot': cmd_snapshot, 'compare': cmd_compare, 'audit': cmd_audit,
-            'drill': cmd_drill}
+            'drill': cmd_drill, 'status': cmd_status}
     if not argv or argv[0] not in cmds:
         print(__doc__)
         return 2

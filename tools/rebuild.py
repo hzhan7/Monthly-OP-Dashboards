@@ -93,6 +93,15 @@ def main(argv):
     # 指向横截面页的引用兑的是那一页**上一轮**的号；被指向的页这一轮改了号（重排了图），
     # 就把指过去的页再建一遍 —— 哪怕它不在本次点名的页里，否则它的正文就指错了图。
     # 判据是各页 payload 里的 xref 记录，不是名单；两轮之内必收敛（重建只改指出去的号）。
+    # 先补一种：成员页第一轮失败、而横截面页已经建完 —— 多半是它新指向了横截面页上刚加的
+    # id（data/ 里那一页还是旧的，兑不出来），横截面页建完之后再试一次就过。
+    retry = [n for n, _ in fails if n in members]
+    if retry:
+        fails = [(n, e) for n, e in fails if n not in retry]
+        for t in retry:
+            name, err = _run(t, mr.builder(t))
+            if err:
+                fails.append((name, err))
     for _ in range(2):
         stale = sorted({pg for pg, *_ in exhibits.stale_xrefs(data)} - {n for n, _ in fails})
         if not stale:
