@@ -173,6 +173,7 @@ import pandas as pd
 
 import notional
 import axisfmt
+import exhibits                  # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss          # 名词释义的版式层与护栏，全站共用
 import payload_guard
 import pctile
@@ -196,6 +197,36 @@ TTM = 12             # 滚动窗口 = 12 个月（本页所有同比读数的口
 TBL_MONTHS = 13      # 末尾核对表：契约 §5.4 的 13 个月
 MIN_COMMON = 24      # 共同历史短于这么多个月就不发（y/y 都画不出来）
 TOP_N = 5            # Exhibit 2 单独画的家数，其余合并「其他」
+
+# ── 图序：挪图只改这一张表（build/exhibits.py）───────────────────────────────
+# 下面的 EX_* 是**建图时的号**（exhibits.Seq，也是登记簿的钥匙），印进正文是占位符；
+# 页面上的图号由 ORDER 现排。条件图（缺常数那几家的产品块矩阵、口径差两张、JPX 那张）
+# 本轮没出时 ORDER 里列着只是跳过，后面的号自动前移 —— 从前手算的 jpx_n 因此不要了。
+# 带「§6.2」的三个 id 另有两处按 id 指着它们：tools/check_yoy_caliber.py 的 ROLLING_OK、
+# schw / lpla / hood 页的 ⟨ex:exchanges12/…⟩ —— id 不要改。
+_S = exhibits.Seq
+EX_INDEX, EX_LEVEL, EX_BAND, EX_HEAT, EX_BLOCKS, EX_TWO, EX_SHRINK, EX_JPX, EX_TABLE = (
+    _S(k) for k in range(2, 11))
+ORDER = [
+    'indexed',                 # Constant-basis notional, rebased to Jan-19 = 100
+    'level',                   # Constant-basis notional level（只含常数齐备的家）
+    'rolling-yoy-band',        # 12-month rolling-sum y/y — all 12（§6.2）
+    'annual-heat',             # Annual y/y 热力矩阵 —— 增长精确的家
+    'block-heat',              # 缺常数那几家拆到产品块的热力矩阵
+    'contracts-vs-notional',   # Same contracts, two units（§6.2）
+    'contract-shrink',         # Contract-shrink effect（§6.2）
+    'jpx-two-units',           # JPX financial derivatives, two units
+]
+#: 建图时的号 → id。
+EX_ID = {EX_INDEX: 'indexed', EX_LEVEL: 'level', EX_BAND: 'rolling-yoy-band',
+         EX_HEAT: 'annual-heat', EX_BLOCKS: 'block-heat', EX_TWO: 'contracts-vs-notional',
+         EX_SHRINK: 'contract-shrink', EX_JPX: 'jpx-two-units'}
+
+
+def _exs(*ns, sep=' / '):
+    """几张图并列点名：「Exhibit 4 / 7 / 8」。本轮没出的图传 None，跳过 ——
+    占位符指着一张没出的图会让构建失败（build/exhibits.py），所以条件图一律经这里点名。"""
+    return 'Exhibit ' + sep.join(str(n) for n in ns if n is not None)
 
 # 数据色只有六个（RED 是断点与截轴离群值的专用色，不做数据色）。
 # 六色 = TOP_N 家 + 一条「其他」，正好用满，所以本页任何一张图都不许出现第 7 条线；
@@ -1591,6 +1622,10 @@ def build_payload(raw, specs, fx, kconst):
     gapblock_keys = [k for k in MEM_KEYS
                      if len(con_prod[k]) >= 2 and (con_prod[k] & set(UNPRICED[k]))]
     nocontract_keys = [k for k in MEM_KEYS if not con_prod[k]]
+    # 条件图：本轮画不画由这两份名单定（Exhibit 6 要 band_keys、7/8 要 mix_keys）。
+    # 没画的那张在正文里不许点名，点名一律走 _exs(..., _blocks, ...)。
+    _blocks = EX_BLOCKS if band_keys else None
+    _two, _shrink = (EX_TWO, EX_SHRINK) if mix_keys else (None, None)
     # 差值两侧都走滚动同比 —— 两侧必须同口径，混口径算出来的差不是「合约变小」而是噪音差。
     # m_gap 是同一批合约在**单月**口径下的差值，只进图注（量化「改口径改了多少」），不画柱。
     gap, m_gap = {}, {}
@@ -1734,7 +1769,7 @@ def build_payload(raw, specs, fx, kconst):
     dense2 = not any(v is None for s in series2 for v in s['values'])
     gap2 = [(k, m) for k, m in GAPS if k in draw or k in rest]
     ex.append({
-        'n': 2, 'kind': 'lines_endlabels' if dense2 else 'lines', 'full': True, 'height': 380,
+        'n': EX_INDEX, 'kind': 'lines_endlabels' if dense2 else 'lines', 'full': True, 'height': 380,
         **({} if dense2 else {'end_label': True, 'zero_base': True}),
         'fmt': 'f0', 'yfmt': 'f0', 'xlabels': XL_LONG, 'xstep': 6, 'xrot': 90,
         'title': f'Constant-basis notional, rebased to {mlab(BASE)} = 100 '
@@ -1751,8 +1786,8 @@ def build_payload(raw, specs, fx, kconst):
                  '图例里因此写「水平值缺常数」）。'
                  % (len(grow_keys),
                     '、'.join(DISP[k] for k in must) if must else '本期没有'))
-        + ('缺常数、增长只能给区间的 <b>%s</b> 不在本图，请看 Exhibit 4 与 Exhibit 6。'
-           % '、'.join(DISP[k] for k in band_keys) if band_keys else '')
+        + ('缺常数、增长只能给区间的 <b>%s</b> 不在本图，请看 Exhibit %s 与 Exhibit %s。'
+           % ('、'.join(DISP[k] for k in band_keys), EX_BAND, EX_BLOCKS) if band_keys else '')
         + ('图例括号里是该家<b>最新月</b>的定基名义额（US$bn/日），只为让人知道谁大谁小；'
            '线的高低比的是<b>各自相对 %s 的增长</b>，与体量无关。'
            % mlab(BASE))
@@ -1795,7 +1830,7 @@ def build_payload(raw, specs, fx, kconst):
                    '截轴<b>不删点</b> —— 超界那根柱画到界并加断口符号，真值以红字竖排标在柱顶之上，'
                    '判据是「第一名 > 第二名 ×3 才截，截到第二名 ×1.15」，不是手挑的一个数。')
     ex.append({
-        'n': 3, 'kind': 'bars_labeled', 'full': True, 'height': 300,
+        'n': EX_LEVEL, 'kind': 'bars_labeled', 'full': True, 'height': 300,
         'xlabels': [DISP[k] for k in ord3], 'xrot': CAT_XROT,
         # f0c 而不是 f0：本图的量级跨到五位数（截轴那根的真值 > 1 万），
         # 没有千分位时红色竖排的 '11309' 要数一遍才知道是不是 1.1 万。
@@ -1827,9 +1862,7 @@ def build_payload(raw, specs, fx, kconst):
     # 是唯一一个对精确家与区间家含义都成立的排序键。取中点排序会隐含一个不存在的中心估计。
     ord4 = sorted(MEM_KEYS, key=lambda k: -float(TYOYLO[k][CUR]))
     ex.append({
-        # id：别的页（schw / lpla / hood 的 EXC_ZH）按 ⟨ex:exchanges12/…⟩ 指到这张与下面两张，
-        # 本页还没迁移到顺序表（build/exhibits.py），号仍在这里手写。
-        'n': 4, 'id': 'rolling-yoy-band', 'kind': 'range_band', 'full': True, 'height': 320,
+        'n': EX_BAND, 'kind': 'range_band', 'full': True, 'height': 320,
         'xlabels': [DISP[k] for k in ord4], 'xrot': CAT_XROT,
         'fmt': 'pct1', 'label_fmt': 'pct1', 'ylab': f'% y/y ({TTM}-mo rolling sum)',
         'title': f'Constant-basis notional, {TTM}-month rolling-sum y/y — all 12 ({mlab(CUR)}); '
@@ -1869,8 +1902,8 @@ def build_payload(raw, specs, fx, kconst):
                     f'所以本页在任何地方都不说它们是涨还是跌 —— '
                     f'页面顶端的「拐点」也只统计给得出点值的 {len(grow_keys)} 家。'
                     if straddle else '')
-                 + ('各家区间为什么缺常数，见 Exhibit 3 的图注；'
-                    '缺常数那几家拆到产品块之后每一格都是精确的，见 Exhibit 6。'
+                 + (f'各家区间为什么缺常数，见 Exhibit {EX_LEVEL} 的图注；'
+                    f'缺常数那几家拆到产品块之后每一格都是精确的，见 Exhibit {EX_BLOCKS}。'
                     if band_keys else '')),
     })
 
@@ -1899,7 +1932,7 @@ def build_payload(raw, specs, fx, kconst):
     gap5_next = [(k, y + 1) for k, y in gap5
                  if y + 1 in yrs and heat5[row5.index(k)][yrs.index(y + 1)] is None]
     ex.append({
-        'n': 5, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
+        'n': EX_HEAT, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
         'title': f'Constant-basis notional, annual y/y (%) — the {len(row5)} exchanges whose '
                  f'growth is exact, × last {len(yrs)} years',
         'rows': [DISP[k] for k in row5], 'cols': [str(y) for y in yrs],
@@ -1911,7 +1944,7 @@ def build_payload(raw, specs, fx, kconst):
                       'Green = faster growth. Colour scale is the 5th–95th percentile of this '
                       'matrix\'s own cells'),
         'note': ('<b>本图是年度同比，不是单月同比，也不是滚动同比。</b>'
-                 f'它按<b>日历年</b>切（未满年同月对同月），而 Exhibit 4 / 7 / 8 与汇总表按'
+                 f'它按<b>日历年</b>切（未满年同月对同月），而 {_exs(EX_BAND, _two, _shrink)} 与汇总表按'
                  f'<b>最近 {TTM} 个月</b>的滚动窗口切 —— 两者都是 {TTM} 个月量级的聚合，'
                  '都不受单月毛刺影响，切法不同而已；'
                  '完整年份的 12 月那一格，两个口径在数学上恰好相等。'
@@ -1919,19 +1952,19 @@ def build_payload(raw, specs, fx, kconst):
                  #   全称：日后加一张单月口径的图，这句话会静静变成假话，没有任何东西报错。
                  #   本页的同比口径在页脚已经声明（「同比口径 = TTM 个月滚动合计」），
                  #   这里只留指路，不再替全页作保。
-                 f'单月口径的毛刺实测见 Exhibit 4 的图注。'
+                 f'单月口径的毛刺实测见 Exhibit {EX_BAND} 的图注。'
                  '行按<b>最新月的指数（增长）</b>从高到低排'
                  + ('，不按体量 —— 因为本图里的 %s 没有可比的体量'
                     '（它的基期常数至今空着，只是那个常数在增长里被约掉了）。'
                     % '、'.join(DISP[k] for k in must)
-                    if must else '（本图各家都有体量，按增长排是为了和 Exhibit 3 的'
+                    if must else f'（本图各家都有体量，按增长排是为了和 Exhibit {EX_LEVEL} 的'
                                  '体量排序互补，两张一起看才知道是大所带小所还是反过来）。')
                  + (f'{"、".join(str(y) for y in part_yrs)} 年只到 {mlab(LATEST)}，'
                     f'该列拿<b>同月对同月</b>比上年（不是比上年全年，否则会砸出一个假坑）。'
                     if part_yrs else '')
                  + ((f'<b>{"、".join(f"{DISP[k]} {y}（{n} 个月对 {n} 个月）" for k, y, n in gap5_cnt)}'
                      f' 不是完整 12 个月对 12 个月</b>：该家有一个月的官方数被主动留空'
-                     f'（缘由见 Exhibit 2 的图注），而本图是同月对同月，缺的那个月被'
+                     f'（缘由见 Exhibit {EX_INDEX} 的图注），而本图是同月对同月，缺的那个月被'
                      f'分子分母同时剔掉了 —— 数值仍然可比，但它比同一列其余各格少一个月的样本。'
                      + (f'受它拖累的 {"、".join(f"{DISP[k]} {y}" for k, y in gap5_next)} '
                         f'那一格因此<b>空着</b>：它要拿少一个月的上一年做分母，'
@@ -1964,7 +1997,7 @@ def build_payload(raw, specs, fx, kconst):
         blank6_who = [f'{rows6[i]} {yrs[j]}' for i, row in enumerate(heat6)
                       for j, v in enumerate(row) if v is None]
         ex.append({
-            'n': 6, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
+            'n': EX_BLOCKS, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
             'title': f'The {len(band_keys)} constant-gap exchanges, broken out by product block '
                      f'— annual y/y (%), every cell exact',
             'rows': rows6, 'cols': [str(y) for y in yrs],
@@ -1979,7 +2012,7 @@ def build_payload(raw, specs, fx, kconst):
                      '块自己的基期常数在同比里被完全约掉 ⇒ <b>每一格都是精确值</b>，'
                      '和常数齐备的家享有同等的可信度。'
                      '缺的只有一件事：这些行之间<b>不能相加</b>，因为块与块的权重正是那个'
-                     '未知常数决定的 —— 那也正是它们合并起来只能给区间（Exhibit 4）的原因。'
+                     f'未知常数决定的 —— 那也正是它们合并起来只能给区间（Exhibit {EX_BAND}）的原因。'
                      '标「已定基」的行是该家常数已知的那几条腿先按已知权重合成的一块。'
                      + (f'<b>空格 = 该块在上一年没有可比历史，年度同比算不出来，'
                         f'不是那一年没有成交</b>（本图 {blank6} 格：'
@@ -1990,9 +2023,9 @@ def build_payload(raw, specs, fx, kconst):
         })
 
     # ── Exhibit 7 / 8：张数口径 vs 定基名义额口径（本次改口径的核心证据）──
-    # JPX 那张图的编号必须**现算**：band_keys 为空时 Exhibit 6 整张不画、后面的号全部前移，
-    # mix_keys 为空时 7/8 两张也不画。写死一个 9，等常数补齐那天它就指到核对表上去了。
-    jpx_n = ex[-1]['n'] + (2 if mix_keys else 0) + 1
+    # JPX 那张图的号不写死：band_keys 为空时 Exhibit 6 整张不画、mix_keys 为空时 7/8 两张也不画，
+    # 后面的号都要前移。从前这里手算一个 jpx_n、画完再断言对得上；现在写 EX_JPX 的占位符，
+    # 号由 ORDER 在写盘时现排（build/exhibits.py），没画的图自动跳过。
     flat_txt = ''
     if flat_keys:
         flat_txt = (f'<b>{"、".join(DISP[k] for k in flat_keys)} 不在本图（结构性）</b>：'
@@ -2000,12 +2033,12 @@ def build_payload(raw, specs, fx, kconst):
                     f'两个口径之间只差<b>同一个常数</b>，同比在数学上恒等、差值恒为 0 —— '
                     f'那是构造出来的零，不是"这家没有合约变小"，画进来只会被读成后者。'
                     + (f'JPX 正是其中之一，而它恰恰是全仓最强的一份反例，'
-                       f'所以单给它一张 Exhibit {jpx_n}。'
+                       f'所以单给它一张 Exhibit {EX_JPX}。'
                        if 'jpx' in flat_keys and jp is not None else ''))
     if gapblock_keys:
         flat_txt += (f'<b>{"、".join(DISP[k] for k in gapblock_keys)} 也不在本图（缺常数）</b>：'
                      f'它们配了 ≥2 个合约产品，本来是可测的，但其中至少一个产品的基期常数'
-                     f'填不出来 ⇒ 名义额那一侧算不出来，差值无从谈起。原因见 Exhibit 3 图注。')
+                     f'填不出来 ⇒ 名义额那一侧算不出来，差值无从谈起。原因见 Exhibit {EX_LEVEL} 图注。')
     if mix_keys:
         ord7 = sorted(mix_keys, key=lambda k: -float(gap[k][CUR]))
         yy_cnt = {k: ttm_yoy(CNT[k]).reindex(IDX) for k in mix_keys}
@@ -2013,7 +2046,7 @@ def build_payload(raw, specs, fx, kconst):
         m_gap_txt = '、'.join(f'{DISP[k]} 单月 {pp(float(m_gap[k][CUR]))}'
                              f' / 滚动 {pp(float(gap[k][CUR]))}' for k in ord7)
         ex.append({
-            'n': ex[-1]['n'] + 1, 'id': 'contracts-vs-notional', 'kind': 'grouped_bars',
+            'n': EX_TWO, 'kind': 'grouped_bars',
             'full': True, 'height': 300,
             'xlabels': [DISP[k] for k in ord7], 'xrot': CAT_XROT,
             'fmt': 'pct1', 'label_fmt': 'pct1', 'bar_labels': True,
@@ -2040,7 +2073,7 @@ def build_payload(raw, specs, fx, kconst):
                      + WHY_TTM + TTM_UNIT_NOTE + flat_txt),
         })
         ex.append({
-            'n': ex[-1]['n'] + 1, 'id': 'contract-shrink', 'kind': 'grouped_bars',
+            'n': EX_SHRINK, 'kind': 'grouped_bars',
             'full': True, 'height': 300,
             'xlabels': [DISP[k] for k in ord7], 'xrot': CAT_XROT,
             'fmt': 'pp1', 'label_fmt': 'pp1', 'bar_labels': True,
@@ -2069,12 +2102,8 @@ def build_payload(raw, specs, fx, kconst):
 
     # ── JPX 的两个单位（被结构性排除，但证据最强的一家）——编号由前面的图决定 ──
     if jp is not None:
-        if ex[-1]['n'] + 1 != jpx_n:
-            raise SystemExit(
-                f'JPX 那张图的实际编号 {ex[-1]["n"] + 1} 与前面图注里引用的 {jpx_n} 对不上 —— '
-                'Exhibit 7/8 的图注会把读者指到别的图上。改了出图顺序就要同步改 jpx_n。')
         ex.append({
-            'n': jpx_n, 'kind': 'lines_endlabels', 'full': True, 'height': 320,
+            'n': EX_JPX, 'kind': 'lines_endlabels', 'full': True, 'height': 320,
             'fmt': 'f0', 'yfmt': 'f0', 'xlabels': XL_LONG, 'xstep': 6, 'xrot': 90,
             'title': f'JPX financial derivatives, two units on the same contracts '
                      f'(rebased {mlab(BASE)} = 100)',
@@ -2229,7 +2258,7 @@ def build_payload(raw, specs, fx, kconst):
             r[f'{k}_c'] = num(float(CNT[k][p]), 0)
         trows.append(r)
     table = {
-        'n': ex[-1]['n'] + 1,
+        'n': EX_TABLE,
         'title': f'近 {TBL_MONTHS} 个月核对表：定基名义额（US$bn/日，仅常数齐备的 '
                  f'{len(ord3)} 家）与张数（张/日，{len(cnt_keys)} 家）并列',
         'idx': '月份',
@@ -2271,7 +2300,7 @@ def build_payload(raw, specs, fx, kconst):
                f'大合约当量 y/y {pct(jp["lgeq_yoy"])}，差 <b>{pp(jp["gap_pp"])}</b>；'
                f'拉长看（{jp["span"]}）张数 {pct(jp["raw_cum"])}、当量 {pct(jp["lgeq_cum"])}，'
                + ('<b>符号相反</b>' if jp['opposite'] else '同号但幅度差一大截')
-               + f'（Exhibit {ex[-1]["n"]}，{JPX_LGEQ_PROV}）。')
+               + f'（Exhibit {EX_JPX}，{JPX_LGEQ_PROV}）。')
 
     uncov_txt = '；'.join(
         f'<b>{DISP[k]}</b> 未纳入 ' + '、'.join(f'{c}（{why}）' for c, why in UNCOVERED[k])
@@ -2322,14 +2351,14 @@ def build_payload(raw, specs, fx, kconst):
          'multiplier 与基期价格恒为 1，notional.py 称其 deflator=<code>fx_only</code>。'
          f'<br>本页有 <b>{len(fxo_keys)} 家</b>含这类腿：{fxo_txt}。'
          '<br><b>对这些腿，上一条的「增长率＝张数增长率」不成立</b>：它们的增长 = 成交量增长 '
-         '+ 标的涨跌。所以 Exhibit 2 的指数线、Exhibit 4 的同比带里，这几家的读数含股价/指数'
+         f'+ 标的涨跌。所以 Exhibit {EX_INDEX} 的指数线、Exhibit {EX_BAND} 的同比带里，这几家的读数含股价/指数'
          '涨幅，与纯合约腿的家<b>不是同一个口径</b>，跨家比增长时必须把这件事算进去。'
          + (f'<br>其中 <b>{"、".join(DISP[k] for k in all_fxo)}</b> 一条合约腿都没有，'
             f'整家读数都是 fx_only —— 这几家的指数线只能读作「本币成交额的定基指数」，'
             f'不能读作成交量。' if all_fxo else '')
          + '<br>本页不因此拒收这些腿：拒了就等于把 4 家亚太所与 Euronext 的现货业务整块删掉，'
            '那比口径混杂更失真。但<b>混了 deflator 的池不许算份额</b>（notional.py:32），'
-           '所以本页任何一处都没有把 Exhibit 3 的水平值读成市场份额。'),
+           f'所以本页任何一处都没有把 Exhibit {EX_LEVEL} 的水平值读成市场份额。'),
 
         ('<b>缺基期常数怎么办：降级到图，不拖垮整页（这一条是本页最需要先读懂的）。</b>'
          f'本页用到 {len(used_prods)} 个 product_id，其中 <b>{len(gap_prods)} 个</b>填不出基期常数。'
@@ -2345,7 +2374,7 @@ def build_payload(raw, specs, fx, kconst):
          + (f'本期 <b>{"、".join(DISP[k] for k in band_keys)}</b> 走这条路。'
             if band_keys else '本期没有一家走到这一步 —— 12 家的常数都齐了。')
          + '<br>· 水平值那个常数不会被约掉（它就是块与块之间的权重），'
-         + f'所以 Exhibit 3、汇总表第 ① 组、核对表的名义额列一律<b>只含常数齐备的 '
+         + f'所以 Exhibit {EX_LEVEL}、汇总表第 ① 组、核对表的名义额列一律<b>只含常数齐备的 '
            f'{len(lvl_keys)} 家</b>，缺的宁可不画。' + gap_note),
 
         f'<b>本页用到的常数有多硬（notional_source 三档）。</b>'
@@ -2355,7 +2384,7 @@ def build_payload(raw, specs, fx, kconst):
         'definitional = 面值本身就是合约定义（如 3 个月 SOFR 期货的 100 万美元、'
         '美债期货的 10 万美元），不依赖任何行情。'
         '<b>「常数齐备」不等于「常数一样硬」</b>，跨所比水平值时这三档混在一起，'
-        '这是 Exhibit 3 之外的另一层不确定性，页面无法用图形表达，只能写在这里。',
+        f'这是 Exhibit {EX_LEVEL} 之外的另一层不确定性，页面无法用图形表达，只能写在这里。',
 
         '<b>为什么不直接比张数。</b>单张名义额 = 乘数 × 标的价格，而<b>乘数是交易所自选的'
         '产品设计</b>：CME 的 E-mini S&P（$50 × 指数）与 Micro E-mini（$5 × 指数）差 10 倍，'
@@ -2370,7 +2399,7 @@ def build_payload(raw, specs, fx, kconst):
         f'<b>各家的口径边界（这一条决定了排名能读到什么程度）。</b>'
         f'本页的「某家名义额」= 该家<b>已进换算链的那几条腿之和</b>，不是它的全部业务。'
         f'已知在范围内但没进腿的列逐条列明：{uncov_txt or "无"}。'
-        '因此 Exhibit 3 的水平值可以相加、可以排名，但<b>不等于市场份额</b> —— '
+        f'因此 Exhibit {EX_LEVEL} 的水平值可以相加、可以排名，但<b>不等于市场份额</b> —— '
         '边界不同的两家放在一起比水平值，比的一部分是覆盖度；'
         '何况本期还有几家因为缺常数根本不在那张图上。'
         '要比增长则不受影响：每家都是拿自己和自己的去年比。',
@@ -2388,7 +2417,7 @@ def build_payload(raw, specs, fx, kconst):
         '本页任何一家在基期月缺完整数据都会直接整页跳过，不会拿相邻月顶上。',
 
         f'<b>同比的口径：{TTM} 个月滚动合计，不是单月（2026-08-07 改）。</b>'
-        f'本页 Exhibit 4 / 7 / 8、汇总表第 ②③ 组、抬头的 y/y 与「拐点」，'
+        f'本页 {_exs(EX_BAND, _two, _shrink)}、汇总表第 ②③ 组、抬头的 y/y 与「拐点」，'
         f'一律是「本月往前 {TTM} 个月的合计 ÷ 去年同月往前 {TTM} 个月的合计 − 1」。'
         + WHY_TTM + TTM_UNIT_NOTE +
         '算法上先在<b>该家自己的完整历史</b>上滚动求和再取同比，最后才截到共同窗口 —— '
@@ -2400,7 +2429,7 @@ def build_payload(raw, specs, fx, kconst):
         '（权重非负、和为 1），上下界照旧两端可取。这条断言每跑一次都拿真实数据验一遍'
         '（见 build_payload 里的 hull 自检）。',
 
-        f'<b>年度同比（Exhibit 5 / 6）是另一种 {TTM} 个月聚合，判定不改。</b>'
+        f'<b>年度同比（{_exs(EX_HEAT, _blocks)}）是另一种 {TTM} 个月聚合，判定不改。</b>'
         '它按<b>日历年</b>切、且是<b>同月对同月</b>：未满的年份只拿已有的那几个月去比上年'
         '同样的几个月，绝不拿半年比全年。'
         f'与本页其余地方的滚动窗口相比，两者<b>都是 {TTM} 个月量级的聚合、都不受单月毛刺'
@@ -2415,9 +2444,9 @@ def build_payload(raw, specs, fx, kconst):
         '<b>汇总表第 ① 组的 y/y 列走的是单月口径</b> —— 那一列恒等于本行三列的算术'
         '（本月 ÷ 去年同月），给它印一个滚动同比读者自己一除就对不上，表内自相矛盾，'
         '所以只能在组标题与表注里标死、不能改；两个口径当期差多少，表注里现算印出来了。'
-        '区间家的年度同比同样是紧界，但热力图一格只能放一个数，'
-        '所以它们改用产品块的分解（Exhibit 6）呈现。'
-        '汇总表的 m/m 列是单月环比 —— 那是「本月 vs 上月」的运营监控量，本来就该看单月。',
+        + (f'区间家的年度同比同样是紧界，但热力图一格只能放一个数，'
+           f'所以它们改用产品块的分解（Exhibit {EX_BLOCKS}）呈现。' if band_keys else '')
+        + '汇总表的 m/m 列是单月环比 —— 那是「本月 vs 上月」的运营监控量，本来就该看单月。',
 
         '<b>差值图只覆盖合约腿。</b>现货成交额（HKEX 的 ADT、Euronext 的 ADNV、'
         'Xetra 的 turnover 等）源头就是金额，没有张数，所以它们不进那两张图；'
@@ -2549,7 +2578,7 @@ def build_payload(raw, specs, fx, kconst):
                      '张数不可跨所加总，本页一律用定基名义额比较 · '
                      f'<b>同比口径 = {TTM} 个月滚动合计</b>（单月同比毛刺过大：本页 '
                      f'{len(VC)} 条产品块序列实测，{_obs_tot} 个「序列 × 月」观测里有 '
-                     f'{_opp_tot} 个两个口径符号相反）；Exhibit 5/6 的年度同比按日历年切，'
+                     f'{_opp_tot} 个两个口径符号相反）；{_exs(EX_HEAT, _blocks, sep="/")} 的年度同比按日历年切，'
                      f'同属 {TTM} 个月聚合 · '
                      'charts only, no commentary · personal research use'),
     }
@@ -2632,6 +2661,9 @@ def run(kconst_override=None, out_path=None, banner=None):
     payload, d = build_payload(raw, specs, fx, kconst)
 
     path = out_path or OUT
+    # 图号：补 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；write_dash 编号兑号。
+    exhibits.bind_ids(payload, EX_ID, EX_TABLE, where='build/exchanges12')
+    payload['order'] = ORDER
     payload_guard.write_dash(path, payload, TICKER)
     if banner:
         print(banner)
