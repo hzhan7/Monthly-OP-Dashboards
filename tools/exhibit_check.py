@@ -326,14 +326,22 @@ def cmd_drill(argv):
 
         # ① 图头
         if how == 'reverse':
-            want_ids = [e['id'] for e in base['exhibits']][::-1]
+            # 按「号」分组倒序：同号带 a/b 后缀的一组（cboe 的 8a / 8b）整组挪、组内不倒。
+            grp = []
+            for e in base['exhibits']:
+                k = X._int_part(e['n'])
+                if grp and grp[-1][0] == k:
+                    grp[-1][1].append(e['id'])
+                else:
+                    grp.append((k, [e['id']]))
+            want = [(i, p if len(g) == 1 else f'{p}{"abcdefghijklmnopqrstuvwxyz"[j]}')
+                    for p, (_, g) in enumerate(grp[::-1], start=2) for j, i in enumerate(g)]
             got_ids = [e['id'] for e in drilled['exhibits']]
-            ok = got_ids == want_ids or sorted(got_ids) == sorted(want_ids)
             seq = [e['n'] for e in drilled['exhibits']]
-            if not ok or seq != list(range(2, 2 + len(seq))):
+            if list(zip(got_ids, seq)) != want:
                 fails.append(f'① 倒序后图序/编号不对：{list(zip(got_ids, seq))}')
             moved = [i for i in n0 if n0[i] != n1[i]]
-            print(f'  ① 图头：倒序后 {len(moved)}/{len(seq)} 张改了号（2..{seq[-1]} 连号）')
+            print(f'  ① 图头：倒序后 {len(moved)}/{len(seq)} 张改了号（2..{len(grp) + 1} 连号）')
         else:
             a, b = how.split(',')
             ch = {i: (n0[i], n1[i]) for i in n0 if n0[i] != n1[i]}
