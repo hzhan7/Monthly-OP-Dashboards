@@ -127,13 +127,95 @@ def _drill(order, page):
 
 
 def _put_first(d, key, val):
-    """把 key 放到 dict 的第一个位置（就地改，保住别处对这个 dict 的引用）。
+    """把 key 放到 dict 的第一个位置、id（有的话）紧随其后（就地改，保住别处对这个 dict
+    的引用）。
 
     图号一直是每张 exhibit 的第一个键；迁移前后的 data/*.js 逐字可比，靠的就是这个。"""
-    rest = [(k, v) for k, v in d.items() if k != key]
+    rest = [(k, v) for k, v in d.items() if k not in (key, 'id')]
+    i = d.get('id')
     d.clear()
     d[key] = val
+    if i is not None:
+        d['id'] = i
     d.update(rest)
+
+
+def final_ids(ids, order, page=None):
+    """生成了的这几张图（ids）按顺序表（含演习钩子）排出来的最终先后。不碰任何 dict。
+
+    给「正文里有按位置说话的句子」的底座用：它要在编号之前就知道谁挨着谁。"""
+    where = f'build/{page}' if page else 'exhibits.final_ids'
+    pos = _flat(_drill(order, page), where)
+    missing = [i for i in ids if i not in pos]
+    if missing:
+        _die(where, f'这些图生成了、顺序表里却没有：{missing} —— 加进 ORDER 决定它排在哪')
+    return sorted(ids, key=lambda i: (pos[i][0], pos[i][1] or 0))
+
+
+class Seq(int):
+    """「一路 n += 1」写法的生成器（build/single.py 那种底座）里的图号计数。
+
+    值照常参与加减、比较、当字典键；**印进正文时是临时占位符 ⟨ex:#k⟩**。等全部图画完、
+    每张图有了 id，`bind_seq()` 把它换成 ⟨ex:id⟩，写盘时再按顺序表兑成最终图号。
+    这样底座里几十处 f'Exhibit {n}' 一个字不用改，挪图之后照样指对。
+    只能用 str() / f'{n}' 印它：'%d' % n 与 int(n) 会绕过占位符，印出建图时的临时号。
+    加一个数还是图号（计数器 n += 1）；**两个号相减得到的是位移（普通 int）**，
+    印出来就是那个数（sgx 的历史账「前移 4 号」就是这么算的）。"""
+    __slots__ = ()
+
+    def __new__(cls, k):
+        return super().__new__(cls, int(k))
+
+    def __add__(self, o):
+        return Seq(int(self) + int(o))
+
+    __radd__ = __add__
+
+    def __sub__(self, o):
+        return int(self) - int(o)
+
+    def __str__(self):
+        return f'⟨ex:#{int(self)}⟩'
+
+    __repr__ = __str__
+
+    def __format__(self, spec):
+        return str(self) if not spec else format(int(self), spec)
+
+
+_SEQ = re.compile(r'⟨ex:#(\d+)⟩')
+
+
+def bind_seq(node, table, where=''):
+    """把正文里的 ⟨ex:#k⟩ 换成 ⟨ex:table[k]⟩（table：建图时的临时号 → id）。就地改。
+
+    临时号对不上任何一张图 → 构建失败：那是正文指着一张最后没进页面的图。"""
+    bad = []
+
+    def rep(m):
+        k = int(m.group(1))
+        if k not in table:
+            bad.append(k)
+            return m.group(0)
+        return f'⟨ex:{table[k]}⟩'
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k in list(x):
+                x[k] = walk(x[k])
+            return x
+        if isinstance(x, list):
+            for j in range(len(x)):
+                x[j] = walk(x[j])
+            return x
+        if isinstance(x, str) and '⟨ex:#' in x:
+            return _SEQ.sub(rep, x)
+        return x
+    walk(node)
+    if bad:
+        _die(where, f'正文里指着建图时的临时号 {sorted(set(bad))}，可那几号最后没有对应的图'
+                    f'（现有 {sorted(table)}）—— 多半是图画不成被跳过了，而指它的那句话还在')
+    return node
 
 
 def number(exs, order, page=None, first=FIRST):
@@ -348,7 +430,9 @@ def resolve(payload, page, data_dir=None):
         local[TABLE_ID] = T['n']
 
     audit = os.environ.get('EXHIBITS_AUDIT')
-    if audit:
+    # 已经兑过一次的 payload（底座在自己的 payload() 里先兑、write_dash 再过一遍）没有占位符，
+    # 不许拿它覆盖掉第一次写下的那份带标记的审计副本。
+    if audit and _has_ph(payload):
         marked = json.loads(json.dumps(payload, ensure_ascii=False))
         _Resolver(page, local, data_dir, mark=True).walk(marked)
         os.makedirs(audit, exist_ok=True)

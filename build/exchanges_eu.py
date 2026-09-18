@@ -1976,7 +1976,9 @@ if HAS_VP:
                     '它带来的笔数比金额多，所以那一列的形状里有一块是<b>抬笔数、压每笔均值</b>的'
                     '并表效应，不是 Euronext 自身的结构变化。')
     ex.append({
-        'n': VP_N_DEC, 'kind': 'bridge_bar', 'full': True, 'height': 320,
+        # id：/enx/ 的页尾按 ⟨ex:exchanges-eu/trades-bridge⟩ 指到这张（build/exhibits.py）；
+        # 本页还没迁移到顺序表，号仍在这里手写。
+        'n': VP_N_DEC, 'id': 'trades-bridge', 'kind': 'bridge_bar', 'full': True, 'height': 320,
         'fmt': 'f1', 'label_fmt': 'f1', 'xrot': 0, 'xstep': 1,
         'xlabels': VP_LAB,
         'title': ('Euronext cash turnover growth split into trade count and average trade value '

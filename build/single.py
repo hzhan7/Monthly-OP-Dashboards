@@ -60,6 +60,7 @@ import pandas as pd
 
 import axisfmt
 import chartscale
+import exhibits         # 图号：每张图一个 id、spec['order'] 定图序、正文 ⟨ex:…⟩ 占位符
 import brief as B         # 数据总结（brief）的规则库与字数护栏（build/brief.py），全站共用
 import glossary as gloss   # 名词释义的版式层与护栏（build/glossary.py），全站共用
 import mrwin              # 窗口排版的裁决层（通栏 / x 标签抽稀），与台湾半导体 7 家共用
@@ -262,7 +263,16 @@ SPEC_KEYS = {'ticker', 'name', 'title', 'csv', 'ccy', 'source',
              #   由 spec 自己命名章节 —— 它们不属于任何一个 group，没有别的挂载点。
              #   `headline_style='none'` 下 ①② 那一段是空的，再写 headline_section 硬失败
              #   （死配置，见 HEADLINE_STYLES 上方那段）。
-             'brief', 'headline_section', 'season_section'}
+             'brief', 'headline_section', 'season_section',
+             # 'order'（2026-09-19 新增，可选）：图序。底座给每一类图一个固定 id
+             #   （`history-<列>` `yoy-<列>` `head-<列>` `bar-<列>` `lines-<首列>` `heat-<首列>`
+             #   `stock-<列>` `mix-<合计列>` `mix-abs-<合计列>` `share-<合计列>[-k]`
+             #   `season-<列>` `decomp-<量列>` `level-<列>`），不给 order 就按底座的缺省排法
+             #   （= 下面 payload() 那一套 ①–⑦ 与 stock_inline / at_end / after_group 开关）。
+             #   给了就是**整页的完整图序**：列一张 id 表，排第几就是 Exhibit 几（从 2 起）；
+             #   页面上有、表里没列的 id 构建失败，表里列了、本轮没出的 id 跳过。
+             #   缺省图序现印：`python3 build/single.py <t> --order`。机制见 build/exhibits.py。
+             'order'}
 SPEC_REQUIRED = {'ticker', 'name', 'title', 'csv', 'ccy', 'source', 'headline', 'groups'}
 COL_KEYS = {'col', 'zh', 'unit', 'fmt', 'stock', 'scale', 'ratio', 'no_yoy'}
 COL_REQUIRED = {'col', 'zh', 'unit', 'fmt'}
@@ -1956,6 +1966,11 @@ class Page:
 
     def __init__(self, spec, series_dir=SERIES):
         _check_keys(spec, SPEC_KEYS, SPEC_REQUIRED, 'SPEC')
+        if 'order' in spec and not (isinstance(spec['order'], (list, tuple))
+                                    and all(isinstance(i, (str, list, tuple))
+                                            for i in spec['order'])):
+            raise SpecError("SPEC['order'] 应当是 id 列表（缺省图序见 "
+                            "`python3 build/single.py <t> --order`）")
         self.spec = spec
         self.ticker = str(spec['ticker'])
         if not re.fullmatch(r'[a-z0-9-]+', self.ticker):
@@ -3709,7 +3724,8 @@ class Page:
         xl = [mlab(p) for p in win]
         zero_ok = bool(np.nanmin(v) >= 0)
         ex = {
-            'n': n, 'kind': 'lines', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
+            'n': n, 'id': f'history-{c["col"]}',
+            'kind': 'lines', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
             'xlabels': xl, 'xstep': max(1, len(win) // 14),
             'full': True, 'height': LINE_H_ENDLABEL, 'end_label': True,
             'title': f'{c["zh"]}：全历史与近 3 年分位带' if band else f'{c["zh"]}：全历史',
@@ -3784,6 +3800,7 @@ class Page:
                       diff_unit=c['unit'] if money else None)
         ex = bar_ex(n, f'{c["zh"]}：全历史水平值与单月同比', c, xl, v, rhs,
                     ylab2=rhs_ylab2(c, mom=True))
+        ex['id'] = f'head-{c["col"]}'
         ex['full'] = True
         ex['_cols'] = [c['col']]
         if rhs:
@@ -3824,7 +3841,7 @@ class Page:
         # grouped_bars 而不是 diverging_bars：后者的图例与表格列名被引擎写死成 COST 的
         # 文案（charts.js:1437/1522-1523），换任何一家都会印出「油汇顺风」。
         ex = {
-            'n': n, 'kind': 'grouped_bars',
+            'n': n, 'id': f'yoy-{c["col"]}', 'kind': 'grouped_bars',
             'fmt': (f'f{mdec}' if money else 'pp1') if ratio else 'pct1',
             # pp 族只有 pp0/pp1 两档，量级细的比率会被印成一列「0.0pp」——
             # 判据与次轴那条线同源，见 `pp_yfmt()`。钱的差连 pp0 都不能要。
@@ -3909,6 +3926,7 @@ class Page:
         avg12 = prior12(v) if (c['no_yoy'] and not rhs) else None
         ex = bar_ex(n, f'{gz}：{c["zh"]}', c, xl, v, rhs,
                     ylab2=rhs_ylab2(c), avg12=avg12)
+        ex['id'] = f'bar-{c["col"]}'
         if rhs:      # 次轴金线是单月口径的同比；rhs 没画出来就没有同比可点名
             cal = ('mom_money' if money else 'mom_pp') if ratio else 'mom'
             self.log_yoy(n, cal)
@@ -3955,7 +3973,8 @@ class Page:
         self.saw_group_lines = True     # 页尾「图型选择规则」按真画出来的图措辞
         names = ' / '.join(c['zh'] for c in cols)
         ex = {
-            'n': n, 'kind': kind, 'fmt': cols[0]['fmt'], 'xlabels': xl,
+            'n': n, 'id': f'lines-{cols[0]["col"]}',
+            'kind': kind, 'fmt': cols[0]['fmt'], 'xlabels': xl,
             # 标题优先列出序列名（读者一眼知道图上是哪几条）；名字太长就退回条数，
             # 免得标题折行把卡片顶开。
             'title': f'{gz}：{names}' if len(names) <= 30 else f'{gz}：{len(cols)} 条序列对比',
@@ -4035,7 +4054,8 @@ class Page:
         # 比值名走 `axis_short`（去掉末尾那对解释性括号），全名留在图例与图注里。
         names = ' / '.join(c['zh'] for c in cols)
         ex = {
-            'n': n, 'kind': 'grouped_bars', 'fmt': cols[0]['fmt'], 'xlabels': xl,
+            'n': n, 'id': f'lines-{cols[0]["col"]}',
+            'kind': 'grouped_bars', 'fmt': cols[0]['fmt'], 'xlabels': xl,
             'title': (f'{gz}：{names if len(names) <= 30 else "%d 条序列对比" % len(cols)}'
                       f'，右轴{axis_short(rr["zh"])}'),
             'ylab': cols[0]['unit'],
@@ -4193,7 +4213,7 @@ class Page:
         munit = kept[0]['unit'] if money else ''
         self.saw_group_heat = True      # 同上
         ex = {
-            'n': n, 'kind': 'heat_matrix', 'full': True,
+            'n': n, 'id': f'heat-{cols[0]["col"]}', 'kind': 'heat_matrix', 'full': True,
             'fmt': (mfmt if money else 'pp1') if ratio else 'pct0',
             'title': f'{gz}：{len(rows)} 条序列 × 近 {len(win)} 个月同比',
             'rows': rows, 'cols': [mlab(p) for p in win], 'matrix': M,
@@ -4307,6 +4327,7 @@ class Page:
             return None
         rhs = yoy_rhs(self.ser(c), win)
         ex = bar_ex(n, f'{gz}：{c["zh"]}（存量，期末口径）', c, xl, v, rhs, ylab2='% y/y')
+        ex['id'] = f'stock-{c["col"]}'
         if rhs:      # 存量的次轴同比是点对点口径（月末快照 vs 去年同月月末）
             self.log_yoy(n, 'stock')
             self.log_yoy_bar(n, c, win, 'stock', 'bar_yoy', f'groups「{gz}」的存量列')
@@ -4538,12 +4559,16 @@ class Page:
             # 从前两处都印 k：某一刀窗口不足没画成时，页面说「声明了 2 种」而 spec 写着 3 种，
             # 与同一页「本轮未出的派生图」里点名的那一刀当场打架。N == k 时措辞与从前逐字节相同。
             n_ = d.get('n_splits', k)
+            # 「合计柱之后连着出」是位置话：照最终图序现判（spec['order'] 可能把它们拆开）。
+            together = self._consecutive(([d['total_n']] if d['total_n'] else [])
+                                         + [j for j, _lb in d['shares']])
             bits.append(
                 f'「{d["gz"]}」声明了同一个合计（{d["total_zh"]}）的 {n_} 种切法，'
                 + (f'本轮画成其中 {k} 种（其余 {n_ - k} 种没画成，原因见「本轮未出的派生图」那一段），'
                    if n_ > k else '')
-                + (f'合计柱（Exhibit {d["total_n"]}）之后' if d['total_n'] else '')
-                + f'连着出 <b>{k} 张</b> 100% 占比堆叠（'
+                + (f'合计柱（Exhibit {d["total_n"]}）之后' if d['total_n'] and together else '')
+                + (f'连着出 <b>{k} 张</b> 100% 占比堆叠（' if together else
+                   f'出 <b>{k} 张</b> 100% 占比堆叠（')
                 + '、'.join(f'Exhibit {j}「{lb}」' for j, lb in d['shares'])
                 + '）：分母是同一列，只是切法不同，跨图的段不能相加也不能相减。')
         return '⚠️ <b>例外</b>：' + ''.join(bits)
@@ -4713,11 +4738,14 @@ class Page:
              a['zh'], f'groups「{gz}」.mix.alt_splits「{a["zh"]}」')
             for a in m['alt_splits']]
         shares, whys, k = [], [why_t], n + (1 if total else 0)
-        for sm, label, where in splits:
+        for si, (sm, label, where) in enumerate(splits):
             share, why_s = self.ex_mix_share(k, gz, sm, total_n=total_n_, total_zh=total_zh_,
                                              label=label, where=where)
             whys.append(why_s)
             if share is not None:
+                # id 跟着 spec 的声明走（第几刀），不跟画成了几张走：某一刀没画成，
+                # 后面那一刀的 id 不变，spec['order'] 里写的名字不会因此指到别的图上。
+                share['id'] = f'share-{m["total"]["col"]}' + (f'-{si + 1}' if si else '')
                 shares.append((share, sm, label))
                 k += 1
         if fold is not None:
@@ -5065,6 +5093,7 @@ class Page:
             # 点对点同比正是存量的合法默认口径。措辞与 `ex_stock` 保持逐字相同。
             ex = bar_ex(n, f'{gz}：{c["zh"]}（存量，期末口径）—— 水平值与点对点同比',
                         c, xl, v, rhs, ylab2='% y/y')
+            ex['id'] = f'mix-{c["col"]}'
             if rhs:
                 self.log_yoy(n, 'stock')
                 self.log_yoy_bar(n, c, win, 'stock', 'bar_yoy',
@@ -5093,6 +5122,7 @@ class Page:
 
         ex = bar_ex(n, f'{gz}：{c["zh"]} —— 水平值与单月同比', c, xl, v, rhs,
                     ylab2='% y/y（单月）')
+        ex['id'] = f'mix-{c["col"]}'
         if rhs:
             self.log_yoy(n, 'mom')
             self.log_yoy_bar(n, c, win, 'mom', 'bar_yoy', f'groups「{gz}」.mix 的合计柱')
@@ -5197,7 +5227,7 @@ class Page:
                             f'{off:.3e}（相对，上限 {MIX_RESID_TOL:.0e}）—— 底座算错了')
 
         ex = {
-            'n': n, 'kind': 'stacked_dual', 'height': 340,
+            'n': n, 'id': f'mix-abs-{tot_c["col"]}', 'kind': 'stacked_dual', 'height': 340,
             'fmt': tot_c['fmt'], 'xrot': 90,
             'title': f'{gz}：各分项绝对值堆叠（柱高 = {tot_c["zh"]}）',
             'xlabels': xl,
@@ -5487,7 +5517,8 @@ class Page:
             return None
         act = self.vals(c, win)
         ex = {
-            'n': n, 'kind': 'seasonality', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
+            'n': n, 'id': f'season-{c["col"]}',
+            'kind': 'seasonality', 'fmt': c['fmt'], 'label_fmt': c['fmt'],
             'xlabels': [mlab(p) for p in win],
             'title': f'{c["zh"]}：与同月常态比',
             'ylab': c['unit'],
@@ -5898,7 +5929,8 @@ class Page:
         share_zh = d['share_zh'] or (f'{d["qty"]["zh"]}份额' if bench else '')
         mix_zh = d['mix_zh'] or (f'{d["price_zh"]}相对行业（品种结构）' if bench else '')
         ex = {
-            'n': n, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
+            'n': n, 'id': f'decomp-{d["qty"]["col"]}',
+            'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
             'xlabels': xl, 'xrot': 0,          # 年度类别轴：标签不斜排
             'title': (f'{d["zh"]}：增长的量价分解'
                       + ('（一格 = 一个完整年度，末格 = 当年 YTD）' if ytd_info
@@ -6398,7 +6430,8 @@ class Page:
         share_zh = d['share_zh'] or (f'{d["qty"]["zh"]}份额' if bench else '')
         mix_zh = d['mix_zh'] or (f'{d["price_zh"]}相对行业（品种结构）' if bench else '')
         ex = {
-            'n': n, 'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
+            'n': n, 'id': f'decomp-{d["qty"]["col"]}',
+            'kind': 'bridge_bar', 'fmt': 'pct1', 'yfmt': 'pct0',
             # ⚠️ 不写 'xrot'（年度桶写的是 0）：见本方法 docstring 末尾那段。
             # full / height / xstep 同理一律不手写，交给 mrwin.layout_all()。
             'xlabels': xl2,
@@ -6887,6 +6920,7 @@ class Page:
         rhs = yoy_rhs(self.ser(c), win)
         ex = bar_ex(n, f'{t["zh"]}：水平值与单月同比', c, xl, v, rhs,
                     ylab2='% y/y（单月）')
+        ex['id'] = f'level-{c["col"]}'
         if rhs:
             self.log_yoy(n, 'mom')
             # 查重在这里，不在函数开头：要比的是**窗口**，而窗口这时候才算出来。
@@ -7216,6 +7250,10 @@ class Page:
         got = [d for d in (getattr(self, 'stock_inline_ns', None) or []) if d['ns']]
         if not got:
             return ''
+        # spec['order'] 改了图序（或重排演习）：这一段讲的是底座缺省排法下的位置，
+        # 最终先后不一样了就整段不印 —— 位置由 order 说了算，页面上看得见。
+        if getattr(self, '_reordered', False):
+            return ''
 
         def _ns(ns):
             return '、'.join(str(k) for k in ns)
@@ -7244,7 +7282,9 @@ class Page:
         self.latest = latest
         idx = list(self.df.index)
         newest = idx[-1]
-        ex, n = [], 2
+        # 图号计数器是 exhibits.Seq：照常 n += 1，但印进正文是 ⟨ex:#k⟩ 临时占位符 ——
+        # 本方法末尾 `_finalize_numbers()` 把它换成每张图的 id、再按 spec['order'] 编号。
+        ex, n = [], exhibits.Seq(2)
         _h0 = 0
         self.yoy_log = []       # 口径账本每次组装从零记，防重复调用时把图号记两遍
         # 「同一列画了几条同比」的账 + 撞上之后的告警，见 log_yoy_bar()。
@@ -7392,6 +7432,12 @@ class Page:
         for g in self.groups:
             if g['at_end']:
                 n = self._group_here(ex, n, g)
+
+        # ── 图序：全部 exhibit 都在 `ex` 里了，先把**最终**先后算出来（spec['order'] 覆盖
+        #    底座的缺省排法；重排演习的钩子也在这一步生效）。页尾几句按位置说话的话
+        #    （`stock_order_zh` 的「紧跟」、`mix_multi_zh` 的「之后连着出」）要照最终先后判，
+        #    号本身等本方法末尾 `_finalize_numbers()` 再编。
+        self._plan_order(ex)
 
         # ── 第二趟：把月度分解图注里那句**页面级**交叉引用填上（见 `_pleg_fill`）──
         # 位置是硬要求，不是随手放的：
@@ -7549,7 +7595,57 @@ class Page:
             if fast:
                 payload['source_date_fast'] = fast
                 payload['source_date_fast_label'] = mlab(newest)
+        self._finalize_numbers(payload)
         return payload, None
+
+    # ────────────────────── 图号：id + 顺序表 ──────────────────────
+    def _plan_order(self, ex):
+        """全部图建完之后、页尾文案之前：定下最终图序（不编号）。
+
+        缺省图序 = 底座建图的先后（①–⑦ 与 stock_inline / at_end / after_group 那套开关）；
+        spec 给了 `order` 就照它。`self._reordered` 记「最终先后与建图先后是否不同」——
+        页尾那几句按建图先后说位置的话，只在两者相同时才照原样印。"""
+        built = [e['id'] for e in ex]
+        order = self.spec.get('order') or built
+        final = exhibits.final_ids(built, order, self.ticker)
+        self._order = order
+        self._reordered = final != built
+        self._fpos = {i: k for k, i in enumerate(final)}
+        self._seq2id = {int(e['n']): e['id'] for e in ex}
+
+    def _consecutive(self, seqs):
+        """这几张（建图时的号）在最终图序里是不是一张挨一张、且就是这个先后。"""
+        p = [self._fpos[self._seq2id[int(k)]] for k in seqs]
+        return p == list(range(p[0], p[0] + len(p))) if p else True
+
+    def _finalize_numbers(self, payload):
+        """正文里的 ⟨ex:#k⟩ → ⟨ex:id⟩ → 按顺序表编号并兑成最终图号（build/exhibits.py）。
+
+        在 payload() 里就兑完而不是全留给 write_dash：test_guards 与各 spec 的自检直接读
+        payload() 的产物（图号、图注里的「见 Exhibit k」），它们要看到的是最终的号。
+        write_dash 再过一遍时这里已经没有占位符，那一遍是空操作。"""
+        ex = payload['exhibits']
+        tab = dict(self._seq2id)
+        T = payload.get('table')
+        if T is not None and T.get('n') is not None:
+            tab[int(T['n'])] = exhibits.TABLE_ID
+            del T['n']
+        exhibits.bind_seq(payload, tab, where=f'[{self.ticker}]')
+        for e in ex:
+            e.pop('n', None)
+        payload['order'] = self._order
+        exhibits.resolve(payload, self.ticker)
+        # 建图时的号 → 最终号：build() 打印维护者清单时用（那几本账记的是建图时的号）。
+        fin = {e['id']: e['n'] for e in ex}
+        self._final_n = {k: fin.get(i, i) for k, i in self._seq2id.items()}
+
+    def fn(self, k):
+        """建图时的号（exhibits.Seq）→ 最终图号，只给 build() 的控制台清单用。"""
+        return getattr(self, '_final_n', {}).get(int(k), k) if k is not None else k
+
+    def fn_txt(self, s):
+        """控制台那几行里现成的 ⟨ex:#k⟩（分解自检行拼进去的）换成最终图号。"""
+        return re.sub(r'⟨ex:#(\d+)⟩', lambda m: str(self.fn(int(m.group(1)))), str(s))
 
     # ────────────────────── 口径与方法说明 ──────────────────────
     def notes(self, latest, common, ex, scaled, newest, disp, _scales=()):
@@ -8076,8 +8172,8 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     for d in (getattr(page, 'dup_yoy', None) or []):
         if not quiet:
             a, b = d['a'], d['b']
-            print(f'[{t}] ⚠️ 同一条同比画了两遍：Exhibit {a["n"]}（{a["where"]}，'
-                  f'{a["win"][0]}–{a["win"][1]} {a["win"][2]} 个月）与 Exhibit {b["n"]}'
+            print(f'[{t}] ⚠️ 同一条同比画了两遍：Exhibit {page.fn(a["n"])}（{a["where"]}，'
+                  f'{a["win"][0]}–{a["win"][1]} {a["win"][2]} 个月）与 Exhibit {page.fn(b["n"])}'
                   f'（{b["where"]}，{b["win"][0]}–{b["win"][1]} {b["win"][2]} 个月）'
                   f'同列 {d["col"]}、同口径 {d["cal"]}'
                   + ('，窗口也逐格相同' if a['win'] == b['win'] else '，窗口不同'))
@@ -8089,7 +8185,7 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     for d in (getattr(page, 'mix_folded', None) or []):
         if not quiet:
             print(f'[{t}] ⚠️ 合计柱有意不出：groups「{d["gz"]}」.mix 的 {d["col"]} '
-                  f'折进 Exhibit {d["n"]}（{d["where"]}，{d["wide"][0]}–{d["wide"][1]} '
+                  f'折进 Exhibit {page.fn(d["n"])}（{d["where"]}，{d["wide"][0]}–{d["wide"][1]} '
                   f'{d["wide"][2]} 个月），本组这张本来要画 {d["own"][0]}–{d["own"][1]} '
                   f'{d["own"][2]} 个月（是它{d["side"]}）'
                   + ('' if d['share_drawn'] else
@@ -8106,25 +8202,25 @@ def build(spec, series_dir=SERIES, out_dir=DATA, quiet=False):
     # 而不必去散文里翻一个会过期的数。
     for z in (getattr(page, 'nz_ns', None) or []):
         if not quiet:
-            print(f'[{t}] ⚠️ Exhibit {z["n"]} 近零基数：{z["col"]}（{z["zh"]}）'
+            print(f'[{t}] ⚠️ Exhibit {page.fn(z["n"])} 近零基数：{z["col"]}（{z["zh"]}）'
                   f'窗口内 {z["k"]}/{z["n_base"]} 个月基期近零（{z["share"]:.1%}）'
                   + (f'，右轴已截到 +{z["cap"]:.0f}%' if z['cap'] else '，未截轴'))
     # 尖刺截轴同理：这一行是给维护者的清单，好让「今天到底截了哪几张、截在多少」
     # 随时能重跑出来，而不必去页面散文里翻一个会过期的数。
     for z in (getattr(page, 'cap_ns', None) or []):
         if not quiet:
-            print(f'[{t}] ⚠️ Exhibit {z["n"]} 尖刺截轴：上界 {z["cap"]:,.0f} {z["unit"]}'
+            print(f'[{t}] ⚠️ Exhibit {page.fn(z["n"])} 尖刺截轴：上界 {z["cap"]:,.0f} {z["unit"]}'
                   f'（Tukey 栅栏 {z["fence"]:,.0f}、日常上沿占未截轴的 {z["head"]:.1%}）'
                   f'，{len(z["over"])} 个越界点：'
                   + '、'.join(f'{m} {nm} {v:,.0f}' for m, nm, v in z['over']))
     for line in (getattr(page, 'decomp_report', None) or []):
         if not quiet:
-            print(f'[{t}] {line}')
+            print(f'[{t}] {page.fn_txt(line)}')
     for n_, sym, det in (getattr(page, 'tight', None) or []):
         # 不硬失败：压 1px 的图仍然读得出来，而硬失败会让 monthly_run 停更整页。
         # 但必须响 —— 这是 VISUAL_QA §3.F 那 18 处压字唯一的自动化哨兵。
         if not quiet:
-            print(f'[{t}] ⚠️ Exhibit {n_} {sym}：{det}')
+            print(f'[{t}] ⚠️ Exhibit {page.fn(n_)} {sym}：{det}')
     if getattr(page, 'md_fixed', 0) and not quiet:
         print(f'[{t}] spec 的 notes 里有 {page.md_fixed} 条用了 Markdown 的 **粗体**，'
               f'已替换成 <b>（notes 走 innerHTML，星号会原样印在页面上）')
@@ -8152,6 +8248,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description='单公司页通用底座：spec → data/<ticker>.js')
     ap.add_argument('tickers', nargs='*', help='要构建的 ticker（= build/specs/<t>.py）')
     ap.add_argument('--all', action='store_true', help='构建 build/specs/ 下的全部配置')
+    ap.add_argument('--order', action='store_true',
+                    help='不写文件，只打印当前图序（id + 图号 + 标题）；整段抄进 spec 的 order 再改就能挪图')
     a = ap.parse_args(argv)
     ts = list(a.tickers)
     if a.all:
@@ -8187,6 +8285,21 @@ def main(argv=None):
             # `--all` 展开后全被挡下不可能发生（specs/ 里还有 9 家交易所）。
             return 1
 
+    if a.order:
+        for t in ts:
+            page = Page(load_spec(t))
+            pay, why = page.payload()
+            if pay is None:
+                print(f'# [{t}] 门槛没到，排不出图序：{why}')
+                continue
+            src = 'spec 的 order' if page.spec.get('order') else '底座缺省排法'
+            print(f"# [{t}] 当前图序（{src}）。抄进 build/specs/{t}.py 的 SPEC 里，"
+                  f"挪行就是挪图；Exhibit 1 是汇总表，核对表自动接在最后。")
+            print("    'order': [")
+            for e in pay['exhibits']:
+                print(f"        {e['id']!r},  # Exhibit {e['n']}：{e['title'][:70]}")
+            print('    ],')
+        return 0
     for t in ts:
         build(load_spec(t))
     return 0

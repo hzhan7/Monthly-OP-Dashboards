@@ -478,7 +478,7 @@ _NO_DECOMP_NOTE = (
         if (_VN and (_VN, _VM0, _VGAP) == (_TN, _TM0, _TGAP)) else
         '成交额 ADV 与成交笔数 ADV 逐月成对'))
     + '），欧洲横截面页 '
-    '<code>build/exchanges_eu.py</code> 的 Exhibit 15 就用这一对画了'
+    '<code>build/exchanges_eu.py</code> 的 Exhibit ⟨ex:exchanges-eu/trades-bridge⟩ 就用这一对画了'
     '「成交额 = 笔数 × 每笔均值」的对数分解。但那张图的结论是'
     '<b>「增长率分解成立、绝对水平不可读」</b>：官方同一张表里金额列<b>单边计</b>、'
     '笔数列<b>买卖双边计</b>，两者相除得到的不是每笔真实成交额，'
