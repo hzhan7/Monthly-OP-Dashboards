@@ -217,6 +217,12 @@ def write_dash(path, payload, gen):
     payload window.DASH 的内容
     gen     生成器名（= ticker），只用于首行注释与报错前缀
     """
+    # 轴刻度小数位收口放在这个唯一写出点：以前靠各生成器自己记得调 axisfmt.fix_all，
+    # schw / ibkr / lpla / cboe / wealth 五家没调，2.5 步长的轴就印成「15│13│10」，
+    # 一个字段的修复前后牵动过五个会话（2026-09-16）。fix() 幂等、只加小数位不减，
+    # 已经自己调过的生成器在这里再过一遍是零变化。
+    import axisfmt
+    axisfmt.fix_all(payload.get('exhibits'))
     try:
         check(payload)
     except PayloadGuardError as e:

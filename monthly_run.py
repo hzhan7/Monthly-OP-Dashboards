@@ -68,11 +68,13 @@ preflight（跑在下载之前，查的都是**配置与代码**，与本轮数�
 
 分界线是「查配置/代码」还是「查产物」：后两道在 preflight 阶段只能看到**上一轮**的
 `data/*.js`，在那儿跑证明不了这一轮。逐条理由与代价写在各自的调用处。
-仓库里还有三个自测/校验脚本**没有**接进来，别把上面那四道读成「全站闸门都自动跑了」:
+`tools/visual_qa.py` 2026-09-19 起接在收尾两道之后，但**只告警、不拦发布**（实测全站约 30 秒；
+理由见 visual_qa_alert() 的调用处）。
+仓库里还有两个自测/校验脚本**没有**接进来，别把上面那四道读成「全站闸门都自动跑了」:
 `build/verify_base_prices.py`（联网下 4MB 官方文件，它自己的文件头就明写「不进 cron」）、
-`tools/visual_qa.py`（每页都要用 headless Chrome 真渲染一遍；本轮没量过它的耗时）、
 `build/test_pools.py`（纯标准库、实测 0.06s，位置和 test_guards 一模一样，接得进来 ——
 接后三道那一轮只改了这三个调用点，它就仍然只能靠人手敲）。
+人手跑全部闸门用 `python3 tools/gate.py`（一条命令、约 30 秒）。
 
 护栏保持不变，且仍然是「宁可不发也不发错」:
   · 提交范围只有 `data/` 与 `series/`；这两个目录以外有未提交改动就直接 FAILED 退出（见 guard_dirty_tree）
@@ -569,6 +571,26 @@ def report_registry():
         print(f'    · {m}')
     print('    删一家要动五个地方，清单见 docs/CRON_WIRING.md')
     print(bar)
+
+
+def visual_qa_alert():
+    """整站截图 + 机器判据，约 30 秒。有 🔴 只打印（最多 8 条），不改退出码、不进末行。"""
+    t0 = time.time()
+    out = f'/tmp/visual_qa_cron_{os.getpid()}'
+    r = subprocess.run([sys.executable, os.path.join(HERE, 'tools', 'visual_qa.py'),
+                        '--all', '--no-shots', '--out', out],
+                       cwd=HERE, capture_output=True, text=True)
+    lines = [x for x in (r.stdout + r.stderr).splitlines() if x.strip()]
+    dt = time.time() - t0
+    if r.returncode == 0:
+        summary = next((x.strip() for x in reversed(lines) if '🔴' in x), '')
+        print(f'── visual_qa（只告警）—— 通过，{dt:.1f}s  {summary}')
+        return
+    reds = [x.strip() for x in lines if '🔴' in x][:8]
+    print(f'── visual_qa（只告警，不拦发布）—— 退出码 {r.returncode}，{dt:.1f}s，'
+          f'报告 {out}/report.md')
+    for x in reds or lines[-5:]:
+        print(f'  ⚠ {x}')
 
 
 def run_gate(name, cmd, quiet_on_pass=False):
@@ -2468,6 +2490,11 @@ def main():
     if run_gate('check_yoy_caliber（同比口径，CONTRACT §6.6）',
                 [sys.executable, os.path.join(HERE, 'tools', 'check_yoy_caliber.py')]) != 0:
         gate_fail.append('check_yoy_caliber')
+    # 像素层（visual_qa）：**只告警、不拦发布**，也不进 fails。它抓的是轴刻度、越界、压字、
+    # 横向滚动这类「读者看得出、但数没错」的版式问题 —— 为这类问题让 34 页当天都停更，
+    # 违背所有者 2026-09-19 定的口径（不影响阅读的小问题不花大力气）。数错了由上面两道拦。
+    # 输出目录按进程隔离：默认的 /tmp/visual_qa 全机共用，并发会话会互相覆盖报告。
+    visual_qa_alert()
     # 重述台账体检（定案与判据见 report_restatement_logs 上方那段）。它与 audit_stale_cols 同档，
     # 却不跟着它印，是按**谁读得到**摆的：调度任务把 stdout 整份 tee 进日志，会话里看的是 tail -60。
     # 2026-09-12 那轮日志 197 行，lseg_tradeweb 自己那句「⚠ 12 处与已入库值冲突」在第 64 行，

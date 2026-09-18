@@ -1,0 +1,5 @@
+# data/*.js 是生成物（正文一行 JSON），两条分支都重建过同一页就必然整行冲突，手挑哪边都是错的。
+# 内建的 merge=binary：冲突时不插冲突标记、工作区保留本分支那份，但路径仍是 unmerged ——
+# 提交不了，逼你按合并后的源码重建：python3 tools/rebuild.py && git add data/
+# -diff：git diff / git log -p 不再刷出 100KB 的整行 JSON（--stat 与 --name-only 照常）。
+data/*.js merge=binary -diff
