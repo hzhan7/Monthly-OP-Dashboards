@@ -38,6 +38,7 @@ import pandas as pd
 
 import brief as B
 import axisfmt
+import exhibits                         # 图号：ORDER 定图序、正文 ⟨ex:…⟩ 占位符（build/exhibits.py）
 import glossary as gloss                # 名词释义的版式层与护栏，全站共用
 import mrwin                            # 通栏 / x 标签抽稀的裁决层，与 single.py 共用
 import payload_guard
@@ -150,15 +151,52 @@ CLS_REV = [(c, nm, cl, k, m, zh) for (c, nm, cl), (k, m, zh) in zip(CLS, CLS_RPC
 # 三件事都由 4.9 节的兜底⓪现读 payload 核对，外部工具指望不上：
 # build/verify_pages.py 只把重号判 ERROR、编号倒退判 WARN，**跳号一声不吭**，
 # 而 main() 那行 `Exhibit {ex[0]['n']}-{ex[-1]['n']}` 假定连号，有洞时会静默印出假区间。
-EX_ADV, EX_DAYCOUNT, EX_MIX = 2, 3, 4
-EX_MAJORS, EX_MINORS = 5, 6          # 品种曲线：两大品种 / 四小品种，见下方拆图说明
-EX_RATES, EX_EQUITY, EX_ENERGY = 7, 8, 9        # 六张品种 ADV 柱，次序照原 deck（见下）
-EX_FX, EX_METALS, EX_AG = 10, 11, 12
-EX_OI = 13                                      # 全页唯一读**存量**（月末快照）的一张
-EX_REV, EX_REVMIX, EX_DECOMP = 14, 15, 16       # 收入：水平值 → 品种结构 → 量价分解
-EX_RPC = 17                                     # 全页唯一的季度刻度图
-EX_HEAT_YOY, EX_HEAT_SHARE = 18, 19
-EX_TABLE = 20
+#
+# ⚠️ 2026-09-19 起**页面上的图号由下面的 ORDER 决定，不由这些常量决定**（build/exhibits.py）。
+# 这些常量现在是 exhibits.Seq：**建图时的号**，也是每张图在本文件里的钥匙（登记簿、豁免表都按它查）；
+# 印进正文时是占位符，写盘时换成 ORDER 排出来的最终号。缺省 ORDER 与建图顺序相同，
+# 所以没挪过图时两者逐一相等；挪图只改 ORDER，这里一个字都不用动。
+_S = exhibits.Seq
+EX_ADV, EX_DAYCOUNT, EX_MIX = _S(2), _S(3), _S(4)
+EX_MAJORS, EX_MINORS = _S(5), _S(6)                 # 品种曲线：两大品种 / 四小品种，见下方拆图说明
+EX_RATES, EX_EQUITY, EX_ENERGY = _S(7), _S(8), _S(9)   # 六张品种 ADV 柱，次序照原 deck（见下）
+EX_FX, EX_METALS, EX_AG = _S(10), _S(11), _S(12)
+EX_OI = _S(13)                                      # 全页唯一读**存量**（月末快照）的一张
+EX_REV, EX_REVMIX, EX_DECOMP = _S(14), _S(15), _S(16)  # 收入：水平值 → 品种结构 → 量价分解
+EX_RPC = _S(17)                                     # 全页唯一的季度刻度图
+EX_HEAT_YOY, EX_HEAT_SHARE = _S(18), _S(19)
+EX_TABLE = _S(20)
+
+#: 每张图的 id（ORDER 里写的就是它）。建图时的号 → id。
+EX_ID = {EX_ADV: 'adv', EX_DAYCOUNT: 'daycount', EX_MIX: 'mix',
+         EX_MAJORS: 'majors', EX_MINORS: 'minors',
+         EX_RATES: 'rates', EX_EQUITY: 'equity', EX_ENERGY: 'energy',
+         EX_FX: 'fx', EX_METALS: 'metals', EX_AG: 'ag', EX_OI: 'oi',
+         EX_REV: 'rev', EX_REVMIX: 'rev-mix', EX_DECOMP: 'rev-bridge', EX_RPC: 'rpc',
+         EX_HEAT_YOY: 'heat-yoy', EX_HEAT_SHARE: 'heat-share'}
+
+# ── 图序：挪图只改这一张表 ─────────────────────────────────────────────────
+# 排第几项就是 Exhibit 几（从 2 起；Exhibit 1 是汇总表，核对表自动接在最后）。
+ORDER = [
+    'adv',          # Total average daily volume
+    'daycount',     # Total volume vs. ADV growth: the day-count gap
+    'mix',          # ADV mix by asset class
+    'majors',       # ADV by asset class: rates and equity index
+    'minors',       # ADV by asset class: energy, ag, FX and metals
+    'rates',        # Interest-rate complex ADV
+    'equity',       # Equity-index complex ADV
+    'energy',       # Energy complex ADV
+    'fx',           # FX complex ADV
+    'metals',       # Metals complex ADV
+    'ag',           # Agricultural complex ADV
+    'oi',           # Month-end total open interest
+    'rev',          # Implied transaction revenue
+    'rev-mix',      # Implied revenue mix across the six complexes
+    'rev-bridge',   # Implied revenue growth split by month: contracts vs. rate per contract
+    'rpc',          # Rate per contract by asset class
+    'heat-yoy',     # Total ADV y/y growth, single month
+    'heat-share',   # Interest-rate share of total ADV
+]
 
 #: **末尾核对表**的行数 —— 这是表的窗口，不是任何一张图的窗口。表的用途是拿着它和
 #: 公司披露逐行对，127 行没人对得完，所以它留在 13 个月。
@@ -2872,13 +2910,17 @@ if len(_hl_ttm) != 1 or _hl_bad:
 
 
 def main():
+    # 图号：每张图补上 id、正文里建图时的号换成 ⟨ex:id⟩，交出 ORDER；
+    # write_dash 按 ORDER 编号、兑成最终号（build/exhibits.py）。
+    exhibits.bind_ids(payload, EX_ID, EX_TABLE, where='build/cme')
+    payload['order'] = ORDER
     # 写出前先过 CONTRACT §5.5 护栏（NaN/Infinity 一律拒写）；首行注释与序列化都在里面。
     payload_guard.write_dash(OUT, payload, 'cme')
     print(f'数据截至 {CUR} | 月份 {df.index[0]} → {LATEST}（{len(df)}）')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张）+ '
           f'Exhibit {table["n"]} 核对表')
     print(f'写出 {OUT}（{os.path.getsize(OUT) / 1024:.1f} KB）')
-    print(DECOMP_CHECK)
+    print(exhibits.console(DECOMP_CHECK, EX_ID, payload))
     print(payload['headline'])
 
 

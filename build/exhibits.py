@@ -183,7 +183,43 @@ class Seq(int):
         return str(self) if not spec else format(int(self), spec)
 
 
+def tag(e, i):
+    """给一张已经建好的图补 id，放在 'n' 后面（没有 'n' 就放第一位）。就地改。"""
+    rest = [(k, v) for k, v in e.items() if k not in ('n', 'id')]
+    n = e.get('n')
+    had_n = 'n' in e
+    e.clear()
+    if had_n:
+        e['n'] = n
+    e['id'] = i
+    e.update(rest)
+    return e
+
+
+def bind_ids(payload, ids, table_seq=None, where=''):
+    """「建图时的号是 Seq、正文里是 ⟨ex:#k⟩」的生成器，写盘前的收口：
+    ids = {Seq: id}（每张图建图时的号 → 它的 id）。给每张图补 id、把正文换成 ⟨ex:id⟩；
+    编号留给 write_dash（它按 payload['order'] 把 Seq 就地换成最终号）。"""
+    tab = {int(k): v for k, v in ids.items()}
+    for e in payload.get('exhibits') or []:
+        k = int(e['n'])
+        if k not in tab:
+            _die(where, f'建图时的号 {k} 没有登记 id（标题：{e.get("title", "")!r}）')
+        tag(e, tab[k])
+    if table_seq is not None:
+        tab[int(table_seq)] = TABLE_ID
+    return bind_seq(payload, tab, where)
+
+
 _SEQ = re.compile(r'⟨ex:#(\d+)⟩')
+
+
+def console(text, ids, payload):
+    """只给控制台打印用：正文之外那几行自检里拼进去的 ⟨ex:#k⟩ 换成最终号。
+    ids = {Seq: id}，payload 是 write_dash 之后（已编号）的那份。"""
+    fin = {e.get('id'): e.get('n') for e in payload.get('exhibits') or []}
+    k2n = {int(k): fin.get(i) for k, i in ids.items()}
+    return _SEQ.sub(lambda m: str(k2n.get(int(m.group(1)), m.group(0))), str(text))
 
 
 def bind_seq(node, table, where=''):
