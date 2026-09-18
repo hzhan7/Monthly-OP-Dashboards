@@ -1978,7 +1978,7 @@ def build_payload(raw, specs, fx, kconst):
                    '所以颜色只在本图内部可比，不要拿去和别的热力图对望。'
                  + (f'缺常数的 <b>{"、".join(DISP[k] for k in band_keys)}</b> 不在本图：'
                     '它们的年度同比是区间不是点值，塞进热力图会被读成实测值。'
-                    '它们拆到产品块之后每一格都是精确的 —— 那就是下一张图。'
+                    '它们拆到产品块之后每一格都是精确的 —— 那就是⟨ex:block-heat@+1:下一张图⟩。'
                     if band_keys else '')),
     })
 
@@ -2007,7 +2007,7 @@ def build_payload(raw, specs, fx, kconst):
             'cell_h': 22, 'row_lab_w': 204, 'row_head': '交易所·产品块',
             'src_extra': ('Each row is a single product block, so its own base constant cancels '
                           'out of the growth rate entirely. No unknown constant enters any cell'),
-            'note': ('<b>这张图是上一张的补集，也是「缺常数不等于看不见增长」的直接证明。</b>'
+            'note': ('<b>这张图是⟨ex:annual-heat@-1:上一张⟩的补集，也是「缺常数不等于看不见增长」的直接证明。</b>'
                      '每一行都是<b>一个</b>产品块（或一组常数已知、权重因而已知的块），'
                      '块自己的基期常数在同比里被完全约掉 ⇒ <b>每一格都是精确值</b>，'
                      '和常数齐备的家享有同等的可信度。'

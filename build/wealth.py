@@ -1579,10 +1579,10 @@ ex.append({
     **brks(I18, ASSET_BRK),
     'note': (firms_note(inc2, exc2,
                         (f'Robinhood 的月度经营指标最早只到 {mlab(_HOOD_F)}（天花板的举证见'
-                         f'下一张图的图注），够不到 {mlab(B18)} 的基期 —— '
+                         f'⟨ex:assets-rebased-4@+1:下一张图⟩的图注），够不到 {mlab(B18)} 的基期 —— '
                          if _HOOD_F else 'Robinhood 的月度经营指标够不到这个基期 —— ')
                         + '把它从自己的首月当 100 起画，会与另外三家比出一个纯属基期不同的假斜率；'
-                          '四家同基期的版本见下一张。')
+                          '四家同基期的版本见⟨ex:assets-rebased-4@+1:下一张⟩。')
              + f'<b>基期 {mlab(B18)} 是算出来的，不是挑的</b>：'
              + '、'.join(f'{NAME[t]} 自 {mlab(_first(f"{t}_assets"))} 起'
                          for t in LONG3 if t in HAS and _first(f'{t}_assets'))

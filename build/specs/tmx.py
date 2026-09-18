@@ -1316,7 +1316,8 @@ _NOTE_MIX_STIR = (
 )
 
 _NOTE_MIX_STIR_OI = (
-    '<b>与上面那张 ADV 占比图读法相同，但口径是存量。</b>ADV 那张回答「这个月的成交'
+    '<b>与⟨ex:share-mx_adv_stir_futures_contracts@<:上面那张⟩ ADV 占比图读法相同，但口径是存量。</b>'
+    'ADV 那张回答「这个月的成交'
     '在哪个合约上」，这张回答「月末还挂着的仓位在哪个合约上」——'
     '换代期间后者滞后于前者（旧合约的仓位要等到期才消失），两张并读才看得出迁移的节奏。'
     + _since_resid('mx_oi_stir_futures_contracts',
