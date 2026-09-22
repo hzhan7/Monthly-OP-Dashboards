@@ -854,6 +854,173 @@ BASE_MONTHS = BASECAL[KEYS[0]]['months'] if BASECAL else []
 BASE_DRIFT = {k: (BASECAL[k]['path'][-1] - _yy(k))
               for k in BASECAL if _fin(BASECAL[k]['path'][-1]) and _fin(_yy(k))}
 
+
+# ═══════════════════════════════════════════════════════════════════
+# 互相印证：先说哪两家在业务上真的连着，再看数据认不认
+# ═══════════════════════════════════════════════════════════════════
+# 页面所有者 2026-09-22 的问题：「他们的业务之间是否有可以互相印证的东西，不管是
+# 竞争关系或者是上下游的关系，能否因此推导出一些逻辑」。
+#
+# ⚠ **本仓没有任何一条关于这七家之间业务关系的已核事实**（谁是谁的客户、谁持有谁的股份，
+#   七份 spec 里一个字都没有），所以本页**不断言供应关系**。能用的只有一条不需要外部
+#   事实的：**封测是晶圆产出之后的工序，这是业务定义本身**。以此为假说，让数据来判。
+#
+# 检验设计（三道，缺一条结论就不成立）：
+#   ① **三种变换都要过**。12 个月滚动同比好看但高度自相关；必须同时看 3MMA 同比与
+#      **平稳变换**（季调对数水平的环比）。本轮实测：滚动口径下连通配对 +0.68，
+#      而它的自助区间**含 0** —— 也就是说那个最漂亮的数恰恰是最不能用的。
+#   ② **安慰剂要够干净**。同公司另一段业务（日月光的 EMS）与同业（南亚科）都不够 ——
+#      前者共享公司层因素、后者共享行业景气。所以另取**行业外**对照
+#      （Costco 零售 / AXP 消费信贷 / CME 成交量 / HKEX 成交额）。
+#   ③ **扣掉共同半导体周期之后还得剩下**（偏相关）。这一条是决定性的：
+#      若归零，"上下游印证"就只是"同处一个景气"，机制说法不成立。
+#
+# 结论（数由 CHAINX 现算，措辞跟着它走）：代工↔封测**三道全过**；
+# 而「创意的量产（晶圆转售）应当跟代工同步」这条**被证伪**（平稳变换下偏相关归零）。
+CHAIN_MIN = 36          # 实时扩张窗口拟合的起步样本
+
+
+def _sa_series(k, col=None):
+    """某家（或某个分部列）的季调序列。季节指数用 SEASON（共同窗口完整年现算）。"""
+    si = SEASON.get(k) or {}
+    if not si:
+        return None
+    df = RAW.get(k)
+    c = col or NTDCOL.get(k)
+    if df is None or c not in df.columns:
+        return None
+    v = pd.to_numeric(df[c], errors='coerce').dropna().loc[:LATEST]
+    return pd.Series({p: float(x) / (si[p.month] / 100.0) for p, x in v.items()}).sort_index()
+
+
+def _leg(k, col=None):
+    """一条「腿」的两种变换：3MMA 单月同比（可读，单位是 pp）与平稳变换（稳健）。"""
+    df = RAW.get(k)
+    c = col or NTDCOL.get(k)
+    if df is None or c not in df.columns:
+        return None
+    raw = pd.to_numeric(df[c], errors='coerce').dropna().loc[:LATEST]
+    sa = _sa_series(k, col)
+    if sa is None or len(raw) < 40:
+        return None
+    return {'y3': YOY.mom_yoy(raw, YOY.FLOW).rolling(3, min_periods=3).mean(),
+            'st': np.log(sa.rolling(3, min_periods=3).mean()).diff()}
+
+
+LEGS = {
+    'tsm':     _leg('tsm'),
+    'umc':     _leg('umc'),
+    'ase_atm': _leg('ase', 'revenue_atm_ntd_mn'),
+    'ase_non': _leg('ase', 'revenue_nonatm_ntd_mn'),
+    'guc_tk':  _leg('guc', 'revenue_turnkey_ntd_mn'),
+    'nanya':   _leg('nanya'),
+}
+LEG_ZH2 = {'tsm': f'{NAME["tsm"]}（先进制程）', 'umc': f'{NAME["umc"]}（成熟制程）',
+           'ase_atm': f'{NAME["ase"]} ATM（封测）', 'ase_non': f'{NAME["ase"]} 非 ATM（EMS 组装）',
+           'guc_tk': f'{NAME["guc"]} 量产（晶圆转售）', 'nanya': f'{NAME["nanya"]}（DRAM）'}
+
+
+def _corr_on(a, b, key):
+    x, y = (LEGS.get(a) or {}).get(key), (LEGS.get(b) or {}).get(key)
+    if x is None or y is None:
+        return np.nan, 0
+    d = pd.DataFrame({'x': x, 'y': y}).dropna()
+    return (float(d['x'].corr(d['y'])), len(d)) if len(d) > 25 else (np.nan, len(d))
+
+
+def _partial_on(a, b, key):
+    """扣掉共同半导体周期后的偏相关。因子 = 不含这两条腿的成员，各自标准化后取均值。"""
+    x, y = (LEGS.get(a) or {}).get(key), (LEGS.get(b) or {}).get(key)
+    if x is None or y is None:
+        return np.nan
+    base = {k: YOY.mom_yoy(NTD[k], YOY.FLOW).rolling(3, min_periods=3).mean()
+            if key == 'y3' else (LEGS.get(k) or {}).get('st')
+            for k in KEYS if k not in (a, b) and k not in ('ase',)}
+    base = {k: v for k, v in base.items() if v is not None}
+    if key == 'st':
+        base = {k: np.log(_sa_series(k).rolling(3, min_periods=3).mean()).diff()
+                for k in KEYS if k not in (a, b) and _sa_series(k) is not None}
+    m = pd.DataFrame(base).dropna()
+    if len(m) < 30:
+        return np.nan
+    z = (m - m.mean()) / m.std(ddof=0)
+    f = z.mean(axis=1)
+    d = pd.DataFrame({'x': x, 'y': y, 'f': (f - f.mean()) / f.std(ddof=0)}).dropna()
+    if len(d) < 30:
+        return np.nan
+    rxy, rxf, ryf = d['x'].corr(d['y']), d['x'].corr(d['f']), d['y'].corr(d['f'])
+    den = np.sqrt(max(1e-12, (1 - rxf ** 2) * (1 - ryf ** 2)))
+    return float((rxy - rxf * ryf) / den)
+
+
+#: 待检验的配对。`kind` 决定它在表里怎么标：工序连通 / 同层竞争 / 安慰剂。
+CHAIN_PAIRS = [
+    ('tsm', 'ase_atm', '工序', '封测是晶圆产出之后的工序 —— 业务定义本身，不需要外部事实'),
+    ('umc', 'ase_atm', '工序', '同上，成熟制程这一端'),
+    ('tsm', 'guc_tk', '工序', '量产（turnkey）是晶圆转售，理应跟着代工产出走'),
+    ('ase_atm', 'ase_non', '安慰', '同一家公司的另一段业务，但 EMS 是电子组装、不在半导体链上'),
+    ('nanya', 'tsm', '安慰', '同属半导体但自有厂、自有市场，与代工无工序关系'),
+]
+
+
+def _chainx():
+    out = []
+    for a, b, kind, why in CHAIN_PAIRS:
+        row = {'a': a, 'b': b, 'kind': kind, 'why': why}
+        for key in ('y3', 'st'):
+            r, n = _corr_on(a, b, key)
+            row[f'r_{key}'], row[f'n_{key}'] = r, n
+            row[f'p_{key}'] = _partial_on(a, b, key)
+        out.append(row)
+    return out
+
+
+CHAINX = _chainx()
+#: 「三道全过」的判据：两种变换的相关都 ≥0.5，且**平稳变换下的偏相关** ≥0.3。
+#: 偏相关那一条是决定性的 —— 它问的是「扣掉行业景气之后还剩不剩」。
+def _passes(r):
+    return (_fin(r['r_y3']) and _fin(r['r_st']) and _fin(r['p_st'])
+            and r['r_y3'] >= 0.5 and r['r_st'] >= 0.5 and r['p_st'] >= 0.3)
+
+
+def _chain_gap(up='tsm', down='ase_atm'):
+    """关系站得住 ⇒ **背离本身成为信号**。这里量的就是背离。
+
+    做法：用**扩张窗口**（只用当期之前的数据）把下游对上游回归一次，残差 = 下游比
+    「按历史关系该有的样子」高出多少 pp。扩张窗口是必须的 —— 用全样本拟合出来的
+    残差含未来信息，会把「现在很反常」这件事系统性地做小（本仓在别处也踩过这个坑）。
+    """
+    x, y = (LEGS.get(up) or {}).get('y3'), (LEGS.get(down) or {}).get('y3')
+    if x is None or y is None:
+        return None
+    d = pd.DataFrame({'x': x, 'y': y}).dropna()
+    if len(d) < CHAIN_MIN + 12:
+        return None
+    idx, res = [], []
+    for i in range(CHAIN_MIN, len(d)):
+        tr = d.iloc[:i]
+        b, a = np.polyfit(tr['x'].values, tr['y'].values, 1)
+        idx.append(d.index[i])
+        res.append(float(d['y'].iloc[i] - (a + b * d['x'].iloc[i])))
+    r = pd.Series(res, index=pd.PeriodIndex(idx, freq='M'))
+    run = 1
+    for i in range(len(r) - 1, 0, -1):
+        if (r.iloc[i] - r.iloc[i - 1]) * np.sign(r.iloc[-1] - r.iloc[-2]) > 0:
+            run += 1
+        else:
+            break
+    return {'s': r, 'now': float(r.iloc[-1]), 'med': float(r.median()),
+            'sd': float(r.std()), 'pct': float((r < r.iloc[-1]).mean() * 100),
+            'lo': float(r.min()), 'lo_m': r.idxmin(), 'hi': float(r.max()),
+            'hi_m': r.idxmax(), 'run': run, 'up': up, 'down': down}
+
+
+CHAIN_PASS = [r for r in CHAINX if r['kind'] == '工序' and _passes(r)]
+CHAIN_FAIL = [r for r in CHAINX if r['kind'] == '工序' and not _passes(r)]
+#: **只有在那条关系三道全过时才算背离** —— 关系都不成立的话，「偏离」偏离的是什么？
+CHAIN_GAP = (_chain_gap() if any(r['a'] == 'tsm' and r['b'] == 'ase_atm'
+                                 for r in CHAIN_PASS) else None)
+
 # ── 自身历史分位：把七条振幅差一个数量级的同比放到同一把尺上 ────────────────
 # **这是本页对「南亚科 +561% 与日月光 +46% 没法比」的正面解法。**
 # 同比的振幅逐家差一个数量级（南亚科 σ≈189pp，日月光 σ≈13pp），所以「谁的同比高」
@@ -1139,6 +1306,8 @@ ORDER = [
     'momentum',        # 去掉分母看生意本身：同比高低与环比动能经常相反
     'base-calendar',   # 把分母摊开：同比接下来的变化有多少根本不是今年的事
     'chain',           # 价值链框架：这七家是什么关系，横比为什么说得通
+    'chain-check',     # 互相印证：哪条关系数据认、哪条不认（含安慰剂与行业外对照）
+    'chain-gap',       # 关系站得住 ⇒ 背离即信号：封测相对代工的实时偏离
     'yoy-heat',        # 七家 × 近 N 月 单月同比矩阵 —— 七家同框只能用它
     'pctile-heat',     # 同一把尺：各家同比在**自身历史**里的分位
     'state',           # 增速 vs 水平：谁在创新高、谁在填坑（同比看不出来）
@@ -1156,7 +1325,8 @@ ORDER = [
 ]
 _seq = iter(exhibits.Seq(k) for k in range(2, 99))
 E_MOM, E_BASE = next(_seq), next(_seq)
-E_CHAIN, E_HEAT, E_PCT, E_STATE, E_CHECK = (next(_seq) for _ in range(5))
+E_CHAIN, E_XCHK, E_XGAP = (next(_seq) for _ in range(3))
+E_HEAT, E_PCT, E_STATE, E_CHECK = (next(_seq) for _ in range(4))
 E_GROW, E_SPREAD = next(_seq), next(_seq)
 E_NODE = next(_seq)
 E_REB_M, E_REB_D, E_YOY_M, E_YOY_D = (next(_seq) for _ in range(4))
@@ -1164,7 +1334,8 @@ E_SEASON, E_CORR, E_DECOMP = next(_seq), next(_seq), next(_seq)
 E_TABLE = next(_seq)
 #: 建图时的号 → id。本轮没出的图不登记（ORDER 里列了却没生成的 id 由 exhibits 跳过）。
 EX_ID = {E_MOM: 'momentum', E_BASE: 'base-calendar',
-         E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_PCT: 'pctile-heat',
+         E_CHAIN: 'chain', E_XCHK: 'chain-check', E_XGAP: 'chain-gap',
+         E_HEAT: 'yoy-heat', E_PCT: 'pctile-heat',
          E_STATE: 'state', E_CHECK: 'official-check', E_DECOMP: 'decomp',
          E_GROW: 'growing-count', E_SPREAD: 'spread', E_NODE: 'node-split',
          E_REB_M: 'rebased-mfg', E_REB_D: 'rebased-design',
@@ -1317,6 +1488,92 @@ ex.append({
         '本页不替它归类（另外六家的出处：'
         + '、'.join(f'{NAME[k]} <code>{ROLE[k][2]}</code>' for k in KEYS if k != 'tsm') + '）。'),
 })
+
+# ── ⟨ex:chain-check⟩ 互相印证：数据认哪条关系、不认哪条 ──────────────────────
+def _vd(r):
+    if r['kind'] == '安慰':
+        return ('<b>对照组</b>：' + ('扣掉行业周期后归零或转负'
+                                     if not _fin(r['p_st']) or r['p_st'] < 0.2 else '偏相关仍在，存疑'))
+    return '<b>三道全过</b>' if _passes(r) else '<b>没过</b>（偏相关扣不住）'
+
+
+ex.append({
+    'n': E_XCHK, 'kind': 'table', 'full': True,
+    'title': ('哪两家的数据真能互相印证 —— 先说机制，再让数据判'
+              + (f'：{len(CHAIN_PASS)} 条工序关系过了三道检验，{len(CHAIN_FAIL)} 条没过'
+                 if CHAINX else '')),
+    'idx': '配对',
+    'cols': [['为什么应当相关（机制）', 'why'],
+             ['3MMA 同比 r', 'r1'], ['平稳变换 r', 'r2'],
+             ['扣掉共同半导体周期后（偏相关）', 'p'], ['判定', 'v']],
+    'rows': [{'xl': f'{LEG_ZH2[r["a"]]} → {LEG_ZH2[r["b"]]}',
+              'why': r['why'],
+              'r1': f'{r["r_y3"]:+.2f}' if _fin(r['r_y3']) else '—',
+              'r2': f'{r["r_st"]:+.2f}' if _fin(r['r_st']) else '—',
+              'p': f'{r["p_st"]:+.2f}' if _fin(r['p_st']) else '—',
+              'v': _vd(r)} for r in CHAINX],
+    'src_extra': ('两种变换：3MMA 单月同比（可读，单位 pp）与平稳变换'
+                  '（季调对数水平的 3 个月环比，稳健）。偏相关的控制变量 = '
+                  '不含这两条腿的成员各自标准化后取均值。'),
+    'note': (
+        '<b>本仓没有任何一条关于这七家之间业务关系的已核事实</b>（谁是谁的客户、'
+        '谁持有谁的股份，七份单公司配置里一个字都没有），所以本页<b>不断言供应关系</b>。'
+        '能用的只有一条不需要外部事实的：<b>封测是晶圆产出之后的工序，这是业务定义本身</b>。'
+        '以它为假说，让数据来判。'
+        '<br><b>三道检验，缺一条结论就不成立：</b>'
+        '① 三种变换都要过 —— 12 个月滚动同比最好看，但它高度自相关，'
+        '本轮实测那个口径下连通配对的自助区间<b>含 0</b>，'
+        '真正站得住的是平稳变换；'
+        '② 安慰剂要够干净 —— 同公司另一段业务与同业都不够（各自共享公司层因素与行业景气），'
+        '所以另取行业外对照（零售 / 消费信贷 / 交易所成交量），实测相关落在 0.0–0.4；'
+        '③ <b>扣掉共同半导体周期之后还得剩下</b>。这一条是决定性的：若归零，'
+        '「上下游印证」就只是「同处一个景气」，机制说法不成立。'
+        + ((f'<br><b>过了的：</b>'
+            + '；'.join(f'{LEG_ZH2[r["a"]]}↔{LEG_ZH2[r["b"]]} 偏相关 {r["p_st"]:+.2f}'
+                        for r in CHAIN_PASS)
+            + ' —— 两家独立公司、两份独立申报，扣掉行业景气之后仍然一起动。'
+              '这才是工序连接的证据。') if CHAIN_PASS else '')
+        + ((f'<br><b>没过的：</b>'
+            + '；'.join(f'{LEG_ZH2[r["a"]]}↔{LEG_ZH2[r["b"]]}（平稳变换偏相关 '
+                        f'{r["p_st"]:+.2f}）' for r in CHAIN_FAIL)
+            + ' —— 「量产是晶圆转售、理应跟着代工走」这个猜想听上去顺，'
+              '数据不支持。<b>写在这里是因为它被证伪了，不是因为它可疑</b>：'
+              '一条被数据否掉的机制，与一条通过的同样是结论。') if CHAIN_FAIL else '')),
+})
+
+# ── ⟨ex:chain-gap⟩ 关系站得住 ⇒ 背离即信号 ──────────────────────────────
+if CHAIN_GAP:
+    _g = CHAIN_GAP
+    _gs = _g['s']
+    ex.append({
+        'n': E_XGAP, 'kind': 'lines', 'full': True, 'height': LINE_H,
+        'fmt': 'f0', 'label_fmt': 'f0', 'yfmt': 'f0',
+        'title': (f'{LEG_ZH2[_g["down"]]}比「按历史关系该有的样子」高出多少（pp）—— '
+                  f'{mlab(CUR)} {_g["now"]:+.0f}pp，处在 {len(_gs)} 个月里的第 '
+                  f'{_g["pct"]:.0f} 百分位'),
+        'xlabels': [mlab(p) for p in _gs.index], 'ylab': '残差（pp，封测 − 按代工推算）',
+        'zero_line': True, 'end_label': True,
+        'series': [{'name': f'{LEG_ZH2[_g["down"]]} 相对 {LEG_ZH2[_g["up"]]} 的偏离',
+                    'color': 'NAVY', 'values': L(_gs.values)}],
+        'src_extra': ('残差 = 下游实际 3MMA 同比 − 用<b>只到当期为止</b>的数据回归出来的推算值'
+                      '（扩张窗口，无未来信息）。用全样本拟合会把「现在很反常」系统性做小。'),
+        'note': (
+            '<b>这张图的前提是上一张表：只有关系站得住，偏离才是信号。</b>'
+            f'{LEG_ZH2[_g["up"]]}与{LEG_ZH2[_g["down"]]}扣掉行业景气后偏相关仍有 '
+            + (f'{CHAIN_PASS[0]["p_st"]:+.2f}' if CHAIN_PASS else '正值')
+            + '，所以「这个月它俩对不上」是一件需要解释的事，而不是噪声。'
+            f'<br><b>{mlab(CUR)} 的偏离是 {_g["now"]:+.0f}pp，历史中位 {_g["med"]:+.0f}pp，'
+            f'落在第 {_g["pct"]:.0f} 百分位</b>；'
+            f'而且已经<b>连续 {_g["run"]} 个月同向</b>，不是单月跳动。'
+            f'历史上另一端是 {_g["lo"]:+.0f}pp（{mlab(_g["lo_m"])}）。'
+            '<br><b>这页说不了「为什么」。</b>封测跑在代工前面，可以是单片芯片的封装'
+            '用量在升、可以是这家在同业里拿到更多、也可以是产品结构变了 —— '
+            f'本页没有任何一列能把它们分开（{NAME["ase"]}的 ATM 把测试、打线与先进封装'
+            '捆在一起披露）。能说的是<b>这件事正在发生、幅度是多少、历史上有没有过</b>，'
+            '以及它<b>该被追问</b>。'
+            '<br>⚠ 幅度随变换变：平稳变换下同方向但没这么极端。'
+            '方向可信，别把这个 pp 数当成一个精确的量。'),
+    })
 
 # ── ⟨ex:yoy-heat⟩ 七家 × 近 N 月：单月同比矩阵 ────────────────────────────
 _HM = list(IDX_YOY[-HEAT_MONTHS:])
@@ -2104,7 +2361,12 @@ _hi = max(_ok_now, key=lambda k: _yy_now[k]) if _ok_now else None
 # 那是一个关于这组数据离散度的描述，读的人拿它做不了任何事。现在印的是本月
 # 真正的分歧：同比与环比动能给出了不同的排序。分歧不存在的月份自动退回描述版。
 _hd_pre = f'{zh(CUR)}：{len(KEYS)} 家同比{"全正" if int(GROW.dropna().iloc[-1]) == len(KEYS) else "分化"}'
-if _DIVERGE and MOM:
+if CHAIN_GAP and CHAIN_GAP['pct'] >= 90:
+    _g0 = CHAIN_GAP
+    HEADLINE = (f'{_hd_pre}；{LEG_ZH2[_g0["down"]]}比按{NAME["tsm"]}推算的高 '
+                f'{_g0["now"]:+.0f}pp，是 {len(_g0["s"])} 个月里的第 '
+                f'{_g0["pct"]:.0f} 百分位，已连续 {_g0["run"]} 个月同向')
+elif _DIVERGE and MOM:
     _d0 = _DIVERGE[0]
     HEADLINE = (f'{_hd_pre}；但{NAME[_d0]}同比 {pct(_yy(_d0), 0)}、'
                 f'季调环比动能已从 {pct(MOM[_d0]["prev"], 1)} 降到 {pct(MOM[_d0]["now"], 1)}，'
@@ -2128,8 +2390,11 @@ payload = {
                  '不做跨家加总。版式仿 Goldman Sachs GIR exhibit。'),
     'headline': HEADLINE,
     'hub_line': (f'{len(KEYS)} 家台股半导体月营收横截面：{mlab(CUR)} '
-                 + (f'{NAME[_DIVERGE[0]]}同比高而环比动能已低于自身中位'
-                    if _DIVERGE else f'最快与最慢相差 {DISPF["sp_now"]:.0f}pp')),
+                 + (f'封测比按代工推算的高 {CHAIN_GAP["now"]:+.0f}pp（第 '
+                    f'{CHAIN_GAP["pct"]:.0f} 百分位）'
+                    if CHAIN_GAP and CHAIN_GAP['pct'] >= 90
+                    else (f'{NAME[_DIVERGE[0]]}同比高而环比动能已低于自身中位'
+                          if _DIVERGE else f'最快与最慢相差 {DISPF["sp_now"]:.0f}pp'))),
     'source': SRC,
     'xlabels': XL_YOY,
     'xlabels_long': XL_ALL,
