@@ -604,6 +604,11 @@ SUMMARY = {
 #: 七家都算得出单月同比的最早月。日月光 2018-05 起才有序列，它的同比要等到
 #: 2019-05；另外六家在 IDX 左端之前就有历史，同比从 IDX 左端就有。**不写死**。
 YOYS = {k: yoy_on(k, IDX) for k in KEYS}
+#: 单月同比的 **3 个月移动平均**。自身分位、方差分解、错位相关三处都用它 ——
+#: 单月值的毛刺会主导「谁更反常」「哪个错位最优」这类比较，那不是口径不一致，
+#: 是这几个问题本来就该在平滑一档的尺度上问。原始单月同比仍在 YOYS 里，
+#: 同比矩阵与同比折线用的是那一份。
+YOY3 = {k: YOYS[k].rolling(3, min_periods=3).mean() for k in KEYS}
 _ok = [p for p in IDX if all(_fin(YOYS[k].get(p)) for k in KEYS)]
 if not _ok:
     skip('七家没有任何一个月同时算得出单月同比')
@@ -711,6 +716,90 @@ if any(v is None for v in STATE.values()):
     skip('近 12 个月合计算不出来（历史不足 13 个月）')
 AT_HIGH = [k for k in KEYS if STATE[k]['at_high']]
 BELOW = sorted((k for k in KEYS if not STATE[k]['at_high']), key=lambda k: STATE[k]['gap'])
+
+
+# ── 自身历史分位：把七条振幅差一个数量级的同比放到同一把尺上 ────────────────
+# **这是本页对「南亚科 +561% 与日月光 +46% 没法比」的正面解法。**
+# 同比的振幅逐家差一个数量级（南亚科 σ≈189pp，日月光 σ≈13pp），所以「谁的同比高」
+# 量的是「谁的生意天生波动大」，不是「谁这个月更反常」。把每家的同比换成
+# **它在自己历史里的百分位**，七家就落到同一把 0–100 的尺上，可以横着读。
+#
+# 三条口径决定：
+#   · 用**自己的全部历史**做分母，不是共同窗口 —— 问的是「对这家自己而言有多反常」，
+#     那就该用它自己见过的全部月份。各家历史长度不同（88–152 个同比月），
+#     这是特征不是缺陷，但下面的图注要说出来。
+#   · 用 **3 个月移动平均的同比**：单月分位的月度churn 是 14.3 点，3MMA 只有 7.4 点，
+#     AR(1) 从 0.77 升到 0.94。分位本来就是给人读「位置」的，噪声大了就读不出位置。
+#   · **至少 36 个同比月**才给分位，不够的留空 —— 不到三年的历史算不出「反常」。
+PCT_MIN = 36
+
+
+def _pctile_own(s):
+    """→ 每个月在**这条序列自己**的历史里排第几（0–100，中位秩）。样本不足留 NaN。"""
+    v = s.dropna()
+    out = pd.Series(np.nan, index=s.index)
+    if len(v) < PCT_MIN:
+        return out
+    arr = v.values
+    for i, (p_, x) in enumerate(zip(v.index, arr)):
+        if i + 1 < PCT_MIN:
+            continue
+        hist = arr[:i + 1]
+        out.loc[p_] = ((hist < x).sum() + 0.5 * (hist == x).sum()) / len(hist) * 100.0
+    return out
+
+
+#: 各家 3MMA 同比在自身全历史里的分位（全历史 = 不截到共同窗口）。
+YOY3_FULL = {k: YOY.mom_yoy(NTD[k], YOY.FLOW).rolling(3, min_periods=3).mean() for k in KEYS}
+PCT3 = {k: _pctile_own(YOY3_FULL[k]) for k in KEYS}
+_pm = pd.DataFrame({k: PCT3[k].reindex(IDX) for k in KEYS}).dropna()
+#: 「七家的分位散得有多开」—— 本轮最值得一看的一条：它在塌。
+PCT_SPREAD = (_pm.max(axis=1) - _pm.min(axis=1)) if len(_pm) else pd.Series(dtype=float)
+
+
+def _pct_now(k):
+    v = PCT3[k].reindex(IDX).dropna()
+    return float(v.iloc[-1]) if len(v) else np.nan
+
+
+PCT_NOW = {k: _pct_now(k) for k in KEYS}
+PCT_OK = [k for k in KEYS if _fin(PCT_NOW[k])]
+#: 同比排名 vs 分位排名 —— 两者不一致才是这张图存在的理由。
+_rk_y = {k: i for i, k in enumerate(sorted(PCT_OK, key=lambda k: -_yy(k)))}
+_rk_p = {k: i for i, k in enumerate(sorted(PCT_OK, key=lambda k: -PCT_NOW[k]))}
+PCT_FLIP = max(PCT_OK, key=lambda k: _rk_y[k] - _rk_p[k]) if PCT_OK else None
+
+
+# ── 这七家其实是几个独立的赌注：系统性 vs 自己的那一份 ────────────────────────
+def _decomp():
+    """每家的 3MMA 同比里，有多少是「跟着组里那个共同周期」，多少是它自己的。
+
+    ⚠ 组因子**不能**用六家同比的等权平均：那样算出来的「因子」其实就是南亚科
+    （它的 σ 是日月光的十几倍），于是它会盖掉真正的共同周期。本轮实测这个差别很大 ——
+    换成**各家先按自身历史标准化再平均**（再归一到单位方差），日月光的 R² 从 0.25
+    跳到 0.65、联电从 0.04 跳到 0.44。所以下面一律用标准化因子。
+
+    ⚠ **只印 R² 与系统性占比，不印 beta。** beta 的量纲是「每 1σ 组周期对应多少 pp
+    自身同比」，而南亚科的 beta 标准误大到与零无异；一个页面上印出来会被当成参数用。
+    """
+    m = pd.DataFrame({k: YOY3[k] for k in KEYS}).dropna()
+    if len(m) < 36:
+        return None
+    z = (m - m.mean()) / m.std(ddof=0)
+    out = {}
+    for k in KEYS:
+        f = z[[c for c in KEYS if c != k]].mean(axis=1)
+        f = (f - f.mean()) / f.std(ddof=0)
+        r = float(np.corrcoef(m[k].values, f.values)[0, 1])
+        r2 = r * r
+        own = float(m[k].std(ddof=0))
+        out[k] = {'r': r, 'r2': r2 * 100.0, 'own_sd': own,
+                  'sys_sd': abs(r) * own, 'idio_sd': own * np.sqrt(max(0.0, 1 - r2)),
+                  'sys_share': abs(r) / (abs(r) + np.sqrt(max(1e-12, 1 - r2))) * 100.0}
+    return {'per': out, 'n': len(m)}
+
+
+DEC = _decomp()
 
 # ── 组内离散度：本页的核心实证 ────────────────────────────────────────
 def _spread(keys, idx):
@@ -883,8 +972,6 @@ def _leadlag(anchor='tsm', span=6, B=400, seed=7):
             'none_clears': all(v['p'] >= 0.05 for v in per.values())}
 
 
-#: 单月同比的 3 个月移动平均 —— 错位相关与相关矩阵都用它，别用毛刺很大的单月值。
-YOY3 = {k: YOYS[k].rolling(3, min_periods=3).mean() for k in KEYS}
 LL = _leadlag()
 _off = [float(CORR.loc[a, b]) for i, a in enumerate(KEYS) for b in KEYS[i + 1:]]
 CORR_MED = float(np.median(_off)) if _off else np.nan
@@ -949,6 +1036,7 @@ ALFX = alchip_fx_facts()
 ORDER = [
     'chain',           # 价值链框架：这七家是什么关系，横比为什么说得通
     'yoy-heat',        # 七家 × 近 N 月 单月同比矩阵 —— 七家同框只能用它
+    'pctile-heat',     # 同一把尺：各家同比在**自身历史**里的分位
     'state',           # 增速 vs 水平：谁在创新高、谁在填坑（同比看不出来）
     'official-check',  # 公司自己的解释，以及能不能用它自己的分部列验出来
     'growing-count',   # 每月七家里有几家在增长（对离群值免疫的分歧度量）
@@ -960,16 +1048,18 @@ ORDER = [
     'yoy-design',      # 设计侧单月同比
     'season-heat',     # 季节性指数矩阵：低谷都在农历年，高峰各不相同
     'corr',            # 单月同比的两两相关
+    'decomp',          # 这七家其实是几个独立的赌注
 ]
 _seq = iter(exhibits.Seq(k) for k in range(2, 99))
-E_CHAIN, E_HEAT, E_STATE, E_CHECK = (next(_seq) for _ in range(4))
+E_CHAIN, E_HEAT, E_PCT, E_STATE, E_CHECK = (next(_seq) for _ in range(5))
 E_GROW, E_SPREAD = next(_seq), next(_seq)
 E_NODE = next(_seq)
 E_REB_M, E_REB_D, E_YOY_M, E_YOY_D = (next(_seq) for _ in range(4))
-E_SEASON, E_CORR = next(_seq), next(_seq)
+E_SEASON, E_CORR, E_DECOMP = next(_seq), next(_seq), next(_seq)
 E_TABLE = next(_seq)
 #: 建图时的号 → id。本轮没出的图不登记（ORDER 里列了却没生成的 id 由 exhibits 跳过）。
-EX_ID = {E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_STATE: 'state', E_CHECK: 'official-check',
+EX_ID = {E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_PCT: 'pctile-heat',
+         E_STATE: 'state', E_CHECK: 'official-check', E_DECOMP: 'decomp',
          E_GROW: 'growing-count', E_SPREAD: 'spread', E_NODE: 'node-split',
          E_REB_M: 'rebased-mfg', E_REB_D: 'rebased-design',
          E_YOY_M: 'yoy-mfg', E_YOY_D: 'yoy-design',
@@ -1066,6 +1156,54 @@ ex.append({
         + (f'<br>{DISP["ase"]}的同比从 {mlab(IDX_YOY[0])} 起才有：'
            '它的序列 2018-05 才开始（控股公司 2018-04-30 才成立，更早的月报属于前身主体，'
            '不可前接），再往前一年才凑得出分母。' if 'ase' in YOY_LATE else '')),
+})
+
+# ── ⟨ex:pctile-heat⟩ 自身历史分位：把七条振幅差一个数量级的同比放到同一把尺上 ──
+_PM = list(IDX[-24:])
+_pm_mat = [L(PCT3[k].reindex(_PM).values) for k in KEYS]
+_sp = PCT_SPREAD.dropna()
+_hist = {k: int(YOY3_FULL[k].dropna().shape[0]) for k in KEYS}
+ex.append({
+    'n': E_PCT, 'kind': 'heat_matrix', 'full': True, 'fmt': 'f0',
+    # 标题是纯文本（page.js 按 textContent 写），所以不带任何标签与星号。
+    'title': f'同一把尺：各家同比在自身历史里排第几（0–100，近 {len(_PM)} 个月）',
+    'rows': [f'{NAME[k]} {CODE[k]}' for k in KEYS],
+    'cols': [mlab(p) for p in _PM],
+    'matrix': _pm_mat,
+    'legend': '3MMA 同比在自身全历史中的百分位',
+    'cell_h': 24, 'row_lab_w': 104, 'row_head': '公司',
+    'src_extra': (f'分母是各家<b>自己的全部历史</b>（{min(_hist.values())}–{max(_hist.values())} '
+                  f'个同比月，逐家不同），不是共同窗口；不足 {PCT_MIN} 个月不给分位。'),
+    'note': (
+        '<b>这张图回答的是⟨ex:yoy-heat@<:上面那张矩阵⟩答不了的问题：谁这个月更反常。</b>'
+        '七家同比的振幅差一个数量级'
+        + (f'（自身波动最大的{NAME[max(KEYS, key=lambda k: DEC["per"][k]["own_sd"])]} '
+           f'σ≈{max(DEC["per"][k]["own_sd"] for k in KEYS):.0f}pp，'
+           f'最小的{NAME[min(KEYS, key=lambda k: DEC["per"][k]["own_sd"])]} '
+           f'σ≈{min(DEC["per"][k]["own_sd"] for k in KEYS):.0f}pp）' if DEC else '')
+        + '，所以「谁的同比高」量的多半是「谁的生意天生波动大」。'
+        '换成<b>各家在自己历史里的百分位</b>，七家才落在同一把 0–100 的尺上。'
+        + ((f'<br>本月这把尺给出的排序与同比排序<b>不一样</b>：'
+            f'按同比{NAME[sorted(PCT_OK, key=lambda k: -_yy(k))[0]]}第一'
+            f'（{pct(_yy(sorted(PCT_OK, key=lambda k: -_yy(k))[0]), 0)}），'
+            f'按自身分位第一的是{NAME[sorted(PCT_OK, key=lambda k: -PCT_NOW[k])[0]]}'
+            f'（{PCT_NOW[sorted(PCT_OK, key=lambda k: -PCT_NOW[k])[0]]:.0f}）—— '
+            f'后者的 {pct(_yy(sorted(PCT_OK, key=lambda k: -PCT_NOW[k])[0]), 0)} 在它自己的历史里'
+            '几乎是最高的一个月，而前者的三位数同比只排到它自己的九十几分位。')
+           if PCT_OK and sorted(PCT_OK, key=lambda k: -_yy(k))[0]
+           != sorted(PCT_OK, key=lambda k: -PCT_NOW[k])[0] else '')
+        + ((f'<br><b>本月真正值得记的是这个：七家的分位挤到了一起。</b>'
+            f'十二个月前最高与最低差 {_sp.iloc[-13]:.0f} 个分位点，现在只差 '
+            f'{_sp.iloc[-1]:.0f} 点，'
+            f'{sum(1 for k in PCT_OK if PCT_NOW[k] >= 90)} 家在自身九十分位以上。'
+            '分位这把尺在顶部会饱和 —— 大家都贴到 100 的时候它就没有分辨率了，'
+            '<b>而那本身就是读数</b>：这是一次同步的普涨，不是一个挑公司的局面。')
+           if len(_sp) > 13 else '')
+        + '<br><b>这张图说的是「站在哪里」，不是「要往哪去」。</b>'
+        '本轮做过前瞻检验：分位对未来 3／6／12 个月的<b>加速度</b>没有可测的关系'
+        '（自助置信区间在三个期限上都跨过零）。唯一稳定的前瞻性质是向中位回归，'
+        '而那是这个比值自身的性质，不是关于公司的消息。'
+        f'<br>色标是本图自己的 5/95 分位，与另外两张矩阵不可比。'),
 })
 
 # ── ⟨ex:state⟩ 增速 vs 水平：同比矩阵结构上看不出的那一半 ────────────────────
@@ -1461,6 +1599,55 @@ ex.append({
 })
 
 
+
+# ── ⟨ex:decomp⟩ 这七家其实是几个独立的赌注 ──────────────────────────────
+if DEC:
+    _dr = sorted(KEYS, key=lambda k: -DEC['per'][k]['sys_share'])
+    _hi = _dr[0]
+    _lo = [k for k in _dr if DEC['per'][k]['sys_share'] < 30]
+    _neg = [k for k in KEYS if DEC['per'][k]['r'] < 0]
+    ex.append({
+        'n': E_DECOMP, 'kind': 'table', 'full': True,
+        'title': ('把每家的波动拆成「跟着组里那个周期」与「它自己的」—— '
+                  '七家并不是七个独立的赌注'),
+        'idx': '公司',
+        'cols': [['与组周期的相关', 'r'], ['被组周期解释的方差', 'r2'],
+                 ['系统性占比', 'sys'], ['自身波动 σ', 'sd'], ['自己的那一份 σ', 'idio']],
+        'rows': [{'xl': f'{NAME[k]} {CODE[k]}',
+                  'r': f'{DEC["per"][k]["r"]:+.2f}',
+                  'r2': f'{DEC["per"][k]["r2"]:.0f}%',
+                  'sys': f'{DEC["per"][k]["sys_share"]:.0f}%',
+                  'sd': f'{DEC["per"][k]["own_sd"]:.0f}pp',
+                  'idio': f'{DEC["per"][k]["idio_sd"]:.0f}pp'} for k in _dr],
+        'src_extra': (f'口径：各家 3MMA 单月同比，{DEC["n"]} 个月。组周期 = <b>其余六家'
+                      '先按自身历史标准化再等权平均</b>（再归一到单位方差）。'),
+        'note': (
+            '<b>为什么组周期要先标准化再平均 —— 这一步不做，结论是反的。</b>'
+            '直接拿六家同比的等权平均当「组周期」，那个平均数其实就是'
+            f'{NAME[max(KEYS, key=lambda k: DEC["per"][k]["own_sd"])]}'
+            '（它的波动是最小那家的十几倍），于是真正的共同周期被它盖掉。'
+            '本轮实测：换成标准化因子之后，'
+            f'{NAME["ase"]}被解释的方差从约 25% 跳到 {DEC["per"]["ase"]["r2"]:.0f}%、'
+            f'{NAME["umc"]}从约 4% 跳到 {DEC["per"]["umc"]["r2"]:.0f}%。'
+            '<br><b>这张表最直接的用处：数一数你手上其实押了几件事。</b>'
+            f'{NAME[_hi]}是这一组的温度计（相关 {DEC["per"][_hi]["r"]:+.2f}，'
+            f'{DEC["per"][_hi]["r2"]:.0f}% 的波动由组周期解释）——'
+            '所有芯片最后都要经过封测，它天然是聚合点。'
+            + (f'而{"、".join(NAME[k] for k in _lo)}的波动{"大部分" if len(_lo) > 1 else ""}'
+               f'是自己的（系统性占比不到 30%）：'
+               '存储走自己的合约价周期，无晶圆厂设计走自己的产品周期。'
+               if _lo else '')
+            + (f'<br>{"、".join(NAME[k] for k in _neg)}是<b>负的</b>'
+               f'（{DEC["per"][_neg[0]]["r"]:+.2f}）—— 它不但不跟着这条链涨，'
+               '还略微反着走。ASIC 设计服务的月营收由少数几个项目的里程碑与量产排程决定，'
+               '跟整条链的景气不是一回事。' if _neg else '')
+            + '<br>⚠ <b>本表不印 beta。</b>「每 1σ 组周期对应多少 pp 自身同比」那个系数，'
+            f'在{NAME[max(KEYS, key=lambda k: DEC["per"][k]["own_sd"])]}身上的标准误大到'
+            '与零无异；印在页面上会被当成一个可以拿去调仓位的参数用。'
+            '这里只印相关、被解释的方差与两段 σ —— 它们说的是<b>结构</b>，不是弹性。'),
+    })
+
+
 # ─────────────────────── 末尾核对表（官方原始单位，未换算）───────────────────────
 def raw_dec(k):
     """某家新台币列的**官方小数位** —— 同样从它自己的 spec 认，不在这里写死。
@@ -1574,9 +1761,23 @@ NOTES = [
          f'{pct(STATE[BELOW[0]]["r12_yoy"], 0)}、距自身峰 {pct(STATE[BELOW[0]]["gap"], 1)}。')
         if BELOW else '')
      + '两种情形在同比矩阵上长得一模一样，在 Exhibit ⟨ex:state⟩ 那张表上一眼分得开。'
-     '<br><b>③ 拿公司自己的话去对账。</b>±50% 触发的 MOPS 备注是法定申报内容，'
+     '<br><b>③ 用同一把尺看「谁更反常」。</b>七家同比的振幅差一个数量级，'
+     '换成各家在自己历史里的百分位才可比（Exhibit ⟨ex:pctile-heat⟩）—— '
+     '本月这把尺给出的第一名与同比第一名不是同一家。'
+     '<br><b>④ 数清楚手上押了几件事。</b>把各家波动拆成「组周期」与「自己的」之后，'
+     # ⚠ 这里逐家印**各自的**数，不要写「都不到 N%」那种概括 ——
+     #   那种句子要跟着四舍五入走，7.4% 写成「不到 7%」就是一句假话。
+     + (f'{NAME["ase"]}有 {DEC["per"]["ase"]["r2"]:.0f}% 的波动由组周期解释、'
+        f'{NAME["umc"]} {DEC["per"]["umc"]["r2"]:.0f}%，'
+        f'而{NAME["nanya"]}只有 {DEC["per"]["nanya"]["r2"]:.0f}%、'
+        f'{NAME["mtk"]} {DEC["per"]["mtk"]["r2"]:.0f}%，'
+        f'{NAME["alchip"]}是负相关（{DEC["per"]["alchip"]["r"]:+.2f}）。'
+        '同时持有前两家更接近<b>一个</b>仓位，后三家才是各自独立的判断'
+        if DEC else '')
+     + '（Exhibit ⟨ex:decomp⟩）。'
+     '<br><b>⑤ 拿公司自己的话去对账。</b>±50% 触发的 MOPS 备注是法定申报内容，'
      '有月度分部列的家还能当场验（Exhibit ⟨ex:official-check⟩）。'
-     '<br><b>④ 时效。</b>七家在次月第 7–15 天就公告上月营收，比同期季报早约六周 —— '
+     '<br><b>⑥ 时效。</b>七家在次月第 7–15 天就公告上月营收，比同期季报早约六周 —— '
      '<b>但这是披露节奏上的领先，不是经济上的领先</b>，两者别混。'
      '<br><b>不能：① 不能做领先滞后择时。</b>本页实测过并且明确不画那张图，'
      '判据与数写在 Exhibit ⟨ex:corr⟩ 的图注里。'
@@ -1587,7 +1788,10 @@ NOTES = [
      '<br><b>④ 不能用比值判贵贱。</b>本轮对十组跨家比值做过单位根检验，'
      '<b>十组的水平都没有锚</b> ⇒「现在处在历史第几百分位」对它们不成立。'
      '页上只留了一张比值图（Exhibit ⟨ex:node-split⟩），留它的理由写在那张图的图注里。'
-     '<br><b>⑤ 不能把一家的分部结论搬给另一家</b>，哪怕同层。'),
+     '<br><b>⑤ 不能把分位当预测。</b>分位说的是「站在哪里」：本轮实测它对未来 '
+     '3／6／12 个月的加速度没有可测关系，自助置信区间三个期限全部跨零；'
+     '唯一稳定的前瞻性质是向中位回归，那是比值自身的性质。'
+     '<br><b>⑥ 不能把一家的分部结论搬给另一家</b>，哪怕同层。'),
 
     ('<b>本页不做跨家加总，一次都不做。</b>七家在同一条价值链的不同层：'
      f'{"；".join(ly + " —— " + "、".join(NAME[k] for k in BY_LAYER[ly]) for ly in LAYERS)}。'
