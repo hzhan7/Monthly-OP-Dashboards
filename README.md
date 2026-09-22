@@ -8,20 +8,30 @@
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 
 ```
-/            总览（28 家 + 6 张横截面，含各家新鲜度红点）
+/            总览（28 家 + 7 张横截面，含各家新鲜度红点）
 /ibkr/ /schw/ /lpla/ /hood/         券商与财富管理
 /cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /lseg/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 3 → 亚太 4）
 /msci/ /spgi/                       数据与指数
 /cost/ /axp/                        消费与信贷
 /tsm/ /ase/ /mtk/ /nanya/ /umc/ /alchip/ /guc/   半导体（台湾月度营收，7 家）
-/exchanges12/ /exchanges-na/ /exchanges-eu/ /exchanges-apac/ /exchanges-products/ /wealth/   横截面（同组公司放同一张图比）
+/exchanges12/ /exchanges-na/ /exchanges-eu/ /exchanges-apac/ /exchanges-products/ /wealth/ /semi/   横截面（同组公司放同一张图比）
 ```
 
-横截面六张页各管一件事：`/exchanges12/` 12 家交易所总览（定基名义额）、
+横截面七张页各管一件事：`/exchanges12/` 12 家交易所总览（定基名义额）、
 `/exchanges-na/` 北美真份额、`/exchanges-eu/` 欧洲现货竞争、`/exchanges-apac/` 亚太增长对比、
 `/exchanges-products/` 标的轴（利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期）、
-`/wealth/` 财富管理组。原 `/exchanges/`（CME / Cboe / HKEX 三家旧横截面）已被 12 家版
-取代，2026-08-07 删除。
+`/wealth/` 财富管理组、`/semi/` 半导体组（台股 7 家的月营收横截面，2026-09-22 新增）。
+
+`/semi/` 与另外六张的口径处境不一样，值得单记一句：**它是全仓唯一不需要做任何口径转换的
+横截面**。七家都按台湾《证券交易法》在次月 10 日前公告同一个法定字段（合并营业收入净额）、
+都以新台币申报、发布节奏都落在次月第 7–15 天 —— 所以那一页不折汇率、不造定基名义额。
+它的难处在另一头：七家在**同一条价值链的不同层**（代工 / 封测 / IC 设计 / 存储 / ASIC
+设计服务），营收互为上下游，**相加是重复计算**，所以页上没有任何合计与占比，只有增速、
+指数与离散度。另外两条页面级约束也写在那份生成器的文件头里：图表引擎只有 6 个数据色而
+本页有 7 家（七家同框只能用热力矩阵，折线按制造 / 设计拆两张），以及南亚科的同比量级
+不与代工同框（那是 `/nanya/` 页自己定的读法，横截面页遵守它）。
+
+原 `/exchanges/`（CME / Cboe / HKEX 三家旧横截面）已被 12 家版取代，2026-08-07 删除。
 
 **LSEG（`/lseg/`）本轮只上了单公司页，暂未进任何一张横截面页。** `/exchanges12/` 仍是
 那 12 家、`/exchanges-eu/` 仍是 Euronext / Cboe Europe / Deutsche Börse 三家，
@@ -45,11 +55,15 @@
 
 ```
 index.html          总览页
-<ticker>/index.html 34 个页面外壳 —— 里面没有任何公司专属内容
+<ticker>/index.html 35 个页面外壳 —— 里面没有任何公司专属内容
                     14 个（11 家老单公司页 + tsm + wealth + ice）由 build/make_shells.py 生成；
-                    21 个（5 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
+                    22 个（6 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
                     由 build/make_shells12.py 生成
-                    （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 34）
+                    （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 35）
+                    ⚠ 两份名单加起来的家数**别照抄**：make_shells12 的单公司那一半是
+                    扫目录得来的（specs ∪ mrspecs），加一份 spec 就多一张壳。
+                    横截面那一半是硬编码的 CROSS —— 新增一张横截面页要手动加进去，
+                    漏了不会报错，只会在下次改版式时静默少铺一张壳
 assets/charts.js    手写 SVG 图表引擎，零依赖零构建（17 种 kind）
 assets/page.js      通用页面渲染器，全部页面共用一份（导航分行读 roster 的 row）
 assets/style.css    版式
@@ -131,7 +145,7 @@ docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 28 家 + 2 张公共表（费率、汇率）+ 6 张横截面页。
+**入口是 `monthly_run.py`**，一条 cron 管 28 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
 **每天跑一次**：28 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
 省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
 各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`

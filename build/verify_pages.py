@@ -751,7 +751,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pages',
                     default=('exchanges12,exchanges-na,exchanges-eu,exchanges-apac'
-                             ',exchanges-products'),
+                             ',exchanges-products,semi'),
                     help='逗号分隔的页面目录名')
     ap.add_argument('--data-only', action='store_true', help='跳过 HTTP 段')
     a = ap.parse_args()

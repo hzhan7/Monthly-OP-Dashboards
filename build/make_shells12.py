@@ -50,7 +50,7 @@ ROOT = os.path.dirname(HERE)
 
 # 横截面页的目录名。顺序即导航顺序，也是本脚本的输出顺序。
 CROSS = ['exchanges12', 'exchanges-na', 'exchanges-eu', 'exchanges-apac',
-         'exchanges-products']
+         'exchanges-products', 'semi']
 
 
 def singles():

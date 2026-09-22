@@ -366,7 +366,7 @@ python3 build/verify_pages.py    # 应 0 个 ERROR
 | `check_registry()`      | 名单一致（TICKERS 21 → 20）                                                           |
 | `build/roster.py`       | 26 页，无 KeyError                                                                    |
 | `build/check_specs.py`  | OK 全部检查通过                                                                       |
-| 6 张横截面页生成器      | 全部退出码 0；`exchanges-apac` / `exchanges-intl` 打印「成员没齐」，其余 4 张照常出数（当时共 6 张；`exchanges-intl` 已于同日删除。2026-08-07 后现存仍是 6 张：`exchanges` 又删了一张、`exchanges-products` 加了一张） |
+| 6 张横截面页生成器      | 全部退出码 0；`exchanges-apac` / `exchanges-intl` 打印「成员没齐」，其余 4 张照常出数（当时共 6 张；`exchanges-intl` 已于同日删除。此后又变过两次：2026-08-07 `exchanges` 删、`exchanges-products` 加，仍是 6 张；2026-09-22 加 `semi`，**现存 7 张**。现值以 `monthly_run.CROSS` 为准，别照抄本行） |
 | `build/verify_pages.py` | 0 个 ERROR                                                                            |
 | 残渣                    | `data/roster.js` 里 0 处 `sgx`；没有任何 `index.html` 提到 `sgx`                      |
 
@@ -467,6 +467,52 @@ python3 build/verify_pages.py
    与 `data/exchanges-intl.js`（22:08）在近 16 分钟内无人写；删完复查，两者均未复活。
    但同一时段 `build/chartscale.py`、`build/exchanges12.py` 确实被另一个 workflow 改着
    —— 同一个仓里同时有别人在写是常态，**「删完再看一眼文件有没有回来」这一步不能省**。
+
+---
+
+### 4.5 怎么**加**一张横截面页（2026-09-22 实测：加 `/semi/` 半导体组）
+
+§4.4 是删，这一节是加。两张清单**不是彼此的镜像**，差别在第 ④、⑤ 条，
+所以单列一节而不是在上面写一句「反着来」。
+
+```bash
+# ① 生成器（1 个）。**名字里没有连字符就直接叫 build/<页>.py** —— builder() 第 1 条就命中；
+#    有连字符的才要下划线版（exchanges-na → build/exchanges_na.py），见 §3。
+#    ⚠ 不要顺手建 build/specs/<页>.py：那会让 builder() 第 3 条把产物覆盖成单公司页的图列。
+vi build/semi.py
+
+# ② 注册（5 处，比删页多一处 —— verify_pages 那处在 §4.4 里是「另外把…也去掉」的附注）
+#   monthly_run.py          CROSS 里加一项           'semi'
+#   build/roster.py         META 里加一行            'semi': (...)
+#   build/roster.py         GROUPS 的 'cross' 组加一项 'semi'
+#   build/make_shells12.py  CROSS 里加一项           'semi'
+#   build/verify_pages.py   --pages 默认值里加一项    ,semi
+#   ⚠ **不要加 build/roster.py 的 LAG** —— 横截面页没有自己的披露节奏，
+#     LAG 缺席才会让 roster 给它 lag=None、首页永不判红点；加了还会让
+#     tools/check_doc_gates.py 当场变红（它只认 LAG 里有的 ticker）。
+
+# ③ 生成 → 铺壳 → 重建导航（顺序不能反：roster 读 data/<页>.js 才知道这一页存在）
+python3 build/semi.py && python3 build/make_shells12.py && python3 build/roster.py
+
+# ④ **把页面外壳 git add 进来。** <页>/index.html 在 monthly_run.PUBLISH（只有 data/ 与
+#    series/）之外，而 guard_dirty_tree() 对 PUBLISH 之外的未提交改动是**硬退出**——
+#    壳不提交，下一轮无人值守 cron 会整轮 FAILED，而且报的是「工作树不干净」，
+#    跟这张新页看不出关系。
+git add semi/index.html
+
+# ⑤ 验证
+python3 build/verify_pages.py          # 0 ERROR；它也是唯一会报「孤儿页面目录」的检查
+python3 tools/gate.py                  # 末行 GATE OK
+python3 -c "import monthly_run as m; print(m.check_registry() or '名单一致')"
+```
+
+**④ 池（`build/pools.py`）：非交易所的横截面页不需要。** 这是与 §4.4 最不对称的一条 ——
+删页时池**不能删、只能改指**，但加页时多数情况下**什么都不用做**：池是定基名义额那套
+竞争模型的数据定义，只有交易所页用得上。`wealth` 一个池都没有，`semi` 也是。
+
+**⑤ 文档**：`README.md`（页面清单 + 目录结构里的外壳家数 + 「每月更新」那句家数）、
+`docs/CRON_WIRING.md`（§1 的 `build_cross()` 家数、§3 的 `builder()` 表、§6 的导航行）、
+`docs/PAGES_REVIEW.md`（`cross` 组家数）。这些都是**手抄的计数**，没有任何工具会核对它们。
 
 ---
 

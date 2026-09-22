@@ -20,7 +20,7 @@
               fee_rates    季度费率，六个单公司页共用 → 有新季度就重跑那六页
               mops_remarks MOPS 備註原文，七个半导体页共用 → 有新月份就重跑那七页
               fx           月度汇率，横截面页共用     → 不重跑任何页（build_cross 紧随其后）
-    CROSS     6 张横截面页，没有自己的数据源，等成员更新完之后无条件重生成
+    CROSS     7 张横截面页，没有自己的数据源，等成员更新完之后无条件重生成
 
 输出：每家一行 "<ticker> <状态> <说明>"，stdout **最后一行**是总状态，供调度任务判断：
     NOTHING_TO_DO                 所有家都没有新数据（正常，等下次）
@@ -152,7 +152,8 @@ CROSS = ['wealth',
          'exchanges-na',     # 北美：ICE / Cboe / MIAX / Nasdaq（TMX 对照）
          'exchanges-eu',     # 欧洲现货：Euronext / Cboe Europe / Deutsche Börse
          'exchanges-apac',   # 亚太：HKEX / JPX / SGX / ASX
-         'exchanges-products']  # 标的轴：利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期
+         'exchanges-products',  # 标的轴：利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期
+         'semi']            # 半导体组：台股 7 家的月营收横截面（生成器 build/semi.py）
 # （`exchanges-intl` 欧亚合页已于 2026-08-06 删除：它是 -eu / -apac 拆分前的旧版，
 #   内容与那两张页重叠。删除的完整步骤与实测结果见 docs/DELIVERY.md §4.4。）
 

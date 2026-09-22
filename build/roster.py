@@ -170,6 +170,13 @@ META = {
     'exchanges-apac': ('亚太', 'HKEX / JPX / SGX / ASX', '成员齐了才生成'),
     'exchanges-products': ('标的轴', '利率 / 股指 / 单股ETF期权 / 能源 / 农产品 / FX 即期',
                            '成员齐了才生成'),
+    # ⚠ 这里的 'semi' 是**页面 ticker**（/semi/），与下面 GROUPS 里那个 key 也叫 'semi'
+    #   的**分组**（7 张单公司页的「半导体」导航组）是两个命名空间，不是重复登记：
+    #   index.html 只对 key == 'cross' 特判，assets/page.js 比的是 it.ticker。
+    #   两者同名是因为它们说的本来就是同一组公司 —— 一个是那 7 页，一个是把它们
+    #   放在一张图上比的横截面页。删其中任何一个都不影响另一个。
+    'semi': ('半导体组', '台积电 / 联电 / 日月光 / 南亚科 / 联发科 / 世芯 / 创意',
+             '成员齐了才生成'),
 }
 
 # 13 家交易所，**一行一条**。按地理排：北美 6 → 欧洲 3 → 亚太 4，
@@ -212,7 +219,8 @@ GROUPS = [
     ('cross', 3, '横截面', ['exchanges12', 'exchanges-na', 'exchanges-eu',
                             'exchanges-apac',
                             'exchanges-products',
-                            'wealth']),
+                            'wealth',
+                            'semi']),
 ]
 
 
