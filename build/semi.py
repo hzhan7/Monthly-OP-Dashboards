@@ -329,6 +329,24 @@ ROLE = {
                                '两条腿同向时乘在一起',
                'build/mrspecs/nanya.py'),
 }
+#: 各家的**实测公告日**（月末后第几天）与出处。取自各 fetch/<t>.py 文件头的
+#: 「发布节奏」实测统计 —— 那是本仓对这件事的权威记录（不是公司承诺，也不是法定上限）。
+#: ⚠ 这一列不是花絮：它决定了**信息到达的先后**，也就决定了「互相印证」在实务上
+#:   怎么用 —— 第 5 天拿到创意，第 10 天才拿到台积电。
+#: ⚠ 联电这一格标的是**台湾公告日**，而本页的源是 SEC 6-K，上 EDGAR 另有滞后
+#:   （见 build/roster.py 的 LAG 注释）；两者别混。
+PUBDAY = {
+    'nanya':  ('第 2–9 天，中位第 4', 'fetch/nanya.py 近 55 期实测'),
+    'guc':    ('第 5 天（公司 IR 日历逐条预告）', 'fetch/guc.py 实测，撞假日顺延'),
+    'ase':    ('第 8–11 天覆盖 96%，众数第 9', 'fetch/ase.py 99 期实测'),
+    'tsm':    ('第 10 天（公司惯例踩着法定上限）', 'fetch/tsm.py 实测，最晚第 13'),
+    'mtk':    ('第 7–12 天，众数第 10', 'fetch/mtk.py 67 期实测'),
+    'umc':    ('台湾公告第 4–10 天；本页源为 SEC 6-K，另有滞后', 'fetch/umc.py 163 期实测'),
+    'alchip': ('无自订惯例、不预告；法定次月 10 日前', 'fetch/alchip.py'),
+}
+#: 按「信息先后」排：先公告的排前面。用于链条表的行序 —— 比按体量或按我定的层排更有用。
+PUB_ORDER = ['nanya', 'guc', 'ase', 'tsm', 'mtk', 'umc', 'alchip']
+
 #: 同层对手（组内的）。**只有同层才接近零和**，跨层不是。组内没有同层对手的写 None。
 RIVAL = {'alchip': 'guc', 'guc': 'alchip', 'tsm': 'umc', 'umc': 'tsm',
          'mtk': None, 'ase': None, 'nanya': None}
@@ -2138,6 +2156,32 @@ payload['glossary'] = gloss.render(GLOSSARY, where=f'{TICKER} glossary')
 # ═══════════════════════════════════════════════════════════════════
 # 自检：本页特有的三类错误，各一道；三道都是「图上看不出来」的那种
 # ═══════════════════════════════════════════════════════════════════
+def selfcheck_rosters():
+    """本文件里几张**按 ticker 列举**的表必须与 KEYS 同增同删。
+
+    `ROLE` / `RIVAL` / `PUBDAY` / `PUB_ORDER` 都是手写的逐家表。加一家成员而漏改
+    其中任何一张，症状是 KeyError（好）或**默默少一行**（坏）—— 后者在页面上
+    看不出来，只是那家从链条表里消失了。所以在这里一次性对账。
+    """
+    bad = []
+    for nm, tbl in (('ROLE', ROLE), ('RIVAL', RIVAL), ('PUBDAY', PUBDAY)):
+        miss, extra = set(KEYS) - set(tbl), set(tbl) - set(KEYS)
+        if miss:
+            bad.append(f'{nm} 缺：{"、".join(sorted(miss))}')
+        if extra:
+            bad.append(f'{nm} 多出：{"、".join(sorted(extra))}')
+    if sorted(PUB_ORDER) != sorted(KEYS):
+        bad.append(f'PUB_ORDER 与 KEYS 对不上：{PUB_ORDER}')
+    for k, v in RIVAL.items():
+        if v is not None and v not in KEYS:
+            bad.append(f'RIVAL[{k!r}] 指向不存在的成员 {v!r}')
+        if v is not None and RIVAL.get(v) != k:
+            bad.append(f'RIVAL 不对称：{k}→{v} 而 {v}→{RIVAL.get(v)}')
+    if bad:
+        raise SystemExit('build/semi 名单自检失败：\n  · ' + '\n  · '.join(bad))
+    return len(KEYS)
+
+
 def selfcheck_colors():
     """同一张图里不许出现两条同色的线。
 
@@ -2219,6 +2263,7 @@ def selfcheck_dense_and_text():
 
 
 def main():
+    n_ros = selfcheck_rosters()
     n_series = selfcheck_colors()
     n_reb = selfcheck_rebased()
     selfcheck_dense_and_text()
@@ -2264,7 +2309,8 @@ def main():
         print(f'世芯汇率：{spanl(ALFX["a"], ALFX["b"])} NTD/USD {ALFX["fx_chg"]:+.2f}%，'
               f'占其新台币累计增长的 {ALFX["share"]:.2f}%（对数分解）；'
               f'恒等式 (1+y_NTD)/(1+y_USD)−1 ≡ 汇率同比 已复验')
-    print(f'自检：配色 {n_series} 条线无同图同色 ✓ | 指数化 {n_reb} 张「= 100」图'
+    print(f'自检：逐家表 ROLE/RIVAL/PUBDAY/PUB_ORDER 与 {n_ros} 家名单一致 ✓ | '
+          f'配色 {n_series} 条线无同图同色 ✓ | 指数化 {n_reb} 张「= 100」图'
           f'基期格等于 100 ✓ | DENSE/纯文本 ✓')
     print(f'Exhibit 1 汇总表 + Exhibit {ex[0]["n"]}-{ex[-1]["n"]}（{len(ex)} 张）+ '
           f'Exhibit {TABLE["n"]} 核对表')
