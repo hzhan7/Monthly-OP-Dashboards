@@ -25,6 +25,41 @@
 下一个人多半会先去找 `fx.csv` 里的 TWD，然后找不到。
 
 ═══════════════════════════════════════════════════════════════════════════
+这页要回答什么 —— 把七条月营收画在一起本身**不是**分析
+═══════════════════════════════════════════════════════════════════════════
+页面所有者 2026-09-22 的原话：「只是数据的简单叠加。最主要是要给出分析……背后是否有
+什么逻辑可以挖掘，对于投资有没有指导意义」。这一节是对那句话的回答，也是本页此后
+增删任何一张图的判据。
+
+**一、机制在哪里。** 七家是同一笔终端需求在链条上的七个观测点，但确认时点、价值捕获、
+需求来源三样都不同 ⇒ 跨层不是零和（相加是重复计算），同层才接近零和。
+所以本页只问两类问题：「哪一层在动」与「同层两家谁在赢」。
+
+**二、逐条检验过的假说，结论写在对应图注里，负的也写。** 这几条都做过零假设校准
+或样本外检验，不是看图说话：
+  · 「上游领先下游」—— **证伪**。六家对台积电挑遍 ±6 个月错位，没有一家的提升
+    跑得赢「在两条无关但同样自相关的序列上挑最优错位」碰巧得到的提升
+    （相位随机化替代序列现算，见 `_leadlag()`）。⇒ 本页**没有**领先滞后图。
+  · 「代工与封测同步」—— **成立**，而且是本页唯一能直接用的正面结论：三家同期相关
+    就是最高，错位没好处。可作同月参照，**不是预测**。
+  · 「比值能读出价值往哪层走」—— **多数证伪**。比值的增速恒等于两条同比线之差，
+    新内容只有水平；而十组比值的水平在单位根检验下都没有锚。⇒ 只留一张
+    （先进 vs 成熟制程），理由写在那张图的图注里。
+  · 「同比高 = 强」—— **证伪**，而且是本页最容易被误读的一处。见 ⟨ex:state⟩。
+  · 「设计服务是领先指标」—— **证伪**：世芯对组内六家的相关全为负且都很弱，
+    它的月营收由少数几个项目的排程决定。
+
+**三、不靠推断的那一列。** MOPS 月营收申报表要求同比增减达 ±50% 者说明原因，
+那是法定申报栏。本页把触发月的原文照引，并对有月度分部列的家用它自己的分部数
+当场对账（⟨ex:official-check⟩）—— 这是页上唯一「公司自己解释自己」且可验证的材料。
+
+**四、边界写在页面上，不藏在代码里。** 不能读份额（凑不出闭合分母）、不能读盈利
+（只有营收）、不能择时（上面第二条）、不能用比值判贵贱（没有锚）。页尾第一条就是这个清单。
+
+⚠ **加图之前先过一遍这四条。** 本页拒绝过的图比画上的多，拒绝的理由都在图注里 ——
+那些理由本身就是分析的一部分，删掉它们等于把页面退回「数据叠加」。
+
+═══════════════════════════════════════════════════════════════════════════
 **本页不做跨家加总，一次都不做** —— 与 `/exchanges-apac/` 不画份额是同一类判断
 ═══════════════════════════════════════════════════════════════════════════
 亚太那页不画份额，是因为四家法域隔离、不在同一个池子里抢单，分母只能是自己圈的。
@@ -252,6 +287,95 @@ def brk_note(idx, keys=None,
     一起消失，不会剩下一句假话（同 build/wealth.py 的 brk_note）。"""
     at, _lab, detail = brk_in(idx, keys)
     return (lead + '；'.join(detail) + '。') if at else ''
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 这七家是什么关系 —— 本页的分析框架，也是「横着比」唯一说得通的理由
+# ═══════════════════════════════════════════════════════════════════
+# 把七条月营收画在一起，本身不构成分析。要让横比有内容，得先答一个问题：
+# **这七个数为什么会一起动、又为什么不总是一起动。**
+#
+# 答案是它们是**同一笔终端需求在链条上的七个观测点**，但每一点的
+#   ① 确认时点（设计费按里程碑、晶圆按投片、封测按出货），
+#   ② 价值捕获（同一颗芯片在各层的单价完全不同），
+#   ③ 需求来源（存储走自己的合约价周期，与逻辑不同步）
+# 都不一样。所以：
+#   · **跨层不是零和**，相加是重复计算（页尾第一条）—— 跨层能问的是「价值往哪儿走」；
+#   · **同层才接近零和** —— 世芯与创意抢同一批 ASIC 案子，台积电与联电各守一端制程。
+#     这正是 `/exchanges-apac/` 那页「产品级头对头才是真正的零和」的同一个判断。
+#
+# 下面这张表的「链上位置 / 营收怎么来」两列是**本页的编辑归纳**，不是公司的披露口径；
+# 但每一条都有出处，且尽量用**公司自己的话**：能引 MOPS 官方备注的月份直接引它
+# （那是法定申报栏，见 REMARK 一节），引不到才退回 spec 里已复核过的表述。
+# ⚠ 台积电是七家里唯一**本仓从未在 spec 里写过它属于哪一层**的（另外六家都写了，
+#   出处见下表 `src`）。所以它那一行的驱动只引它自己的 MOPS 备注原文，不替它归类。
+ROLE = {
+    #        链上位置        营收怎么来（编辑归纳）                     出处
+    'alchip': ('ASIC 设计服务', 'NRE 里程碑 + turnkey 量产出货，按里程碑与出货批次认列，本身就是块状的',
+               'build/mrspecs/alchip.py'),
+    'guc':    ('ASIC 设计服务', '无晶圆厂的 ASIC 设计服务商，营收由量产出货与 NRE 里程碑构成',
+               'build/mrspecs/guc.py'),
+    'mtk':    ('IC 设计（fabless）', '无晶圆厂设计公司，营收按出货认列',
+               'build/mrspecs/mtk.py'),
+    'tsm':    ('晶圆代工（先进制程）', '',      # ← 故意留空，见上方 ⚠
+               '本仓 spec 未归类；驱动只引公司自己的 MOPS 备注'),
+    'umc':    ('晶圆代工（成熟制程）', 'FY2025 20-F 附注 12：公司只剩晶圆代工一个报告分部',
+               'build/mrspecs/umc.py'),
+    'ase':    ('封测 + EMS', 'ATM（封测及材料）与非 ATM（环旭 USI 的电子代工及其他）两块拼成，'
+                             '两块的客户与周期完全不同',
+               'build/mrspecs/ase.py'),
+    'nanya':  ('存储（DRAM）', 'DRAM 是标准品、价格由供需缺口定，营收 = 位元出货 × 合约价，'
+                               '两条腿同向时乘在一起',
+               'build/mrspecs/nanya.py'),
+}
+#: 同层对手（组内的）。**只有同层才接近零和**，跨层不是。组内没有同层对手的写 None。
+RIVAL = {'alchip': 'guc', 'guc': 'alchip', 'tsm': 'umc', 'umc': 'tsm',
+         'mtk': None, 'ase': None, 'nanya': None}
+
+
+def load_remarks():
+    """读 `series/mops_remarks.csv` —— 公司在 MOPS「備註／營收變化原因說明」栏填的原文。
+
+    **这是本页唯一一处「公司自己解释自己」的数据**，也是回答「背后是什么逻辑」时
+    唯一不靠推断的材料：台湾 MOPS 月营收申报表脚注第 6 条要求
+    **当月营收或本年累计营收同比增减达 ±50% 者必须说明原因**，所以这一栏在触发月是
+    法定申报内容，不是公关稿。
+
+    ⚠ 两条语义必须照搬（权威在 `fetch/mops_remarks.py`，`build/mrbase.py` 的 `_remark()`
+      是同一套的另一处实现 —— 本页不 import 它：那是**单公司页的底座**，
+      横截面页挂上去等于把两类页面的生命周期绑死）：
+      · **查不到这一行 ≠ 公司没填**。前者是本库还没收到（回补窗口之外），页面一个字都不说；
+        后者是官方那一栏确实为空（落库归一成空串）。混为一谈就是替公司说了一句它没说的话。
+      · **`triggered=0` 而备注非空 ⇒ 常设口径注，不得当成「增减原因」引用。**
+        实测联发科连续 24 个月填同一句「海外子公司之營收係以當月平均匯率換算之」而
+        一次都没触发门槛 —— 把它当成「联发科解释了营收变化」，是把一句会计口径说明
+        伪造成经营评论。本页因此**只在 triggered 为真时引用原文**。
+    """
+    path = os.path.join(SERIES, 'mops_remarks.csv')
+    out = {}
+    try:
+        import csv as _csv
+        with open(path, encoding='utf-8') as fh:
+            for r in _csv.DictReader(fh):
+                out[(r['ticker'], r['month'])] = {
+                    'remark': (r.get('remark') or '').strip(),
+                    'triggered': str(r.get('triggered', '')).strip() in ('1', 'True', 'true'),
+                    'leg': (r.get('trigger_leg') or '-').strip()}
+    except OSError as e:
+        # 只告警不阻断：这张表喂的是注脚，为它停掉整页不值当（同 mrbase._remark）。
+        # 但告警必须响，否则「本页集体少一块」会被当成设计如此。
+        print(f'[warn] 读 series/mops_remarks.csv 失败，本页不印官方备注：{e!r}')
+    return out
+
+
+REMARKS = load_remarks()
+LEG_ZH = {'month': '当月', 'ytd': '累计', 'both': '当月与累计', '-': ''}
+
+
+def remark_of(k, p):
+    """→ dict 或 None。None = 本库没有这一行，页面一个字都不说。"""
+    return REMARKS.get((k, str(p)))
 
 
 # ────────────────────────────── 读数据 ──────────────────────────────
@@ -510,6 +634,84 @@ REB = {k: rebased(k, IDX_REB) for k in KEYS}
 NOISE = {k: float(NTD[k].pct_change().abs().median() * 100.0) for k in KEYS}
 
 
+
+# ── 分部交叉验证：公司说的那个原因，用它自己的分部列能不能验出来 ──────────────
+# 官方备注是**公司的断言**，不是证据。七家里有两家在月度层面另外披露了分部拆分
+# （日月光的 ATM / 非 ATM、创意的量产 / NRE），于是这两家的断言可以当场对账：
+# 说「量产产品增加」，就该看到量产那一段的增速显著高于另一段。
+# 对不上不代表公司说谎（口径可以不同），但**能对上是一条真凭据**，值得印出来。
+# ⚠ 世芯没有月度分部列 ⇒ 它那句「量產產品增加」本页**验不了**，只能照引并明说验不了。
+#   不许拿创意的分部去「印证」世芯 —— 那是两家公司。
+SEG = {
+    'ase': [('revenue_atm_ntd_mn', 'ATM（封测及材料）'),
+            ('revenue_nonatm_ntd_mn', '非 ATM（EMS 等）')],
+    'guc': [('revenue_turnkey_ntd_mn', '量产 Turnkey'),
+            ('revenue_nre_other_ntd_mn', 'NRE 及其他')],
+}
+
+
+def seg_facts(k):
+    """→ [{'zh', 'yoy', 'r12_yoy', 'share_now', 'share_prev'}]，算不出来返回 None。
+
+    份额用**近 12 个月合计**算，不用单月：分部的单月占比被农历年与里程碑确认打得很碎，
+    一个月的占比变动读不出结构。
+    """
+    cols = SEG.get(k)
+    if not cols or k not in RAW:
+        return None
+    df, out = RAW[k], []
+    tot = pd.to_numeric(df[NTDCOL[k]], errors='coerce')
+    t_now = tot.loc[CUR - 11:CUR].sum()
+    t_prv = tot.loc[CUR - 23:CUR - 12].sum()
+    for col, zh_ in cols:
+        if col not in df.columns:
+            return None
+        sv = pd.to_numeric(df[col], errors='coerce')
+        if not _fin(sv.get(CUR)) or not _fin(sv.get(CUR - 12)):
+            return None
+        now, prv = sv.loc[CUR - 11:CUR].sum(), sv.loc[CUR - 23:CUR - 12].sum()
+        out.append({
+            'zh': zh_,
+            'yoy': float(YOY.mom_yoy(sv, YOY.FLOW).get(CUR, np.nan)),
+            'r12_yoy': (now / prv - 1.0) * 100.0 if prv else np.nan,
+            'share_now': now / t_now * 100.0 if t_now else np.nan,
+            'share_prev': now and (prv / t_prv * 100.0 if t_prv else np.nan),
+        })
+    return out
+
+
+SEGF = {k: seg_facts(k) for k in SEG}
+SEGF = {k: v for k, v in SEGF.items() if v}
+
+
+# ── 各家在自己历史里的位置：增速排名与水平排名可以完全相反 ────────────────────
+def state_facts(k):
+    """近 12 个月合计 vs 这家自己的历史峰，以及史上最大回撤。
+
+    **这是本页对「只是数据叠加」那条批评的正面回答之一。** 同比只说「比去年这个月
+    多了多少」，它对基数一无所知：一家刚从腰斩里爬出来的公司，同比可以是三位数，
+    而它的生意规模仍然远低于自己两年前的水平。把两者并排，横截面才读得出
+    「谁在创新高、谁在填坑」—— 单看同比矩阵，这两种情形长得一模一样。
+    """
+    s = pd.to_numeric(RAW[k][NTDCOL[k]], errors='coerce').dropna().loc[:LATEST]
+    r12 = s.rolling(12, min_periods=12).sum().dropna()
+    if len(r12) < 13:
+        return None
+    cur, pk = float(r12.iloc[-1]), float(r12.max())
+    dd = (r12 / r12.cummax() - 1.0) * 100.0
+    return {'r12': cur, 'peak': pk, 'peak_m': r12.idxmax(),
+            'gap': (cur / pk - 1.0) * 100.0 if pk else np.nan,
+            'r12_yoy': (cur / float(r12.iloc[-13]) - 1.0) * 100.0 if len(r12) > 12 else np.nan,
+            'maxdd': float(dd.min()), 'maxdd_m': dd.idxmin(),
+            'at_high': abs(cur / pk - 1.0) < 1e-9}
+
+
+STATE = {k: state_facts(k) for k in KEYS}
+if any(v is None for v in STATE.values()):
+    skip('近 12 个月合计算不出来（历史不足 13 个月）')
+AT_HIGH = [k for k in KEYS if STATE[k]['at_high']]
+BELOW = sorted((k for k in KEYS if not STATE[k]['at_high']), key=lambda k: STATE[k]['gap'])
+
 # ── 组内离散度：本页的核心实证 ────────────────────────────────────────
 def _spread(keys, idx):
     """每月「这一组里最快的一家 − 最慢的一家」（pp）。"""
@@ -615,38 +817,74 @@ def _corr():
 CORR, CORR_N = _corr()
 
 
-def _leadlag(anchor='tsm', span=6):
-    """「谁领先谁」的判据 —— 算出来是为了**说明本页为什么不画这张图**。
+def _phase_rand(x, rng):
+    """相位随机化替代序列：保住这条序列**自己的**自相关与频谱，只打散它与别人的关系。
 
-    对每一家算 corr(X[t], anchor[t−k])，k ∈ [−span, +span]，取相关最高的 k。
-    再把窗口对半切，看那个最佳 k 与它的相关在前后两半里稳不稳。
-
-    页面上那句「不要读成领先滞后」引用的每一个数都从这里来，一个都不写死：
-    写死的坏处不是难看，是**下个月它就可能不成立，而页面照印**。
+    为什么非要这一步：在两条各自高度自相关的序列上，**在 ±k 个错位里挑相关最高的那个**
+    本身就会产出一个不小的「增益」，哪怕两条序列毫无关系。不给这个「碰巧能挑出多少」
+    定个标尺，任何错位相关的读数都无法判断是发现还是噪声。
     """
-    m = pd.DataFrame({k: YOYS[k].reindex(IDX_YOY) for k in KEYS}).dropna()
-    if len(m) < 24 or anchor not in m:
+    n = len(x)
+    f = np.fft.rfft(x - x.mean())
+    ph = rng.uniform(0, 2 * np.pi, len(f))
+    ph[0] = 0.0
+    if n % 2 == 0:
+        ph[-1] = 0.0
+    return np.fft.irfft(np.abs(f) * np.exp(1j * ph), n) + x.mean()
+
+
+def _maxgain(a, b, span):
+    """→ (在 ±span 里挑出来的最高相关 − 同期相关, 那个 k, 同期相关)。"""
+    r0 = float(np.corrcoef(a, b)[0, 1])
+    best, bk = -9.0, 0
+    for k in range(-span, span + 1):
+        x, y = (a[k:], b[:-k]) if k > 0 else ((a[:k], b[-k:]) if k < 0 else (a, b))
+        r = float(np.corrcoef(x, y)[0, 1])
+        if r > best:
+            best, bk = r, k
+    return best - r0, bk, r0
+
+
+def _leadlag(anchor='tsm', span=6, B=400, seed=7):
+    """「谁领先谁」——**算出来是为了说明本页为什么不画这张图**，结论是负的。
+
+    口径：各家单月同比的 3 个月移动平均（月营收的单月同比毛刺太大，错位相关会被
+    噪声主导），窗口取七家都有值的那一段。对每一家算「在 ±span 里挑最优错位」
+    相对同期相关的**增益**，再用 `_phase_rand` 生成 B 条零假设序列，得出
+    「同样的挑选过程在无关序列上碰巧能挑出多大增益」。p = 零分布 ≥ 实测增益的比例。
+
+    ⚠ **p 大不等于「没关系」，等于「这个数据量分不出来」**。页面上必须这么写：
+      本页窗口只有七年上下，而这几条序列的周期是两三年一轮 —— 一共两三轮。
+      在这种样本上，「领先 10 个月」与「滞后 16 个月」经常是同一句话。
+    """
+    m = pd.DataFrame({k: YOY3[k] for k in KEYS}).dropna()
+    if len(m) < 36 or anchor not in m:
         return None
-    half = len(m) // 2
-    out, gains, flips = {}, [], 0
+    rng = np.random.default_rng(seed)
+    per, worst_p = {}, 1.0
     for k in KEYS:
         if k == anchor:
             continue
-        cs = {kk: float(m[k].corr(m[anchor].shift(kk))) for kk in range(-span, span + 1)}
-        best = max(cs, key=cs.get)
-        out[k] = {'best': best, 'r': cs[best], 'r0': cs[0], 'gain': cs[best] - cs[0]}
-        gains.append(cs[best] - cs[0])
-        r1 = float(m[k].iloc[:half].corr(m[anchor].iloc[:half]))
-        r2 = float(m[k].iloc[half:].corr(m[anchor].iloc[half:]))
-        out[k].update(r1=r1, r2=r2)
-        if _fin(r1) and _fin(r2) and r1 * r2 < 0:
-            flips += 1
-    return {'per': out, 'anchor': anchor, 'span': span,
-            'at0': [k for k, v in out.items() if v['best'] == 0],
-            'gain_max': max(gains) if gains else None,
-            'flips': flips, 'n_half': half}
+        a, b = m[k].values, m[anchor].values
+        g, bk, r0 = _maxgain(a, b, span)
+        null = np.array([_maxgain(_phase_rand(a, rng), b, span)[0] for _ in range(B)])
+        per[k] = {'gain': g, 'best': bk, 'r0': r0, 'p': float((null >= g).mean()),
+                  'null_med': float(np.median(null)), 'null_95': float(np.percentile(null, 95))}
+        worst_p = min(worst_p, per[k]['p'])
+    #: 「代工 + 封测」这一块是本页**唯一站得住的正面结论**：三家同期就最高，错位没好处。
+    block = {}
+    for a_, b_ in (('tsm', 'ase'), ('tsm', 'umc'), ('umc', 'ase')):
+        g, bk, r0 = _maxgain(m[a_].values, m[b_].values, span)
+        block[(a_, b_)] = {'r0': r0, 'best': bk, 'gain': g}
+    return {'per': per, 'anchor': anchor, 'span': span, 'B': B, 'n': len(m),
+            'min_p': worst_p, 'block': block,
+            'at0': [k for k, v in per.items() if v['best'] == 0],
+            'gain_max': max(v['gain'] for v in per.values()),
+            'none_clears': all(v['p'] >= 0.05 for v in per.values())}
 
 
+#: 单月同比的 3 个月移动平均 —— 错位相关与相关矩阵都用它，别用毛刺很大的单月值。
+YOY3 = {k: YOYS[k].rolling(3, min_periods=3).mean() for k in KEYS}
 LL = _leadlag()
 _off = [float(CORR.loc[a, b]) for i, a in enumerate(KEYS) for b in KEYS[i + 1:]]
 CORR_MED = float(np.median(_off)) if _off else np.nan
@@ -654,6 +892,11 @@ CORR_HI = max(((a, b, float(CORR.loc[a, b])) for i, a in enumerate(KEYS)
                for b in KEYS[i + 1:]), key=lambda r: r[2])
 CORR_LO = min(((a, b, float(CORR.loc[a, b])) for i, a in enumerate(KEYS)
                for b in KEYS[i + 1:]), key=lambda r: r[2])
+#: 世芯那一行：与其余各家相关为负的家数，以及相关绝对值的上限。
+#: **不写死「它与每一家都在噪声里」** —— 那是一句要逐对检验才成立的话；
+#: 这里只印真正算得出来的两个量，措辞跟着它们走。
+_AL_NEG = sum(1 for k in KEYS if k != 'alchip' and float(CORR.loc['alchip', k]) < 0)
+_AL_MAXABS = max(abs(float(CORR.loc['alchip', k])) for k in KEYS if k != 'alchip')
 
 
 # ── 世芯的汇率那一份有多大：现算，且**只用尺度无关的写法** ────────────────────
@@ -704,9 +947,13 @@ ALFX = alchip_fx_facts()
 # 图序：挪图**只改 ORDER 这一张表**（机制见 build/exhibits.py 文件头）
 # ═══════════════════════════════════════════════════════════════════
 ORDER = [
+    'chain',           # 价值链框架：这七家是什么关系，横比为什么说得通
     'yoy-heat',        # 七家 × 近 N 月 单月同比矩阵 —— 七家同框只能用它
+    'state',           # 增速 vs 水平：谁在创新高、谁在填坑（同比看不出来）
+    'official-check',  # 公司自己的解释，以及能不能用它自己的分部列验出来
     'growing-count',   # 每月七家里有几家在增长（对离群值免疫的分歧度量）
     'spread',          # 组内同比极差；含「去掉南亚科」的对照线
+    'node-split',      # 先进 vs 成熟制程：本页唯一一张比值图（为什么只有一张，见图注）
     'rebased-mfg',     # 制造侧指数化（基期 = 100）
     'rebased-design',  # 设计侧指数化
     'yoy-mfg',         # 制造侧单月同比（**不含南亚科**，理由见图注）
@@ -715,12 +962,15 @@ ORDER = [
     'corr',            # 单月同比的两两相关
 ]
 _seq = iter(exhibits.Seq(k) for k in range(2, 99))
-E_HEAT, E_GROW, E_SPREAD = next(_seq), next(_seq), next(_seq)
+E_CHAIN, E_HEAT, E_STATE, E_CHECK = (next(_seq) for _ in range(4))
+E_GROW, E_SPREAD = next(_seq), next(_seq)
+E_NODE = next(_seq)
 E_REB_M, E_REB_D, E_YOY_M, E_YOY_D = (next(_seq) for _ in range(4))
 E_SEASON, E_CORR = next(_seq), next(_seq)
 E_TABLE = next(_seq)
 #: 建图时的号 → id。本轮没出的图不登记（ORDER 里列了却没生成的 id 由 exhibits 跳过）。
-EX_ID = {E_HEAT: 'yoy-heat', E_GROW: 'growing-count', E_SPREAD: 'spread',
+EX_ID = {E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_STATE: 'state', E_CHECK: 'official-check',
+         E_GROW: 'growing-count', E_SPREAD: 'spread', E_NODE: 'node-split',
          E_REB_M: 'rebased-mfg', E_REB_D: 'rebased-design',
          E_YOY_M: 'yoy-mfg', E_YOY_D: 'yoy-design',
          E_SEASON: 'season-heat', E_CORR: 'corr'}
@@ -758,6 +1008,39 @@ def _axis_owner(keys, idx, series_of):
             f'水平值在 Exhibit 1 的汇总表里。')
 
 
+# ── ⟨ex:chain⟩ 价值链框架：横着比为什么说得通 ────────────────────────────
+def _drv(k):
+    """驱动那一格：能引公司自己的话就引它，引不到才用 spec 里复核过的编辑归纳。"""
+    rk = remark_of(k, CUR)
+    if rk and rk['triggered'] and rk['remark']:
+        return f'<b>公司本月自述</b>：「{rk["remark"]}」'
+    return ROLE[k][1] or '—'
+
+
+ex.append({
+    'n': E_CHAIN, 'kind': 'table', 'full': True,
+    'title': '这七家是同一笔需求在链条上的七个观测点 —— 横着比之前先看清关系',
+    'idx': '公司',
+    'cols': [['链上位置', 'pos'], ['营收怎么来', 'drv'], ['组内同层对手', 'rival']],
+    'rows': [{'xl': f'{NAME[k]} {CODE[k]}', 'pos': ROLE[k][0], 'drv': _drv(k),
+              'rival': (f'{NAME[RIVAL[k]]}（接近零和）' if RIVAL[k] else '组内无同层对手')}
+             for k in KEYS],
+    'note': (
+        '<b>跨层不是零和，同层才是。</b>同一颗 ASIC 的设计费记在世芯／创意，晶圆记在'
+        '台积电，封测记在日月光 —— 三层一起涨不是三家互相抢，是同一笔需求被数了三次。'
+        '所以本页跨层只问「<b>价值往哪一层走</b>」（看比值与各层增速差），'
+        '不问「谁占几成」（那需要一个这七家凑不出来的分母）。'
+        '真正接近零和的只有同层两对：世芯 vs 创意抢同一批 ASIC 案子，'
+        '台积电 vs 联电各守制程的一端。'
+        '<br>「链上位置」与「营收怎么来」两列是<b>本页的编辑归纳</b>，不是公司的披露口径；'
+        '能引公司自己法定申报原文的月份直接引原文（见'
+        '⟨ex:official-check@>:下面那张对账表⟩）。'
+        f'<br>⚠ {DISP["tsm"]}那一行的「营收怎么来」<b>只引它自己的话</b>：'
+        '本仓七份单公司配置里，只有它从未写过属于哪一层，'
+        '本页不替它归类（另外六家的出处：'
+        + '、'.join(f'{NAME[k]} <code>{ROLE[k][2]}</code>' for k in KEYS if k != 'tsm') + '）。'),
+})
+
 # ── ⟨ex:yoy-heat⟩ 七家 × 近 N 月：单月同比矩阵 ────────────────────────────
 _HM = list(IDX_YOY[-HEAT_MONTHS:])
 ex.append({
@@ -783,6 +1066,112 @@ ex.append({
         + (f'<br>{DISP["ase"]}的同比从 {mlab(IDX_YOY[0])} 起才有：'
            '它的序列 2018-05 才开始（控股公司 2018-04-30 才成立，更早的月报属于前身主体，'
            '不可前接），再往前一年才凑得出分母。' if 'ase' in YOY_LATE else '')),
+})
+
+# ── ⟨ex:state⟩ 增速 vs 水平：同比矩阵结构上看不出的那一半 ────────────────────
+_rank_yoy = sorted(KEYS, key=lambda k: -(_yy(k) if _fin(_yy(k)) else -9e9))
+_rank_gap = sorted(KEYS, key=lambda k: -STATE[k]['gap'])
+ex.append({
+    'n': E_STATE, 'kind': 'table', 'full': True,
+    'title': (f'同比说「比去年这个月多多少」，不说「生意有没有回到过」—— '
+              f'{mlab(CUR)} 七家里 {len(AT_HIGH)} 家近 12 个月合计创新高，'
+              f'{len(BELOW)} 家仍低于自己的峰'),
+    'idx': '公司',
+    'cols': [['当月同比', 'y1'], ['近 12 月合计同比', 'y12'],
+             ['近 12 月合计 vs 自身历史峰', 'gap'], ['峰在', 'pk'],
+             ['史上最大回撤（12 月合计）', 'dd']],
+    'rows': [{'xl': f'{NAME[k]} {CODE[k]}',
+              'y1': pct(_yy(k), 0),
+              'y12': pct(STATE[k]['r12_yoy'], 0),
+              'gap': ('<b>创新高</b>' if STATE[k]['at_high'] else pct(STATE[k]['gap'], 1)),
+              'pk': mlab(STATE[k]['peak_m']),
+              'dd': f'{STATE[k]["maxdd"]:.0f}%（{mlab(STATE[k]["maxdd_m"])}）'}
+             for k in _rank_yoy],
+    'note': (
+        '<b>这张表是为了拆掉一个横截面最容易犯的错：把高同比读成「强」。</b>'
+        '同比的分母是去年同月，它对「这家公司本来有多大」一无所知 —— '
+        '一家刚从腰斩里爬出来的公司，同比可以是三位数，而它的生意仍远小于两年前。'
+        + ((f'<br>本月就是这样：按当月同比排，第一是{NAME[_rank_yoy[0]]}'
+            f'（{pct(_yy(_rank_yoy[0]), 0)}）；但按「离自己的历史峰还有多远」排，'
+            f'垫底的是{NAME[BELOW[0]]}（{pct(STATE[BELOW[0]]["gap"], 1)}，'
+            f'峰在 {mlab(STATE[BELOW[0]]["peak_m"])}），'
+            f'而它的当月同比是 {pct(_yy(BELOW[0]), 0)} —— '
+            '<b>三位数的同比与「还没回到两年前」可以同时为真</b>，'
+            '这正是只看⟨ex:yoy-heat@<:上面那张矩阵⟩会读反的地方。')
+           if BELOW and _fin(STATE[BELOW[0]]['gap']) else '')
+        + '<br>用<b>近 12 个月合计</b>而不是单月来比水平：单月带农历年与出货批次的块状噪声，'
+        '一个月的高低读不出生意规模。回撤也按同一口径算，'
+        '所以表里每一列都是同一条序列的不同问法，可以横着读。'),
+})
+
+# ── ⟨ex:official-check⟩ 公司自己的解释，能不能用它自己的分部列验出来 ──────────
+_TRIG = [k for k in KEYS if (remark_of(k, CUR) or {}).get('triggered')
+         and (remark_of(k, CUR) or {}).get('remark')]
+_NOROW = [k for k in KEYS if remark_of(k, CUR) is None]
+_check_rows = []
+for _k in KEYS:
+    _rk = remark_of(_k, CUR)
+    if _rk is None:
+        _said = '<i>本库暂无这一行</i>'
+    elif _rk['triggered'] and _rk['remark']:
+        _said = f'「{_rk["remark"]}」'
+    elif _rk['triggered']:
+        _said = '<i>触发门槛，但官方该栏为空</i>'
+    else:
+        _said = '<i>未触发 ±50% 门槛，无须说明</i>'
+    _segs = SEGF.get(_k)
+    if _segs:
+        _fast = max(_segs, key=lambda x: x['r12_yoy'] if _fin(x['r12_yoy']) else -9e9)
+        _slow = min(_segs, key=lambda x: x['r12_yoy'] if _fin(x['r12_yoy']) else 9e9)
+        _ver = (f'{_fast["zh"]} 近 12 月 {pct(_fast["r12_yoy"], 0)}、'
+                f'占比 {_fast["share_prev"]:.0f}%→<b>{_fast["share_now"]:.0f}%</b>；'
+                f'{_slow["zh"]} {pct(_slow["r12_yoy"], 0)}')
+    else:
+        _ver = '<i>无月度分部列，验不了</i>'
+    _check_rows.append({'xl': f'{NAME[_k]} {CODE[_k]}',
+                        'leg': LEG_ZH.get((_rk or {}).get('leg', '-'), '') or '—',
+                        'said': _said, 'ver': _ver})
+# 真正能「对账」的 = 既触发了门槛（有一句话要验）**又**有月度分部列（验得了）。
+# 两者的交集逐月在变，**不许写死家数** —— 上一版标题写「其中两家」，而本月实际只有
+# 一家落在交集里（另一家有分部列但没触发，没有说法可对）。
+_VERIFIABLE = [k for k in _TRIG if k in SEGF]
+_SEG_ONLY = [k for k in SEGF if k not in _TRIG]
+ex.append({
+    'n': E_CHECK, 'kind': 'table', 'full': True,
+    'title': (f'公司自己怎么解释这个月 —— {mlab(CUR)} 有 {len(_TRIG)} 家触发法定说明门槛，'
+              + (f'其中 {len(_VERIFIABLE)} 家（'
+                 + '、'.join(NAME[k] for k in _VERIFIABLE)
+                 + '）的说法能用它自己的分部列当场对账'
+                 if _VERIFIABLE else '但没有一家同时具备可对账的月度分部列')),
+    'idx': '公司',
+    'cols': [['触发腿', 'leg'], ['MOPS 备注原文（法定申报栏）', 'said'],
+             ['用它自己的分部列验', 'ver']],
+    'rows': _check_rows,
+    'src_extra': ('备注原文取自 series/mops_remarks.csv（TWSE/MOPS 月营收申报表的'
+                  '「備註／營收變化原因說明」栏，24 个月滚动窗口）。'),
+    'note': (
+        '<b>这是本页唯一一处「公司自己解释自己」的材料，也是回答「背后是什么逻辑」时'
+        '唯一不靠推断的一列。</b>台湾 MOPS 月营收申报表脚注第 6 条要求：'
+        '当月或本年累计营收同比增减<b>达 ±50%</b> 者必须说明原因 —— '
+        '所以触发月的那句话是法定申报内容，不是公关稿。'
+        '<br><b>两条读法上的硬规矩</b>：'
+        '① <b>未触发 ≠ 公司没话说</b>，只等于它这个月没到门槛；'
+        '② <b>没触发却填了字的，不能当成增减原因引用</b> —— '
+        f'{DISP["mtk"]}连续多个月填同一句汇率换算的会计口径说明而一次都没触发门槛，'
+        '把它当成「联发科解释了营收变化」，就是把一句口径注伪造成经营评论。'
+        '本页因此只在触发时印原文。'
+        '<br><b>最后一列是对账，不是转述。</b>公司的断言不是证据；七家里只有'
+        f'{"、".join(NAME[k] for k in SEGF)}在月度层面另外披露了分部拆分。'
+        '说「量产／封测那一段在涨」，就该看到那一段的增速与占比同时抬升；'
+        '对不上不等于公司说谎（分部口径可以与备注口径不同），但<b>对得上就是一条真凭据</b>。'
+        + (f'<br><b>本月真正构成对账的只有{"、".join(NAME[k] for k in _VERIFIABLE)}</b>'
+           '（既触发门槛、又有分部列）。'
+           if _VERIFIABLE else '<br>本月没有一家同时触发门槛且具备分部列，这一列无对账可做。')
+        + (f'{"、".join(NAME[k] for k in _SEG_ONLY)}有分部列但本月未触发门槛，'
+           '它那一格是<b>分部数据自己说话</b>，不对应任何一句官方说法 —— '
+           '两者别混着读。' if _SEG_ONLY else '')
+        + f'<br>⚠ {DISP["alchip"]}没有月度分部列，它那句话本页<b>验不了</b>，只能照引 —— '
+        f'也<b>不许</b>拿{NAME["guc"]}的分部去替它背书，那是两家公司。'),
 })
 
 # ── ⟨ex:growing-count⟩ 每月有几家在增长 ──────────────────────────────────
@@ -846,6 +1235,67 @@ ex.append({
        if brk_in(IDX_YOY)[0] else {}),
 })
 
+# ── ⟨ex:node-split⟩ 本页唯一一张比值图 ───────────────────────────────────
+# ⚠ **为什么只有一张 —— 这一段是本图存在的全部理由，改图之前先读完。**
+# 「多画几张比值图」是横截面页最容易犯的错，有两条硬道理挡着：
+#   ① **比值的增速不含新信息。** 恒等式 Δ12 log(a/b) ≡ 单月同比_a − 单月同比_b
+#      （本轮实测最大误差 4.4e-16）。也就是说比值线的同比，等于页上已有的两条同比线
+#      相减 —— 画出来是把同一批数换个样子再讲一遍。比值**唯一**的新内容是**水平**。
+#   ② **而水平要能读，得先有个锚。** 本轮对十组比值做了 ADF（对数比值、含常数与趋势）：
+#      **十组全部无法拒绝单位根**。没有锚，「现在处在历史第 3 百分位」就只是装饰 ——
+#      一条随机游走的分位数不指代任何「贵/便宜」。
+# ⇒ 只有一组通过了「水平确实在持续移动、且移动没有回头」这一关：先进 vs 成熟制程。
+#    另外几组各自倒在哪一条上，写在本图图注与页尾里，那也是本页的分析内容之一。
+_NODE = (NTD['tsm'].rolling(12, min_periods=12).sum()
+         / NTD['umc'].rolling(12, min_periods=12).sum()).reindex(IDX).dropna()
+
+
+def _cagr(x):
+    """对数线性拟合出来的年化斜率（%/年）。点数不够返回 None。"""
+    if len(x) < 24:
+        return None
+    b = np.polyfit(np.arange(len(x)), np.log(x.values), 1)[0]
+    return (np.exp(b * 12) - 1) * 100
+
+
+_ND_DD = (_NODE / _NODE.cummax() - 1.0) * 100.0
+_ND_36 = _cagr(_NODE.iloc[-36:])
+_ND_ALL = _cagr(_NODE)
+ex.append({
+    'n': E_NODE, 'kind': 'lines', 'full': True, 'height': LINE_H,
+    'fmt': 'f1', 'label_fmt': 'f1', 'yfmt': 'f1',
+    'title': (f'先进制程与成熟制程的分离：{NAME["tsm"]} ÷ {NAME["umc"]}（近 12 个月合计之比）'
+              f'—— {mlab(_NODE.index[0])} {_NODE.iloc[0]:.1f} 倍 → {mlab(CUR)} '
+              f'{_NODE.iloc[-1]:.1f} 倍'),
+    'xlabels': [mlab(p) for p in _NODE.index], 'ylab': '倍（近 12 个月营收合计之比）',
+    'zero_base': True, 'end_label': True,
+    'series': [{'name': f'{NAME["tsm"]} ÷ {NAME["umc"]}', 'color': 'NAVY',
+                'values': L(_NODE.values)}],
+    'src_extra': ('两家都是晶圆代工，分别守在制程的两端；用近 12 个月合计相除是为了'
+                  '把农历年与单月批次抹掉 —— 这条线读的是结构，不是当月景气。'),
+    'note': (
+        f'<b>{len(_NODE)} 个月里，这条线距离它自己的运行新高最多只回撤过 '
+        f'{abs(_ND_DD.min()):.1f}%（{mlab(_ND_DD.idxmin())}）</b>，'
+        f'而那恰好是成熟制程最紧的一段 —— 本该把它拉回去的环境，只拉回了不到 '
+        f'{abs(_ND_DD.min()):.0f}%。'
+        + (f'斜率还在加速：全窗 {_ND_ALL:+.0f}%/年，最近 36 个月 {_ND_36:+.0f}%/年。'
+           if _ND_ALL and _ND_36 else '')
+        + '<br><b>这是一条结构陈述，不是一个交易信号。</b>本轮实测：把这条比值对自己的'
+        '趋势做实时（只用当期之前的数据）偏离，再去解释未来 12 个月的相对增长，'
+        '系数在统计上与零无异 —— 也就是说它<b>说得出「分开了」，说不出「什么时候合回去」</b>，'
+        '更不指示任何一边贵还是便宜。'
+        '<br><b>本页为什么只有这一张比值图</b>：比值的增速恒等于两条同比线之差'
+        f'（⟨ex:yoy-mfg@>:下面那张制造侧同比⟩上就有这两条），所以比值的新内容只有水平；'
+        '而本轮对十组比值做单位根检验，<b>十组的水平都没有可依靠的锚</b>，'
+        '只有这一组的水平在持续、单向、未曾回头地移动。'
+        + (('<br>' + brk_note(IDX, ['tsm', 'umc'])) if brk_in(IDX, ['tsm', 'umc'])[0] else '')),
+    **({'break_at': [i for i, p in enumerate(_NODE.index)
+                     if p in {b[0] for b in BREAKS if b[1] in ('tsm', 'umc')}],
+        'break_label': [NAME[b[1]] for b in BREAKS
+                        if b[1] in ('tsm', 'umc') and b[0] in set(_NODE.index)]}
+       if any(b[1] in ('tsm', 'umc') and b[0] in set(_NODE.index) for b in BREAKS) else {}),
+})
+
 # ── ⟨ex:rebased-mfg⟩ / ⟨ex:rebased-design⟩ 指数化 ────────────────────────
 _NOISE_TXT = '、'.join(f'{NAME[k]} {NOISE[k]:.0f}%' for k in KEYS)
 for _e, _side in ((E_REB_M, '制造'), (E_REB_D, '设计')):
@@ -901,7 +1351,7 @@ for _e, _side in ((E_YOY_M, '制造'), (E_YOY_D, '设计')):
                'DRAM 是标准品、营收 = 位元出货 × 合约价，两条腿同向时相乘，'
                '单月同比可以到三位数；跟个位数到两位数的代工增速共用一根线性纵轴，'
                '会把代工那几条压成直线。这条读法是 <code>/nanya/</code> 页自己定的，'
-               '本页遵守它。它的同比在 ⟨ex:yoy-heat⟩ 的矩阵里（按格着色，不共用纵轴）。'
+               '本页遵守它。它的同比在 Exhibit ⟨ex:yoy-heat⟩ 的矩阵里（按格着色，不共用纵轴）。'
                if _out else '')
             + (('<br>' + brk_note(IDX_YOY, _ks)) if brk_in(IDX_YOY, _ks)[0] else '')),
         **({'break_at': brk_in(IDX_YOY, _ks)[0], 'break_label': brk_in(IDX_YOY, _ks)[1]}
@@ -939,7 +1389,7 @@ ex.append({
         '<br><b>这张图不是景气判断。</b>它把各年同月平均掉了，'
         f'{SEASON_YRS[0]}–{SEASON_YRS[-1]} 之间存储与 ASIC 两轮大周期的涨跌都落在同一批格子里 ——'
         '某一家的旺季指数偏高，可能只是它在某一年的那几个月刚好处在上行段。'
-        '<br>色标同样是<b>本图自己的</b> 5/95 分位，与⟨ex:yoy-heat⟩那张不可比。'),
+        '<br>色标同样是<b>本图自己的</b> 5/95 分位，与 Exhibit ⟨ex:yoy-heat⟩ 那张不可比。'),
 })
 
 # ── ⟨ex:corr⟩ 同比的两两相关 ────────────────────────────────────────────
@@ -964,17 +1414,50 @@ ex.append({
         f'<b>中位 {CORR_MED:+.2f} —— 这一组整体上并不同步。</b>'
         f'最高的一对是{NAME[CORR_HI[0]]}与{NAME[CORR_HI[1]]}（{CORR_HI[2]:+.2f}），'
         f'最低的一对是{NAME[CORR_LO[0]]}与{NAME[CORR_LO[1]]}（{CORR_LO[2]:+.2f}）。'
-        '<br><b>不要把它读成领先滞后 —— 本页没有、也不会有那张图。</b>'
-        + (f'把另外六家的同比对{NAME[LL["anchor"]]}做 ±{LL["span"]} 个月的错位相关，'
-           f'其中 {len(LL["at0"])} 家的相关在<b>错位 0 期</b>就已经最高'
-           f'（{"、".join(NAME[k] for k in LL["at0"])}），错位一点好处都没有；'
-           f'其余几家「最佳错位」带来的提升最多 {LL["gain_max"]:.2f}。'
-           f'把窗口对半切（各 {LL["n_half"]} 个月），'
-           + (f'有 {LL["flips"]} 家的相关在前后两半里<b>正负号相反</b>。'
-              if LL['flips'] else '各家相关的符号在前后两半里没有翻转。')
-           + '一个换半段样本就改号的领先关系，画出来只会被当成规律。'
-           if LL else '相关系数不带方向，错位相关在本页的窗口上算不出稳定结果。')
-        + f'<br>窗口是全部 {CORR_N} 个月，没有挑区间。'),
+        '<br><b>不要把它读成领先滞后 —— 本页没有、也不会有那张图，而这是实测的结论。</b>'
+        + (f'把另外六家对{NAME[LL["anchor"]]}做 ±{LL["span"]} 个月的错位相关，'
+           '再问一个关键问题：<b>同样「在十三个错位里挑最好的那个」的动作，'
+           '作用在两条毫无关系、但各自同样自相关的序列上，碰巧能挑出多大的提升？</b>'
+           f'（{LL["B"]} 条相位随机化替代序列现算）。'
+           f'答案是：实测提升最大的一家只有 {LL["gain_max"]:.2f}，'
+           + ('而<b>六家没有一家超过这个「碰巧」的水平</b>'
+              f'（最小 p = {LL["min_p"]:.2f}，全部远大于 0.05）—— '
+              '也就是说这些「最佳错位」<b>连噪声都跑不赢</b>。'
+              if LL['none_clears'] else
+              f'其中最小 p = {LL["min_p"]:.2f}。')
+           + f'（{len(LL["at0"])} 家的相关本来就在错位 0 期最高：'
+           + '、'.join(NAME[k] for k in LL['at0']) + '。）'
+           if LL else '错位相关在本页的窗口上算不出稳定结果。')
+        + '<br><b>⚠ p 大不等于「肯定没关系」，等于「这点数据分不出来」。</b>'
+        '本页窗口是七年上下，而这几条序列一轮周期两三年 —— 统共两三轮。'
+        '在这种样本上「领先 10 个月」和「滞后 16 个月」常常是同一句话。'
+        '把这个不确定性说清楚，比印一个看上去很确定的最佳错位诚实。'
+        + (('<br><b>但有一条正面结论，而且它可以用。</b>'
+            + '、'.join(f'{NAME[a]}–{NAME[b]} r(0)={v["r0"]:+.2f}'
+                        for (a, b), v in LL['block'].items())
+            + f'：{NAME["tsm"]}／{NAME["umc"]}／{NAME["ase"]}这三家'
+              '<b>在同一个日历月里同步</b>，把它们错开一两个月不但没有提升，'
+            + f'挑遍 ±{LL["span"]} 个月最多也只多 '
+            + f'{max(v["gain"] for v in LL["block"].values()):.3f}。'
+              '物理上晶圆到封测要一两个月，但三家都按出货认列，'
+              '这个时滞比「一个月」这个记账颗粒还短，所以在月度数据上看不见。'
+              '⇒ 读者可以拿这三家里先公告的那一家，当同月另外两家的<b>同期参照</b>；'
+              '<b>但那是同期参照，不是预测</b>。')
+           if LL and LL.get('block') else '')
+        + (f'<br>{DISP["alchip"]}那一行值得单看：它对组内<b>另外六家全部为负</b>'
+           f'（绝对值最大也只有 {_AL_MAXABS:.2f}），'
+           '即它既不跟着这条链涨、也谈不上稳定地反着走 —— 就是不相干。'
+           '它的月营收由少数几个 ASIC 项目的里程碑与量产排程决定，'
+           '<b>把它当「设计端领先指标」读是错的</b>：本页实测它对台积电的同期相关是 '
+           f'{LL["per"]["alchip"]["r0"]:+.2f}，错位怎么挑都跑不赢噪声（p = '
+           f'{LL["per"]["alchip"]["p"]:.2f}）。'
+           if LL and 'alchip' in LL.get('per', {}) and _AL_NEG == len(KEYS) - 1 else
+           (f'<br>{DISP["alchip"]}对组内其余各家的相关绝对值最大 {_AL_MAXABS:.2f}，'
+            '基本不相干 —— 它的月营收由少数几个 ASIC 项目的排程决定。'))
+        + f'<br>矩阵本身用<b>单月同比</b>算（{CORR_N} 个月，没有挑区间）；'
+        '上面那套错位检验用的是<b>单月同比的 3 个月移动平均</b> —— '
+        '单月值的毛刺会主导「哪个错位最优」的挑选，那不是口径不一致，'
+        '是两个问题该用两种平滑。'),
 })
 
 
@@ -1074,7 +1557,38 @@ _LAG_TXT = '、'.join(f'{NAME[k]} {_LAGS[k][0]}' for k in
                      sorted(KEYS, key=lambda k: _LAGS.get(k, (99,))[0]) if k in _LAGS)
 _SLOW = max((k for k in KEYS if k in _LAGS), key=lambda k: _LAGS[k][0])
 
+# ⚠ 第一条说的是**这页能拿来干什么**，不是口径。它放在最前面是因为「横着比七条
+#   月营收」这件事本身不构成分析 —— 不写清楚它支持什么判断、不支持什么判断，
+#   读者只会按自己本来的成见去读这几张图。里面每一个数都由上面现算，不写死。
 NOTES = [
+    ('<b>这页能支持什么判断 —— 以及明确不能支持什么。</b>'
+     '<br><b>能：①「半导体」不要当一个东西读。</b>'
+     f'{DISPF["n"]} 个可比月里，{DISPF["split_pct"]:.0f}% 的月份有人在涨的同时有人在跌'
+     + (f'，去掉{NAME["nanya"]}之后六家仍有 {DISPF["exn_split_pct"]:.0f}%'
+        if DISPF['exn_split_pct'] is not None else '')
+     + '。把这七家当同一个景气读，多数月份会读错 —— 该问的是「哪一层在动」。'
+     '<br><b>② 把「创新高」与「在填坑」分开。</b>同比的分母是去年同月，它对'
+     '「这家本来有多大」一无所知。'
+     + ((f'本月 {len(AT_HIGH)} 家的近 12 个月合计创新高，{len(BELOW)} 家仍低于自己的峰；'
+         f'{NAME[BELOW[0]]}当月同比 {pct(_yy(BELOW[0]), 0)}，而它的近 12 个月合计是 '
+         f'{pct(STATE[BELOW[0]]["r12_yoy"], 0)}、距自身峰 {pct(STATE[BELOW[0]]["gap"], 1)}。')
+        if BELOW else '')
+     + '两种情形在同比矩阵上长得一模一样，在 Exhibit ⟨ex:state⟩ 那张表上一眼分得开。'
+     '<br><b>③ 拿公司自己的话去对账。</b>±50% 触发的 MOPS 备注是法定申报内容，'
+     '有月度分部列的家还能当场验（Exhibit ⟨ex:official-check⟩）。'
+     '<br><b>④ 时效。</b>七家在次月第 7–15 天就公告上月营收，比同期季报早约六周 —— '
+     '<b>但这是披露节奏上的领先，不是经济上的领先</b>，两者别混。'
+     '<br><b>不能：① 不能做领先滞后择时。</b>本页实测过并且明确不画那张图，'
+     '判据与数写在 Exhibit ⟨ex:corr⟩ 的图注里。'
+     '<br><b>② 不能读份额。</b>这七家凑不出一个闭合分母（台湾还有华邦、旺宏、力积电、'
+     '联咏、瑞昱…，且各层的分母本来就不是同一个市场）。页上任何一处都没有「占几成」。'
+     '<br><b>③ 不能读盈利。</b>本页只有营收：没有价格、没有毛利、没有费用。'
+     '营收创新高与赚不赚钱是两件事，月营收答不了第二件。'
+     '<br><b>④ 不能用比值判贵贱。</b>本轮对十组跨家比值做过单位根检验，'
+     '<b>十组的水平都没有锚</b> ⇒「现在处在历史第几百分位」对它们不成立。'
+     '页上只留了一张比值图（Exhibit ⟨ex:node-split⟩），留它的理由写在那张图的图注里。'
+     '<br><b>⑤ 不能把一家的分部结论搬给另一家</b>，哪怕同层。'),
+
     ('<b>本页不做跨家加总，一次都不做。</b>七家在同一条价值链的不同层：'
      f'{"；".join(ly + " —— " + "、".join(NAME[k] for k in BY_LAYER[ly]) for ly in LAYERS)}。'
      f'{NAME["alchip"]}或{NAME["guc"]}的一颗 ASIC，设计费记在它们的营收里，'
@@ -1352,9 +1866,17 @@ def main():
           f'最高 {NAME[CORR_HI[0]]}–{NAME[CORR_HI[1]]} {CORR_HI[2]:+.2f}，'
           f'最低 {NAME[CORR_LO[0]]}–{NAME[CORR_LO[1]]} {CORR_LO[2]:+.2f}')
     if LL:
-        print(f'错位相关（对{NAME[LL["anchor"]]}，±{LL["span"]} 月）：'
-              f'{len(LL["at0"])} 家最佳错位就是 0 期，最大增益 {LL["gain_max"]:.3f}，'
-              f'前后半段符号翻转 {LL["flips"]} 家 ⇒ 本页不画领先滞后图')
+        print(f'错位相关（对{NAME[LL["anchor"]]}，±{LL["span"]} 月，3MMA 同比，'
+              f'{LL["B"]} 条相位随机化零假设，n={LL["n"]}）：')
+        for k, v in LL['per'].items():
+            print(f'  {NAME[k]:<8} r(0)={v["r0"]:+.2f} 最佳k={v["best"]:+d} '
+                  f'增益={v["gain"]:+.3f} | 零分布中位 {v["null_med"]:.3f}／95分位 '
+                  f'{v["null_95"]:.3f} → p={v["p"]:.3f}')
+        print(f'  ⇒ {"没有一家" if LL["none_clears"] else "有家"}跑赢零假设'
+              f'（最小 p={LL["min_p"]:.3f}）—— 本页不画领先滞后图')
+        print('  代工/封测块（唯一正面结论）：'
+              + '、'.join(f'{NAME[a]}–{NAME[b]} r(0)={v["r0"]:+.2f} 最佳k={v["best"]:+d}'
+                          for (a, b), v in LL['block'].items()))
     if ALFX:
         print(f'世芯汇率：{spanl(ALFX["a"], ALFX["b"])} NTD/USD {ALFX["fx_chg"]:+.2f}%，'
               f'占其新台币累计增长的 {ALFX["share"]:.2f}%（对数分解）；'
