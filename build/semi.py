@@ -718,6 +718,124 @@ AT_HIGH = [k for k in KEYS if STATE[k]['at_high']]
 BELOW = sorted((k for k in KEYS if not STATE[k]['at_high']), key=lambda k: STATE[k]['gap'])
 
 
+
+# ── 季节性指数：月值 ÷ 当年 12 个月均值，只取**共同窗口里的完整年** ──────────
+def _season():
+    """→ {ticker: {月份 1-12: 指数×100}}，以及实际用到的年份清单。
+
+    只用完整日历年（12 个月齐）—— 半年会把季节形状算成「上半年低、下半年没有」。
+    年份限定在**共同窗口之内**，七家用同一批年，否则「谁的高峰在几月」比的是
+    各自不同的历史时段。
+    """
+    yrs = [y for y in range(IDX[0].year, LATEST.year + 1)
+           if all(len(NTD[k].loc[f'{y}-01':f'{y}-12'].dropna()) == 12 for k in KEYS)]
+    out = {}
+    for k in KEYS:
+        by = {m: [] for m in range(1, 13)}
+        for y in yrs:
+            s = NTD[k].loc[f'{y}-01':f'{y}-12']
+            mean = float(s.mean())
+            if not mean:
+                continue
+            for p, v in s.items():
+                by[p.month].append(float(v) / mean * 100.0)
+        out[k] = {m: (sum(v) / len(v) if v else None) for m, v in by.items()}
+    return out, yrs
+
+
+SEASON, SEASON_YRS = _season()
+
+
+def _peak_trough(k):
+    d = {m: v for m, v in SEASON[k].items() if _fin(v)}
+    if not d:
+        return None, None
+    return max(d, key=d.get), min(d, key=d.get)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 月度营收真正独有的两件事：把分母摊开，以及去掉分母看生意本身
+# ═══════════════════════════════════════════════════════════════════
+# 同比是一个比值，它同时被**分子**（这个月的生意）和**分母**（去年同月）驱动。
+# 一张同比矩阵把两者混在一起，于是页面上最显眼的读数（南亚科 +561%）既说不清
+# 「生意有多好」，也说不清「这个数接下来会怎么走」。下面两个量把它拆开：
+#
+#   · `BASECAL` —— **基数日历**：假设季调后的运行速率**原地不动**，未来几个月的同比
+#     会自己走成什么样。这**不是预测**，是把去年同月那一串已经发生的数摊开来看。
+#     它回答的是「同比接下来的变化里，有多少根本不是今年的事」。
+#   · `MOM` —— **季调环比动能**：把季节性和去年同期一起去掉，只看最近三个月相对
+#     前三个月。它回答「生意本身现在是在加速还是减速」，与同比高低无关。
+#
+# 这两个量互相独立，而且经常给出相反的指示 —— 那正是它们的价值所在。
+MOM_WIN = 3          # 季调环比的窗口（3 个月 vs 前 3 个月）
+BASE_FWD = 6         # 基数日历往前摊几个月
+
+
+def _sa(k):
+    """季调后的月营收：月值 ÷ 该月的季节指数（`SEASON` 现算，见季节性那一节）。"""
+    si = SEASON.get(k) or {}
+    s = pd.to_numeric(RAW[k][NTDCOL[k]], errors='coerce').dropna().loc[:LATEST]
+    if not si or any(not _fin(si.get(m)) or not si.get(m) for m in range(1, 13)):
+        return None
+    return pd.Series({p: float(v) / (si[p.month] / 100.0) for p, v in s.items()}).sort_index()
+
+
+SA = {k: _sa(k) for k in KEYS}
+
+
+def _mom(k):
+    """→ {'now','prev','med'}：季调后 3 个月 vs 前 3 个月的百分比变化（**不年化**）。
+
+    ⚠ **不年化是刻意的。** 把一个三个月的变化折成年率，在块状序列上会炸开 ——
+    本轮实测世芯的年化读数能到五位数（它刚从一次腰斩里出来），那个数没有任何
+    可读性，印在页面上只会让整张表失去刻度。不年化的版本有界、可横比，
+    而且与「自身历史中位」并排时读者立刻知道这一档算大还是算小。
+    """
+    sa = SA.get(k)
+    if sa is None or len(sa) < MOM_WIN * 2 + 12:
+        return None
+    q = sa.rolling(MOM_WIN, min_periods=MOM_WIN).mean()
+    r = (q / q.shift(MOM_WIN) - 1.0) * 100.0
+    if not (_fin(r.get(LATEST)) and _fin(r.get(LATEST - MOM_WIN))):
+        return None
+    return {'now': float(r.loc[LATEST]), 'prev': float(r.loc[LATEST - MOM_WIN]),
+            'med': float(r.abs().median())}
+
+
+MOM = {k: _mom(k) for k in KEYS}
+MOM = {k: v for k, v in MOM.items() if v}
+
+
+def _basecal(k):
+    """→ (未来 BASE_FWD 个月的 Period 列表, 机械同比路径)。算不出来返回 None。
+
+    做法：取最近 MOM_WIN 个月的**季调**均值当运行速率，再按各月的季节指数还原成
+    「如果生意原地不动，那个月会报多少」，除以**去年同月的真实值**。
+    分子是一个不变的假设，分母全是已经发生的事实 ⇒ 路径的形状完全由分母决定。
+    """
+    sa, si = SA.get(k), (SEASON.get(k) or {})
+    if sa is None or not si:
+        return None
+    s = pd.to_numeric(RAW[k][NTDCOL[k]], errors='coerce').dropna()
+    rr = float(sa.loc[LATEST - (MOM_WIN - 1):LATEST].mean())
+    months, path = [], []
+    for i in range(1, BASE_FWD + 1):
+        m = LATEST + i
+        base = s.get(m - 12)
+        months.append(m)
+        path.append((rr * si[m.month] / 100.0 / float(base) - 1.0) * 100.0
+                    if _fin(base) and base else np.nan)
+    return months, path
+
+
+_bc = {k: _basecal(k) for k in KEYS}
+_bc = {k: v for k, v in _bc.items() if v}
+BASECAL = {k: dict(zip(('months', 'path'), v)) for k, v in _bc.items()}
+BASE_MONTHS = BASECAL[KEYS[0]]['months'] if BASECAL else []
+#: 「同比在未来 BASE_FWD 个月里会因为分母变动多少」—— 排序用。
+BASE_DRIFT = {k: (BASECAL[k]['path'][-1] - _yy(k))
+              for k in BASECAL if _fin(BASECAL[k]['path'][-1]) and _fin(_yy(k))}
+
 # ── 自身历史分位：把七条振幅差一个数量级的同比放到同一把尺上 ────────────────
 # **这是本页对「南亚科 +561% 与日月光 +46% 没法比」的正面解法。**
 # 同比的振幅逐家差一个数量级（南亚科 σ≈189pp，日月光 σ≈13pp），所以「谁的同比高」
@@ -862,40 +980,6 @@ if DISPF is None:
     skip('离散度算不出来（同比窗口为空）')
 
 
-# ── 季节性指数：月值 ÷ 当年 12 个月均值，只取**共同窗口里的完整年** ──────────
-def _season():
-    """→ {ticker: {月份 1-12: 指数×100}}，以及实际用到的年份清单。
-
-    只用完整日历年（12 个月齐）—— 半年会把季节形状算成「上半年低、下半年没有」。
-    年份限定在**共同窗口之内**，七家用同一批年，否则「谁的高峰在几月」比的是
-    各自不同的历史时段。
-    """
-    yrs = [y for y in range(IDX[0].year, LATEST.year + 1)
-           if all(len(NTD[k].loc[f'{y}-01':f'{y}-12'].dropna()) == 12 for k in KEYS)]
-    out = {}
-    for k in KEYS:
-        by = {m: [] for m in range(1, 13)}
-        for y in yrs:
-            s = NTD[k].loc[f'{y}-01':f'{y}-12']
-            mean = float(s.mean())
-            if not mean:
-                continue
-            for p, v in s.items():
-                by[p.month].append(float(v) / mean * 100.0)
-        out[k] = {m: (sum(v) / len(v) if v else None) for m, v in by.items()}
-    return out, yrs
-
-
-SEASON, SEASON_YRS = _season()
-
-
-def _peak_trough(k):
-    d = {m: v for m, v in SEASON[k].items() if _fin(v)}
-    if not d:
-        return None, None
-    return max(d, key=d.get), min(d, key=d.get)
-
-
 # ── 同比的两两相关：对角线留空 ────────────────────────────────────────
 def _corr():
     m = pd.DataFrame({k: YOYS[k].reindex(IDX_YOY) for k in KEYS}).dropna()
@@ -1034,6 +1118,8 @@ ALFX = alchip_fx_facts()
 # 图序：挪图**只改 ORDER 这一张表**（机制见 build/exhibits.py 文件头）
 # ═══════════════════════════════════════════════════════════════════
 ORDER = [
+    'momentum',        # 去掉分母看生意本身：同比高低与环比动能经常相反
+    'base-calendar',   # 把分母摊开：同比接下来的变化有多少根本不是今年的事
     'chain',           # 价值链框架：这七家是什么关系，横比为什么说得通
     'yoy-heat',        # 七家 × 近 N 月 单月同比矩阵 —— 七家同框只能用它
     'pctile-heat',     # 同一把尺：各家同比在**自身历史**里的分位
@@ -1051,6 +1137,7 @@ ORDER = [
     'decomp',          # 这七家其实是几个独立的赌注
 ]
 _seq = iter(exhibits.Seq(k) for k in range(2, 99))
+E_MOM, E_BASE = next(_seq), next(_seq)
 E_CHAIN, E_HEAT, E_PCT, E_STATE, E_CHECK = (next(_seq) for _ in range(5))
 E_GROW, E_SPREAD = next(_seq), next(_seq)
 E_NODE = next(_seq)
@@ -1058,7 +1145,8 @@ E_REB_M, E_REB_D, E_YOY_M, E_YOY_D = (next(_seq) for _ in range(4))
 E_SEASON, E_CORR, E_DECOMP = next(_seq), next(_seq), next(_seq)
 E_TABLE = next(_seq)
 #: 建图时的号 → id。本轮没出的图不登记（ORDER 里列了却没生成的 id 由 exhibits 跳过）。
-EX_ID = {E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_PCT: 'pctile-heat',
+EX_ID = {E_MOM: 'momentum', E_BASE: 'base-calendar',
+         E_CHAIN: 'chain', E_HEAT: 'yoy-heat', E_PCT: 'pctile-heat',
          E_STATE: 'state', E_CHECK: 'official-check', E_DECOMP: 'decomp',
          E_GROW: 'growing-count', E_SPREAD: 'spread', E_NODE: 'node-split',
          E_REB_M: 'rebased-mfg', E_REB_D: 'rebased-design',
@@ -1097,6 +1185,87 @@ def _axis_owner(keys, idx, series_of):
             f'读这张图请看<b>斜率</b>（谁在加速），不要按线的高低读「谁更大」，'
             f'水平值在 Exhibit 1 的汇总表里。')
 
+
+# ── ⟨ex:momentum⟩ 去掉分母，生意本身在加速还是减速 ──────────────────────────
+_SLOW = [k for k in MOM if MOM[k]['now'] < MOM[k]['prev']]
+_BELOW = [k for k in MOM if MOM[k]['now'] < MOM[k]['med']]
+#: 同比还很高、但环比动能已经掉到自身历史中位以下的 —— 本表最该被看见的一格。
+_DIVERGE = sorted((k for k in MOM if _fin(_yy(k)) and _yy(k) > 30
+                   and MOM[k]['now'] < MOM[k]['med'] and MOM[k]['now'] < MOM[k]['prev']),
+                  key=lambda k: -_yy(k))
+ex.append({
+    'n': E_MOM, 'kind': 'table', 'full': True,
+    'title': ('同比看不见运行速率：把季节性与去年同期一起去掉之后，'
+              + (f'{"、".join(NAME[k] for k in _DIVERGE)}的环比动能已经掉到自身历史中位以下'
+                 if _DIVERGE else '七家的环比动能都还在自身historical中位之上')),
+    'idx': '公司',
+    'cols': [['当月同比', 'y'], ['季调环比（近 3 月 vs 前 3 月）', 'now'],
+             ['上一期同口径', 'prev'], ['自身历史中位（绝对值）', 'med'], ['读数', 'v']],
+    'rows': [{'xl': f'{NAME[k]} {CODE[k]}',
+              'y': pct(_yy(k), 0),
+              'now': pct(MOM[k]['now'], 1),
+              'prev': pct(MOM[k]['prev'], 1),
+              'med': f'{MOM[k]["med"]:.1f}%',
+              'v': (('<b>减速</b>' if MOM[k]['now'] < MOM[k]['prev'] else '加速')
+                    + '，' + ('<b>低于</b>' if MOM[k]['now'] < MOM[k]['med'] else '高于')
+                    + '自身中位')}
+             for k in sorted(MOM, key=lambda k: -(_yy(k) if _fin(_yy(k)) else -9e9))],
+    'src_extra': (f'季调 = 月营收 ÷ 该月季节指数（同⟨ex:season-heat@>:后面那张季节性矩阵⟩，'
+                  f'{SEASON_YRS[0]}–{SEASON_YRS[-1]} 完整年现算）。'
+                  '环比取 3 个月对前 3 个月，<b>不年化</b>。'),
+    'note': (
+        '<b>同比的分母是去年同月，它对「这个月相对上个月怎么样」一无所知。</b>'
+        '一家公司可以同时做到：同比很高（去年基数低）、而生意本身已经在减速。'
+        '这一栏就是为了把那种情形拎出来。'
+        + ((f'<br><b>本月的分歧在{"、".join(NAME[k] for k in _DIVERGE)}</b>：'
+            + '；'.join(f'{NAME[k]}同比 {pct(_yy(k), 0)}，'
+                        f'而季调环比从 {pct(MOM[k]["prev"], 1)} 降到 {pct(MOM[k]["now"], 1)}，'
+                        f'已低于它自己的历史中位 {MOM[k]["med"]:.1f}%'
+                        for k in _DIVERGE)
+            + '。同比排名把它排在前列，环比动能不支持这个位置。')
+           if _DIVERGE else '')
+        + '<br><b>为什么不年化。</b>把三个月的变化折成年率，在块状序列上会炸开 —— '
+        '本轮实测世芯的年化读数能到五位数（它刚从一次腰斩里出来），'
+        '那个数没有刻度可言，印上去会让整张表失去可读性。不年化的版本有界，'
+        '而且与「自身历史中位」并排时，读者立刻知道这一档对这家公司算大还是算小。'
+        '<br>⚠ 季节指数是多年平均，而<b>农历年落在一月还是二月逐年不同</b>；'
+        '跨年那两个月的季调值因此会被系统性错配，读这张表时对 1–2 月要打折扣。'),
+})
+
+# ── ⟨ex:base-calendar⟩ 把分母摊开 ────────────────────────────────────────
+_bd = sorted(BASE_DRIFT, key=lambda k: BASE_DRIFT[k])
+_down, _up = _bd[0], _bd[-1]
+ex.append({
+    'n': E_BASE, 'kind': 'heat_matrix', 'full': True, 'fmt': 'pct0z',
+    'title': (f'基数日历：运行速率原地不动的话，未来 {len(BASE_MONTHS)} 个月的同比会自己走成什么样'),
+    'rows': [f'{NAME[k]} {CODE[k]}' for k in KEYS if k in BASECAL],
+    'cols': [mlab(m) for m in BASE_MONTHS],
+    'matrix': [L(BASECAL[k]['path']) for k in KEYS if k in BASECAL],
+    'legend': '机械同比（%）：分子按季调运行速率固定，分母是去年同月实际值',
+    'cell_h': 24, 'row_lab_w': 104, 'row_head': '公司',
+    'src_extra': ('分子 = 最近 3 个月的季调均值，按各月季节指数还原；'
+                  '分母 = 去年同月的<b>实际申报值</b>。'),
+    'note': (
+        '<b>这不是预测，是把分母摊开。</b>分子在这张表里是一个不变的假设'
+        '（生意原地不动），所以每一格的高低<b>完全由去年同月那个已经发生的数决定</b>。'
+        '它回答的是：同比接下来的变化里，有多少根本不是今年的事。'
+        + (f'<br><b>两个最扎眼的读数正在往相反方向走，而且原因纯粹是算术。</b>'
+           f'{DISP[_down]}的同比会从 {pct(_yy(_down), 0)} 一路走到 '
+           f'{pct(BASECAL[_down]["path"][-1], 0)}（{BASE_DRIFT[_down]:+.0f}pp），'
+           '而它的生意在这个假设里一天都没有变弱；'
+           f'{DISP[_up]}反过来，从 {pct(_yy(_up), 0)} 走到 '
+           f'{pct(BASECAL[_up]["path"][-1], 0)}（{BASE_DRIFT[_up]:+.0f}pp），'
+           '因为它去年这几个月正处在自己的谷底。'
+           '<br>⇒ 明年初看到「南亚科增速大幅放缓」「世芯增速再创新高」这类说法时，'
+           '先回到这张表看一眼：其中有多少是分母。'
+           if _down in BASECAL and _up in BASECAL else '')
+        + '<br><b>这张表能做什么、不能做什么。</b>能做的是<b>剔除</b>一部分惊讶 —— '
+        '把「同比变化」里属于去年的那一份先扣掉，剩下的才值得解释。'
+        '不能做的是判断方向：运行速率会不会变，这张表一个字都没说，'
+        f'那要看⟨ex:momentum@<:上面那张环比动能表⟩，以及下个月的实际公告。'
+        '<br>⚠ 同上：农历年在一月还是二月逐年不同，季节指数用的是多年平均，'
+        '所以跨年那两列的还原会被系统性错配，读的时候对它们打折扣。'),
+})
 
 # ── ⟨ex:chain⟩ 价值链框架：横着比为什么说得通 ────────────────────────────
 def _drv(k):
@@ -1878,28 +2047,26 @@ def compose_brief():
     hi, lo = max(ok, key=lambda k: yy[k]), min(ok, key=lambda k: yy[k])
     npos = int(GROW.dropna().iloc[-1]) if len(GROW.dropna()) else None
 
-    s1 = (f'{zh(CUR)}，{len(KEYS)} 家里 {npos} 家单月同比为正；'
-          f'最快的{NAME[hi]} {pct(yy[hi], 0)}、最慢的{NAME[lo]} {pct(yy[lo], 0)}，'
-          f'相差 {DISPF["sp_now"]:.0f}pp。')
-    s2 = (f'这不是个别月份：{DISPF["n"]} 个月里只有 {DISPF["same_pct"]:.0f}% 全体同向，'
-          f'极差中位 {DISPF["sp_med"]:.0f}pp。')
-    s3 = ((f'去掉{NAME["nanya"]}之后，六家的极差中位仍有 {DISPF["exn_med"]:.0f}pp —— '
-           '这一组本来就不在同一个周期上。')
-          if DISPF['exn_med'] is not None else None)
-    s4 = (f'指数化看（{mlab(BASE)} = 100，{MA} 个月移动平均），'
-          + '、'.join(f'{NAME[k]} {float(REB[k].dropna().iloc[-1]):.0f}'
-                      for k in sorted(KEYS, key=lambda k: -float(REB[k].dropna().iloc[-1]))[:3])
-          + f' 排在前面，最慢的{NAME[sorted(KEYS, key=lambda k: float(REB[k].dropna().iloc[-1]))[0]]}'
-          + f' {float(REB[sorted(KEYS, key=lambda k: float(REB[k].dropna().iloc[-1]))[0]].dropna().iloc[-1]):.0f}。')
-    s5 = (f'七家两两相关的中位只有 {CORR_MED:+.2f}，最高的一对是'
-          f'{NAME[CORR_HI[0]]}与{NAME[CORR_HI[1]]}（{CORR_HI[2]:+.2f}）。')
-    s6 = ('它们在价值链的不同层、营收互为上下游，'
-          '所以本页只比增速与指数，不做任何加总。')
-    # s3 是可让位的那一句：六句都放得下就全出，超了先精简它（B.fit_optional 的用法）。
-    lines_ = [s1, s2, s3 or '', s4, s5, s6]
-    lines_[2] = B.fit_optional(
-        lines_, 2, compact=lambda: (f'去掉{NAME["nanya"]}后六家极差中位仍有 '
-                                    f'{DISPF["exn_med"]:.0f}pp。') if DISPF['exn_med'] else '')
+    s1 = (f'{zh(CUR)}，{len(KEYS)} 家里 {npos} 家单月同比为正，'
+          f'最快的{NAME[hi]} {pct(yy[hi], 0)}、最慢的{NAME[lo]} {pct(yy[lo], 0)}。')
+    s2 = ((f'但去掉基数与季节看环比，{"、".join(NAME[k] for k in _DIVERGE[:2])}'
+           f'的动能已低于自身历史中位（{NAME[_DIVERGE[0]]} '
+           f'{pct(MOM[_DIVERGE[0]]["prev"], 1)}→{pct(MOM[_DIVERGE[0]]["now"], 1)}）。')
+          if _DIVERGE and MOM else None)
+    s3 = ((f'分母也在动：运行速率不变的话，{NAME[_down]}的同比 {BASE_DRIFT[_down]:+.0f}pp、'
+           f'{NAME[_up]} {BASE_DRIFT[_up]:+.0f}pp，与今年的生意无关。')
+          if BASE_DRIFT else None)
+    s4 = ((f'水平上，{len(AT_HIGH)} 家近 12 个月合计创新高，'
+           f'{NAME[BELOW[0]]}仍低于自身峰 {pct(STATE[BELOW[0]]["gap"], 0)}。')
+          if BELOW else None)
+    s5 = ((f'{DISPF["n"]} 个月里只有 {DISPF["same_pct"]:.0f}% 是七家同向 —— '
+           '这一组不在同一个周期上。') if DISPF else None)
+    s6 = ('七家在价值链的不同层、营收互为上下游，本页只比增速与指数，不做任何加总。')
+    # s4 是可让位的那一句：放得下就全出，超了先精简（B.fit_optional 的用法）。
+    lines_ = [s1, s2 or '', s3 or '', s4 or '', s5 or '', s6]
+    lines_[3] = B.fit_optional(
+        lines_, 3, compact=lambda: (f'{len(AT_HIGH)} 家近 12 个月合计创新高。'
+                                    if AT_HIGH else ''))
     return B.render([x for x in lines_ if x])
 
 
@@ -1915,10 +2082,21 @@ except SystemExit as e:
 _yy_now = {k: _yy(k) for k in KEYS}
 _ok_now = [k for k in KEYS if _fin(_yy_now[k])]
 _hi = max(_ok_now, key=lambda k: _yy_now[k]) if _ok_now else None
-HEADLINE = (
-    f'{zh(CUR)}：{len(KEYS)} 家里 {int(GROW.dropna().iloc[-1])} 家单月同比为正，'
-    f'最快与最慢相差 {DISPF["sp_now"]:.0f}pp'
-    + (f'（{NAME[_hi]} {pct(_yy_now[_hi], 0)}）' if _hi else ''))
+# 抬头那一行给**读数**，不给统计量。上一版印的是「最快与最慢相差 530pp」——
+# 那是一个关于这组数据离散度的描述，读的人拿它做不了任何事。现在印的是本月
+# 真正的分歧：同比与环比动能给出了不同的排序。分歧不存在的月份自动退回描述版。
+_hd_pre = f'{zh(CUR)}：{len(KEYS)} 家同比{"全正" if int(GROW.dropna().iloc[-1]) == len(KEYS) else "分化"}'
+if _DIVERGE and MOM:
+    _d0 = _DIVERGE[0]
+    HEADLINE = (f'{_hd_pre}；但{NAME[_d0]}同比 {pct(_yy(_d0), 0)}、'
+                f'季调环比动能已从 {pct(MOM[_d0]["prev"], 1)} 降到 {pct(MOM[_d0]["now"], 1)}，'
+                f'低于它自己的历史中位')
+elif BASE_DRIFT:
+    _d0 = min(BASE_DRIFT, key=lambda k: BASE_DRIFT[k])
+    HEADLINE = (f'{_hd_pre}；{NAME[_d0]}未来 {len(BASE_MONTHS)} 个月的同比'
+                f'将因基数机械变动 {BASE_DRIFT[_d0]:+.0f}pp')
+else:
+    HEADLINE = f'{_hd_pre}，最快与最慢相差 {DISPF["sp_now"]:.0f}pp'
 
 payload = {
     'ticker': TICKER,
@@ -1931,8 +2109,9 @@ payload = {
                  '同一条法规、同一个单位、同一个节奏 —— 全部以新台币计量，不折汇率，'
                  '不做跨家加总。版式仿 Goldman Sachs GIR exhibit。'),
     'headline': HEADLINE,
-    'hub_line': (f'{len(KEYS)} 家台股半导体的月营收横截面：'
-                 f'{mlab(CUR)} 最快与最慢相差 {DISPF["sp_now"]:.0f}pp'),
+    'hub_line': (f'{len(KEYS)} 家台股半导体月营收横截面：{mlab(CUR)} '
+                 + (f'{NAME[_DIVERGE[0]]}同比高而环比动能已低于自身中位'
+                    if _DIVERGE else f'最快与最慢相差 {DISPF["sp_now"]:.0f}pp')),
     'source': SRC,
     'xlabels': XL_YOY,
     'xlabels_long': XL_ALL,
