@@ -2131,10 +2131,30 @@ def main():
     _sgw = load_seg_q()
     _sgw = _sgw[_sgw['scope'] == 'Q'].set_index('fq')['weeks']
     _miss_w = [f for f in _rep.index if f not in _sgw.index]
+    # 两段式更新（所有者 2026-09-26 定）：业绩 8-K 在季末后三四周就到，10-K 还要再等
+    # 两周左右，分部表那一行（周数的正式来源）只能跟着 10-K 来。只差**最后一格 Q4**
+    # 时不再整页停机，按财历现推周数先发，等 10-K 入库后 cost_sec 有新主键会自动重建，
+    # 那时就回到读表。财历规则见 load_seg_q 的 docstring：Q1–Q3 各 12 周；财年止于最接近
+    # 8 月 31 日的那个周日，所以 Q4 = 该周日 − Q3 期末，只能是 16 或 17 周。
+    _w_est = {}
+    if _miss_w == [_rep.index[-1]] and _miss_w[0].endswith('Q4'):
+        _f = _miss_w[0]
+        _q3 = f'{_f[:4]}Q3'
+        if _q3 not in _sgw.index:
+            raise SystemExit(f'分部季度表里查不到 {_q3}，{_f} 的周数无从现推')
+        _q3_end = pd.Timestamp(load_seg_q().set_index('fq').at[_q3, 'period_end'])
+        _a31 = pd.Timestamp(f'20{_f[2:4]}-08-31')
+        _fy_end = _a31 + pd.Timedelta(days=(6 - _a31.dayofweek + 3) % 7 - 3)   # 最近的周日
+        _w = (_fy_end - _q3_end).days / 7
+        if _w not in (16, 17):
+            raise SystemExit(f'{_f} 按财历现推得 {_w} 周（Q3 止 {_q3_end.date()}、'
+                             f'财年止 {_fy_end.date()}），不是 16/17 —— 财历规则不成立，停机')
+        _w_est[_f] = int(_w)
+        _miss_w = []
     if _miss_w:
         raise SystemExit(f'分部季度表里查不到 {_miss_w} 的周数 —— '
                          f'Exhibit 15 图注要拿它说明「一格是几周」，缺了这句话就得改写')
-    _wq = [int(_sgw[f]) for f in _rep.index]
+    _wq = [_w_est[f] if f in _w_est else int(_sgw[f]) for f in _rep.index]
     _wm = sorted({int(w) for w in df['weeks'].dropna()})       # 月度轴一格是 4 或 5 周
     # (b) 序列为什么只有 9 格：两张表各自的第一个季度 + 核心口径缺的那几季
     _adj_gap = [f for f in _rep.index if f not in _adj.index]
@@ -2258,7 +2278,11 @@ def main():
             + f'<b>⚠️ 这张图的横轴是财季，不是本页其余各图的零售月 —— 两张网格不一样。</b>'
             f'本图一格是 {"／".join(str(w) for w in sorted(set(_wq)))} 周'
             f'（{_TKT_X[0]}–{_TKT_X[-1]} 逐格 {"、".join(str(w) for w in _wq)} 周，'
-            f'合计 {sum(_wq)} 周），而本页月度图一格是 '
+            f'合计 {sum(_wq)} 周'
+            + ''.join(f'；其中 {f} 的 {w} 周是按财历现推的 —— 该季 10-K 尚未申报、'
+                      f'分部表还没有这一行，10-K 入库后本页自动重建并改读申报值'
+                      for f, w in _w_est.items())
+            + f'），而本页月度图一格是 '
             f'{"／".join(str(w) for w in _wm)} 周（4-4-5 零售日历）。'
             f'一格不是同一个东西，<b>本图的柱不能跟任何一张月度图的柱并排读</b>；'
             f'两张网格之间也没有一条现成的换算 —— 要对，只能拿整季对整季。'
