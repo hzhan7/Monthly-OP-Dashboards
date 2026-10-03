@@ -109,6 +109,7 @@ SRC = ('Source: Company data (IBKR monthly brokerage metrics); '
 # 正文里指本页的图一律写 ⟨ex:id⟩；按号登记的几本登记簿（LATE_WHY / COST_NOTE /
 # STOCK_YOY / SPLIT_SRC / RHS_NOT_YOY）一律按 id 登记，挪图后不用改任何一处。
 ORDER = [
+    'accounts',           # Total accounts（柱 + 单月同比）
     'net-new',            # IBKR added ~Nk net new accounts（柱 + 单月同比）
     'cleared-darts',      # Implied cleared DARTs（柱 + 单月同比）
     'product-darts',      # Implied product DARTs（分产品堆叠 + F&O 占比）
@@ -952,6 +953,38 @@ def main():
             naive_ex = (m, real_nn[m] / real_nn[yagm[m]] - 1,
                         series[m]['net_new'] / series[yagm[m]]['net_new'] - 1)
             break
+
+    # ══════════════════ 账户总数（柱）+ 单月同比（次轴）════════════════════════════
+    # 2026-10 所有者指令：插在净新增账户那张之前，画法照它（gs_bar + 次轴金色同比线）。
+    # 账户数是**月末存量**，同比走点对点（本月末 ÷ 去年同月末 − 1），柱与线同源 ——
+    # 线上任一点就是这根柱相对 12 根柱之前的涨幅。ADJ 里三次口径事件都直接改变了
+    # 账户存量（2024-11 存量下调、2025-03 escheat、2025-09 introducing broker 撤出），
+    # 那三个月的柱以斜纹标出；同比按披露的存量算、不做还原（存量本身就是披露值）。
+    ACC_MONO = mono_yoy_arr(acc_all, ALL)
+    _acc_mk = sorted(ADJ)
+    _acc_mk_txt = '；'.join(
+        f'{k} {ADJ[k]["reason"]}'
+        for k in _acc_mk if k in WIN)
+    ex.append({
+        'id': 'accounts', 'kind': 'gs_bar', 'fmt': 'f0c', 'xlabels': XL, 'xstep': 12,
+        'title': f'IBKR total accounts at {acc_all[-1]:,.0f}k, {pctf(at(ACC_MONO))} YoY '
+                 f'and {pctf(mom(acc_all))} MoM',
+        'ylab': 'Total Accounts (thousands)',
+        'ylab2': 'y/y, single month (%)',
+        'note': (f'柱是历史指标表披露的 Total Accounts（月末存量，千户），{XL[0]} 起逐月。'
+                 '<b>次轴金色折线是账户总数的单月同比</b>（本月末 ÷ 去年同月末 − 1），'
+                 '与柱同源，线上任一点就是这根柱相对 12 根柱之前的涨幅。'
+                 f'绝对水平：{peak_zh(acc_all, unit="", dec=0, suffix="k")}。'
+                 + (f'<b>斜纹柱</b>是账户存量含一次性口径事件的月份（悬停有说明）：{_acc_mk_txt}。'
+                    '同比按披露存量直接算、不还原，所以从这几个月起各 12 个月的同比都含这几笔'
+                    '（量级相对存量很小）。' if _acc_mk_txt else '')
+                 + f'每月增量见 Exhibit ⟨ex:net-new⟩。'),
+        'legend': 'Total Accounts', 'values': L(acc_all),
+        'yoy': yoy_rhs(ACC_MONO, 'y/y, single month (RHS)'),
+        'bar_marks': [i for i, w in enumerate(WIN) if w in _acc_mk],
+        'mark_note': '该月账户存量含一次性口径事件，不可与相邻柱直读（见图注）',
+    })
+    STOCK_YOY[ex[-1]['id']] = '账户总数是月末存量'
 
     # ══════════════════ Exhibit 2：净新增账户（柱）+ 单月同比（次轴）══════════════
     # 2026-09 的合并：原 Exhibit 3（净新增账户的 12 个月滚动同比，整张 gs_line）删掉，
