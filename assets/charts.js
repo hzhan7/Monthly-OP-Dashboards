@@ -1880,7 +1880,8 @@
             capLabel(Xc(i) + 3.4, false, capFmt(negB[i]));
         }
         if (!isNum(netv[i]) || capPoint(Xc(i), netv[i])) continue;
-        diamond(g, Xc(i), Y(netv[i]), 3.2, col(ex.net_color || 'INK'));
+        /* 白描边：INK 菱形落在 NAVY 柱身里时两者几乎同色，不描边就看不见（ice Ex8 实例） */
+        diamond(g, Xc(i), Y(netv[i]), 3.6, col(ex.net_color || 'INK'), C.WHITE, 1.1);
       }
 
     /* grouped_bars ← gsx.implied_vs_actual：同一 x 上两根并排柱 + 右轴误差线。
