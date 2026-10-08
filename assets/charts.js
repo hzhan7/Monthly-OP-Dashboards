@@ -2486,7 +2486,10 @@
             it[1] + ';' + dia + '"></i>'
         : it[0] === 'grad' ? '<i style="width:54px;height:9px;background:linear-gradient(90deg,' +
             it[1] + ')"></i>'
-        : '<i style="background:' + it[1] + '"></i>';
+        /* 白色块（COST 开业年份矩阵的「盈亏平衡」格）在白底图例上看不见，描一圈细边 */
+        : '<i style="background:' + it[1] +
+            (String(it[1]).toUpperCase() === C.WHITE ? ';box-shadow:inset 0 0 0 1px ' + C.AXIS : '') +
+            '"></i>';
       return '<span>' + sw + it[2] + '</span>';
     }).join('') + '</div>';
   }
