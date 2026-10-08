@@ -32,6 +32,7 @@
 | `break_at` | int \| int[] | 结构性断点的 x 索引，红色竖虚线画在**该期左缘**，语义是「从这一期起与左侧不可比」 |
 | `break_label` | string \| string[] | 断点竖排标签；给一条时所有断点共用 |
 | `bar_marks` / `mark_note` | int[] / string | 斜纹柱（不可比期）与它在 tooltip 里的解释 |
+| `extra_lines` | `[{name, color, values}]` | **仅 `bar_line`**：同轴再画几条带圆点的线（口径换代后新序列另起一条、不与旧线相连时用；圆点让开头只有一两个点的新序列也看得见）。参与量程、图例、tooltip、表格视图 |
 | `bar_labels` | bool | `false` 关掉每柱/每点数值标签（`grouped_bars` 相反，默认关、给 `true` 才开） |
 | `section` | string | 在这张图**之前**起一个新章节标题（`page.js` 插 `<h2 class="section ingrid">`，CSS 里 `grid-column: 1/-1` 横跨整行）。用途是「下面这一段读的不是同一份数据」——TSM 的 Ex10 起读的是营收之外的五张法定申报表。只该给一段里的**第一张**图 |
 
@@ -102,6 +103,12 @@
 - 图例是一条色标 + 两端真值（gsx 那边没有色标，读者只能靠格内数字）。
 - 字号按格宽自动收缩，保证数字不压出格子。
 - **不支持 `break_at` / `ycap`**（矩阵没有连续 x 轴）。
+- **可选逐格分类**：给 `cell_class`（与 `matrix` 同形，元素是类别键或 `null`）+ `classes`
+  （`{键: {color: 色名, tint: 0–1 向白混合, label: 图例文字}}`）+ 可选 `class_order`，
+  有类别的格子按类别填**纯色**，不走 5/95 色标；图例改为逐类方块（只列画面上出现过的类别），
+  tooltip 多一行类别文字。用于「颜色回答过没过某条线」的图（COST 开业年份矩阵 × 盈亏平衡线）。
+  `verify_pages` 要求：形状与 `matrix` 一致、键都在 `classes` 里、**有数值的格子必须都有类别**
+  （混用两套填色会让同一个颜色在一张图上有两种意思）。
 
 ## 2. `year_lines` ← `gsx.year_lines`
 

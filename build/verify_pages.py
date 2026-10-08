@@ -459,6 +459,34 @@ def check_exhibit(tag, ex, short, long_):
                 err(where, f'matrix[{i}] 长 {len(r) if isinstance(r, list) else "非数组"}，'
                            f'cols 有 {len(cols)} 个 —— 缺的格子会画成浅灰，看着像那个月没数据')
                 break
+        # 可选逐格分类（engine_kinds.md §1）：形状、键、色名都要对；有数值的格子必须都有类别，
+        # 否则引擎会对那几格退回 5/95 色标，同一个颜色在一张图上就有了两种意思。
+        cc, defs = ex.get('cell_class'), ex.get('classes')
+        if cc is not None:
+            if not isinstance(defs, dict) or not defs:
+                err(where, 'cell_class 给了但 classes 为空 —— 引擎认不出任何类别，整张图退回色标')
+                defs = {}
+            for k, d in defs.items():
+                c = (d or {}).get('color')
+                if c not in COLORS and not str(c).startswith('#'):
+                    err(where, f'classes[{k!r}].color={c!r} 不是引擎认得的色名')
+                if not (d or {}).get('label'):
+                    err(where, f'classes[{k!r}] 没有 label —— 图例上会是一块没名字的色块')
+            if len(cc) != len(m):
+                err(where, f'cell_class 有 {len(cc)} 行，matrix 有 {len(m)} 行')
+            for i, (cr, mr) in enumerate(zip(cc, m)):
+                if not isinstance(cr, list) or len(cr) != len(mr or []):
+                    err(where, f'cell_class[{i}] 与 matrix[{i}] 长度不一致')
+                    break
+                bad = [j for j, (k, v) in enumerate(zip(cr, mr)) if k is not None and k not in defs]
+                miss = [j for j, (k, v) in enumerate(zip(cr, mr)) if k is None and v is not None]
+                if bad:
+                    err(where, f'cell_class[{i}] 第 {bad[0]} 格的键 {cr[bad[0]]!r} 不在 classes 里')
+                    break
+                if miss:
+                    err(where, f'cell_class[{i}] 第 {miss[0]} 格有数值却没有类别 —— '
+                               f'引擎会对它退回 5/95 色标，与分类填色混在一张图上')
+                    break
         if ex.get('xlabels'):
             warn(where, 'heat_matrix 不吃 xlabels（它用 rows/cols），这个字段是死的')
         # 12 列的月 × 年矩阵在半栏里是既有页的既定版式（字号自动收缩仍读得出）；

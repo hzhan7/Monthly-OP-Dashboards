@@ -3048,10 +3048,12 @@ def main():
            f'既不是「还没开业」也不是「被折走」，而是<b>算不出来</b>，'
            f'空着不代表那几年不需要过平衡线。'
            if len(_BE_YS) < len(_COH_YRS) else '')
-        + f'<b>⚠️ 但别按颜色读这两行</b>：色阶是全矩阵共用的（引擎按所有有限值的 5/95 '
-        f'分位定色），而它们的语义与队列各行相反 —— 队列是越高越好，平衡线是越高越难达标，'
-        f'于是同一种绿色在这两行上的含义正好反过来。引擎没有逐行色阶这个开关，'
-        f'所以只能在这里点名，读数请看格子里的数字。')
+        + f'<b>颜色读法</b>（所有者 2026-10-08 定）：每一格只和<b>同一财年</b>那一列的两条平衡线比，'
+        f'分三档纯色 —— 红 = 低于「计会员费」那条线（亏损）；金 = 过了「计会员费」那条、'
+        f'还没过「不计会员费」那条（开始盈利，但要靠会员费才过线）；绿 = 连「不计会员费」那条'
+        f'也过了（只靠商品毛利就盈利）。比的是格子里印出来的整数，相等算过线。'
+        f'颜色<b>不再</b>表示「相对全表高还是低」；两条平衡线自己是浅蓝，它们是尺子不是读数。'
+        f'平衡线是<b>推导值</b>（见上），所以颜色说的「亏损 / 盈利」也是推导结论，不是公司披露。')
 
     # ── 把盈亏平衡线并进矩阵（所有者 2026-09-03 指令：「把『盈亏平衡销售额』这个数字
     #    写到 ex16 里面 totals 这一行」）──────────────────────────────────────────
@@ -3132,6 +3134,38 @@ def main():
 
     _rlab = {c: _rowlab(c) for c in _DRAW if c not in (_BE_LO, _BE_HI)}
 
+    # ── 逐格分类填色（所有者 2026-10-08 指令）──────────────────────────────────────
+    # 「亏损的一种颜色，盈利的一种颜色，越过盈亏平衡（计会员费）的作为过渡色」。
+    # 每格只和**同一列**的两条平衡线比：< 计会员费线 → loss；< 不计会员费线 → trans；
+    # 否则 profit。平衡线两行自己标 'be'（尺子，不参与判档）。比较用的是格内印的整数
+    # （_be_vals 已 round 过、队列值本来就是整数），相等算过线 —— 读者对着两个相同的数
+    # 看到「没过线」的颜色会以为图画错了。
+    _CLS_BE = {c: k for c, k in ((_BE_LO, 'lo'), (_BE_HI, 'hi'))}
+    for _y, _lo, _hi in zip(_COH_YRS, _be_vals['lo'], _be_vals['hi']):
+        if _lo is not None and _hi is not None and not _lo < _hi:
+            raise SystemExit(f'FY{_y} 的两条平衡线 计会员费 {_lo} ≥ 不计会员费 {_hi} —— '
+                             f'过渡档就不存在了，先查 _be_ratio')
+
+    def _cls(c, v, lo, hi):
+        if v is None:
+            return None
+        if c in _CLS_BE:
+            return 'be'
+        if lo is None or hi is None:
+            return 'na'
+        return 'loss' if v < lo else ('trans' if v < hi else 'profit')
+
+    _cell_class = [[_cls(c, v, lo, hi) for v, lo, hi in zip(r, _be_vals['lo'], _be_vals['hi'])]
+                   for c, r in zip(_DRAW, _draw_matrix)]
+    _COH_CLASSES = {
+        'loss': {'color': 'RED', 'tint': 0.35, 'label': '亏损：低于平衡线（计会员费）'},
+        'trans': {'color': 'GOLD', 'tint': 0.5,
+                  'label': '开始盈利：过了计会员费的平衡线、未过不计会员费的'},
+        'profit': {'color': 'GREEN', 'tint': 0.3, 'label': '盈利：高于平衡线（不计会员费）'},
+        'be': {'color': 'BLUE', 'tint': 0.68, 'label': '盈亏平衡线（推导值）'},
+        'na': {'color': 'GRAY', 'tint': 0.4, 'label': '该年算不出平衡线，无从判档'},
+    }
+
     # ── 护栏 F：行标签宽度预算 ──────────────────────────────────────────────────
     # 行标签栏的宽度 row_lab_w 是从**最长行标签**现算出来的，它直接吃掉画布：15 列时，
     # 标签每多 1 个宽度单位，每一格就窄约 0.55px。而下限本来就被两条中文推导行标签
@@ -3165,6 +3199,9 @@ def main():
         'rows': [_rlab.get(c, c) for c in _DRAW],
         'cols': [f'FY{y}' for y in _COH_YRS],
         'matrix': _draw_matrix,
+        'cell_class': _cell_class,
+        'classes': _COH_CLASSES,
+        'class_order': ['loss', 'trans', 'profit', 'be', 'na'],
         'fmt': 'usd0',
         'legend': '均店销售（$mn/店·年）',
         # 默认的 row_lab_w=32 会让行标签压到格子里去；这里按最长行标签定宽，不猜常数。

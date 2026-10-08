@@ -703,6 +703,15 @@
     var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img',
       'aria-label': 'Exhibit ' + ex.n + ': ' + ex.title }, host);
     var g = el('g', {}, svg), sc = heatScale(ex);
+    /* 可选的逐格分类（ex.cell_class + ex.classes）：给了就按类别填纯色，不走 5/95 色标。
+       用在「颜色要回答的是相对某条线过没过」而不是「相对全表高还是低」的图上
+       （COST 开业年份矩阵：每格对同一财年的两条盈亏平衡线分三档）。 */
+    var cc = ex.cell_class || null, cdefs = ex.classes || {};
+    function clsOf(i, j) {
+      var k = cc && cc[i] ? cc[i][j] : null;
+      return (k != null && cdefs[k]) ? cdefs[k] : null;
+    }
+    function clsFill(d) { return mix(col(d.color), C.WHITE, +d.tint || 0); }
     var maxLen = 1;
     for (i = 0; i < rows.length; i++)
       for (j = 0; j < cols.length; j++) {
@@ -720,7 +729,8 @@
       for (j = 0; j < cols.length; j++) {
         v = (m[i] || [])[j];
         var ok = isNum(v), x = M.l + j * cw, y = M.t + i * chh;
-        var fc = ok ? sc.at(+v) : C.GRID;
+        var cd = ok ? clsOf(i, j) : null;
+        var fc = !ok ? C.GRID : (cd ? clsFill(cd) : sc.at(+v));
         var rc = el('rect', { x: x.toFixed(2), y: y.toFixed(2), width: cw.toFixed(2),
           height: chh, fill: fc, stroke: C.WHITE, 'stroke-width': 1.1 }, g);
         /* halo:false 是必须的，不是省事 —— txt() 默认给每个字加 2.4px 的**白色**描边，
@@ -729,16 +739,17 @@
            格子本身是实心色块，底下没有网格线要挡，描边在这里没有任何作用。 */
         if (ok) txt(g, x + cw / 2, y + chh / 2 + fs * 0.35, fmt(+v),
           { size: +fs.toFixed(2), fill: inkOn(fc), halo: false });
-        if (tip) (function (node, head, val, sw, cx) {
+        if (tip) (function (node, head, val, sw, cx, clab) {
           node.setAttribute('style', 'cursor:crosshair');
           node.addEventListener('mouseenter', function () {
             tip.innerHTML = '<div class="th">' + head + '</div><div class="row"><i style="background:' +
               sw + '"></i><span>' + name + '</span><b>' +
-              (val == null ? '—' : pf(val)) + '</b></div>';
+              (val == null ? '—' : pf(val)) + '</b></div>' +
+              (clab ? '<div class="row"><span>' + clab + '</span></div>' : '');
             tip.style.opacity = 1;
             placeTip(tip, host, cx, W);
           });
-        }(rc, rows[i] + ' · ' + cols[j], ok ? +v : null, fc, x + cw / 2));
+        }(rc, rows[i] + ' · ' + cols[j], ok ? +v : null, fc, x + cw / 2, cd ? cd.label : ''));
       }
       txt(g, M.l - 5, M.t + i * chh + chh / 2 + fscale(3), rows[i], { size: 8, anchor: 'end' });
     }
@@ -2402,9 +2413,24 @@
     } else if (ex.kind === 'heat_matrix') {
       /* 矩阵没有系列可列，图例改成一条色标 + 两端真值 —— 否则读者只能靠格内数字，
          看不出「这一格算高还是低」是相对什么定的。 */
-      var hs = heatScale(ex), hf = fmtOf(ex.fmt || 'f1');
-      items.push(['grad', hs.loc + ',' + C.WHITE + ',' + hs.hic,
-        hf(hs.lo) + ' → ' + hf(hs.hi) + '（5–95 分位色标）']);
+      if (ex.cell_class && ex.classes) {
+        /* 分类填色时图例列各类别（只列画面上真出现过的），不再画那条色标 ——
+           色标说的是「相对全表高低」，而此时格子的颜色根本不是按它填的。 */
+        var used = {}, ci, cj;
+        for (ci = 0; ci < ex.cell_class.length; ci++)
+          for (cj = 0; cj < (ex.cell_class[ci] || []).length; cj++)
+            if (ex.cell_class[ci][cj] != null) used[ex.cell_class[ci][cj]] = 1;
+        var order = ex.class_order || Object.keys(ex.classes);
+        for (i = 0; i < order.length; i++) {
+          var cdf = ex.classes[order[i]];
+          if (cdf && used[order[i]])
+            items.push(['sq', mix(col(cdf.color), C.WHITE, +cdf.tint || 0), cdf.label]);
+        }
+      } else {
+        var hs = heatScale(ex), hf = fmtOf(ex.fmt || 'f1');
+        items.push(['grad', hs.loc + ',' + C.WHITE + ',' + hs.hic,
+          hf(hs.lo) + ' → ' + hf(hs.hi) + '（5–95 分位色标）']);
+      }
     } else if (ex.kind === 'year_lines') {
       var ycl = yearColors(ex);
       for (i = 0; i < ex.series.length; i++) items.push(['line', ycl[i], ex.series[i].name]);
