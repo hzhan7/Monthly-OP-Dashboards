@@ -182,6 +182,22 @@ _CALIBER_PAIRS = [('us_r', 'us_a'), ('ca_r', 'ca_a'), ('oi_r', 'oi_a'),
                   ('tc_r', 'tc_a'), ('ec_r', 'ec_a')]
 
 
+#: Digitally-Enabled **comp**（ec_r / ec_a）最后一期。2026-09 起 Costco 不再发这个 comp，
+#: 改发 Digitally-enabled **销售增速**（dg_r 报告 / dg_a 剔汇率，见 cost_release.parse_release
+#: 末尾那段）。两者口径不同，分两组列存、页面分两条线画，不连成一条（所有者 2026-10-08 定）。
+EC_LAST = '2026-08'
+DG_FIRST = '2026-09'
+
+
+def _optional_cols(key):
+    """这个月允许缺的列：分界之后 ec 两列不再有，分界之前 dg 两列还没有。
+
+    只放开**这两组**，其余列照旧缺一列就抛（README「缺列一律失败」）。
+    分界之后的月份 dg 两列是必需的 —— 那段话哪天没了，这里会照样响。
+    """
+    return ('ec_r', 'ec_a') if key > EC_LAST else ('dg_r', 'dg_a')
+
+
 def _guard_two_calibers(key, rec, url):
     """两套口径完全相同 → 判定解析走错分支，拒绝入库。
 
@@ -455,7 +471,7 @@ def update(series_dir, cache_dir=None):
         got = f'{ym[0]}-{ym[1]:02d}'
         if got != key:
             raise CostFetchError(f'月份不符: 期望 {key} 实得 {got} ({url})')
-        missing = [c for c in head[1:] if c not in rec]
+        missing = [c for c in head[1:] if c not in rec and c not in _optional_cols(key)]
         if missing:
             raise CostFetchError(f'{key} 解析缺列 {missing} ({url})')
         _guard_two_calibers(key, rec, url)
@@ -464,7 +480,7 @@ def update(series_dir, cache_dir=None):
         with open(path, 'rb') as f:
             term = '\r\n' if b'\r\n' in f.read(4096) else '\n'
         with open(path, 'a', newline='', encoding='utf-8') as f:
-            csv.writer(f, lineterminator=term).writerow([key] + [rec[c] for c in head[1:]])
+            csv.writer(f, lineterminator=term).writerow([key] + [rec.get(c, '') for c in head[1:]])
         added.append(key)
         have.add(key)
         last = key

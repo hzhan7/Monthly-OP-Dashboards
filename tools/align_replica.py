@@ -189,7 +189,8 @@ def left_values_of(ex):
     """charts.js:858-899 的 `lv`。认不出的 kind **抛错**，不静默返回空。"""
     k = ex.get('kind')
     if k == 'bar_line':
-        return list(ex['bar']['values']) + list(ex['line']['values'])
+        return (list(ex['bar']['values']) + list(ex['line']['values'])
+                + [v for s in ex.get('extra_lines') or [] for v in s['values']])
     if k == 'bar_line_dual':
         return list(ex['bar']['values'])
     if k in ('lines', 'lines_endlabels', 'year_lines'):

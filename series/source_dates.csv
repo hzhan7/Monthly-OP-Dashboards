@@ -116,6 +116,7 @@ cme,2026-08,2026-09-01,"cme_monthly_volume.xlsx（官方文件名 cme_group_adv-
 cme,2026-09,2026-10-01,"cme_monthly_volume.xlsx（官方文件名 cme_group_adv-rpc-oi_trend_Sep26 incl cash marketsFINAL.xlsx）的 HTTP Last-Modified ""Thu, 01 Oct 2026 19:35:32 GMT""，与工作簿 docProps/core.xml 的 dcterms:modified 2026-10-01T18:30:16Z 互证，换算到芝加哥时间同为 2026-10-01"
 cost,2026-07,2026-08-05,"GlobeNewswire 稿 costco-wholesale-corporation-reports-july-sales-results.html 的 <time itemprop=""datePublished""> 渲染文本 ""August 05, 2026 16:15 ET""；正文电头 ""ISSAQUAH, Wash., Aug. 05, 2026 (GLOBE NEWSWIRE)"" 一致"
 cost,2026-08,2026-09-02,"GlobeNewswire 稿 costco-wholesale-corporation-reports-august-sales-results.html 的 <time itemprop=""datePublished""> 渲染文本 ""September 02, 2026 16:15 ET""；正文电头 ""ISSAQUAH, Wash., Sept. 02, 2026 (GLOBE NEWSWIRE)"" 一致"
+cost,2026-09,2026-10-07,"GlobeNewswire 稿 costco-wholesale-corporation-reports-september-sales-results.html 的 <time itemprop=""datePublished""> 渲染文本 ""October 07, 2026 16:15 ET""；正文电头 ""ISSAQUAH, Wash., Oct. 07, 2026 (GLOBE NEWSWIRE)"" 一致"
 db1,2026-07,2026-08-04,monthlystat_202607.xls 的 Cover 表「Created on:」= 2026-08-04
 db1,2026-08,2026-09-02,monthlystat_202608.xls 的 Cover 表「Created on:」= 2026-09-02；同月另一条腿 FWB_Monthly_Cash_Market_Statistics.20260831.xls 的 Cover 表「Created on:」序列号换算 = 2026-09-01（取两者较晚者）
 db1,2026-09,2026-10-02,monthlystat_202609.xls 的 Cover 表「Created on:」= 2026-10-02；同月另一条腿 FWB_Monthly_Cash_Market_Statistics.20260930.xls 的 Cover 表「Created on:」序列号换算 = 2026-10-01（取两者较晚者）
@@ -149,6 +150,7 @@ lpla,2026-07,2026-08-20,"新闻稿 lpla_pr_2026-07.pdf 电头 ""SAN DIEGO – Au
 lpla,2026-08,2026-09-24,"新闻稿 lpla_pr_2026-08.pdf 电头 ""SAN DIEGO – September 24, 2026 –"""
 miax,2026-07,2026-08-05,"MIH_Volume_and_RPC_Report_08052026.pdf 第 2 行 ""Updated on August 5, 2026""（权威）；辅助线索：HTTP Last-Modified Wed, 05 Aug 2026 14:05:35 GMT"
 miax,2026-08,2026-09-04,"MIAX_Key_Stats-August_2026.pdf 第 2 行 ""Updated on September 4, 2026""（权威）；辅助线索：HTTP Last-Modified Thu, 03 Sep 2026 21:00:15 GMT"
+miax,2026-09,2026-10-06,"MIH_Volume_and_RPC_Report_10062026.pdf 第 2 行 ""Updated on October 6, 2026""（权威）；辅助线索：HTTP Last-Modified Mon, 05 Oct 2026 19:54:53 GMT"
 mtk,2026-05,2026-06-10,"月度营收新闻稿 ""Monthly Sales Revenue May, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-06-10）"
 mtk,2026-06,2026-07-10,"月度营收新闻稿 ""Monthly Sales Revenue June, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-07-10）"
 mtk,2026-07,2026-08-10,"月度营收新闻稿 ""Monthly Sales Revenue July, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-08-10）"

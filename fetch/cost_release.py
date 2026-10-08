@@ -376,6 +376,44 @@ def parse_release(html):
         raise RuntimeError(f'comp tables not recognized ({len(comp_tabs)} candidates)')
     for k in ['us_r','ca_r','oi_r','tc_r','us_a','ca_a','oi_a','tc_a']:
         if k not in rec: raise RuntimeError(f'missing {k}')
+    # --- Digitally-enabled 销售增速（2026-09 起）---
+    # 2026-09 那期起 Costco 把「Digitally-Enabled」从两张 comp 表里拿掉，改成单独一段：
+    #   "Digitally-enabled sales, which are sales initiated through a digital device, whether
+    #    fulfilled through a warehouse, distribution center, or Costco Travel, increased
+    #    year-over-year as follows:" + 一张 [Reported | Excluding Foreign Exchange] 小表。
+    # **这不是 ec_r/ec_a 的改名**：旧的是 comp（报告 / 剔油价与汇率），新的是总销售增速
+    # （报告 / 只剔汇率），所以落进另外两列 dg_r / dg_a，不往 ec 里写（所有者 2026-10-08 定）。
+    dg = re.search(r'Digitally-enabled sales, which are sales initiated through a digital '
+                   r'device.{0,200}?(increased|decreased) year-over-year as follows', text, re.I)
+    if dg:
+        got = []
+        for t in tabs:
+            s = _drop_dup_cols(t.astype(str).fillna('nan'))
+            joined = ' '.join(s.values.flatten().tolist())
+            if 'Total Company' in joined or 'Excluding Foreign Exchange' not in joined:
+                continue
+            rows = {}
+            for _, row in s.iterrows():
+                cells = [c for c in row.tolist() if c and c != 'nan']
+                if not cells:
+                    continue
+                toks = re.findall(r'\(?-?[\d.]+\)?\s*%', ' '.join(cells[1:]))
+                if toks and re.match(r'^Reported$', cells[0]):
+                    rows['dg_r'] = toks
+                elif toks and re.match(r'^Excluding Foreign Exchange$', cells[0]):
+                    rows['dg_a'] = toks
+            if set(rows) == {'dg_r', 'dg_a'}:
+                got.append({'rows': {'tc': rows['dg_r'], **rows}, 'periods': _periods(s)})
+        if len(got) != 1:
+            raise RuntimeError(f'Digitally-enabled 那段话在，但对应的 Reported / Excluding Foreign '
+                               f'Exchange 小表认出 {len(got)} 张（应为 1 张）')
+        j = _month_col(got[0])
+        for k in ('dg_r', 'dg_a'):
+            toks = got[0]['rows'][k]
+            rec[k] = pct(toks[j] if j < len(toks) else toks[0])
+        if dg.group(1).lower() == 'decreased' and (rec['dg_r'] > 0 or rec['dg_a'] > 0):
+            raise RuntimeError(f'Digitally-enabled 那句写的是 decreased，表里却是正数 '
+                               f'（{rec["dg_r"]} / {rec["dg_a"]}）—— 符号判不准，拒绝采信')
     # --- 仓库数 ---
     w = re.search(r'operates? ([\d,]+) warehouses,? including ([\d,]+) in the United States', text)
     if w:

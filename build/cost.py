@@ -26,6 +26,7 @@ import datetime
 import json
 import os
 import re
+import sys
 
 import numpy as np
 import pandas as pd
@@ -83,6 +84,16 @@ def _source_dates():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _cohort_gaps():
+    """fetch/cost_sec.py 的 COHORT_UPSTREAM_GAPS（开业年份矩阵里官方自身不平、逐值登记的格）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'cost_sec', os.path.join(ROOT, 'fetch', 'cost_sec.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.COHORT_UPSTREAM_GAPS
 
 
 # 时序图的窗口起点。2026-08-18 从原 PDF 的 2021-01 改成 2016-01，全站统一
@@ -472,8 +483,18 @@ def compose_glossary(df, fy, tkt, seg_q, exn=None):
 
     # ── 最新披露的 Digitally-Enabled comp ───────────────────────────────────
     _de = df['ec_r'].dropna()
-    de_now = (f'最新一期（{_de.index[-1].strftime("%b-%y")}）报告口径 '
+    _dg = df[['dg_r', 'dg_a']].dropna(how='all')
+    de_now = (f'{"comp 最后一期" if len(_dg) else "最新一期"}（{_de.index[-1].strftime("%b-%y")}）报告口径 '
               f'<b>{float(_de.iloc[-1]):+.1f}%</b>。' if len(_de) else '')
+    # 2026-09 起公司不再发这个 comp，改发 digitally-enabled **销售增速**（另两列 dg_r / dg_a）。
+    # 两者不是同一个量，术语表里分开说、图上分两条线画，不连起来（所有者 2026-10-08 定）。
+    if len(_dg):
+        _g0, _g1 = _dg.index[0].strftime('%b-%y'), _dg.index[-1].strftime('%b-%y')
+        de_now += (f'<b>{_g0} 起公司不再披露 Digitally-Enabled comp</b>，改为单独一段披露 '
+                   f'digitally-enabled <b>销售增速</b>：是总销售同比、不是 comp，调整口径也从'
+                   f'「剔除油价与汇率」变成「只剔汇率」，所以不与上面那条 comp 连成一条线。'
+                   f'最新一期（{_g1}）报告口径 <b>{float(_dg["dg_r"].iloc[-1]):+.1f}%</b>、'
+                   f'剔汇率 <b>{float(_dg["dg_a"].iloc[-1]):+.1f}%</b>。')
 
     # ── 最新一季的 ticket / traffic ─────────────────────────────────────────
     # 公司按 reported / adjusted 两套基准各报一套，取最新一季的 reported 那行；
@@ -1281,7 +1302,7 @@ def main():
     df = pd.read_csv(SERIES, index_col=0)
     df.index = pd.PeriodIndex(df.index, freq='M')
     need = ['net_sales_bn', 'weeks', 'ns_yoy', 'us_r', 'ca_r', 'oi_r', 'tc_r',
-            'us_a', 'ca_a', 'oi_a', 'tc_a', 'wh_total', 'wh_us', 'ec_r', 'ec_a']
+            'us_a', 'ca_a', 'oi_a', 'tc_a', 'wh_total', 'wh_us', 'ec_r', 'ec_a', 'dg_r', 'dg_a']
     miss = [c for c in need if c not in df.columns]
     if miss:
         raise SystemExit(f'series/cost.csv 缺列 {miss}')
@@ -1858,7 +1879,33 @@ def main():
     else:
         ec_src = ('FY26 起口径由 e-commerce 改为 Digitally-Enabled comparable sales，前后不保证可比；'
                   '该断点已滚出本图窗口，图上不再画竖虚线。' + ec_src)
-    ex.append(bar_line_ex(_S(11), 'ec_a', 'ec_r', 'E-commerce / Digitally-Enabled Comp, y/y',
+    # 2026-09 起：Digitally-Enabled comp 停发，换成 digitally-enabled 销售增速（dg_a 剔汇率 /
+    # dg_r 报告）。所有者 2026-10-08 定「新旧分开画」：comp 的柱与线停在最后一期，新序列走
+    # extra_lines 另起两条带圆点的线（开头只有一两个点，不带点的折线画不出来），
+    # 断点处再加一根竖虚线。两组列在同一个月不会同时有值（fetch/cost.py 的 _optional_cols）。
+    _dg_s = df[['dg_r', 'dg_a']].dropna(how='all')
+    if len(_dg_s):
+        DG_FROM = _dg_s.index[0]
+        _ec_last = df[['ec_r', 'ec_a']].dropna(how='all').index[-1]
+        if _ec_last >= DG_FROM:
+            raise SystemExit(f'ec_* 与 dg_* 在 {mlab(DG_FROM)}..{mlab(_ec_last)} 同时有值 —— '
+                             f'口径分界不成立，Exhibit「E-commerce / Digitally-Enabled」要重看')
+        _bi = list(d8.index).index(DG_FROM)
+        ec_kw['break_at'] = list(ec_kw.get('break_at', [])) + [_bi]
+        ec_kw['break_label'] = (['definition change'] * (len(ec_kw['break_at']) - 1)
+                                + ['comp → sales growth'])
+        ec_kw['extra_lines'] = [
+            {'name': 'Digitally-enabled sales, ex. FX', 'color': 'GREEN', 'values': L(d8['dg_a'])},
+            {'name': 'Digitally-enabled sales, reported', 'color': 'GOLD', 'values': L(d8['dg_r'])},
+        ]
+        ec_src = (f'<b>{mlab(DG_FROM)} 起公司不再披露 Digitally-Enabled comp</b>（柱与蓝线止于 '
+                  f'{mlab(_ec_last)}），改为单独一段披露 digitally-enabled <b>销售增速</b>'
+                  f'（绿 = 剔汇率、金 = 报告口径）。新序列是总销售同比、不是 comp，'
+                  f'调整口径只剔汇率、不剔油价，所以另起两条线、不与 comp 相连；'
+                  f'{mlab(DG_FROM)} 处的竖虚线即这次变更。' + ec_src)
+    ex.append(bar_line_ex(_S(11), 'ec_a', 'ec_r',
+                          'E-commerce / Digitally-Enabled Comp, y/y'
+                          + (' (sales growth from ' + mlab(_dg_s.index[0]) + ')' if len(_dg_s) else ''),
                           'E-comm Core (ex. FX)', 'Reported', start=str(ECOMM_FROM),
                           src_extra=ec_src, **ec_kw))
     _EC_N = ex[-1]['n']          # 电商 comp 那张图的图号；下面三处图注/表注现读它
@@ -2590,7 +2637,15 @@ def main():
         #    本行原来的注释写着「与 fetch/cost_sec.py 同源」，那句话早就是假的。
         _dev = abs(_num / _den - _cval[(_COH_TOT, _y)])
         _wa_dev[_y] = _dev
-        if _dev > 1.0:
+        # 上游自身不平的格只认 fetch/cost_sec.py 的 COHORT_UPSTREAM_GAPS 逐值登记（读同一张表，
+        # 不在这里另抄一份）。本页这一列读的是「覆盖该列最早那份 10-K」，FY2021 起就是当年那份，
+        # 所以 (矩阵财年, 列财年) = (_col_v(_y), _y) 与解析端的键是同一个格。
+        if _dev > 1.0 and _cohort_gaps().get((_col_v(_y), _y)) == (
+                _cval[(_COH_TOT, _y)], round(_num / _den, 2)):
+            print(f'[cost] 矩阵 FY{_y} 列放行（上游自身不平，已在 cost_sec.COHORT_UPSTREAM_GAPS '
+                  f'登记）：加权 {_num / _den:.2f} vs 印的 {_cval[(_COH_TOT, _y)]}，页面用印的值',
+                  file=sys.stderr)
+        elif _dev > 1.0:
             raise SystemExit(f'矩阵 FY{_y} 列：按家数加权均值 {_num / _den:.2f} 与印出来的'
                              f' Totals {_cval[(_COH_TOT, _y)]} 差 {_dev:.2f} > 1 —— '
                              f'多半是右对齐串了一列，或者这一列的行集挑错了')
@@ -3432,6 +3487,14 @@ def main():
                              '（e-commerce → Digitally-Enabled），窗口内两种口径混排')
     # y/y 是否也跨断点（本月与去年同月分属两种口径）—— 同样现算
     EC_CROSS_YOY = yag < ECOMM_BREAK <= cur
+    # digitally-enabled 销售增速（2026-09 起）：不满 36 个月就没有分位可算，现算月数
+    _dg_n = int(df['dg_r'].notna().sum())
+    if 0 < _dg_n < 36:
+        for _c in ('dg_a', 'dg_r'):
+            BLANK_WHY[_c] = (f'这条序列 {mlab(df["dg_r"].first_valid_index())} 才开始披露，'
+                             f'只有 {_dg_n} 个月，凑不满 36 个月的窗口')
+    # comp 停发之后，「E-comm / Digitally-Enabled」两行的本月格是「—」—— 表注要说为什么
+    EC_STOPPED = bool(pd.isna(df['ec_r'].get(cur)) and _dg_n)
 
     def pcell(col):
         """3Y %ile 单元格。判据交给 pctile.cell()，本页只负责口径性留空。"""
@@ -3500,7 +3563,8 @@ def main():
     # 现算出来 —— 手写的表注会在数据滚动后变成假话。
     _blank_lines = []
     for _c, _lab in [('net_sales_bn', '净销售额 ($bn)'), ('wh_total', '仓库数（全球 / 美国及波多黎各）'),
-                     ('ec_a', 'E-comm / Digitally-Enabled（核心与报告两行）')]:
+                     ('ec_a', 'E-comm / Digitally-Enabled（核心与报告两行）'),
+                     ('dg_a', 'Digitally-enabled 销售增速（两行）')]:
         if _c in BLANK_WHY:
             _blank_lines.append(f'<b>{_lab}</b> 的 3Y %ile 留空：{BLANK_WHY[_c]}。')
     # pctile.py 自己判成「没有区分度」的行，理由用它给的原话，不另写一套说法
@@ -3537,6 +3601,10 @@ def main():
            f'（53 周财年），两者差 {NS_GAP_TXT} —— 这一格的表内算术里有整整一周的量，'
            f'该读的是下一行的披露值。</b>')
         + ('' if not _blank_lines else ' ' + ' '.join(_blank_lines))
+        + ('' if not EC_STOPPED else
+           f' <b>E-comm / Digitally-Enabled</b> 两行本月是「—」：公司自 '
+           f'{mlab(df["dg_r"].first_valid_index())} 起不再披露这个 comp，改发 digitally-enabled '
+           f'销售增速（见下方单独一组；是总销售同比、不是 comp，只剔汇率），两者不互相填补。')
         + ('' if not EC_CROSS_YOY else
            f' <b>†</b>：本月（{mlab(cur)}）与去年同月（{mlab(yag)}）分处 {ECOMM_BREAK} '
            'e-commerce → Digitally-Enabled 口径变更的两侧，该 y/y 是两种口径相减，'
@@ -3560,6 +3628,9 @@ def main():
             srow('Canada', 'ca_r', 'pp', PCTF),
             srow("Other Int'l", 'oi_r', 'pp', PCTF),
             srow('E-comm / Digitally-Enabled', 'ec_r', 'pp', PCTF, cross=EC_CROSS_YOY),
+            *([G('Digitally-enabled 销售增速（y/y；不是 comp）'),
+               srow('剔汇率', 'dg_a', 'pp', PCTF),
+               srow('报告口径', 'dg_r', 'pp', PCTF)] if _dg_n else []),
             # 组标题写明这一组的 y/y 是什么口径：这一组里「$bn」行的 y/y 是表内算术
             # （本月 ÷ 去年同月），而下一行是公司披露的可比口径，两者在 53 周财年前后
             # 差 20pp 以上。不在组标题上说清楚，读者只会以为表里有个数算错了。
@@ -3588,11 +3659,12 @@ def main():
         'idx': '零售月',
         'cols': [['净销售额 $bn', 'net_sales_bn'], ['y/y %', 'ns_yoy'], ['核心 Total', 'tc_a'],
                  ['核心 US', 'us_a'], ['核心 Canada', 'ca_a'], ['核心 Other Intl', 'oi_a'],
-                 ['核心 E-comm', 'ec_a'], ['报告 Total', 'tc_r'], ['周数', 'weeks'],
+                 ['核心 E-comm', 'ec_a'], ['Digital 销售 ex-FX', 'dg_a'],
+                 ['报告 Total', 'tc_r'], ['周数', 'weeks'],
                  ['仓库数(全球)', 'wh_total']],
         'rows': [{'xl': mlab(p), 'net_sales_bn': F2(r.net_sales_bn),
                   **{k: F1(getattr(r, k)) for k in
-                     ['ns_yoy', 'tc_a', 'us_a', 'ca_a', 'oi_a', 'ec_a', 'tc_r']},
+                     ['ns_yoy', 'tc_a', 'us_a', 'ca_a', 'oi_a', 'ec_a', 'dg_a', 'tc_r']},
                   'weeks': I0(r.weeks), 'wh_total': I0(r.wh_total)}
                  for p, r in zip(d13.index, d13.itertuples())],
     }
@@ -3653,7 +3725,7 @@ def main():
     # （`yoy.caliber_diff` 拿这条序列的水平值自算两遍再对齐），因此在本页算不出来，
     # 下面那条 note 要把「为什么算不出来」说清楚 —— 不是省了这笔账。
     _disc_cols = ['tc_a', 'tc_r', 'us_a', 'us_r', 'ca_a', 'ca_r', 'oi_a', 'oi_r',
-                  'ec_a', 'ec_r', 'ns_yoy']
+                  'ec_a', 'ec_r', 'dg_a', 'dg_r', 'ns_yoy']
 
     # 分桶交给模块级的 partition_axes()（正文块 §8）：它比原来的二分多一个「占比」桶，
     # 且判据同时看 fmt —— stacked_dual 的占比图可以只给 fmt 不给 yfmt，原判据会把它

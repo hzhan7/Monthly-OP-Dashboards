@@ -1065,6 +1065,14 @@ FY_TAGS = {
     'dda_mn': ('DepreciationDepletionAndAmortization', ()),
 }
 
+#: 总收入的备用标签。FY2025 及以前的 10-K 给合并总收入同时打两个无维度标签
+#: `Revenues` 与 `RevenueFromContractWithCustomerExcludingAssessedTax`，两者逐年相等
+#: （FY2025 10-K：275,235 / 254,453 / 242,290 两边一致，实测）；FY2026 10-K
+#: （0000909832-26-000093）起只剩后者。**只在同一篇申报里没有 `Revenues` 时才用它**，
+#: 并且要求它恰好等于同篇的净销售 + 会员费（FY2026：297,247 + 5,907 = 303,154）——
+#: 这个标签不带维度时就是合并总收入，但万一哪年它被拿去报别的口径，这道等式会当场炸。
+FY_TOTAL_REV_ALT = 'RevenueFromContractWithCustomerExcludingAssessedTax'
+
 #: 分部经营利润的三代成员名，与 SEG_MEMBER 同一套。
 FY_SEG_OI = {'us': 'op_income_us_mn', 'ca': 'op_income_ca_mn', 'oi': 'op_income_oi_mn'}
 
@@ -1083,8 +1091,10 @@ PREOPEN_NONE = 'not-disclosed'          # 源里根本没有这条线了（FY202
 
 #: Item 2 那句面积。FY2016 结尾多一个词（"Other International locations."），
 #: 所以最后一段不能钉死在句号上。
+#: "approximately" 可有可无：FY2025 及以前写 "contained approximately 134.7 million"，
+#: FY2026 10-K 起写 "contained 138.7 million"。
 _SQFT = re.compile(
-    r'warehouses contained approximately ([\d.]+) million square feet[^.]*?:\s*'
+    r'warehouses contained (?:approximately )?([\d.]+) million square feet[^.]*?:\s*'
     r'([\d.]+) million in the U\.S\.;\s*([\d.]+) million in Canada;\s*and\s*'
     r'([\d.]+) million in Other International', re.I)
 #: Item 2 自有 / 租赁表的合计行。用后面那句 "(1) N of the M leases are land-only"
@@ -1169,6 +1179,7 @@ def _latest_fy_facts(cache_dir, filings):
     for f in sorted((x for x in filings if x['form'] == '10-K' and x['filed'] >= XBRL_FROM),
                     key=lambda x: x['filed']):
         raw = _instance(cache_dir, f)
+        alt_rev, this = {}, defaultdict(dict)       # 本篇的备用总收入 / 本篇自己的值
         for local, s, e, i, dims, txt in _facts(raw):
             dk = tuple(sorted(dims.items()))
             v = _num(txt)
@@ -1188,6 +1199,9 @@ def _latest_fy_facts(cache_dir, filings):
                 if local == tag and dk == want:
                     val[(s, e)][col] = v
                     src[(s, e)][col] = (f['filed'], f['accession'])
+                    this[(s, e)][col] = v
+            if local == FY_TOTAL_REV_ALT and not dims:
+                alt_rev[(s, e)] = v
             # 老口径（FY2015 及更早）顺手收一份，喂 `build_fy_be`。两代分开装在
             # `beval` 里，不与 `val` 混 —— 理由见 FY_BE_TAGS 的注释（同一个名字在
             # 两代里指的不是同一个数）。这里不按年份筛：筛在 `build_fy_be` 里，
@@ -1202,6 +1216,18 @@ def _latest_fy_facts(cache_dir, filings):
             if reg:
                 val[(s, e)][FY_SEG_OI[reg]] = v
                 src[(s, e)][FY_SEG_OI[reg]] = (f['filed'], f['accession'])
+        for k, v in alt_rev.items():
+            mine = this.get(k, {})
+            if 'total_rev_mn' in mine:
+                continue                            # 本篇有 `Revenues`，照旧用它
+            ns, mf = mine.get('net_sales_mn'), mine.get('memb_fee_mn')
+            if ns is None or mf is None or abs(ns + mf - v) > 10 ** 6:
+                raise CostSecError(
+                    f'{f["accession"]} 没有 `Revenues`，备用标签 {FY_TOTAL_REV_ALT} '
+                    f'（{k[0]}..{k[1]}）= {v}，但同篇净销售 {ns} + 会员费 {mf} 对不上 —— '
+                    f'不敢把它当合并总收入，拒绝采信')
+            val[k]['total_rev_mn'] = v
+            src[k]['total_rev_mn'] = (f['filed'], f['accession'])
     return val, src, stores, consol_oi_hist, beval, besrc
 
 
@@ -1642,6 +1668,19 @@ def _cohort_cells(raw_html):
 #: 要重调请把上面两组数都重算一遍再动手，不要凭手感 —— 这些数就是为此留的。
 _COHORT_TOL = 1.5
 
+#: 上游自身不平、逐值登记放行的格：{(矩阵财年, 列财年): (印出来的 Totals, 加权均值保留两位)}。
+#: 登记之外照样抛；登记了但数变了（Costco 改了表）也照样抛 —— 只放行**这一个**数字组合。
+#:
+#: (2026, 2026)：FY2026 10-K（0000909832-26-000093）矩阵的当年列。10 个队列按家数加权
+#:   271,923 / 939 = 289.59，印的 Totals 是 292，差 2.41。同一张矩阵的 2025 列加权 271.67
+#:   对印的 272、FY2025 10-K 的 2025 列加权 272.2 对 272，都是「含当年新开仓」的算法；
+#:   而 2026 列只有**剔掉当年新开的 25 家**才凑得出 292（267,248 / 914 = 292.4）。
+#:   右对齐的零容差宽度检查照常通过，即不是串位，是官方这一格换了算法或印错。
+#:   页面按仓库规矩用官方印的 292（2026-10-08 主线程逐格验算后登记）。
+COHORT_UPSTREAM_GAPS = {
+    (2026, 2026): (292, 289.59),
+}
+
 
 def _cohort_check_widths(fy, years, data, totals):
     """右对齐的**零容差**检查：每行的值个数必须与它该覆盖的财年数完全相等。
@@ -1698,6 +1737,12 @@ def _cohort_parse(rows, fy):
         num = sum(c * v[y] for _c, c, v in data if y in v)
         den = sum(c for _c, c, v in data if y in v)
         if den and abs(num / den - tv) > _COHORT_TOL:
+            gap = COHORT_UPSTREAM_GAPS.get((fy, y))
+            if gap == (tv, round(num / den, 2)):
+                print(f'[cost_sec] 开业年份矩阵放行（上游自身不平，已登记）：FY{fy} 矩阵 {y} 列 '
+                      f'加权均值 {num / den:.2f} vs 印出来的 Totals {tv}，'
+                      f'与 COHORT_UPSTREAM_GAPS 登记逐值一致', file=sys.stderr)
+                continue
             raise CostSecError(
                 f'FY{fy} 矩阵 {y} 列：按家数加权均值 {num / den:.2f} 与印出来的 Totals '
                 f'{tv} 差 {abs(num / den - tv):.2f} > {_COHORT_TOL} —— 说明右对齐串位了')

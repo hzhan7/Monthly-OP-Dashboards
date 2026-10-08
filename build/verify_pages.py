@@ -240,7 +240,7 @@ def arrays_of(ex):
         take(k, ex.get(k))
     if isinstance(ex.get('actual'), dict):          # seasonality 的 actual 是对象
         take('actual', ex['actual'])
-    for grp in ('series', 'stacks', 'groups'):
+    for grp in ('series', 'stacks', 'groups', 'extra_lines'):
         for i, s in enumerate(ex.get(grp) or []):
             take(f'{grp}[{i}]', s)
     return out
@@ -356,7 +356,7 @@ def check_exhibit(tag, ex, short, long_):
         if v is not None and v not in FMTS:
             err(where, f'{key}={v!r} 不是引擎认得的格式器名（会静默退回 f1）')
     for path, obj in [(k, ex.get(k)) for k in ('bar', 'line', 'net', 'yoy', 'base', 'actual')] + \
-                     [(f'{g}[{i}]', s) for g in ('series', 'stacks', 'groups')
+                     [(f'{g}[{i}]', s) for g in ('series', 'stacks', 'groups', 'extra_lines')
                       for i, s in enumerate(ex.get(g) or [])]:
         if not isinstance(obj, dict):
             continue

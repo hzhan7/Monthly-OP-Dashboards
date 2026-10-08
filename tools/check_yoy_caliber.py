@@ -833,6 +833,8 @@ def yoy_series(ex):
     take(ex.get('bar'), 'bar', ylab, ax_fmt=ex_fmt)
     for i, s in enumerate(ex.get('series') or []):
         take(s, f'series[{i}]', ylab, ax_fmt=ex_fmt)
+    for i, s in enumerate(ex.get('extra_lines') or []):  # bar_line 的附加线（与 bar 同轴）
+        take(s, f'extra_lines[{i}]', ylab, ax_fmt=ex_fmt)
     for i, s in enumerate(ex.get('stacks') or []):
         take(s, f'stacks[{i}]', ylab, ax_fmt=ex_fmt)
 

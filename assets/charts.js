@@ -47,6 +47,10 @@
                            语义是「从这一期起与左侧不可比」。
      break_label string|string[]  断点竖排标签；给一条时所有断点共用。
      bar_marks int[]   需要标成斜纹的柱（如 53 周财年多出一周的月份），与 break_at 配合用。
+     extra_lines [{name,color,values}]  **仅 bar_line**：同一根轴上再画几条带圆点的线。
+                       给「口径换了、新序列另起一条不与旧线相连」用（COST 的 Digitally-Enabled
+                       2026-09 起由 comp 换成销售增速）。带圆点是因为新序列开头往往只有一两个点，
+                       不带点的折线一个点画不出来。参与纵轴量程、图例、tooltip 与表格视图。
      mark_note string  bar_marks 命中的期在 tooltip 里追加的说明。
      ylab2   string    右轴标题（双轴图），与左侧 ylab 对称。
 
@@ -874,7 +878,10 @@
 
     /* 左轴参与计算的值 */
     var lv = [];
-    if (kind === 'bar_line') lv = ex.bar.values.concat(ex.line.values);
+    if (kind === 'bar_line') {
+      lv = ex.bar.values.concat(ex.line.values);
+      for (s = 0; s < (ex.extra_lines || []).length; s++) lv = lv.concat(ex.extra_lines[s].values);
+    }
     else if (kind === 'bar_line_dual') lv = ex.bar.values.slice();
     else if (kind === 'lines' || kind === 'lines_endlabels' || kind === 'year_lines') {
       for (s = 0; s < ex.series.length; s++) lv = lv.concat(ex.series[s].values);
@@ -1385,6 +1392,9 @@
         if (cut) { capMark(g, Xc(i), Y(vp), w); capLabel(Xc(i) + 3.4, ov, capFmt(v)); }
       }
       if (kind === 'bar_line') polyline(ex.line.values, col(ex.line.color), 1.6, false, false);
+      if (kind === 'bar_line')
+        for (var xl = 0; xl < (ex.extra_lines || []).length; xl++)
+          polyline(ex.extra_lines[xl].values, col(ex.extra_lines[xl].color), 1.6, false, true);
       if (kind === 'bar_line_dual') polyline(ex.line.values, col(ex.line.color), 1.6, false, false, Y2);
       if (kind === 'bars_labeled') {
         var lf = fmtOf(ex.label_fmt || 'f1'), labb = [];
@@ -2260,6 +2270,10 @@
         fmt: fmtOf(ex.bar.yfmt || ex.yfmt) });
       out.push({ name: ex.line.name, color: col(ex.line.color), values: ex.line.values,
         fmt: fmtOf(ex.line.yfmt || ex.yfmt) });
+      if (ex.kind === 'bar_line')
+        for (i = 0; i < (ex.extra_lines || []).length; i++)
+          out.push({ name: ex.extra_lines[i].name, color: col(ex.extra_lines[i].color),
+            values: ex.extra_lines[i].values, fmt: fmtOf(ex.extra_lines[i].yfmt || ex.yfmt) });
     } else if (ex.kind === 'lines' || ex.kind === 'lines_endlabels') {
       for (i = 0; i < ex.series.length; i++)
         out.push({ name: ex.series[i].name, color: col(ex.series[i].color),
@@ -2353,6 +2367,8 @@
       /* 单轴图走 matplotlib get_legend_handles_labels：线在前、柱在后 */
       items.push(['line', col(ex.line.color), ex.line.name]);
       items.push(['sq', col(ex.bar.color), ex.bar.name]);
+      for (i = 0; i < (ex.extra_lines || []).length; i++)
+        items.push(['line', col(ex.extra_lines[i].color), ex.extra_lines[i].name]);
     } else if (ex.kind === 'lines' || ex.kind === 'lines_endlabels') {
       for (i = 0; i < ex.series.length; i++)
         items.push(['line', col(ex.series[i].color), ex.series[i].name]);

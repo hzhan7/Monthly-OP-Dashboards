@@ -590,8 +590,12 @@ def _lab(words):
     'Rolling three-month average RPC(2)'。脚注号历史上加过也挪过位置，
     留着它做全等匹配会在某个月突然全表失配；而约定的标签里没有一处真的写着 (数字)，
     所以直接剥掉是安全的。
+
+    脚注号也可能是多编号：季末那期（10062026 那份，覆盖到 Sep-26）给三行 RPC/capture
+    挂成 '(2,5)' / '(3,5)'，5 号脚注说该季 RPC 是初步估计。只剥单编号时这 4 行全部失配。
     """
-    return _norm(re.sub(r'\(\d\)', '', ' '.join(w['text'] for w in words)))
+    return _norm(re.sub(r'\(\d(?:\s*,\s*\d)*\)', '',
+                        ' '.join(w['text'] for w in words)))
 
 
 def _num(s, where):

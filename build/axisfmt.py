@@ -100,7 +100,8 @@ def _left_vals(ex):
     """左轴参与量程计算的值（`charts.js:578` 起的 `lv`）。认不出的 kind 返回 None。"""
     k = ex.get('kind')
     if k == 'bar_line':
-        return list(ex['bar']['values']) + list(ex['line']['values'])
+        return (list(ex['bar']['values']) + list(ex['line']['values'])
+                + [v for s in ex.get('extra_lines') or [] for v in s['values']])
     if k == 'bar_line_dual':
         return list(ex['bar']['values'])
     if k in ('lines', 'lines_endlabels', 'year_lines'):
