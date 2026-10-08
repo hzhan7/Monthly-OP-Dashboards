@@ -3048,11 +3048,12 @@ def main():
            f'既不是「还没开业」也不是「被折走」，而是<b>算不出来</b>，'
            f'空着不代表那几年不需要过平衡线。'
            if len(_BE_YS) < len(_COH_YRS) else '')
-        + f'<b>颜色读法</b>（所有者 2026-10-08 定）：每一格只和<b>同一财年</b>那一列的两条平衡线比，'
-        f'分三档纯色 —— 红 = 低于「计会员费」那条线（亏损）；金 = 过了「计会员费」那条、'
-        f'还没过「不计会员费」那条（开始盈利，但要靠会员费才过线）；绿 = 连「不计会员费」那条'
-        f'也过了（只靠商品毛利就盈利）。比的是格子里印出来的整数，相等算过线。'
-        f'颜色<b>不再</b>表示「相对全表高还是低」；两条平衡线自己是浅蓝，它们是尺子不是读数。'
+        + f'<b>颜色读法</b>（所有者 2026-10-08 定）：盈亏平衡<b>只看「计会员费」那一条</b>，'
+        f'每一格和<b>同一财年</b>那一列的这条线比 —— 红 = 低于线（亏损）；'
+        f'金 = 这个开业队列<b>首次越过</b>这条线的那一年（开始盈利；开业当年就在线上的，开业当年即金；'
+        f'跌回线下后再越过，再越过那年也是金）；绿 = 越过之后仍在线上的年份（盈利）。'
+        f'「不计会员费」那一行只作参考，不参与判档。Totals 行不是一个开业队列，没有「首次越过」，只分红绿。'
+        f'比的是格子里印出来的整数，相等算过线。两条平衡线自己是白底，它们是尺子不是读数。'
         f'平衡线是<b>推导值</b>（见上），所以颜色说的「亏损 / 盈利」也是推导结论，不是公司披露。')
 
     # ── 把盈亏平衡线并进矩阵（所有者 2026-09-03 指令：「把『盈亏平衡销售额』这个数字
@@ -3134,58 +3135,76 @@ def main():
 
     _rlab = {c: _rowlab(c) for c in _DRAW if c not in (_BE_LO, _BE_HI)}
 
-    # ── 逐格分类填色（所有者 2026-10-08 指令）──────────────────────────────────────
-    # 「亏损的一种颜色，盈利的一种颜色，越过盈亏平衡（计会员费）的作为过渡色」。
-    # 每格只和**同一列**的两条平衡线比：< 计会员费线 → loss；< 不计会员费线 → trans；
-    # 否则 profit。平衡线两行自己标 'be'（尺子，不参与判档）。比较用的是格内印的整数
-    # （_be_vals 已 round 过、队列值本来就是整数），相等算过线 —— 读者对着两个相同的数
-    # 看到「没过线」的颜色会以为图画错了。
-    _CLS_BE = {c: k for c, k in ((_BE_LO, 'lo'), (_BE_HI, 'hi'))}
-    for _y, _lo, _hi in zip(_COH_YRS, _be_vals['lo'], _be_vals['hi']):
-        if _lo is not None and _hi is not None and not _lo < _hi:
-            raise SystemExit(f'FY{_y} 的两条平衡线 计会员费 {_lo} ≥ 不计会员费 {_hi} —— '
-                             f'过渡档就不存在了，先查 _be_ratio')
+    # ── 逐格分类填色（所有者 2026-10-08 指令，同日二改）─────────────────────────────
+    # 一改是「每格对两条平衡线分三档」；所有者随即纠正：「盈亏平衡按照『计会员费』那档来定，
+    # 不是其他行的标准」。所以判档**只用计会员费那条线**：
+    #   loss   = 低于线；
+    #   trans  = 越过线的那一年 —— 本队列上一格是 loss、或这是本队列第一格（开业当年）且已在线上；
+    #   profit = 越过之后仍在线上的年份。
+    # Totals 不是一个开业队列，没有「首次越过」，只分 loss / profit。平衡线两行标 'be'（尺子，白底）。
+    # 比较用格内印的整数（_be_vals 已 round 过、队列值本来就是整数），相等算过线 ——
+    # 读者对着两个相同的数看到「没过线」的颜色会以为图画错了。
+    # 「第一格 = 开业当年」成立的前提：画出来的只有单年队列，且矩阵左端 FY{_COH_YRS[0]} 早于最老队列
+    # 的开业年，所以每条队列行的第一个有值格子都是它的开业年（护栏见下）。
+    _CLS_BE = (_BE_LO, _BE_HI)
 
-    def _cls(c, v, lo, hi):
-        if v is None:
-            return None
+    def _row_cls(c, r):
         if c in _CLS_BE:
-            return 'be'
-        if lo is None or hi is None:
-            return 'na'
-        return 'loss' if v < lo else ('trans' if v < hi else 'profit')
+            return ['be' if v is not None else None for v in r]
+        if c != _COH_TOT:
+            _j0 = next(j for j, v in enumerate(r) if v is not None)
+            if _COH_YRS[_j0] != int(c):
+                raise SystemExit(f'「{c}」这条队列的第一个有值格子是 FY{_COH_YRS[_j0]}，不是它的开业年 —— '
+                                 f'「开业当年即在线上 = 开始盈利」这条判据不成立了，先看矩阵左端')
+        out, prev = [], None
+        for v, lo in zip(r, _be_vals['lo']):
+            if v is None:
+                out.append(None)
+                continue
+            if lo is None:
+                k = 'na'
+            elif v < lo:
+                k = 'loss'
+            elif c != _COH_TOT and prev in (None, 'loss'):
+                k = 'trans'
+            else:
+                k = 'profit'
+            out.append(k)
+            if k != 'na':
+                prev = k
+        return out
 
-    _cell_class = [[_cls(c, v, lo, hi) for v, lo, hi in zip(r, _be_vals['lo'], _be_vals['hi'])]
-                   for c, r in zip(_DRAW, _draw_matrix)]
+    _cell_class = [_row_cls(c, r) for c, r in zip(_DRAW, _draw_matrix)]
 
     # 类内深浅（所有者 2026-10-08 追加：「亏的多的深一点，盈利多的也深一点，也是渐变色」）：
-    # 亏损档按「比计会员费线低多少 %」、盈利档按「比不计会员费线高多少 %」定深度，
+    # 红按「比计会员费线低多少 %」、绿按「比计会员费线高多少 %」定深度（同一条线，两头各量各的），
     # 用 % 而不是 $，因为平衡线本身从 $114 涨到 $204，同样差 $20 在两头不是一回事。
     # 各档按自己差距的 95 分位封顶到 1（与引擎色标的 5/95 同一个理由：一两个极端格
-    # 不该把其余格子全压成浅色）。过渡档是两线之间的窄带，不分深浅。
-    def _gap(k, v, lo, hi):
-        return (lo - v) / lo if k == 'loss' else ((v - hi) / hi if k == 'profit' else None)
+    # 不该把其余格子全压成浅色）。金色只标「越过的那一年」，不分深浅。
+    def _gap(k, v, lo):
+        return (lo - v) / lo if k == 'loss' else ((v - lo) / lo if k == 'profit' else None)
 
-    _gaps = {k: sorted(g for cr, r in zip(_cell_class, _draw_matrix)
-                       for kk, v, lo, hi in zip(cr, r, _be_vals['lo'], _be_vals['hi'])
-                       if kk == k for g in [_gap(k, v, lo, hi)]) for k in ('loss', 'profit')}
+    _gaps = {k: sorted(_gap(k, v, lo) for cr, r in zip(_cell_class, _draw_matrix)
+                       for kk, v, lo in zip(cr, r, _be_vals['lo']) if kk == k)
+             for k in ('loss', 'profit')}
     _gcap = {k: (float(np.percentile(g, 95)) if g else 1.0) for k, g in _gaps.items()}
-    _cell_t = [[(round(min(1.0, _gap(k, v, lo, hi) / _gcap[k]), 3)
+    _cell_t = [[(round(min(1.0, _gap(k, v, lo) / _gcap[k]), 3)
                  if k in _gcap and _gcap[k] > 0 else None)
-                for k, v, lo, hi in zip(cr, r, _be_vals['lo'], _be_vals['hi'])]
+                for k, v, lo in zip(cr, r, _be_vals['lo'])]
                for cr, r in zip(_cell_class, _draw_matrix)]
     # 图注在上面已拼好，深浅这句要等 95 分位算出来才写得出真数，所以在这里追加
-    _COH_NOTE += (f' 红与绿<b>越深离线越远</b>：红按「比计会员费线低多少 %」、绿按「比不计会员费线'
+    _COH_NOTE += (f' 红与绿<b>越深离线越远</b>：红按「比计会员费线低多少 %」、绿按「比计会员费线'
                   f'高多少 %」，各自到本图该档差距的 95 分位（红 {_gcap["loss"] * 100:.0f}%、'
-                  f'绿 {_gcap["profit"] * 100:.0f}%）即为最深；金色档是两线之间的窄带，不分深浅。')
+                  f'绿 {_gcap["profit"] * 100:.0f}%）即为最深；金色只标越过那一年，不分深浅。')
     _COH_CLASSES = {
         'loss': {'color': 'RED', 'tint': 0.68, 'tint_deep': 0.0,
                  'label': '亏损：低于平衡线（计会员费），越深亏得越多'},
         'trans': {'color': 'GOLD', 'tint': 0.5,
-                  'label': '开始盈利：过了计会员费的平衡线、未过不计会员费的'},
+                  'label': '开始盈利：首次越过平衡线（计会员费）的那一年'},
         'profit': {'color': 'GREEN', 'tint': 0.68, 'tint_deep': 0.0,
-                   'label': '盈利：高于平衡线（不计会员费），越深赚得越多'},
-        'be': {'color': 'BLUE', 'tint': 0.68, 'label': '盈亏平衡线（推导值）'},
+                   'label': '盈利：越过后仍高于平衡线（计会员费），越深赚得越多'},
+        # 所有者 2026-10-08：「盈亏平衡用白色」。白色块在白底图例上看不见，所以不进 class_order
+        'be': {'color': 'WHITE', 'tint': 0, 'label': '盈亏平衡线（推导值）'},
         'na': {'color': 'GRAY', 'tint': 0.4, 'label': '该年算不出平衡线，无从判档'},
     }
 
@@ -3225,7 +3244,7 @@ def main():
         'cell_class': _cell_class,
         'cell_t': _cell_t,
         'classes': _COH_CLASSES,
-        'class_order': ['loss', 'trans', 'profit', 'be', 'na'],
+        'class_order': ['loss', 'trans', 'profit', 'na'],
         'fmt': 'usd0',
         'legend': '均店销售（$mn/店·年）',
         # 默认的 row_lab_w=32 会让行标签压到格子里去；这里按最长行标签定宽，不猜常数。
