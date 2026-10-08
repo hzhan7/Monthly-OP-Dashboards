@@ -3157,11 +3157,34 @@ def main():
 
     _cell_class = [[_cls(c, v, lo, hi) for v, lo, hi in zip(r, _be_vals['lo'], _be_vals['hi'])]
                    for c, r in zip(_DRAW, _draw_matrix)]
+
+    # 类内深浅（所有者 2026-10-08 追加：「亏的多的深一点，盈利多的也深一点，也是渐变色」）：
+    # 亏损档按「比计会员费线低多少 %」、盈利档按「比不计会员费线高多少 %」定深度，
+    # 用 % 而不是 $，因为平衡线本身从 $114 涨到 $204，同样差 $20 在两头不是一回事。
+    # 各档按自己差距的 95 分位封顶到 1（与引擎色标的 5/95 同一个理由：一两个极端格
+    # 不该把其余格子全压成浅色）。过渡档是两线之间的窄带，不分深浅。
+    def _gap(k, v, lo, hi):
+        return (lo - v) / lo if k == 'loss' else ((v - hi) / hi if k == 'profit' else None)
+
+    _gaps = {k: sorted(g for cr, r in zip(_cell_class, _draw_matrix)
+                       for kk, v, lo, hi in zip(cr, r, _be_vals['lo'], _be_vals['hi'])
+                       if kk == k for g in [_gap(k, v, lo, hi)]) for k in ('loss', 'profit')}
+    _gcap = {k: (float(np.percentile(g, 95)) if g else 1.0) for k, g in _gaps.items()}
+    _cell_t = [[(round(min(1.0, _gap(k, v, lo, hi) / _gcap[k]), 3)
+                 if k in _gcap and _gcap[k] > 0 else None)
+                for k, v, lo, hi in zip(cr, r, _be_vals['lo'], _be_vals['hi'])]
+               for cr, r in zip(_cell_class, _draw_matrix)]
+    # 图注在上面已拼好，深浅这句要等 95 分位算出来才写得出真数，所以在这里追加
+    _COH_NOTE += (f' 红与绿<b>越深离线越远</b>：红按「比计会员费线低多少 %」、绿按「比不计会员费线'
+                  f'高多少 %」，各自到本图该档差距的 95 分位（红 {_gcap["loss"] * 100:.0f}%、'
+                  f'绿 {_gcap["profit"] * 100:.0f}%）即为最深；金色档是两线之间的窄带，不分深浅。')
     _COH_CLASSES = {
-        'loss': {'color': 'RED', 'tint': 0.35, 'label': '亏损：低于平衡线（计会员费）'},
+        'loss': {'color': 'RED', 'tint': 0.68, 'tint_deep': 0.0,
+                 'label': '亏损：低于平衡线（计会员费），越深亏得越多'},
         'trans': {'color': 'GOLD', 'tint': 0.5,
                   'label': '开始盈利：过了计会员费的平衡线、未过不计会员费的'},
-        'profit': {'color': 'GREEN', 'tint': 0.3, 'label': '盈利：高于平衡线（不计会员费）'},
+        'profit': {'color': 'GREEN', 'tint': 0.68, 'tint_deep': 0.0,
+                   'label': '盈利：高于平衡线（不计会员费），越深赚得越多'},
         'be': {'color': 'BLUE', 'tint': 0.68, 'label': '盈亏平衡线（推导值）'},
         'na': {'color': 'GRAY', 'tint': 0.4, 'label': '该年算不出平衡线，无从判档'},
     }
@@ -3200,6 +3223,7 @@ def main():
         'cols': [f'FY{y}' for y in _COH_YRS],
         'matrix': _draw_matrix,
         'cell_class': _cell_class,
+        'cell_t': _cell_t,
         'classes': _COH_CLASSES,
         'class_order': ['loss', 'trans', 'profit', 'be', 'na'],
         'fmt': 'usd0',

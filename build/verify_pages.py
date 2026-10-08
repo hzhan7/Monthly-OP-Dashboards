@@ -487,6 +487,13 @@ def check_exhibit(tag, ex, short, long_):
                     err(where, f'cell_class[{i}] 第 {miss[0]} 格有数值却没有类别 —— '
                                f'引擎会对它退回 5/95 色标，与分类填色混在一张图上')
                     break
+            ct = ex.get('cell_t')
+            if ct is not None:
+                if len(ct) != len(m) or any(len(r or []) != len(mr or []) for r, mr in zip(ct, m)):
+                    err(where, 'cell_t 的形状与 matrix 不一致')
+                elif any(t is not None and not (isinstance(t, (int, float)) and 0 <= t <= 1)
+                         for r in ct for t in r):
+                    err(where, 'cell_t 只能是 0–1 或 null（类内深浅）')
         if ex.get('xlabels'):
             warn(where, 'heat_matrix 不吃 xlabels（它用 rows/cols），这个字段是死的')
         # 12 列的月 × 年矩阵在半栏里是既有页的既定版式（字号自动收缩仍读得出）；

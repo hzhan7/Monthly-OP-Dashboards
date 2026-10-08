@@ -711,7 +711,15 @@
       var k = cc && cc[i] ? cc[i][j] : null;
       return (k != null && cdefs[k]) ? cdefs[k] : null;
     }
-    function clsFill(d) { return mix(col(d.color), C.WHITE, +d.tint || 0); }
+    /* 类内也可以渐变：类别给了 tint_deep、且 ex.cell_t 给了这一格的 0–1 深度时，
+       向白混合的比例从 tint（浅端）走到 tint_deep（深端）。用于「亏得越多越红、
+       赚得越多越绿」—— 判档靠类别，程度靠 cell_t，两件事分开传。 */
+    var ct = ex.cell_t || null;
+    function clsFill(d, i, j) {
+      var t = ct && ct[i] ? ct[i][j] : null, w = +d.tint || 0;
+      if (d.tint_deep != null && isNum(t)) w = w + (+d.tint_deep - w) * Math.max(0, Math.min(1, +t));
+      return mix(col(d.color), C.WHITE, w);
+    }
     var maxLen = 1;
     for (i = 0; i < rows.length; i++)
       for (j = 0; j < cols.length; j++) {
@@ -730,7 +738,7 @@
         v = (m[i] || [])[j];
         var ok = isNum(v), x = M.l + j * cw, y = M.t + i * chh;
         var cd = ok ? clsOf(i, j) : null;
-        var fc = !ok ? C.GRID : (cd ? clsFill(cd) : sc.at(+v));
+        var fc = !ok ? C.GRID : (cd ? clsFill(cd, i, j) : sc.at(+v));
         var rc = el('rect', { x: x.toFixed(2), y: y.toFixed(2), width: cw.toFixed(2),
           height: chh, fill: fc, stroke: C.WHITE, 'stroke-width': 1.1 }, g);
         /* halo:false 是必须的，不是省事 —— txt() 默认给每个字加 2.4px 的**白色**描边，
@@ -2423,8 +2431,11 @@
         var order = ex.class_order || Object.keys(ex.classes);
         for (i = 0; i < order.length; i++) {
           var cdf = ex.classes[order[i]];
-          if (cdf && used[order[i]])
-            items.push(['sq', mix(col(cdf.color), C.WHITE, +cdf.tint || 0), cdf.label]);
+          if (!cdf || !used[order[i]]) continue;
+          var c0 = mix(col(cdf.color), C.WHITE, +cdf.tint || 0);
+          if (cdf.tint_deep != null)          // 类内渐变：图例画浅 → 深一段色带
+            items.push(['grad', c0 + ',' + mix(col(cdf.color), C.WHITE, +cdf.tint_deep), cdf.label]);
+          else items.push(['sq', c0, cdf.label]);
         }
       } else {
         var hs = heatScale(ex), hf = fmtOf(ex.fmt || 'f1');
