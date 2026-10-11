@@ -210,6 +210,14 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
       （「已有值永不覆盖」的一次例外，理由与逐格清单写在那个脚本里）。
       2025-08 及更早的期次行名是单行 `Iron Ore Lump Premium Futures`，一直都算进去了，不受影响。
 
+20. **证书链在 Python 默认 context 下验不过 —— 症状像「SGX 挂了」，其实是本机根库缺根。**
+    2026-10-11 起 www.sgx.com 与 api2.sgx.com（同一张证书）改由
+    `GlobalSign GCC R46 EV TLS CA 2025` 签发，根是 `GlobalSign Root R46`，**不在**
+    /private/etc/ssl/cert.pem 里；默认 context 当场 CERTIFICATE_VERIFY_FAILED（unable to get
+    local issuer certificate），`curl` 和 `openssl s_client` 却都说 OK（它们用另一套根库）。
+    certifi 的 cacert.pem 里有 R46。→ 见 `_ssl_ctx()`：优先 certifi，**绝不降级成 CERT_NONE**。
+    同一条坑 fetch/nanya.py 口径坑 2、fetch/fx.py 口径坑 9 已经各踩过一次。
+
 ━━ series/sgx.csv 每一列的确切口径 ━━
 月份 `month` = **数据月**（YYYY-MM），不是发布月。所有「本月」值取该期报告里表头等于数据月
 的那一列（M0 列），FYTD / CYTD / 上年同月 / YoY% 一概不取。
@@ -262,7 +270,9 @@ CMS 列表覆盖 2010-02 ~ 2026-06 共 197 期、**零断档**，但本模块只
 2010-02~2010-11 是 Excel 打印稿、文字层行列关系全靠坐标碎片；2011~2014 表头位置不稳。
 2015-01 起 At-A-Glance 与分产品表全部稳定可解析（实测 138 期全通）。
 
-━━ 依赖 ━━ pymupdf（fitz）。不依赖 pandas / curl_cffi / nscurl。
+━━ 依赖 ━━ pymupdf（fitz）、certifi（口径坑 20；requirements.txt 没有直接声明它，它是
+curl_cffi 的传递依赖，没装就退回默认 context —— 那样会照旧验不过、响亮地 FAIL）。
+不依赖 pandas / curl_cffi / nscurl。
 """
 
 import csv
@@ -270,6 +280,7 @@ import datetime
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.parse
@@ -294,6 +305,21 @@ class SgxFetchError(RuntimeError):
 
 
 # ══ 网络 ═════════════════════════════════════════════════════════════════
+def _ssl_ctx():
+    """给 www.sgx.com / api2.sgx.com 用的 context：优先 certifi 的根库（口径坑 20）。
+
+    **不降级成 CERT_NONE**：certifi 没装就退回默认 context，宁可整家 FAIL 也不关校验。
+    """
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+_CTX = _ssl_ctx()
+
+
 def _http_get(url, timeout=90):
     """返回 (bytes, headers)。失败抛 SgxFetchError。"""
     req = urllib.request.Request(url, headers={
@@ -302,7 +328,7 @@ def _http_get(url, timeout=90):
         'Accept-Language': 'en-US,en;q=0.9',
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=_CTX) as r:
             return r.read(), dict(r.headers)
     except Exception as e:                                # noqa: BLE001
         raise SgxFetchError('下载失败 %s: %r' % (url, e)) from e
