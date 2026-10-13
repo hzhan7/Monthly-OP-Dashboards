@@ -888,9 +888,13 @@ D_TOTAL_VOL = {'total trading volume'}
 D_OI = {'total open interest'}
 
 # A50 有一期把 Futures 印成了单数 Future（2016-06）。
-P_A50 = {'ftse china a50 index futures', 'ftse china a50 index future'}
+# 2026-09 期起 SGX 给自家产品名统一加了「SGX 」前缀（`SGX FTSE China A50 Index Futures`、
+# `SGX USD_CNH FX Futures` …，GIFT Nifty 不加）；新旧两种写法都收，同一期里只会出现一种，
+# _pick_row 的「命中多行即抛」照样兜住过渡月两名并存的情形。
+P_A50 = {'ftse china a50 index futures', 'ftse china a50 index future',
+         'sgx ftse china a50 index futures'}
 # 只要标准合约；Mini / Micro / USD / Total Return / Climate PAB 各自单列，全等匹配自然排除。
-P_NIKKEI = {'nikkei 225 index futures'}
+P_NIKKEI = {'nikkei 225 index futures', 'sgx nikkei 225 index futures'}
 # Nifty 一族：**必须相加，不能挑一行**。演变实测如下（全在 Equity Index Futures Volume 节内）：
 #   2015-01~2015-10  `SGX CNX Nifty Index Futures`（指数 2015-11 由 S&P CNX Nifty 更名 Nifty 50）
 #   2015-11~2022-06  `SGX Nifty 50 Index Futures` / `Nifty 50 Index Futures`（两种写法不同期出现）
@@ -905,11 +909,12 @@ P_NIFTY = {'sgx cnx nifty index futures', 'sgx nifty 50 index futures',
            'nifty 50 index futures', 'gift nifty 50 index futures',
            'nse ifsc nifty 50 index futures', 'nse ix nifty 50 index futures',
            'nse ixnifty 50 index futures'}
-P_MSCI_SG = {'msci singapore index futures'}
-P_MSCI_TW = {'msci taiwan index futures'}
-P_FTSE_TW = {'ftse taiwan index futures'}
-P_USDCNH = {'usd_cnh fx futures'}
-P_INRUSD = {'inr_usd fx futures', 'inr_usd fx ffutures'}   # 2016 那代官方拼错，两个 F
+P_MSCI_SG = {'msci singapore index futures', 'sgx msci singapore index futures'}
+P_MSCI_TW = {'msci taiwan index futures', 'sgx msci taiwan index futures'}
+P_FTSE_TW = {'ftse taiwan index futures', 'sgx ftse taiwan index futures'}
+P_USDCNH = {'usd_cnh fx futures', 'sgx usd_cnh fx futures'}
+P_INRUSD = {'inr_usd fx futures', 'inr_usd fx ffutures',   # 2016 那代官方拼错，两个 F
+            'sgx inr_usd fx futures'}
 
 
 def _velocity(blocks, mon, g):
