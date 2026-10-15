@@ -1135,3 +1135,8 @@ HKEX,2026-Q2,trading_fee_effective_rate_both_sides,0.009596,pct_of_turnover,http
 HKEX,2026-Q2,trading_fee_effective_rate_per_side,0.004798,pct_of_consideration,https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0819/2026081900213.pdf
 HKEX,2026-Q2,trading_fee_listed_rate_per_side,0.00565,pct_of_consideration,https://www.hkex.com.hk/Services/Rules-and-Forms-and-Fees/Fees/Securities-(Hong-Kong)/Trading/Transaction?sc_lang=en
 HKEX,2026-Q2,trading_tariff_per_side,0.0,HKD_per_side_per_trade,https://www.hkex.com.hk/Services/Rules-and-Forms-and-Fees/Fees/Securities-(Hong-Kong)/Trading/Transaction?sc_lang=en
+SCHW,2026-Q3,avg_bank_deposits,244309,USD_mn,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
+SCHW,2026-Q3,avg_interest_earning_assets,451538,USD_mn,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
+SCHW,2026-Q3,bank_deposits_rate_paid,0.23,pct_annualized,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
+SCHW,2026-Q3,net_interest_margin,3.04,pct_annualized,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
+SCHW,2026-Q3,net_interest_revenue,3476,USD_mn,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
