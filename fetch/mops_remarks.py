@@ -337,8 +337,12 @@ def _get(url, *, data=None, timeout=180, tries=3):
 
 
 # ── 源 1：MOPS 全市场月档 CSV ────────────────────────────────────────────
-def _mops_csv(month, cache_dir=None):
+def _mops_csv(month, cache_dir=None, refresh=False):
     """取某个月的全市场月营收 CSV 正文。
+
+    `refresh=True` 时不读缓存、重下并覆盖。月档在申报截止前后几天里会**逐日长大**
+    （2026-10-12 存下的 9 月档 872 家、缺 ase/alchip；10-15 现档 1,079 家），
+    所以缓存只是「当时那一版」，调用方发现缺行时要用它重取一次。
 
     护栏（一条都不能省，理由见口径坑 1/2/5）：
       ① 体长 >= `_MIN_CSV`  —— 挡限流页（564 字节）与未来月空表（344 字节）；
@@ -353,7 +357,8 @@ def _mops_csv(month, cache_dir=None):
     cpath = os.path.join(cache_dir, 'mops_remarks_' + fname) if cache_dir else None
 
     body = None
-    if cpath and os.path.exists(cpath) and os.path.getsize(cpath) >= _MIN_CSV:
+    if (not refresh and cpath and os.path.exists(cpath)
+            and os.path.getsize(cpath) >= _MIN_CSV):
         body = open(cpath, 'rb').read()
 
     if body is None:
@@ -396,7 +401,19 @@ def _mops_month(month, cache_dir=None):
     `latest_month()` 又保证了这个月已经全市场汇总完毕，缺行只可能是解析/取档出了事，
     不可能是「这家没申报」。把它降级成 warn 会让整列静默变空。
     """
-    text, fname = _mops_csv(month, cache_dir)
+    try:
+        return _mops_month_once(month, cache_dir, refresh=False)
+    except MopsRemarksFetchError as e:
+        if not cache_dir or '缺 ' not in str(e):
+            raise
+        # 缓存是月档长大前的旧版（见 `_mops_csv` docstring）：重下一次再判。
+        # 现档仍缺才抛 —— 护栏照旧，只是不再被一份旧缓存永久卡死。
+        print(f'[mops_remarks][warn] 缓存月档缺行（{e}），绕过缓存重取一次')
+        return _mops_month_once(month, cache_dir, refresh=True)
+
+
+def _mops_month_once(month, cache_dir, refresh):
+    text, fname = _mops_csv(month, cache_dir, refresh=refresh)
     recs = list(csv.DictReader(io.StringIO(text)))
     if len(recs) < _MIN_ROWS:
         # 口径坑 2b + 5：表头能过、行数过不去的那种 200。阈值来历见口径坑 5。
