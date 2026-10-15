@@ -488,15 +488,19 @@ def _get(url, *, data=None, timeout=180, tries=3, context=None):
 
 
 # ── 源 1：MOPS 月档 ──────────────────────────────────────────────────────
-def _mops_csv(year, month, cache_dir=None):
+def _mops_csv(year, month, cache_dir=None, refresh=False):
     """取某个月的全市场月营收 CSV，返回 decode 好的正文。
 
     三重护栏见口径坑 1：长度、表头、以及调用方再核 `資料年月`。
+
+    `refresh=True` 时不读缓存、重下并覆盖。月档在申报截止前后几天里会逐日长大
+    （2026-10-12 存下的 9 月档 870 行，10-15 现档 1,079 家），缓存只是当时那一版；
+    `_mops_row()` 在缓存里找不到 2408 时用它重取一次（同 fetch/mops_remarks.py 57d3d28）。
     """
     roc = year - 1911
     fname = f't21sc03_{roc}_{month}.csv'
     body = None
-    if cache_dir:
+    if cache_dir and not refresh:
         p = os.path.join(cache_dir, 'nanya_' + fname)
         if os.path.exists(p) and os.path.getsize(p) >= _MIN_CSV:
             body = open(p, 'rb').read()
@@ -535,7 +539,18 @@ def _mops_csv(year, month, cache_dir=None):
 
 def _mops_row(year, month, cache_dir=None):
     """返回 2408 在该月档里的整行 dict。找不到就抛异常，不返回 None。"""
-    text = _mops_csv(year, month, cache_dir)
+    try:
+        return _mops_row_once(year, month, cache_dir, refresh=False)
+    except NanyaFetchError as e:
+        if not cache_dir or '没有 ' + TWSE_CODE not in str(e):
+            raise
+        # 缓存是月档长大前的旧版：重下一次再判，现档仍缺才抛。
+        print(f'[nanya][warn] 缓存月档缺行（{e}），绕过缓存重取一次')
+        return _mops_row_once(year, month, cache_dir, refresh=True)
+
+
+def _mops_row_once(year, month, cache_dir, refresh):
+    text = _mops_csv(year, month, cache_dir, refresh=refresh)
     for row in csv.DictReader(io.StringIO(text)):
         if (row.get('公司代號') or '').strip() == TWSE_CODE:
             row = {(k or '').strip(): (v or '').strip() for k, v in row.items()}
