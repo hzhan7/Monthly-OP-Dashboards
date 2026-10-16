@@ -2563,7 +2563,7 @@ def compose_brief(frame=None):
 # ACQ_ACCOUNTS_K（官方月报脚注 (4)，见该常量上方的原文引用），各列的起点全部从
 # 序列现读（nna / dm / mb / avgm）—— 下个月官方再回填一格，这几句自己就跟着走。
 #
-# ━━ 为什么是这 10 个词（选词判断）━━
+# ━━ 为什么是这 12 个词（选词判断；NNA 缩写条 2026-10-16 应所有者要求加）━━
 # 判据只有一条：这个词出现在本页的图题 / 序列名 / 纵轴 / 汇总表行头 / 核对表列头里，
 # 而且**不看定义就会读错**。按「读错会出什么事」分四类：
 #   ① 公司口径里带限定词的行  核心净新增资产（core 是**剔除**过的，与未剔除的 Net
@@ -2593,6 +2593,17 @@ _G_ACQ = '、'.join(f'{mlab(_p)} 的 {_k / 1000:.1f}mn 户'
                    for _p, _k in sorted(ACQ_ACCOUNTS_K.items()))
 
 GLOSSARY = [
+    # 缩写本身单列一条（2026-10-16 所有者要求）：图题、纵轴、notes 通篇写「core NNA」，
+    # 却没有一处说 NNA 是什么。定义取月报自己的恒等式（Beginning Client Assets +
+    # Net New Assets + Net Market Gains (Losses) = Total Client Assets），官方脚注里
+    # 没有对 NNA 本身的文字定义，所以这里不编一句「官方定义」。
+    ('NNA（净新增资产）',
+     '<code>Net New Assets</code> 的缩写，本页图题里的「core NNA」就是下一条的'
+     '「核心净新增资产」。它是<b>流量</b>：当月客户净带进 Schwab 的资产（转入 − 转出），'
+     '<b>不含</b>市值涨跌 —— 月报里它与 <code>Net Market Gains (Losses)</code> 并列，'
+     '<code>期初客户资产 + NNA + 市值涨跌 = 期末客户资产</code>。'
+     '⚠️ 本页画的都是剔除过的 core 口径，未剔除的 NNA 本身不画（理由见下一条）。'),
+
     ('核心净新增资产',
      '官方行名 <code>Core Net New Assets</code>，本页的主口径，是<b>流量</b>不是余额：'
      '在净新增资产的基础上<b>剔除</b>单一客户的巨额流入/流出，以及表外 Schwab Bank '
