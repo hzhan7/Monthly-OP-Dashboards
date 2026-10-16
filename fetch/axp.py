@@ -515,12 +515,17 @@ def parse_10d(html_bytes):
     """
     t = _flat_text(html_bytes)
 
+    # 标题里的空白要容错：2026-09 期（0001104659-26-116105）把「D. Trust Performance」
+    # 印成「D.Trust Performance」，精确子串匹配整家 FAIL。
+    def _pat(s):
+        return re.compile(r'\s*'.join(map(re.escape, s.split())).replace(r'\.', r'\.\s*'), re.I)
+
     def _section(start, end):
-        i = t.lower().find(start.lower())
-        j = t.lower().find(end.lower(), i + 1) if i >= 0 else -1
-        if i < 0 or j < 0:
+        mi = _pat(start).search(t)
+        mj = _pat(end).search(t, mi.end()) if mi else None
+        if not mi or not mj:
             raise FetchError(f'10-D 里切不出 {start!r} … {end!r} 段')
-        return t[i:j]
+        return t[mi.start():mj.start()]
 
     A = _section('A. Trust Activity', 'B. Series Allocations')
     D = _section('D. Trust Performance', 'E. Repurchases')
