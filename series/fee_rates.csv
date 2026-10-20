@@ -1140,3 +1140,7 @@ SCHW,2026-Q3,avg_interest_earning_assets,451538,USD_mn,https://www.sec.gov/Archi
 SCHW,2026-Q3,bank_deposits_rate_paid,0.23,pct_annualized,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
 SCHW,2026-Q3,net_interest_margin,3.04,pct_annualized,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
 SCHW,2026-Q3,net_interest_revenue,3476,USD_mn,https://www.sec.gov/Archives/edgar/data/316709/000031670926000035/a3q26exhibit991.htm
+MSCI,2026-Q3,asset_based_fee_effective_rate_annualized,3.427,bp_of_etf_aum,https://www.sec.gov/Archives/edgar/data/1408198/000140819826000054/exhibit991earningsrelease-.htm
+MSCI,2026-Q3,asset_based_fee_revenue,246.6,USD_mn,https://www.sec.gov/Archives/edgar/data/1408198/000140819826000054/exhibit991earningsrelease-.htm
+MSCI,2026-Q3,avg_aum_etfs_linked_msci_equity,2878.0,USD_bn,https://www.sec.gov/Archives/edgar/data/1408198/000140819826000054/exhibit991earningsrelease-.htm
+MSCI,2026-Q3,disclosed_period_end_basis_point_fee_etf,2.28,bp,https://www.sec.gov/Archives/edgar/data/1408198/000140819826000054/exhibit991earningsrelease-.htm
