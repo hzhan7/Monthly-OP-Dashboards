@@ -1151,3 +1151,6 @@ CME,2026-Q3,rpc_foreign_exchange,0.852,USD_per_contract,https://www.sec.gov/Arch
 CME,2026-Q3,rpc_interest_rates,0.489,USD_per_contract,https://www.sec.gov/Archives/edgar/data/1156375/000115637526000065/exhibit9919302026.htm
 CME,2026-Q3,rpc_metals,1.326,USD_per_contract,https://www.sec.gov/Archives/edgar/data/1156375/000115637526000065/exhibit9919302026.htm
 CME,2026-Q3,rpc_total,0.679,USD_per_contract,https://www.sec.gov/Archives/edgar/data/1156375/000115637526000065/exhibit9919302026.htm
+AXP,2026-Q3,avg_card_balances_and_other_loans,230587,USD_mn,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
+AXP,2026-Q3,net_interest_income,4940,USD_mn,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
+AXP,2026-Q3,net_interest_yield_newbasis,8.5,pct_annualized,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
