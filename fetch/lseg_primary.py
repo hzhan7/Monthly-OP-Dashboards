@@ -20,39 +20,45 @@ Drupal 在同名文件重传时会自动加序号后缀，实测同一批链接�
 2026-08-07 全量统计：AIM 2018-01 起 103 期里 43 期带 `_N` 后缀，Main Market 98 期里
 31 期带。**按「AIM factsheet {Month} {Year}.xlsx」硬拼，会有四成月份 404。**
 后缀与月份无规律（既不是新月才有，也不是老月才有），唯一正确的做法是从索引里读链接。
+2026-10 官网换平台后后缀原样保留（新索引的 fileName 与旧索引逐月相同），这条仍然成立。
 
-索引不在 HTML 里 —— www.londonstockexchange.com 是 Angular SPA，
-`/reports` 与 `/reports?tab=aim` 返回的是同一份 54,995 字节的空壳，
-`curl` 拿不到任何文件链接，`sitemap.xml` 是 404。真正的索引走这条 JSON 接口：
+索引（2026-10-24 起）：官网 2026-10 由 Angular SPA 换成 Adobe AEM。报告页
+https://www.londonstockexchange.com/en/reports/primary-markets curl 下来仍然没有文件链接
+（运行时注入），但页面 HTML 里写明了它读的静态 JSON，每个市场一对：
 
-  1) 握手（拿 tab → tabId / componentId 映射，**不要写死这些 uuid**）
-     GET https://api.londonstockexchange.com/api/v1/pages?path=reports
-     → components[0].content[0].value.reportsFilterToggleFilters
-       里每个 subFilter 有 {label, tabId, modules:[{moduleId}]}，
-       本模块要的两个：label='Main Market' 与 label='AIM'（属 'Primary markets' 组）。
+    https://docs.londonstockexchange.com/reports/<目录>/latest.json     ← 最新一期
+    https://docs.londonstockexchange.com/reports/<目录>/historic.json   ← 全部归档
+    <目录> = main-market / aim（见 MARKETS）
 
-  2) 取该 tab 的报告清单
-     POST https://api.londonstockexchange.com/api/v1/components/refresh
-     body {"path":"reports",
-           "parameters":"tab%3D<slug>%26tabId%3D<tabId>",
-           "components":[{"componentId":"block_content%3A<uuid>","parameters":null}]}
-     ⚠ **componentId 里的冒号必须写成 %3A，parameters 必须是二次编码的查询串。**
-       冒号不编码时接口照样返回 HTTP 200，但 body 是空数组 `[]` —— 静默失败，
-       不是报错。本模块因此对空结果直接 raise，绝不当成「本月没有报告」。
-     → content[0].value.ctaItems[*]：
-         ctaButton.link          = 最新一期直链
-         history.items[*].links  = 历年归档，{label:'AIM factsheet June 2026.xlsx', link:...}
-       2026-08-07 实测：AIM 573 条（分 1995~2026 共 32 个年份组），
-       Main Market 321 条（2009~2026 共 18 个年份组）。
+两份都是 {"Data": [{reportType, year, fileName, displayTitle, publishedDate,
+downloadLink, fileSize, fileType}, ...], "rowCount": n}。`_report_list` 把 latest 排在前、
+historic 在后并成一张清单（同一月份出现多条时 `_month_index` 取先遇到的，即 latest 那条）。
+  · 只认 displayTitle 以「AIM factsheet」/「Main Market factsheet」开头的行 ——
+    aim/latest.json 里还混着 AIM Issuers by Country、AIM Regulation S Instruments 两份名单；
+  · 月份**从 displayTitle 解析，不从 fileName / URL 解析** —— 后两者带 `_0`/`_1` 噪声，
+    displayTitle 是干净的「AIM factsheet April 2026.xlsx」（latest 那条不带扩展名）；
+  · `publishedDate` 不能当发布日：historic 里它一律写成数据月的 1 号（June 2026 那期写
+    01-06-2026，早于数据月月末）；
+  · 任一份 Data 为空一律 raise，绝不当成「本月没有报告」。
+解析完还要用工作簿内的标题格（第 3~4 行写着「April 2026」）再校验一次，不符就 raise：
+这是防「索引 label 与文件内容错位」的唯一一道闸。
 
-  3) 月份**从 label 解析，不从 URL 解析** —— URL 里有 `_0`/`_1` 噪声，label 是干净的
-     「AIM factsheet April 2026.xlsx」。解析完还要用工作簿内的标题格（第 3~4 行写着
-     「April 2026」）再校验一次，不符就 raise：这是防「索引 label 与文件内容错位」的
-     唯一一道闸。
+2026-10-24 迁移核对（实测）：新索引 AIM xlsx 146 / xls 214 / pdf 214 条、Main Market
+98 / 112 / 112 条；按本模块规则建出的月份索引与旧索引（2026-10-23 缓存）**月份集合与
+fileName 逐月相同**（两个市场 × 两种扩展名，0 处差异）。新路径下抽 5 份（AIM 2026-07、
+2026-04、2016-10.xls，MM 2026-07、2018-06）与 cache 里的旧件逐字节相同。
 
-下载域是 docs.londonstockexchange.com。实测普通 UA + plain urllib 直接 200，
-无 Cloudflare / Akamai / PerimeterX / JS 渲染 / 登录墙；2026-08-07 一次拉 201 个
-xlsx 零失败（8 线程），满足 cron 无人值守。
+下载域仍是 docs.londonstockexchange.com，路径由旧的 /sites/default/files/reports/<文件名>
+改成 /reports/<目录>/<文件名>（链接照旧从索引读，不拼）。普通 UA + plain urllib 直接 200，
+无 Cloudflare / Akamai / PerimeterX / 登录墙，满足 cron 无人值守。不存在的文件回 403
+（111 字节的 S3 AccessDenied XML），`_download` 的 20KB 下限会把它当失败抛出。
+⚠ 迁移把所有文件的 HTTP `Last-Modified` 重置成了 2026-10-08~11（迁移时刻）：`.lm` 这条
+旁证对 2026-09 及更早的月份从此作废，`publish_lags()` 的 lastmod 一列对这些月份别看。
+
+旧路子（2026-10-23 止，留作排障对照，别再往回走）：`api.londonstockexchange.com/api/v1/
+pages?path=reports` 握手拿 tabId / componentId，再 POST `/api/v1/components/refresh` 取
+ctaItems。10-23 其中链接先被改到不解析的 olddocs.londonstockexchange.com，10-24 起整个
+api 主机对任何 path 都回 CloudFront 403（plain curl 与 curl_cffi 浏览器指纹结果相同，不是反爬）。
 
 **不进管道的两个源**（同在 Primary markets 组下，看着像但不是月度统计）：
 `New issues and IPOs_82.xlsx` 与 `Further issues_85.xlsx` —— 这两份是**逐笔明细的
@@ -118,7 +124,7 @@ a. **判据**：官方索引里「有文件」的月份，对照日历。「有�
    与 fetch/lseg_orderbook.py 的 `_guard_overdue_missing` 同一个比较方向）就判逾期；
    没超过的只算「还没发」，每轮无条件打印一行 `[lseg_primary] 索引里还没有：…`。
    阈值怎么来的写在常量 `_MAX_PUBLISH_LAG_DAYS` 的注释里。
-b. **为什么看索引、不看解析结果**：`_month_index` 在 label 写法、扩展名或 ctaTitle
+b. **为什么看索引、不看解析结果**：`_month_index` 在 displayTitle 写法、扩展名或
    前缀漂移时会**静默丢月**（对不上的条目只 `continue`，不抛）；`fetch_rows` 对缺月
    也只记进 `skipped` 就往下走。这两处正是「读不到」唯一不出声的地方。解析层面的
    问题（空格、标题月错位、闭合失败、下载失败）本来就会抛，经 fetch/lseg.py 的
@@ -128,11 +134,11 @@ c. **为什么先写后抛**：两个市场不是每月同步发（98 个共有�
    入库。所以 `refresh()` 先 `write_csv`、再判逾期；抛的是 `LsegPrimaryOverdueError`
    （`written = True`）。合流层见 `written` 就按「已写入 + 报警」处理：照常合流、
    不计入「四路全挂」，但照样记进 `DEGRADED`。
-d. **证词只写进报错消息，不决定抛不抛**：`_witness` 在该 tab 报告清单的原文里搜
+d. **证词只写进报错消息，不决定抛不抛**：`_witness` 在该市场报告清单的原文里搜
    「完整月名 年份」/「三字母缩写 年份」。命中 = 索引里有这个月、是 `_month_index`
    没认出来；没命中 = 更像官方晚发或停发。证词只帮人决定先查哪边，触发只看日历。
 e. **处置**（响了以后）：
-   · label / 扩展名 / ctaTitle 前缀变了（证词多半是「没认出来」）→ 改 `_month_index`；
+   · displayTitle 写法 / 扩展名 / 前缀变了（证词多半是「没认出来」）→ 改 `_month_index`；
    · **只在官方书面确认这一期不补发时**，才把 (市场, 月) 按 `'absent'` 登记进
      `KNOWN_SOURCE_GAPS`，出处写那份书面确认。「官网上没找到」不算确认 —— 登记即豁免，
      登记过的月份 `fetch_rows` 连下载都不试；官方晚几天补挂的话，这一期只能靠 g 的反查报出来。
@@ -437,18 +443,19 @@ import urllib.request
 import zipfile
 
 # ── 站点常量 ────────────────────────────────────────────────────────────────
-PAGES_API = 'https://api.londonstockexchange.com/api/v1/pages?path=reports'
-REFRESH_API = 'https://api.londonstockexchange.com/api/v1/components/refresh'
+# 新站（2026-10-24 起）的报告索引：每个市场 <目录>/latest.json + <目录>/historic.json，
+# 见 docstring「数据源与『怎么找到文件』」。旧的 api.londonstockexchange.com 两步接口已下线。
+INDEX_BASE = 'https://docs.londonstockexchange.com/reports/'
+INDEX_PARTS = ('latest', 'historic')      # 顺序有意义：latest 在前，同月多条时取它
 
 _UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
 
-# 索引里的 subFilter label（在 'Primary markets' 组下）。tabId / componentId 一律
-# 从握手接口现取，**不写死** —— CMS 改版时 uuid 会变，label 不会。
+# 索引目录名取自 /en/reports/primary-markets 页面 HTML 里写明的 JSON 地址（2026-10-24 实测）。
 MARKETS = [
-    # (内部 tag, 列前缀, subFilter label, ctaTitle 前缀, 汇总 sheet 名的判据)
-    ('MM',  'mm',  'Main Market', 'Main Market factsheet', 'summary'),
-    ('AIM', 'aim', 'AIM',         'AIM factsheet',         'since launch'),
+    # (内部 tag, 列前缀, 索引目录, displayTitle 前缀, 汇总 sheet 名的判据)
+    ('MM',  'mm',  'main-market', 'Main Market factsheet', 'summary'),
+    ('AIM', 'aim', 'aim',         'AIM factsheet',         'since launch'),
 ]
 
 # 每个市场自己的起点 —— **两个市场共用一个 START 是错的**（口径坑 10）。
@@ -667,87 +674,58 @@ def _cached_download(url, path):
 
 
 # ── 索引发现 ────────────────────────────────────────────────────────────────
-def _slug(label):
-    return re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')
+def _report_list(index_dir, cache_dir, tag):
+    """新站索引 `<目录>/latest.json` + `<目录>/historic.json` → 报告清单（Data 行，latest 在前）。
 
-
-def _discover_tabs(cache_dir):
-    """握手接口 → {subFilter label: (slug, tabId, componentId)}。"""
-    raw, _ = _http(PAGES_API)
-    with open(_cache(cache_dir, 'lseg_primary_pages.json'), 'wb') as f:
-        f.write(raw)
-    doc = json.loads(raw.decode('utf-8', 'replace'))
-    out = {}
-    for comp in doc.get('components') or []:
-        for c in comp.get('content') or []:
-            val = c.get('value') or {}
-            for filt in val.get('reportsFilterToggleFilters') or []:
-                for sub in filt.get('subFilters') or []:
-                    mods = sub.get('modules') or []
-                    if not sub.get('tabId') or not mods:
-                        continue
-                    mid = (mods[0].get('moduleId') or '').split(':', 1)[-1]
-                    out[sub.get('label')] = (_slug(sub.get('label')), sub['tabId'], mid)
-    if not out:
-        raise LsegPrimaryFetchError(
-            '握手接口没解析出任何 subFilter —— %s 的 CMS 结构变了' % PAGES_API)
-    return out
-
-
-def _tab_reports(slug, tab_id, component_id, cache_dir, tag):
-    """POST components/refresh 拿该 tab 的报告清单 JSON。
-
-    ⚠ componentId 里的冒号必须 %3A —— 不编码时接口返回 200 + `[]`，静默失败。
-    所以空结果一律 raise，不当成「本月没有报告」。
+    每行形如 {displayTitle, fileName, downloadLink, fileType, ...}，见 docstring
+    「数据源与『怎么找到文件』」。任一份取不到、不是 JSON、或 Data 为空都抛 ——
+    空清单是「索引坏了」，不是「本月没有报告」。并好的清单整份落 cache 备查。
     """
-    body = json.dumps({
-        'path': 'reports',
-        'parameters': 'tab%%3D%s%%26tabId%%3D%s' % (slug, tab_id),
-        'components': [{'componentId': 'block_content%3A' + component_id,
-                        'parameters': None}],
-    }).encode('utf-8')
-    raw, _ = _http(REFRESH_API, data=body, json_body=True)
-    with open(_cache(cache_dir, 'lseg_primary_%s.json' % tag), 'wb') as f:
-        f.write(raw)
-    doc = json.loads(raw.decode('utf-8', 'replace'))
-    if not doc:
-        raise LsegPrimaryFetchError(
-            'components/refresh 对 tab=%s 返回空数组 —— 多半是 componentId 没编码，'
-            '或 CMS 换了 uuid（当前用的是 %s）' % (slug, component_id))
-    return doc
+    rows = []
+    for part in INDEX_PARTS:
+        url = '%s%s/%s.json' % (INDEX_BASE, index_dir, part)
+        raw, _ = _http(url)
+        try:
+            doc = json.loads(raw.decode('utf-8', 'replace'))
+        except ValueError as e:
+            raise LsegPrimaryFetchError('%s 返回的不是 JSON（%d 字节）：%s' % (url, len(raw), e))
+        data = doc.get('Data') if isinstance(doc, dict) else None
+        if not data or not isinstance(data, list):
+            raise LsegPrimaryFetchError(
+                '%s 的 Data 为空或不是列表 —— 索引结构变了，不当成「本月没有报告」' % url)
+        rows.extend(data)
+    with open(_cache(cache_dir, 'lseg_primary_%s.json' % tag), 'w', encoding='utf-8') as f:
+        json.dump(rows, f, ensure_ascii=False, indent=1)
+    return rows
 
 
-def _month_index(doc, cta_prefix, tag, ext='.xlsx'):
-    """报告清单 JSON → {'YYYY-MM': 直链}。
+def _month_index(rows, title_prefix, tag, ext='.xlsx'):
+    """报告清单（`_report_list` 的产物）→ {'YYYY-MM': 直链}。
 
-    月份**从 label 解析**（'AIM factsheet April 2026.xlsx'），不从 URL 解析：
-    URL 里有 `_0`/`_1` 重传后缀。同一月份出现多条时取先遇到的
-    （ctaButton 的最新一期排在最前）。
+    只收 displayTitle 以 `title_prefix` 开头的行。月份**从 displayTitle 解析**
+    （'AIM factsheet April 2026.xlsx'），不从 fileName / URL 解析：后两者有 `_0`/`_1`
+    重传后缀。同一月份出现多条时取先遇到的（清单里 latest.json 排在最前）。
 
-    `ext` 决定收哪一种文件。同一个 tab 的清单里 .xlsx / .xls / .pdf 三种并存
-    （2026-08-19 实测 AIM 146/214/214、Main Market 98/112/112），且**多数月份
-    只有其中一种**，所以两种扩展名要各建一份索引，不能混在一起靠「谁先出现」取。
+    `ext` 决定收哪一种文件（按 downloadLink 的扩展名判）。同一个市场的清单里
+    .xlsx / .xls / .pdf 三种并存（2026-10-24 实测 AIM 146/214/214、Main Market 98/112/112），
+    且**多数月份只有其中一种**，所以两种扩展名要各建一份索引，不能混在一起靠「谁先出现」取。
     """
     mon_no = {m.capitalize(): i + 1 for i, m in enumerate(MONTHS)}
     out = {}
-    for comp in doc:
-        for c in comp.get('content') or []:
-            for cta in (c.get('value') or {}).get('ctaItems') or []:
-                title = cta.get('ctaTitle') or ''
-                if not title.lower().startswith(cta_prefix.lower()):
-                    continue
-                pairs = [(title, ((cta.get('ctaButton') or {}).get('link')))]
-                for grp in (cta.get('history') or {}).get('items') or []:
-                    for link in grp.get('links') or []:
-                        pairs.append((link.get('label'), link.get('link')))
-                for label, url in pairs:
-                    if not url or not url.lower().endswith(ext):
-                        continue
-                    m = re.search(r'([A-Z][a-z]+)\s+(\d{4})', label or '')
-                    if not m or m.group(1) not in mon_no:
-                        continue
-                    key = '%s-%02d' % (m.group(2), mon_no[m.group(1)])
-                    out.setdefault(key, url)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        title = r.get('displayTitle') or ''
+        if not title.lower().startswith(title_prefix.lower()):
+            continue
+        url = r.get('downloadLink') or ''
+        if not url.lower().endswith(ext):
+            continue
+        m = re.search(r'([A-Z][a-z]+)\s+(\d{4})', title)
+        if not m or m.group(1) not in mon_no:
+            continue
+        key = '%s-%02d' % (m.group(2), mon_no[m.group(1)])
+        out.setdefault(key, url)
     if not out:
         raise LsegPrimaryFetchError(
             '%s 的报告清单里没解析出任何 %s factsheet 链接' % (tag, ext))
@@ -1596,18 +1574,18 @@ def _republished_gaps(present):
 
 
 def _witness(tag, month, text):
-    """证词：该 tab 报告清单原文里有没有这个月的字样。**只写进报错消息，不决定抛不抛。**
+    """证词：该市场报告清单原文里有没有这个月的字样。**只写进报错消息，不决定抛不抛。**
 
     `text` 是 `fetch_rows.index_text[tag]`（报告清单 JSON 的文本）。先 URL 解码（直链里
     的空格是 %20），再不分大小写搜「完整月名 年份」或「三字母缩写 年份」
     （'August 2026' / 'Aug 2026'；月名与年份之间容许空白、下划线或连字符）。
     命中 = 索引里有、是 `_month_index` 没认出来；没命中 = 更像官方晚发或停发。
-    `tag` 不参与匹配：清单本来就是按市场分 tab 取的，传进来的 text 已经只属于这个市场。
+    `tag` 不参与匹配：清单本来就是按市场分目录取的，传进来的 text 已经只属于这个市场。
     """
     full = MONTHS[int(month[5:7]) - 1].lower()
     s = urllib.parse.unquote(text or '').lower()
     if re.search(r'(?<![a-z])(?:%s|%s)[\s_\-]*%s(?!\d)' % (full, full[:3], month[:4]), s):
-        return '索引里有这个月的字样，但 _month_index 没认出来（label / 扩展名 / ctaTitle 前缀变了）'
+        return '索引里有这个月的字样，但 _month_index 没认出来（displayTitle 写法 / 扩展名 / 前缀变了）'
     return '索引里连这个月的字样都没有 —— 更像官方晚发或停发'
 
 
@@ -1618,14 +1596,9 @@ def latest_month(cache_dir):
     取 min(Main Market 最新月, AIM 最新月)：两份都到齐，这一行才写得全。
     抓不到就抛异常，不返回 None 掩盖故障。
     """
-    tabs = _discover_tabs(cache_dir)
     newest = {}
-    for tag, _pfx, label, cta, _needle in MARKETS:
-        if label not in tabs:
-            raise LsegPrimaryFetchError(
-                'reports 索引里没有 %r 这个 subFilter，实有 %s' % (label, sorted(tabs)))
-        slug, tab_id, comp_id = tabs[label]
-        idx = _month_index(_tab_reports(slug, tab_id, comp_id, cache_dir, tag), cta, tag)
+    for tag, _pfx, index_dir, prefix, _needle in MARKETS:
+        idx = _month_index(_report_list(index_dir, cache_dir, tag), prefix, tag)
         newest[tag] = max(idx)
     return min(newest.values())
 
@@ -1657,21 +1630,16 @@ def fetch_rows(cache_dir=None, start=None, end=None):
     os.makedirs(cache_dir, exist_ok=True)
     gaps = _gap_table()             # 登记形状先校验，写坏了连索引都不取（docstring 护栏 g）
 
-    tabs = _discover_tabs(cache_dir)
     index, index_legacy, newest, index_text = {}, {}, {}, {}
-    for tag, _pfx, label, cta, _needle in MARKETS:
-        if label not in tabs:
-            raise LsegPrimaryFetchError(
-                'reports 索引里没有 %r 这个 subFilter，实有 %s' % (label, sorted(tabs)))
-        slug, tab_id, comp_id = tabs[label]
-        doc = _tab_reports(slug, tab_id, comp_id, cache_dir, tag)
+    for tag, _pfx, index_dir, prefix, _needle in MARKETS:
+        doc = _report_list(index_dir, cache_dir, tag)
         # 报告清单原文留给逾期护栏作证（`_witness`），不参与建行。
         index_text[tag] = json.dumps(doc, ensure_ascii=False)
-        index[tag] = _month_index(doc, cta, tag)
+        index[tag] = _month_index(doc, prefix, tag)
         # 老版式月份的源可能是 .xls，也可能是 .xlsx（AIM 2016-11/12）。两份索引都建，
         # 取的时候 xlsx 优先 —— 同一期两种格式都在时，xlsx 是官方后来重新导出的那份。
         # `newest` 只看 xlsx 索引：最新一期永远是 xlsx，.xls 只在历史段出现。
-        index_legacy[tag] = _month_index(doc, cta, tag, ext='.xls') if tag in LEGACY_LAST else {}
+        index_legacy[tag] = _month_index(doc, prefix, tag, ext='.xls') if tag in LEGACY_LAST else {}
         newest[tag] = max(index[tag])
     common_latest = min(newest.values())
     # 右端也按市场各走各的：某个月只有一个市场发了，就先写那一段列，另一段留空等回补
@@ -1820,8 +1788,8 @@ def refresh(series_dir, cache_dir=None, today=None):
         msgs.append(
             'LSE 一级市场 factsheet 逾期未见（阈值 %d 天，模块实测 197 期最晚 +27）：%s。'
             'part CSV 已写入（本轮一行没少写，本异常只让「该到没到」计入末行）。'
-            '处置（本模块 docstring「护栏：晚发 / 停发必须出声」e）：label / 扩展名 / '
-            'ctaTitle 前缀变了就改 _month_index；只在官方书面确认这一期不补发时，才把 (市场, 月) '
+            '处置（本模块 docstring「护栏：晚发 / 停发必须出声」e）：displayTitle 写法 / 扩展名 / '
+            '前缀变了就改 _month_index；只在官方书面确认这一期不补发时，才把 (市场, 月) '
             "按 'absent' 登记进 KNOWN_SOURCE_GAPS、出处写那份确认（「官网上没找到」不算 —— "
             '登记过的月份连下载都不试）；整段停发由人写下结论、另议 MARKET_END，'
             "再从 monthly_run.SLOW_LEGS['lseg'] 摘掉前缀（代码改动，同一提交连带改 "

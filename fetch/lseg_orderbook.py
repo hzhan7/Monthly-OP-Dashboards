@@ -11,35 +11,41 @@ Turquoise 在泛欧的份额）。衍生品、清算（LCH）、Tradeweb、数�
 **主源：LSEG Monthly Market Report（每月一个 PDF）**
   标题固定为 `LSEG market report <Month> <Year>`，第 1 页表名
   "LSEG - Electronic Order Book Trading"。本模块只读第 1 页最上面那张 **MTD 表**。
-  文件落在 https://docs.londonstockexchange.com/sites/default/files/reports/ 。
+  文件落在 https://docs.londonstockexchange.com/reports/group-statistics/
+  （2026-10-23 前是 /sites/default/files/reports/）。
 
 **副源（只做核对，不入库）：`Order book trading` 工作簿**
   同一个文件服务器上的一个 xlsx，三个 sheet（Daily / Monthly / Yearly Order Book
-  Trading）。Monthly sheet 从 **1997-10 到当月**共 346 行（2026-08-07 实测），
+  Trading）。2026-10 改版后它在索引里的标题是 `Order Book Trading (Daily File)`、
+  文件名 `Daily Orderbook Trading.xlsx`（2026-10-24 实测：sheet 与列布局与旧件相同，
+  Monthly sheet 最早仍是 Oct-97）。Monthly sheet 从 **1997-10 到当月**共 346 行（2026-08-07 实测），
   给的是 LSE 订单簿的成交笔数、成交额（**精确到便士**，不是 PDF 那样四舍五入到 £m）、
   交易日数、日均笔数、日均成交额。每月逐笔核对 PDF 的 LSE 那三个数，对不上就抛异常。
 
-⚠️ **两个文件的 URL 都不能写死，必须每次从官方检索接口里查出来**，理由见下面「文件名坑」。
+⚠️ **两个文件的 URL 都不能写死，必须每次从官方索引里查出来**，理由见下面「文件名坑」。
 
 ━━ 怎么找到文件（**不许猜文件名**）━━
 
-londonstockexchange.com 是 Angular SPA，`/reports?tab=...` 那个页面 curl 下来只有空壳，
-文件链接是运行时才注入的。但站内检索有一个**可以直接 curl 的 JSON 接口**：
+2026-10 官网由 Angular SPA 换成 Adobe AEM，报告页 curl 下来仍然没有文件链接（运行时注入），
+但页面 HTML 里写明了它读的静态 JSON 索引（2026-10-24 实测）：
 
-    GET https://api.londonstockexchange.com/api/v1/pages
-        ?path=search&parameters=<双重 urlencode 的 "q=...&tab=documents&size=..&page=..">
+    月报 PDF：https://docs.londonstockexchange.com/reports/group-statistics/latest.json
+              https://docs.londonstockexchange.com/reports/group-statistics/historic.json
+    副源 xlsx：https://docs.londonstockexchange.com/reports/secondary-markets/market-summary/latest.json
 
-`parameters` 是 **双重编码**：内层先把 `q=LSEG market report June 2026&tab=documents`
-整串 urlencode 一次，再整体 urlencode 一次（浏览器发的就是 `q%253D...%2526tab%253D...`）。
-少编一层不会报错，只会**静音返回错误的结果集**，所以 `_search()` 里那两层 quote 谁都别删。
+每份都是 {"Data": [{displayTitle, fileName, downloadLink, publishedDate, ...}], "rowCount": n}。
+`_index_hits` 把它们读成 [{'title': displayTitle, 'url': downloadLink}]（同一进程只取一次），
+后面的匹配逻辑与改版前对检索接口命中列表的处理一字不改。Data 为空一律抛。
+`publishedDate` 不能当发布日：historic 里它写的是数据月的 1 号。
 
-返回体里 `components[type=="search"].content[0].value.pagesdocuments` 是文档命中列表，
-每条形如：
+旧路子（2026-10-23 止）：`api.londonstockexchange.com/api/v1/pages?path=search` 站内检索，
+`parameters` 双重 urlencode。2026-10-24 起整个 api 主机对任何 path 都回 CloudFront 403。
 
-    {"url": "https://docs.londonstockexchange.com/sites/default/files/reports/
-             LSEG%20market%20report%20June%202026.pdf",
-     "world": "documents", "title": "LSEG market report June 2026",
-     "lastupdate": "2026-07-30T21:04:07"}
+⚠️ **改版丢了一期**：新索引里没有 2026-08 那期月报（historic 到 7 月、latest 是 9 月），
+新旧两条路径下的文件都回 403（2026-10-24 实测）。本仓 2026-09-26 已入库该月、
+cache/lseg_orderbook/mmr_2026-08.pdf 是原件，日跑靠 skip 不再去找它；cache 若被清空
+重建，这一期会进 `missing`、过 90 天阈值后由 `_guard_overdue_missing` 报出来 —— 那时它
+是真缺，别为了让它闭嘴去调阈值。
 
 本模块按 title 取链接，**绝不按文件名拼 URL**：先全等匹配，全等落空再退一步做
 「标题里同时含 'market report' 与该月标签、且 url 以 .pdf 结尾」的宽松匹配
@@ -54,16 +60,17 @@ CMS 标题历史上就漂过，而标题一漂，全等匹配返回的是 None�
      猜出来的 URL 不报错，只是永远给你六年前的数据。
   2. **少数条目的 title 里带扩展名**：2022-06 那期在 CMS 里的标题是
      `LSEG market report June 2022.pdf`（其余月份都不带）。所以匹配时要把 title 末尾的
-     `.pdf` 去掉再比。
+     `.pdf` 去掉再比。2026-10 改版后 historic.json 的 displayTitle 几乎全带 `.pdf`
+     （170 条里 169 条），2022-03 那条更是照抄了带重传后缀的文件名
+     `LSEG market report March 2022_1.pdf` —— `_title_key` 因此连末尾的 `_N` 一起去掉。
 
-反面教材记在这里免得下次重来：docs.londonstockexchange.com 的目录页返回 403，
+反面教材记在这里免得下次重来（改版前的 SPA 时代）：docs.londonstockexchange.com 的目录页返回 403，
 Angular 的 `/api/v1/components/refresh` 用页面里那些 block_content id 去拉 tab 模块
 **一律返回 `[]`**（页面级 component 如 hero 却能拉到，说明 id 不通用），
 web.archive.org 在本机是黑名单。别再往这三条路上走。
 
 ━━ 抓取方式与依赖 ━━
-`urllib.request` 裸奔即可：api.londonstockexchange.com 与 docs.londonstockexchange.com
-都是 CloudFront，实测无 Cloudflare/Akamai 挑战、无 JS 渲染、无登录墙、无 JA3 指纹拦截，
+`urllib.request` 裸奔即可：docs.londonstockexchange.com 是 CloudFront，实测无 Cloudflare/Akamai 挑战、无 JS 渲染、无登录墙、无 JA3 指纹拦截，
 **满足无人值守**。PDF 解析用 PyMuPDF（`fitz`，仓里已有），xlsx 用 openpyxl（仓里已有）。
 
 ━━ 实测发布节奏 ━━
@@ -216,7 +223,6 @@ import json
 import os
 import re
 import time
-import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -224,10 +230,14 @@ ROOT = os.path.dirname(HERE)
 CACHE = os.path.join(ROOT, 'cache', 'lseg_orderbook')
 SERIES = os.path.join(ROOT, 'series')
 
-SEARCH_API = 'https://api.londonstockexchange.com/api/v1/pages'
+# 新站（2026-10-24 起）的静态索引，见 docstring「怎么找到文件」。旧的 api 主机检索接口已下线。
+INDEX_BASE = 'https://docs.londonstockexchange.com/reports/'
+REPORT_INDEX = ('group-statistics/latest.json', 'group-statistics/historic.json')
+XLSX_INDEX = ('secondary-markets/market-summary/latest.json',)
+XLSX_TITLE = 'Order Book Trading (Daily File)'
 UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36')
-REFERER = 'https://www.londonstockexchange.com/search'
+REFERER = 'https://www.londonstockexchange.com/en/reports/group-statistics'
 
 # 起点见 docstring 口径坑 3。终点由官方发到哪算哪。
 START_MONTH = '2016-01'
@@ -269,7 +279,7 @@ class LsegOrderbookFetchError(RuntimeError):
     """本模块所有失败路径统一抛它，调度器只需 catch 一种。"""
 
 
-# ──────────────────────────────────────────────────────────────── HTTP 与检索
+# ──────────────────────────────────────────────────────────────── HTTP 与索引
 
 def _http_get(url, timeout=90, tries=3, pause=1.5):
     """带退避的 GET。docs/api 两个域都是 CloudFront，偶发 5xx 重试即可。"""
@@ -288,46 +298,53 @@ def _http_get(url, timeout=90, tries=3, pause=1.5):
     raise LsegOrderbookFetchError(f'GET 失败 {url}: {last}')
 
 
-def _search(q, size=20, page=0, tab='documents'):
-    """站内检索。返回 pagesdocuments 列表（可能为空）。
+_INDEX_MEMO = {}
 
-    `parameters` 必须双重 urlencode，见 docstring「怎么找到文件」。
+
+def _index_hits(paths):
+    """新站静态索引 → [{'title': displayTitle, 'url': downloadLink}, ...]，按 `paths` 顺序拼接。
+
+    同一进程内每组索引只取一次：`fetch_rows` 逐月查，回补时一轮上百次。
+    取不到、不是 JSON、Data 为空都抛 —— 空清单是「索引坏了」，不是「这个月没发」。
     """
-    inner = urllib.parse.urlencode({'q': q, 'tab': tab,
-                                    'size': str(size), 'page': str(page)})
-    once = urllib.parse.quote(inner, safe='')
-    twice = urllib.parse.quote(once, safe='')
-    url = f'{SEARCH_API}?path=search&parameters={twice}'
-    raw = _http_get(url)
-    try:
-        doc = json.loads(raw)
-    except Exception as e:
-        raise LsegOrderbookFetchError(f'检索接口返回的不是 JSON（q={q!r}）: {e}') from e
-    comps = [c for c in (doc.get('components') or []) if c.get('type') == 'search']
-    if not comps:
-        raise LsegOrderbookFetchError(
-            f'检索接口没有 search 组件（q={q!r}）—— 接口改版了，别再往下解析')
-    content = comps[0].get('content') or []
-    if not content:
-        return []
-    return (content[0].get('value') or {}).get('pagesdocuments') or []
+    key = tuple(paths)
+    if key in _INDEX_MEMO:
+        return _INDEX_MEMO[key]
+    hits = []
+    for p in paths:
+        url = INDEX_BASE + p
+        raw = _http_get(url)
+        try:
+            doc = json.loads(raw)
+        except Exception as e:
+            raise LsegOrderbookFetchError(f'索引返回的不是 JSON（{url}）: {e}') from e
+        data = doc.get('Data') if isinstance(doc, dict) else None
+        if not data or not isinstance(data, list):
+            raise LsegOrderbookFetchError(
+                f'索引的 Data 为空或不是列表（{url}）—— 结构变了，别再往下解析')
+        hits.extend({'title': r.get('displayTitle') or '', 'url': r.get('downloadLink') or ''}
+                    for r in data if isinstance(r, dict))
+    _INDEX_MEMO[key] = hits
+    return hits
 
 
 def _title_key(title):
-    """CMS 里少数条目的 title 带扩展名（2022-06 那期），比对前去掉。"""
+    """CMS 里有的 title 带扩展名（2022-06 那期），改版后还有照抄重传后缀的
+    （'March 2022_1.pdf'），比对前都去掉。"""
     t = (title or '').strip()
     for ext in ('.pdf', '.xlsx', '.xls'):
         if t.lower().endswith(ext):
             t = t[:-len(ext)]
+    t = re.sub(r'_\d+$', '', t)
     return re.sub(r'\s+', ' ', t).strip().lower()
 
 
-def _find_doc(title):
-    """按标题精确匹配拿一条文档记录，找不到返回 None（不抛）。"""
-    for hit in _search(title, size=30):
+def _find_doc(title, paths=REPORT_INDEX):
+    """按标题精确匹配拿一条文档记录，找不到返回 None（不抛）。默认查月报索引。"""
+    for hit in _index_hits(paths):
         if _title_key(hit.get('title')) == _title_key(title):
             if not (hit.get('url') or '').startswith('http'):
-                continue                            # 页面命中不是文档，跳过
+                continue                            # 没有下载链接的条目，跳过
             return hit
     return None
 
@@ -355,7 +372,7 @@ def _find_month_report(month):
     这一种由 `_guard_overdue_missing` 兜，不在这里兜 —— 正则只认识见过的变体。
     """
     title = f'LSEG market report {_month_label(month)}'
-    hits = _search(title, size=30)
+    hits = _index_hits(REPORT_INDEX)
     key = _title_key(title)
     for hit in hits:
         # 第一轮与 `_find_doc` 完全同义：全等命中时行为一个字节都不变。
@@ -676,9 +693,9 @@ def _xlsx_monthly():
     永远失效，而失效时它只会打印一句「副源尚无这些月份」，不会报错。
     """
     import openpyxl
-    hit = _find_doc('Order book trading')
+    hit = _find_doc(XLSX_TITLE, XLSX_INDEX)
     if hit is None:
-        raise LsegOrderbookFetchError('检索接口找不到 "Order book trading" 工作簿')
+        raise LsegOrderbookFetchError(f'索引 {XLSX_INDEX} 里找不到 {XLSX_TITLE!r} 工作簿')
     path = _download(hit['url'], os.path.join(CACHE, 'order_book_trading.xlsx'),
                      min_bytes=100000, max_age_hours=_XLSX_MAX_AGE_HOURS)
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
@@ -854,15 +871,15 @@ def _guard_overdue_missing(missing, use_judge=True, today=None):
                          '更像官方整体停发，而不是标题写法变了')
 
     raise LsegOrderbookFetchError(
-        '检索接口里这些月份的月报逾期未见（阈值 {} 天，本模块实测最慢一期 +51 天）：'
+        '官方索引里这些月份的月报逾期未见（阈值 {} 天，本模块实测最慢一期 +51 天）：'
         '{}。{}。按标题找不到时取链接那一步是返回 None 不抛的，所以不抛在这里，'
-        '这一路就会一直安静空转。先手工搜一次 "LSEG market report <Month> <Year>" '
-        '看标题写法变没变（变了就把新写法补进 `_find_month_report` 的宽松判据）；'
+        '这一路就会一直安静空转。先打开 {}{} 看 displayTitle 写法变没变'
+        '（变了就把新写法补进 `_find_month_report` 的宽松判据）；'
         '若确认是官方永久停发，照 JPX cmdty_proforma 那套写下结论并收窄窗口，'
         '**不要调 _MAX_PUBLISH_LAG_DAYS**。'.format(
             _MAX_PUBLISH_LAG_DAYS,
             ', '.join(f'{m}（月末后 {d} 天）' for m, d in overdue),
-            judge))
+            judge, INDEX_BASE, ' / '.join(REPORT_INDEX)))
 
 
 # ──────────────────────────────────────────────────────────────── 对外接口
@@ -870,15 +887,15 @@ def _guard_overdue_missing(missing, use_judge=True, today=None):
 def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=()):
     """返回 [{'month': 'YYYY-MM', <17 列>}, ...]，按月份升序。
 
-    end 默认取「上个月」—— 当月的月报当然还没出。逐月按标题去检索接口要链接
-    （`_find_month_report`：先全等、后宽松），检索不到的记进 `missing`。
+    end 默认取「上个月」—— 当月的月报当然还没出。逐月按标题去官方索引要链接
+    （`_find_month_report`：先全等、后宽松），找不到的记进 `missing`。
 
     `missing` 里的月份**只在还没超期时**算「这一期还没发」：超过
     `_MAX_PUBLISH_LAG_DAYS` 的由 `_guard_overdue_missing` 抛出来。为什么不能一律
     当「还没发」静静跳过，见文件头「护栏」那一节 —— 那正是本模块踩过的第四类失败。
 
     `skip` = 已经入库、不必再抓的月份集合。**窗口从 2021-01 前推到 2016-01 之后
-    这个参数是必需的，不是优化**：本函数对窗口里的每个月都发一次检索请求 + 下一份
+    这个参数是必需的，不是优化**：本函数对窗口里的每个月都查一次索引 + 下一份
     PDF + 解析一遍（还各 sleep 0.25s），66 个月时每轮约 1 分钟，127 个月时要三倍多，
     而 `write_csv()` 转头就把已有月份全部丢弃（「只填空不覆盖」）—— 那些请求从头到尾
     没有任何产出。
@@ -918,7 +935,7 @@ def fetch_rows(start=START_MONTH, end=None, verbose=True, crosscheck=True, skip=
     # 全部已入库月份）—— 于是「某个月检索不到月报」这件事一次都没被打印过，函数还
     # 顺口报了一句「全部已入库」（在有 missing 的日子里，那句话是假的）。
     if missing:
-        print(f'[lseg_orderbook] 检索接口没有这些月份的月报: {missing}')
+        print(f'[lseg_orderbook] 官方索引里没有这些月份的月报: {missing}')
     _guard_overdue_missing(missing, use_judge=crosscheck)
 
     if not rows and not skip:

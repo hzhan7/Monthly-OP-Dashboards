@@ -397,7 +397,7 @@ def _record_conflicts(cache_dir, rows):
 def _probe_orderbook_latest(mod):
     """orderbook 那一路没有 latest_month()，按标题往回探测最新一期月报。
 
-    借的是它的私有 `_find_doc`（检索接口按标题精确匹配，找不到返回 None 不抛）。
+    借的是它的私有 `_find_doc`（在官方月报索引里按标题精确匹配，找不到返回 None 不抛）。
     这是本模块唯一一处伸进别人私有函数的地方 —— 它没有公开的等价物，而
     「用 part CSV 的最大月充当官方最新月」是错的：那是本地真值，不是源头状态。
     将来那一路补上 latest_month()，下面的 getattr 会自动优先用公开接口。
@@ -409,7 +409,7 @@ def _probe_orderbook_latest(mod):
             return month
         month = _prev_month(month)
     raise LsegFetchError(
-        'orderbook：往回探 %d 期都没找到月报（最新试到 %s）—— 检索接口或标题模板变了'
+        'orderbook：往回探 %d 期都没找到月报（最新试到 %s）—— 官方索引或标题模板变了'
         % (_PROBE_BACK, _prev_month(_this_month())))
 
 
