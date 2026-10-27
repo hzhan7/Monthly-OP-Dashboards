@@ -1154,3 +1154,9 @@ CME,2026-Q3,rpc_total,0.679,USD_per_contract,https://www.sec.gov/Archives/edgar/
 AXP,2026-Q3,avg_card_balances_and_other_loans,230587,USD_mn,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
 AXP,2026-Q3,net_interest_income,4940,USD_mn,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
 AXP,2026-Q3,net_interest_yield_newbasis,8.5,pct_annualized,https://www.sec.gov/Archives/edgar/data/4962/000000496226000405/q326exhibit992.htm
+LPLA,2026-Q3,avg_ica_sweep_balance,37.1,USD_bn,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
+LPLA,2026-Q3,avg_total_client_cash_balance,54.8,USD_bn,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
+LPLA,2026-Q3,client_cash_net_yield,342,bp_annualized,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
+LPLA,2026-Q3,client_cash_revenue,472282,USD_k,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
+LPLA,2026-Q3,ica_sweep_net_yield,352,bp_annualized,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
+LPLA,2026-Q3,ica_sweep_revenue,328870,USD_k,https://www.sec.gov/Archives/edgar/data/1397911/000162828026067590/a2026q3earningsrelease.htm
