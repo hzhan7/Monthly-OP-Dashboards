@@ -579,7 +579,8 @@ rm -rf cache/tsm_6k          # 月报正文缓存 + 补建戳，可重下
    多腿源（一家的数据来自几份互相独立的上游文件）可选再暴露模块级 `DEGRADED: dict`
    （{腿名: '异常类型: 消息'}，每轮 `update()` 开头清空，填入本轮降级或报警的腿）：
    `monthly_run.one()` 读到非空就记进 `LEG_ALERTS`，该家照常发布、但计入末行失败清单，
-   明细由 `report_leg_alerts()` 在末行前印。现成的写法见 `fetch/lseg.py`。
+   明细由 `report_leg_alerts()` 在末行前印。现成的写法见 `fetch/lseg.py`（四路）与
+   `fetch/tmx.py`（MX / 现货两路，2026-11-05 起；两路全挂才整家抛）。
 2. `build/specs/<t>.py` —— 见 `docs/SINGLE_SPEC.md`。**注意 headline 选哪条腿**：
    它决定 `data_through`，也就决定 §2 的 LAG 该跟哪条腿。
 3. `python3 build/make_shells12.py` —— 壳自动生成（它扫 `build/specs/`，不需要登记）。

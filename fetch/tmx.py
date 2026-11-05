@@ -33,7 +33,12 @@ r"""TMX Group (TSX:X) 月度经营指标 —— 无人值守抓取。
 源 2（MX 衍生品，主源）Montréal Exchange 月度统计 xlsx：
     落地页 https://www.m-x.ca/en/trading/data/monthly-volumes-and-open-interest
     直链   https://www.m-x.ca/f_stat_en/{YY}{MM}_stats_en.xlsx   （2026 年 7 月 -> 2607）
-  · **裸 urllib 即 200**，无 UA 要求 —— 和源 1 相反。两条源的要求不同，不要一刀切。
+  · ~~裸 urllib 即 200，无 UA 要求~~ —— **2026-11-01 起失效**：www.m-x.ca 全域（落地页、
+    f_stat_en 直链）一律回 **HTTP 202 + `x-amzn-waf-action: challenge`**（AWS WAF JS 质询，
+    CloudFront），换 UA、换 TLS 指纹（curl_cffi chrome/safari）都一样。urllib 把 202 当成功，
+    以前会拿空 body 去解析、报一句误导的「找不到直链，源站可能改版」；现在 _http_get 对任何
+    非 200 都抛，并把 WAF 头写进报错。**不要**用真浏览器去过质询（那是绕站方反爬，由所有者定）。
+    这条腿坏了不再连累现货腿：update() 把它记进 DEGRADED['mx']，现货照常入库（见 update()）。
   · 未发布的月份返回干净的 **404**（body 是 HTML），已发布的返回
     application/vnd...spreadsheetml.sheet，可以放心用状态码当「发了没有」的判据
     （不像 Cboe 那样 403/404 混淆）。**但 404 之外的错误一律不能当成「没发」** ——
@@ -558,8 +563,24 @@ class TmxFetchError(RuntimeError):
     """源站结构变化 / 下载失败 / 解析结果不完整。一律炸掉，绝不静默写 NaN。"""
 
 
+# ── 腿级降级（协议见 monthly_run.LEG_ALERTS）──────────────────────────────
+# 本模块的两条月度腿（MX 衍生品 / CTS 现货）上游互不相干。2026-11-01 m-x.ca 上了
+# AWS WAF 之后，旧写法让 MX 那一下异常把整家打成 FAIL —— 本来正常的现货腿也跟着停更。
+# 现在 update() 把坏掉的那一路记进这里（{'mx'|'spot': '异常类型: 消息'}，每轮开头清空），
+# 另一路照常入库；monthly_run 读它把 tmx 并入末行失败清单，所以故障照样出声。
+# 两路都坏才整家抛（否则 monthly_run 会看到 added=[] 报 NOCHANGE，把故障伪装成没新数据）。
+DEGRADED = {}
+
+
 # ── 网络 ────────────────────────────────────────────────────────────────
 def _http_get(url, timeout=120):
+    """GET → bytes。**只有 HTTP 200 才算成功**，其余一律抛 TmxFetchError。
+
+    2xx 里的非 200 也要抛：urllib 不把 202 当错误，而 m-x.ca 的 AWS WAF 质询就是
+    「202 + 空 body（或 2KB 质询页）+ x-amzn-waf-action: challenge」。2026-11-01 起
+    当成功收下的后果是：空串被写进 cache/tmx_mx_landing.html，下游报「找不到直链，
+    源站可能改版」—— 真因被藏住了。报错里带上 WAF 头，读日志的人第一眼就知道是被挡。
+    """
     req = urllib.request.Request(url, headers={
         'User-Agent': _UA,
         'Accept': '*/*',
@@ -567,11 +588,20 @@ def _http_get(url, timeout=120):
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
+            status = getattr(r, 'status', None) or r.getcode()
+            waf = r.headers.get('x-amzn-waf-action')
+            body = r.read()
     except urllib.error.HTTPError as e:
         raise TmxFetchError('下载失败 %s: HTTP %s' % (url, e.code)) from e
     except Exception as e:                                # noqa: BLE001
         raise TmxFetchError('下载失败 %s: %r' % (url, e)) from e
+    if status != 200:
+        raise TmxFetchError(
+            '下载失败 %s: HTTP %s（%d B）%s' % (
+                url, status, len(body),
+                ('，x-amzn-waf-action: %s —— AWS WAF 质询页，不是数据；换 UA / TLS 指纹无效，'
+                 '不是源站改版' % waf) if waf else ''))
+    return body
 
 
 def _http_get_or_404(url, timeout=120):
@@ -1182,6 +1212,12 @@ def _next_month(month):
     return '%04d-%02d' % (y + 1, 1) if m == 12 else '%04d-%02d' % (y, m + 1)
 
 
+def _prev_calendar_month(today=None):
+    """上一个自然月 'YYYY-MM'（本机时区）。MX 腿坏掉时给现货腿量缺口用（见 update()）。"""
+    d = today or datetime.now()
+    return '%04d-12' % (d.year - 1) if d.month == 1 else '%04d-%02d' % (d.year, d.month - 1)
+
+
 def mx_latest_month(cache_dir):
     """官方当前最新的 MX 月份 'YYYY-MM'。
 
@@ -1609,44 +1645,77 @@ def update(series_dir, cache_dir):
     BOX 放在最后、且**只在出现新季度时才下载 PDF**：它是季度数据，一年只有 4 次真活干；
     把 PDF 解析摆在 tmx.csv 落盘之后，是为了让「MD&A 措辞变了」这类故障至少不至于
     连累已经抓到的月度数据（下次跑 tmx.csv 那段是纯 no-op）。
+
+    两条腿互不连累（2026-11-05 改，起因见模块级 DEGRADED 那段注释）：
+      · 一路抛 TmxFetchError → 记进 DEGRADED[腿名]、印一行 ⚠，另一路照跑、照常落盘；
+      · 两路都抛 → 整家抛 TmxFetchError（两路原因都带上），一个字节都不写；
+      · 现货腿的反侧哨兵（_guard_spot_not_vanished）炸了也只作废**现货**那半边：
+        它在现货 _merge 之前抛，内存里只可能有 MX 那半边的改动，那些是经过 MX 自己
+        护栏的真数据。
+    MX 坏掉的那些天会出现「现货先到、MX 留空」的行（与常态的「MX 先到」方向相反）。
+    页面不受影响：build/specs/tmx.py 的头条只放 MX、现货全在 slow_cols，共同最新月
+    仍由 MX 决定 —— 现货先进库，等 MX 恢复那天页面一并前进。
+    MX 那天回填进既有行时照样计入返回值：MX 是头条腿，它一到页面月份就前进，
+    这是「新月份」不是「慢腿回补」。
     """
+    DEGRADED.clear()                    # 只描述「本轮」，见模块级 DEGRADED 注释
     csv_path = os.path.join(series_dir, 'tmx.csv')
     header, body, have = _load_csv(csv_path, COLUMNS, 'month')
+    idx = {n: i for i, n in enumerate(header)}
 
     # ── MX 腿 ──
-    mx_cols = [c for c, _b, _s, _l in MX_SPEC]
-    idx = {n: i for i, n in enumerate(header)}
-    done_mx = [r[0] for r in body if r[idx['mx_volume_contracts']].strip()]
-    mx_from = max(done_mx) if done_mx else None
-    mx_latest = mx_latest_month(cache_dir)
-    want_mx = (_month_range(mx_from, mx_latest) if mx_from
-               else [MX_START] + _month_range(MX_START, mx_latest))
-
     added = []
-    for month in want_mx:
-        got = fetch_mx_month(cache_dir, month)
-        if got is None:                 # 干净 404 = 官方还没发这个月
-            continue
-        rec, _raw = got
-        if _merge(header, body, have, month, rec):
-            added.append(month)
+    mx_latest = None
+    try:
+        done_mx = [r[0] for r in body if r[idx['mx_volume_contracts']].strip()]
+        mx_from = max(done_mx) if done_mx else None
+        mx_latest = mx_latest_month(cache_dir)
+        want_mx = (_month_range(mx_from, mx_latest) if mx_from
+                   else [MX_START] + _month_range(MX_START, mx_latest))
+        for month in want_mx:
+            got = fetch_mx_month(cache_dir, month)
+            if got is None:                 # 干净 404 = 官方还没发这个月
+                continue
+            rec, _raw = got
+            # want_mx 只含 mx_from 之后的月份 ⇒ 这些月的 MX 格原本都是空的；
+            # 行可能已由现货腿先建好（MX 坏掉的那些天），那时 _merge 返回 False，但对头条腿
+            # 而言仍是新月份（见 docstring 末段）。
+            if _merge(header, body, have, month, rec) or rec.get('mx_volume_contracts') is not None:
+                added.append(month)
+    except TmxFetchError as e:
+        DEGRADED['mx'] = '%s: %s' % (type(e).__name__, e)
+        print('[tmx] ⚠ MX 这一路本轮失败（现货腿照跑）：%s' % DEGRADED['mx'])
 
     # ── 现货腿 ──
-    done_spot = [r[0] for r in body if r[idx['tmx_all_volume_shares']].strip()]
-    spot_from = max(done_spot) if done_spot else None
-    gap = len(_month_range(spot_from, mx_latest)) if spot_from else 999
-    # feed 一次最多回 300 条（全量 139 期也才 139 条）；缺口小的常规月只拉十来条，
-    # 省掉每月几 MB 的正文下载，也少给对方站点添堵。+3 是给「官方补发/重发」留的余量。
-    page = min(300, max(6, gap + 3))
-    window = []
-    cts = fetch_cts(cache_dir, page_size=page, window_out=window)
-    # 反侧哨兵：上一轮已入库的最新现货月，这一轮必须还在（见 _guard_spot_not_vanished）。
-    # 放在 _merge 之前 —— 一旦要炸就一个字节都别写。
-    _guard_spot_not_vanished(spot_from, cts, window)
-    for month in sorted(cts):
-        row = cts[month][0]
-        if _merge(header, body, have, month, row):
-            added.append(month)
+    cts = {}
+    try:
+        done_spot = [r[0] for r in body if r[idx['tmx_all_volume_shares']].strip()]
+        spot_from = max(done_spot) if done_spot else None
+        # 缺口按「官方最新 MX 月」量；MX 这一路坏了就按上一个自然月量（同一个上界：
+        # 现货永远不会比上一个自然月更新）。
+        ref = mx_latest or _prev_calendar_month()
+        gap = len(_month_range(spot_from, ref)) if spot_from else 999
+        # feed 一次最多回 300 条（全量 139 期也才 139 条）；缺口小的常规月只拉十来条，
+        # 省掉每月几 MB 的正文下载，也少给对方站点添堵。+3 是给「官方补发/重发」留的余量。
+        page = min(300, max(6, gap + 3))
+        window = []
+        got_cts = fetch_cts(cache_dir, page_size=page, window_out=window)
+        # 反侧哨兵：上一轮已入库的最新现货月，这一轮必须还在（见 _guard_spot_not_vanished）。
+        # 放在 _merge 之前 —— 一旦要炸，现货这半边就一个字节都别写。
+        _guard_spot_not_vanished(spot_from, got_cts, window)
+        cts = got_cts
+        for month in sorted(cts):
+            row = cts[month][0]
+            if _merge(header, body, have, month, row):
+                added.append(month)
+    except TmxFetchError as e:
+        DEGRADED['spot'] = '%s: %s' % (type(e).__name__, e)
+        print('[tmx] ⚠ 现货这一路本轮失败（MX 腿照常落盘）：%s' % DEGRADED['spot'])
+
+    if 'mx' in DEGRADED and 'spot' in DEGRADED:
+        # 两路全挂 = 整家故障。不抛的话 monthly_run 看到 added=[] 会报 NOCHANGE。
+        raise TmxFetchError('MX 与现货两路都失败 —— MX：%s ｜ 现货：%s'
+                            % (DEGRADED['mx'], DEGRADED['spot']))
 
     # 无条件落盘：即便没有新月份，上面的现货回补也可能改了既有行。
     _write_csv(csv_path, header, body)
