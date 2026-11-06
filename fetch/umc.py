@@ -180,7 +180,7 @@ START_MONTH = '2013-01'
 COLUMNS = ['month', 'revenue_ntd_mn', 'revenue_ytd_ntd_mn']
 
 # SEC 要求 UA 里带申明用途与联系方式；不带会拿到 200 + 封禁页（口径坑 6）
-_UA = 'monthly-op-dashboards/1.0 (hzhan@outlook.com)'
+_UA = 'monthly-op-dashboards/1.0 (aaronzhan0117@gmail.com)'
 _CTX = ssl.create_default_context()
 
 # 最多往回翻多少份 6-K（UMC 一年约 40 份，翻 40 份≈覆盖一年）

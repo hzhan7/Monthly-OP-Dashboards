@@ -184,7 +184,7 @@ SUB_URL = f'https://data.sec.gov/submissions/CIK{CIK:010d}.json'
 DOC_URL = f'https://www.sec.gov/Archives/edgar/data/{CIK}/%s/%s'
 
 # 照抄 fetch/umc.py 的 _UA（与 umc 生产同一个值）；fetch/test_tsm_6k.py 钉住两处相等。
-USER_AGENT = os.environ.get('SEC_EDGAR_UA', 'monthly-op-dashboards/1.0 (hzhan@outlook.com)')
+USER_AGENT = os.environ.get('SEC_EDGAR_UA', 'monthly-op-dashboards/1.0 (aaronzhan0117@gmail.com)')
 _CTX = ssl.create_default_context()
 
 CACHE_SUB = 'tsm_6k'
