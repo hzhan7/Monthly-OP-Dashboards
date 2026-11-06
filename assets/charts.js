@@ -677,11 +677,45 @@
       fill: fill, stroke: stroke || null, 'stroke-width': sw || null }, g);
   }
 
-  /* 把 tooltip 定位到某个画布 x（与 draw() 里的逻辑一致，heat_matrix 也要用） */
-  function placeTip(tip, host, xInSvg, W) {
-    var tw = tip.offsetWidth, px = xInSvg / W * host.clientWidth;
-    tip.style.left = Math.max(2, Math.min(host.clientWidth - tw - 2, px - tw / 2)) + 'px';
-    tip.style.top = '0px';
+  /* 把 tooltip 放到悬停那一期的**旁边**（draw() 的 band hover 与 heat_matrix 都走这里）。
+     2026-11-06 所有者：「悬停内容把要看的那个月的线段遮住了，放在边上点」—— 原来以悬停 x
+     为中心盖在绘图区顶上，正好压住这一期的点、柱顶和连到前后两期的线段。
+     现在与悬停 x 至少隔一个 gapInSvg（调用方传一个 band / 一格宽，即相邻一期的位置），
+     这一期连到前后两期的线段都露在外面。三级退路，前一级放不下才走下一级：
+       1. 绘图区内：悬停 x 在左半边放右侧、右半边放左侧，那侧放不下就换边；
+       2. 允许伸出绘图区、到视口边为止（系列多的图 tooltip 宽到 270px，半栏卡片中段两侧
+          都不够，伸进页边 / 邻卡比压住当期好 —— .tip 的 z-index 盖得住邻卡）；
+       3. 视口也放不下（手机竖屏）：挪到绘图区下方，不压任何一期。 */
+  function placeTip(tip, host, xInSvg, W, gapInSvg) {
+    /* 先放回左上角、解开宽度再量：绝对定位的框宽度是「收缩适应」的，停在上一次的位置
+       （比如贴着右边）量出来会偏窄，换位置后又撑开，正好压回相邻一期。量完把宽度钉住，
+       伸出绘图区时也不会被压窄。 */
+    tip.style.width = ''; tip.style.left = '0px'; tip.style.top = '0px';
+    var cw = host.clientWidth, tw = tip.offsetWidth, k = cw / W;
+    var vw = document.documentElement.clientWidth;
+    if (tw > vw - 8) {   // 比屏幕还宽（手机上系列名长、行又不换行）：限到屏宽，让行内换行
+      tw = vw - 8;
+      Array.prototype.forEach.call(tip.querySelectorAll('.row'), function (r) { r.style.whiteSpace = 'normal'; });
+    }
+    tip.style.width = tw + 'px';
+    var px = xInSvg * k, gap = Math.max(12, (gapInSvg || 0) * k + 6);
+    function side(lo, hi) {            // 在 [lo, hi] 内找一侧放下；放不下返回 null
+      var r = px + gap + tw <= hi, l = px - gap - tw >= lo;
+      if (r && (px <= cw / 2 || !l)) return px + gap;
+      return l ? px - gap - tw : null;
+    }
+    var left = side(2, cw - 2), top = 0;
+    if (left == null) {
+      var box = (tip.offsetParent || host).getBoundingClientRect();
+      var vL = 4 - box.left, vR = vw - 4 - box.left;
+      left = side(vL, vR);
+      if (left == null) {
+        left = Math.max(vL, Math.min(vR - tw, px - tw / 2));
+        top = host.offsetHeight + 6;
+      }
+    }
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
   }
 
   /* ───────────── heat_matrix：行=年、列=月的热力矩阵（gsx.heat_matrix）─────────────
@@ -755,7 +789,7 @@
               (val == null ? '—' : pf(val)) + '</b></div>' +
               (clab ? '<div class="row"><span>' + clab + '</span></div>' : '');
             tip.style.opacity = 1;
-            placeTip(tip, host, cx, W);
+            placeTip(tip, host, cx, W, cw);
           });
         }(rc, rows[i] + ' · ' + cols[j], ok ? +v : null, fc, x + cw / 2, cd ? cd.label : ''));
       }
@@ -2267,12 +2301,10 @@
             }
             /* 斜纹柱（如 53 周月份）在 tooltip 里补一句为什么它与相邻柱不可比 */
             if (markSet && markSet[idx] && ex.mark_note)
-              html += '<div class="row" style="font-style:italic;opacity:.85"><span>' +
+              html += '<div class="row" style="font-style:italic;opacity:.85;white-space:normal;max-width:300px"><span>' +
                 ex.mark_note + '</span></div>';
             tip.innerHTML = html; tip.style.opacity = 1;
-            var tw = tip.offsetWidth, px = Xc(idx) / W * host.clientWidth;
-            tip.style.left = Math.max(2, Math.min(host.clientWidth - tw - 2, px - tw / 2)) + 'px';
-            tip.style.top = '0px';
+            placeTip(tip, host, Xc(idx), W, band);
           });
         }(i));
       }
