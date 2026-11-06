@@ -159,10 +159,12 @@ lpla,2026-08,2026-09-24,"新闻稿 lpla_pr_2026-08.pdf 电头 ""SAN DIEGO – Se
 miax,2026-07,2026-08-05,"MIH_Volume_and_RPC_Report_08052026.pdf 第 2 行 ""Updated on August 5, 2026""（权威）；辅助线索：HTTP Last-Modified Wed, 05 Aug 2026 14:05:35 GMT"
 miax,2026-08,2026-09-04,"MIAX_Key_Stats-August_2026.pdf 第 2 行 ""Updated on September 4, 2026""（权威）；辅助线索：HTTP Last-Modified Thu, 03 Sep 2026 21:00:15 GMT"
 miax,2026-09,2026-10-06,"MIH_Volume_and_RPC_Report_10062026.pdf 第 2 行 ""Updated on October 6, 2026""（权威）；辅助线索：HTTP Last-Modified Mon, 05 Oct 2026 19:54:53 GMT"
+miax,2026-10,2026-11-05,"MIH-Volume-and-RPC-Report-11052026.pdf 第 2 行 ""Updated on November 5, 2026""（权威）；辅助线索：HTTP Last-Modified Thu, 05 Nov 2026 14:58:03 GMT"
 mtk,2026-05,2026-06-10,"月度营收新闻稿 ""Monthly Sales Revenue May, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-06-10）"
 mtk,2026-06,2026-07-10,"月度营收新闻稿 ""Monthly Sales Revenue June, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-07-10）"
 mtk,2026-07,2026-08-10,"月度营收新闻稿 ""Monthly Sales Revenue July, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-08-10）"
 mtk,2026-08,2026-09-10,"月度营收新闻稿 ""Monthly Sales Revenue August, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-09-10）"
+mtk,2026-09,2026-10-08,"月度营收新闻稿 ""Monthly Sales Revenue September, 2026.pdf"" 正文电头 ""Hsinchu, Taiwan, ..."" 解析所得（2026-10-08）"
 nanya,2026-07,2026-08-04,"IR 新闻稿列表标题日期 ""Nanya Technology ... Revenue NT$..."" （2026-08-04）"
 nanya,2026-08,2026-09-02,"IR 新闻稿列表标题日期 ""Nanya Technology ... Revenue NT$..."" （2026-09-02）"
 nanya,2026-09,2026-10-05,"IR 新闻稿列表标题日期 ""Nanya Technology ... Revenue NT$..."" （2026-10-05）"
@@ -339,6 +341,7 @@ tmx,2026-06,2026-07-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Tra
 tmx,2026-07,2026-08-07,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - July 2026」的 PressReleaseDate 字段
 tmx,2026-08,2026-09-08,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - August 2026」的 PressReleaseDate 字段
 tmx,2026-09,2026-10-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - September 2026」的 PressReleaseDate 字段
+tmx,2026-10,2026-11-06,TMX IR 新闻稿 feed 条目「TMX Group Consolidated Trading Statistics - October 2026」的 PressReleaseDate 字段
 tsm,2026-06,2026-07-13,"新闻稿「TSMC June 2026 Revenue Report」(https://pr.tsmc.com/english/news/3323) 正文电头 ""HSINCHU, Taiwan, R.O.C. – July 13, 2026""；同页 Issued on 2026-07-13；稿内 NT$442.68bn 与 xlsx 一致"
 tsm,2026-07,2026-08-10,"新闻稿「TSMC July 2026 Revenue Report」(https://pr.tsmc.com/english/news/3329) 正文电头 ""HSINCHU, Taiwan, R.O.C. – August 10, 2026""；同页 Issued on 2026-08-10；稿内 NT$467.58bn 与 xlsx 一致"
 tsm,2026-08,2026-09-10,"新闻稿「TSMC August 2026 Revenue Report」(https://pr.tsmc.com/english/news/3340) 正文电头 ""HSINCHU, Taiwan, R.O.C. – September 10, 2026""；同页 Issued on 2026-09-10；稿内 NT$514.81bn 与 xlsx 一致"
