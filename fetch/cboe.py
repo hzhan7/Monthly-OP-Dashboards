@@ -69,6 +69,7 @@ import urllib.request
 from datetime import datetime
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 
 LISTING_URL = ('https://www.cboe.com/us/options/market_statistics/'
                'monthly_volume_rpc_reports/')
@@ -235,12 +236,33 @@ def _lab(v):
     return _norm(v).rstrip(' *¹²³0123456789')
 
 
-def _locate_rows(ws):
+def _header_anchor(ws):
+    """返回表头 'Period' 那一格的 (行, 列)：它所在的列就是标签列，它所在的行就是月份表头行。
+
+    2026-10 那期（11-04 发）起整张报表右移了 12 列：标签列从 A 变成 M，月份表头从
+    B4 起变成 N4 起，A–L 是新露出的 TM1/Cognos 维度列（'ZZ' / 'RPT_USD' / 'FIN Segment'
+    / 'Product (Name)' / 'Account' …，A–F、J–L 分组隐藏），print area $M$1:$AD$59。
+    此前所有期都是 A:R、'Period' 在 A4。所以不写死第 1 列，按 'Period' 定位。
+
+    只扫前 10 行（表头区），且要求整张 sheet 恰好一格 —— 找不到或找到多格都说明
+    版式又变了，直接抛，不猜。
+    """
+    hits = [(r, c) for r in range(1, min(10, ws.max_row) + 1)
+            for c in range(1, ws.max_column + 1)
+            if _norm(ws.cell(r, c).value) == 'Period']
+    if len(hits) != 1:
+        raise CboeFetchError(
+            "sheet %s 表头区（前 10 行）应恰有一格 'Period'，实际 %d 格 %r —— 版式可能又变了"
+            % (ws.title, len(hits), hits))
+    return hits[0]
+
+
+def _locate_rows(ws, label_col):
     """返回 {(section, label): row}。section 之间靠大标题切段，见「口径坑 2」。"""
     out = {}
     section = None
     for r in range(1, ws.max_row + 1):
-        lab = _lab(ws.cell(r, 1).value)
+        lab = _lab(ws.cell(r, label_col).value)
         if not lab:
             continue
         anchor = next((a for a in _SECTION_ANCHORS if lab.startswith(a)), None)
@@ -252,28 +274,31 @@ def _locate_rows(ws):
     return out
 
 
-def _month_columns(ws):
-    """{'YYYY-MM': col}。只认 Jan-26 这种形状，季度列 / Year TD 一概丢掉。"""
+def _month_columns(ws, hdr_row, label_col):
+    """{'YYYY-MM': col}。只认 Jan-26 这种形状，季度列 / Year TD 一概丢掉。
+
+    只看标签列右边：标签列左边（2026-10 起的 Cognos 维度列）不是数据区。
+    """
     out = {}
-    for c in range(2, ws.max_column + 1):
-        h = _norm(ws.cell(4, c).value)
+    for c in range(label_col + 1, ws.max_column + 1):
+        h = _norm(ws.cell(hdr_row, c).value)
         if _MONTH_HDR.match(h):
             d = datetime.strptime(h, '%b-%y')
             out['%04d-%02d' % (d.year, d.month)] = c
     return out
 
 
-def _quarter_columns(ws):
+def _quarter_columns(ws, hdr_row, label_col):
     """{'YYYY-Q4': col}。只取 1Q26 这种季度列，用于补 12 月 RPC，见 _fill_december_rpc。"""
     out = {}
-    for c in range(2, ws.max_column + 1):
-        m = _QTR_HDR.match(_norm(ws.cell(4, c).value))
+    for c in range(label_col + 1, ws.max_column + 1):
+        m = _QTR_HDR.match(_norm(ws.cell(hdr_row, c).value))
         if m:
             out['%04d-Q%s' % (2000 + int(m.group(2)), m.group(1))] = c
     return out
 
 
-def _fill_december_rpc(ws, rows, data, sheet_year):
+def _fill_december_rpc(ws, rows, data, sheet_year, hdr_row, label_col):
     """用 4Qxx 列补 12 月的 RPC —— 否则这一格永远补不上。
 
     结构性窟窿：月度 RPC 滞后一个月，所以 12 月的 RPC 要等 1 月的报告；
@@ -306,7 +331,7 @@ def _fill_december_rpc(ws, rows, data, sheet_year):
     key = '%s-12' % sheet_year
     if key not in data or all(data[key][c] is not None for c in RPC_COLS):
         return
-    qcol = _quarter_columns(ws).get('%s-Q4' % sheet_year)
+    qcol = _quarter_columns(ws, hdr_row, label_col).get('%s-Q4' % sheet_year)
     if qcol is None:
         return
     for name, sec, lab in COLUMN_SPEC:
@@ -340,15 +365,18 @@ def parse_workbook(path):
     data = {}
     for sn in sorted(sheets):
         ws = wb[sn]
-        rows = _locate_rows(ws)
+        hdr_row, label_col = _header_anchor(ws)
+        rows = _locate_rows(ws, label_col)
         missing = [(sec, lab) for _c, sec, lab in COLUMN_SPEC
                    if (sec, lab) not in rows]
         if missing:
             raise CboeFetchError(
-                'sheet %s 缺行标签，官方表结构可能已变：%s' % (sn, missing))
-        cols = _month_columns(ws)
+                'sheet %s 缺行标签（标签列 = %s 列），官方表结构可能已变：%s'
+                % (sn, get_column_letter(label_col), missing))
+        cols = _month_columns(ws, hdr_row, label_col)
         if not cols:
-            raise CboeFetchError('sheet %s 第 4 行找不到 %%b-%%y 形状的月份表头' % sn)
+            raise CboeFetchError('sheet %s 第 %d 行找不到 %%b-%%y 形状的月份表头'
+                                 % (sn, hdr_row))
         for mon, c in cols.items():
             rec = {}
             for name, sec, lab in COLUMN_SPEC:
@@ -357,7 +385,7 @@ def parse_workbook(path):
             if all(v is None for v in rec.values()):
                 continue
             data[mon] = rec
-        _fill_december_rpc(ws, rows, data, sn)
+        _fill_december_rpc(ws, rows, data, sn, hdr_row, label_col)
     if not data:
         raise CboeFetchError('%s 解析后没有任何有数的月份' % os.path.basename(path))
     return dict(sorted(data.items()))
@@ -420,10 +448,15 @@ def _updated_on(path):
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     try:
         for sn in wb.sheetnames:
+            if not (sn.isdigit() and len(sn) == 4):
+                continue                # 只认年份 sheet，与 parse_workbook 同一套
             ws = wb[sn]
+            # 「Updated on」写在标签列（2026-09 那期及以前是 A2，2026-10 那期起是 M2），
+            # 标签列按 'Period' 定位，见 _header_anchor
+            _hdr_row, label_col = _header_anchor(ws)
             # 只扫表头区：正文里若有别的 "Updated on" 字样（脚注之类）不该抢答
             for r in range(1, min(6, ws.max_row) + 1):
-                raw = _norm(ws.cell(r, 1).value)
+                raw = _norm(ws.cell(r, label_col).value)
                 m = _UPDATED_ON.match(raw)
                 if not m:
                     continue
@@ -433,8 +466,9 @@ def _updated_on(path):
                     except ValueError:
                         continue
                     return d.strftime('%Y-%m-%d'), (
-                        '%s 工作表 "%s" 第 %d 行 A 列 "%s"'
-                        % (os.path.basename(path), sn, r, raw))
+                        '%s 工作表 "%s" 第 %d 行 %s 列 "%s"'
+                        % (os.path.basename(path), sn, r,
+                           get_column_letter(label_col), raw))
                 return None, None       # 认得出这行、读不懂日期 → 宁缺勿猜
     finally:
         wb.close()
