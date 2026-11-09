@@ -1,6 +1,6 @@
-# 月度经营指标看板（28 家）
+# 月度经营指标看板（29 家）
 
-28 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
+29 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
 数据全部来自公司官网 IR 或 SEC 申报的原始披露，不含任何券商研报的观点或数据。
 
 **看板地址：** https://hzhan7.github.io/Monthly-OP-Dashboards/
@@ -8,11 +8,11 @@
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 
 ```
-/            总览（28 家 + 7 张横截面，含各家新鲜度红点）
+/            总览（29 家 + 7 张横截面，含各家新鲜度红点）
 /ibkr/ /schw/ /lpla/ /hood/         券商与财富管理
 /cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /lseg/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 3 → 亚太 4）
 /msci/ /spgi/                       数据与指数
-/cost/ /axp/                        消费与信贷
+/cost/ /axp/ /slm/                  消费与信贷
 /tsm/ /ase/ /mtk/ /nanya/ /umc/ /alchip/ /guc/   半导体（台湾月度营收，7 家）
 /exchanges12/ /exchanges-na/ /exchanges-eu/ /exchanges-apac/ /exchanges-products/ /wealth/ /semi/   横截面（同组公司放同一张图比）
 ```
@@ -55,11 +55,11 @@
 
 ```
 index.html          总览页
-<ticker>/index.html 35 个页面外壳 —— 里面没有任何公司专属内容
+<ticker>/index.html 36 个页面外壳 —— 里面没有任何公司专属内容
                     14 个（11 家老单公司页 + tsm + wealth + ice）由 build/make_shells.py 生成；
-                    22 个（6 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
+                    23 个（6 张横截面 + build/specs/ 与 build/mrspecs/ 下每一家）
                     由 build/make_shells12.py 生成
-                    （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 35）
+                    （tsm 两处都在，是接入 mrbase 时留下的历史重叠，去重后 36）
                     ⚠ 两份名单加起来的家数**别照抄**：make_shells12 的单公司那一半是
                     扫目录得来的（specs ∪ mrspecs），加一份 spec 就多一张壳。
                     横截面那一半是硬编码的 CROSS —— 新增一张横截面页要手动加进去，
@@ -145,8 +145,8 @@ docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 28 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
-**每天跑一次**：28 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
+**入口是 `monthly_run.py`**，一条 cron 管 29 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
+**每天跑一次**：29 家的披露日从次月 1 号散到 27 号，覆盖全部窗口只能天天开工；
 省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
 各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`
 （删一家 = 3 个文件 + 5 行注册，见其 §4；删一张横截面页照 `docs/DELIVERY.md` §4.4 的实测清单）。
@@ -205,7 +205,7 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 
 | 总状态 | 含义 |
 |---|---|
-| `NOTHING_TO_DO` | 28 家都没有新数据（正常，等下次） |
+| `NOTHING_TO_DO` | 29 家都没有新数据（正常，等下次） |
 | `PUBLISHED <sha> <n> <月份串>` | n 家更新并已推送，Pages 约 1 分钟后生效 |
 | `PARTIAL <sha> <n> ok / <m> fail` | 有更新也有失败，成功的那部分已发布 |
 | `FAILED <原因>` | 一家都没成功，或工作树不干净 / push 失败 |
@@ -225,8 +225,8 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
    「更新数据」推到公开站。（`--dry-run` 不 commit/push，故只警告不拦。）
 2. **缺列一律失败**，绝不静默写 NaN 上线。解析结果少任何一个已有列，该家的 fetch
    模块直接抛异常。
-3. **未到披露期不下载。** 28 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
-   天天跑；但天天把 28 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
+3. **未到披露期不下载。** 29 家的披露日从次月 1 号散到 27 号，要覆盖全部窗口就得
+   天天跑；但天天把 29 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
    `data_through` 对照各家的 LAG 节奏表，够新的直接跳过。
 
    **闸门比 LAG 提前 `EARLY = 5` 天开，不要改成和红点一样的 `+ GRACE`。** 两者共用
@@ -378,6 +378,11 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   且是稳定别名，每月指向新文件。别去猜带月份的文件名直链，那种链接每月都变。
 - **AXP**：SEC EDGAR CIK 0000004962 的 8-K Item 7.01。2026-05 起口径从 loans-only
   改成合并的 Card balances，两套口径不可连比，分别存不同 CSV。
+- **SLM**（2026-11 接入）：官网只发 SMB 学生贷 ABS **逐信托**的比率（Trust Performance xlsx，
+  链接与月份文件夹每月变，只能从来源页解析），`/slm/` 上**每个数都是自算的合计 / 加权值**。
+  池因子的分母是各信托服务报告里的**交割日**池余额（不是 xlsx 里统计截止日那个，差约 1%），
+  落 `series/slm_trusts.csv`；各比率按自己的分母（池余额 / P&I / P&I+forbearance…）还原成金额再加。
+  口径、期数↔日历月映射与回源核对见 `docs/verify/slm.md`。
 - **SCHW / LPLA**：季末月（3/6/9/12）没有独立月报，数值取自当季季报。
   ⚠️ SCHW 的季报附表里还多印着两张月报上没有的表 —— `Clients' Daily Average Trades`
   与 `Growth in Client Assets and Accounts` 的 `Margin loans outstanding`。这两个量在

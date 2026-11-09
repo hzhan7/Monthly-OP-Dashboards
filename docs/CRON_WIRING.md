@@ -1,7 +1,7 @@
 # cron 接线：一轮跑什么、各家什么时候开闸、怎么删掉一家
 
-入口是 `monthly_run.py`，**每天跑一次**。天天跑不是浪费：28 家的披露日从次月 1 号散到
-21 号，要覆盖全部窗口就只能天天开工；真正省下来的是「今天该不该下载」这一层判断
+入口是 `monthly_run.py`，**每天跑一次**。天天跑不是浪费：29 家的披露日从次月 1 号散到
+27 号，要覆盖全部窗口就只能天天开工；真正省下来的是「今天该不该下载」这一层判断
 （`not_due()`），够新的那几家一个字节都不下。
 
 本文档答三个问题：**一轮跑了什么** / **各家的闸门参数是怎么来的** / **删掉一家要动哪几处**。
@@ -19,7 +19,7 @@ check_specs.main()     contract_specs 结构体检 → 不过就 FAILED 退出
 taiwan_fx()            台湾六页共用的 NTD/USD 底座（series/tsm_fx.csv）→ **必须在循环之前**
                        它是唯一跑在循环**前面**的公共表，理由见下（2026-09 新增）
                        ↓
-for t in TICKERS:      28 家，逐家隔离：not_due? → fetch → build
+for t in TICKERS:      29 家，逐家隔离：not_due? → fetch → build
     one(t)             一家失败只让这一家 FAIL，其余照常发布
                        多腿源的 DEGRADED → LEG_ALERTS：该家照常发布，但计入末行失败清单（接口见 §5）
                        ↓
@@ -116,8 +116,8 @@ data_changed()?        忽略首行构建日期的正文比较 → 有变化才 
 写成裸整数会在下标那步 TypeError，崩掉的是**整轮** monthly_run，不只是那一家。
 
 ⚠️ **下面 §2.2 / §2.3 两张表是手抄的代码常量，改了 `LAG` / `EARLY_BY` / `FACT_GATE`
-必须同步改表。** 有机检：`python3 tools/check_doc_gates.py` 逐行核 28 家的 `LAG` /
-`EARLY_BY` / 闸门，连 §2.3 那句「13 + 15 = 28 家」一起核；闸门那一格双向认两种写法
+必须同步改表。** 有机检：`python3 tools/check_doc_gates.py` 逐行核 29 家的 `LAG` /
+`EARLY_BY` / 闸门，连 §2.3 那句「13 + 16 = 29 家」一起核；闸门那一格双向认两种写法
 ——数字，或 `FACT_GATE` 里那几家的「事实闸门」，写反了哪个方向都报。它不在 cron 路径上
 （理由见脚本头），跟着 README「改过生成器或引擎之后」那一组一起手工跑。
 
@@ -197,9 +197,9 @@ LSEG 是反方向的同一条规则：它的头条在**快腿**（Tradeweb）上
   LAG 与闸门两格照旧跟头条腿走。四条 RPC/capture 按设计晚一整期，**不**进 `SLOW_LEGS`，
   只进 `slow_cols` —— 两张表刻意不相交。
 
-### 2.3 其余 15 家（非交易所，列此供对照）
+### 2.3 其余 16 家（非交易所，列此供对照）
 
-13（§2.2）+ 15（本节）= **28 家**，与开头的家数一致。
+13（§2.2）+ 16（本节）= **29 家**，与开头的家数一致。
 
 | ticker | LAG | EARLY_BY | 闸门 |
 |---|---|---|---|
@@ -215,9 +215,16 @@ LSEG 是反方向的同一条规则：它的头条在**快腿**（Tradeweb）上
 | `umc`  | (14, 14) | (10, 10) | 4 |
 | `ase`  | (15, 15) | (7, 7) | 8 |
 | `axp`  | (16, 16) | — | 11 |
+| `slm`  | (27, 27) | (20, 20) | 7 |
 | `msci` | (17, 17) | — | **事实闸门**（见下） |
 | `spgi` | (18, 18) | (7, 7) | 11 |
 | `lpla` | (21, 52) | — | 16 / 47 |
+
+`slm`（2026-11-09 接入）的源是官网「Trust Performance」xlsx，**不自述发布日**，节奏只能看 HTTP Last-Modified：
+13 期（2025-09..2026-09）落在月末后第 8–27 天、中位第 13 天。`LAG=(27, 27)` 照最晚那期（红点要上界；
+重传过的期次会把 Last-Modified 记晚，27 可能偏宽）；默认闸门 27−5 = 第 22 天会让 13 期里 11 期迟到，
+所以 `EARLY_BY=(20, 20)` → 第 7 天开闸，比实测最早的第 8 天早一天（同 enx / lseg 的取法）。逐期表见 `fetch/slm.py`
+docstring 与 `docs/verify/slm.md` §10。
 
 `umc` / `ase` 的 `EARLY_BY` 是 **2026-08-30 补的**（此前两家吃默认 `EARLY=5`，
 本表相应写着「—」与旧闸门第 9 / 10 天，2026-09-07 订正）。判据与 §2.1 同一条
@@ -469,7 +476,7 @@ rm -rf sgx/                    # 页面壳
 #   build/roster.py  EXCH 里的       'sgx',  这一行
 #   build/roster.py  LAG 里的        'sgx':  这一行
 #   build/roster.py  META 里的       'sgx':  这一行
-#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq / umc / ase 七家，交易所是中间四家）
+#   monthly_run.py   EARLY_BY 里的   'sgx':  那一段（EARLY_BY 现有 spgi / enx / sgx / lseg / ndaq / umc / ase / slm 八家，交易所是中间四家）
 #   （另：若该家在 monthly_run.py 的 SLOW_LEGS 里有登记，那一段一并删 —— 留着不影响 cron，one() 不再调它，
 #    但手工跑的 test_slow_legs.py 不变式会红；build/test_guards.py 里按 fetch 文件是否存在 skip 的组不用改）
 

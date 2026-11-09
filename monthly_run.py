@@ -8,7 +8,7 @@
     python3 monthly_run.py --force            # 数据没变也重新生成并推送（改了图表代码后用）
 
 跑的东西分四类，删一家只动第一类的一行（完整清单见 docs/CRON_WIRING.md）：
-    TICKERS   28 家有自己数据源的公司（11 家其它 + 7 家台湾半导体 + 10 家新交易所），
+    TICKERS   29 家有自己数据源的公司（12 家其它 + 7 家台湾半导体 + 10 家新交易所），
               逐家抓 → 逐家生成
     第二源    cost_sec  /cost/ 的 SEC 申报层（10-K/10-Q/8-K，季度与年度节奏，五张
               series/cost_*.csv）。也不是 ticker、也自成一步，但它只有 /cost/ 一个消费者，
@@ -138,7 +138,7 @@ EXCHANGES = [
 #   现在那条依赖由 taiwan_fx() 在按家循环**之前**满足，所以这张表的顺序确实可以随便改了；
 #   但**别再往里加新的跨家依赖**：这里没有任何东西会检查它，代价是当轮 FAIL + 之后每轮静默 NOCHANGE。
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
-           'msci', 'spgi', 'axp', 'nanya', 'guc', 'alchip', 'mtk', 'umc', 'ase',
+           'msci', 'spgi', 'axp', 'slm', 'nanya', 'guc', 'alchip', 'mtk', 'umc', 'ase',
            'tsm'] + EXCHANGES
 # 读 series/tsm_fx.csv 的六页（那张表由 fetch/tsm.py 维护，见 taiwan_fx）。
 # 前五家在 TICKERS 里都排在 tsm 前面 —— 这正是 taiwan_fx 存在的理由。
@@ -273,6 +273,13 @@ EARLY_BY = {
     # series/nanya_notes.csv 里那 24 期「第 2-8 天」是**新闻稿日期**，写它的
     # update_notes() 压根没接进本文件（fetch/nanya.py:352），与闸门无关 —— 拿它
     # 反推闸门是比错了事件。
+
+    # SLM：官网「Trust Performance」xlsx（fetch/slm.py），不自述发布日，只能看 HTTP Last-Modified。
+    # 2025-09..2026-09 共 13 期 = 月末后第 24/13/8/13/27/19/8/12/11/13/13/14/13 天，最早第 8 天
+    # （出现 2 次），最晚第 27 天（LAG 照它）。默认闸门 = 27−5 = 第 22 天 ⇒ 13 期里 11 期迟到。
+    # 27−20 = 第 7 天开闸，比实测最早再早一天（同 enx / lseg 的取法）。代价是每月最多约
+    # 20 个空请求（来源页一个 100 KB 的 HTML），追平后零请求。
+    'slm': (20, 20),
 }
 
 
