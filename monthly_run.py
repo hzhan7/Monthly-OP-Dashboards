@@ -140,6 +140,7 @@ EXCHANGES = [
 TICKERS = ['cost', 'ibkr', 'schw', 'lpla', 'hood', 'cme', 'cboe', 'hkex',
            'msci', 'spgi', 'axp', 'nanya', 'guc', 'alchip', 'mtk', 'umc', 'ase',
            'tsm'] + EXCHANGES
+TICKERS += ['shenhua']   # 中国神华（2026-11 接入）：主要运营数据公告，披露易 01088 中文版
 # 读 series/tsm_fx.csv 的六页（那张表由 fetch/tsm.py 维护，见 taiwan_fx）。
 # 前五家在 TICKERS 里都排在 tsm 前面 —— 这正是 taiwan_fx 存在的理由。
 TAIWAN_FX_PAGES = ['tsm', 'umc', 'ase', 'mtk', 'nanya', 'guc']
@@ -273,6 +274,12 @@ EARLY_BY = {
     # series/nanya_notes.csv 里那 24 期「第 2-8 天」是**新闻稿日期**，写它的
     # update_notes() 压根没接进本文件（fetch/nanya.py:352），与闸门无关 —— 拿它
     # 反推闸门是比错了事件。
+
+    # 中国神华：披露易上载日实测（`python3 fetch/shenhua.py --cadence` 现印，229 期）
+    # 全样本最早第 10 天（2012-08 → 09-10）、2020 年起 81 期最早第 11 天、中位第 15 天。
+    # 默认闸门 = 22−5 = 第 17 天 ⇒ 2020 年起 81 期里 60 期（74%）在开闸之前就已发布。
+    # 22−12 = 第 10 天开闸 = 全样本最早发布日，比 2020 年以来的最早再早一天（同 enx / lseg 的取法）。
+    'shenhua': (12, 12),
 }
 
 
@@ -1139,6 +1146,21 @@ DEAD_COLS = {
         'vol_msci_taiwan_futures_contracts':
             ('2021-11', 'MSCI Taiwan Index Futures 合约停用（fetch/sgx.py 明写「已停发的死列」，'
                         'build/specs/sgx.py 亦然）'),
+    },
+    # 中国神华：四类「按设计不会再有新值」的列，逐条见 fetch/shenhua.py 的 SCOPE_SPLITS 注释、
+    # build/specs/shenhua.py 文件头与 docs/verify/shenhua.md 第三、六节。
+    'shenhua': {
+        **{c: ('2026-03', '2026-04 资产注入重述后切列：旧口径段止于 2026-03，之后的当月值落 <列>_s2604')
+           for c in ('coal_prod_mt', 'coal_sales_mt', 'ship_vol_mt', 'ship_tnm_bn',
+                     'power_gen_bnkwh', 'power_sold_bnkwh', 'pe_sales_kt', 'pp_sales_kt')},
+        **{c: ('2026-05', '2026-06 起煤化工改报聚烯烃 / 油品 / 甲醇 / 乙二醇（万吨），聚乙烯 / 聚丙烯停报')
+           for c in ('pe_sales_kt_s2604', 'pp_sales_kt_s2604', 'pe_yoy_pct', 'pp_yoy_pct')},
+        'coal_self_mt': ('2016-12', '自产煤 / 外购煤只在 2016-04..12 的公告里单列过'),
+        'coal_purch_mt': ('2016-12', '同上'),
+        'coal_export_mt': ('2016-03', '出口量 2016-04 起不再单列'),
+        'coal_import_mt': ('2016-03', '进口量 2016-04 起不再单列'),
+        'seaborne_mt': ('2019-12', '2020-01 起「港口下水煤销量」停报，两港改报装船量'),
+        'polyolefin_sales_kt': ('2020-02', '只在 2020-01、02 两期把聚乙烯 + 聚丙烯合并报过'),
     },
 }
 

@@ -1,6 +1,6 @@
-# 月度经营指标看板（28 家）
+# 月度经营指标看板（29 家）
 
-28 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
+29 家公司按月披露的经营数据，做成一套交互看板，版式仿 Goldman Sachs GIR exhibit。
 数据全部来自公司官网 IR 或 SEC 申报的原始披露，不含任何券商研报的观点或数据。
 
 **看板地址：** https://hzhan7.github.io/Monthly-OP-Dashboards/
@@ -8,12 +8,13 @@
 一行一族（与导航分行一致，顺序照 `build/roster.py` 的 `GROUPS`）：
 
 ```
-/            总览（28 家 + 7 张横截面，含各家新鲜度红点）
+/            总览（29 家 + 7 张横截面，含各家新鲜度红点）
 /ibkr/ /schw/ /lpla/ /hood/         券商与财富管理
 /cme/ /cboe/ /ice/ /ndaq/ /miax/ /tmx/ /enx/ /db1/ /lseg/ /hkex/ /jpx/ /sgx/ /asx/   交易所（北美 6 → 欧洲 3 → 亚太 4）
 /msci/ /spgi/                       数据与指数
 /cost/ /axp/                        消费与信贷
 /tsm/ /ase/ /mtk/ /nanya/ /umc/ /alchip/ /guc/   半导体（台湾月度营收，7 家）
+/shenhua/                           能源（中国神华主要运营数据公告，2007-09 起）
 /exchanges12/ /exchanges-na/ /exchanges-eu/ /exchanges-apac/ /exchanges-products/ /wealth/ /semi/   横截面（同组公司放同一张图比）
 ```
 
@@ -72,6 +73,9 @@ series/*.csv        历史序列（唯一真值，入库）[注]
                     ibkr_pr（IBKR 月度新闻稿的佣金口径，2016-02 起）/
                     hood_ipo_pit、hood_ipo_q（HOOD 在月度披露开始之前的 IPO 申报期时点值与
                     季度损益，由 build/basefill/hood_ipo.py 一次性回填、不进抓取链路）等
+series/shenhua_ann.csv  /shenhua/ 的公告台账：每期公告表格里印出来的每一格原样（当月 / 累计 / 上年同月 /
+                    同比、原文行名与单位）。series/shenhua.csv 由它确定性推出；重述（上年同期被追溯调整）
+                    只记在这里。口径断点表是 series/shenhua_breaks.csv（每条带公告原文依据）
 series/cost_seg_q.csv   /cost/ 的 SEC 腿，季度/财年分部收入（US / CA / Other Intl）。
                     ⚠ **口径是 TOTAL REVENUE（净销售额 + 会员费），不是净销售额** ——
                     FY2025 三段合计 275,235 而 total net sales 是 269,912，差的 5,323
@@ -145,8 +149,8 @@ docs/CRON_WIRING.md 各家的发布节奏与闸门参数、以及「怎么删掉
 
 ## 每月更新
 
-**入口是 `monthly_run.py`**，一条 cron 管 28 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
-**每天跑一次**：28 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
+**入口是 `monthly_run.py`**，一条 cron 管 29 家 + 2 张公共表（费率、汇率）+ 7 张横截面页。
+**每天跑一次**：29 家的披露日从次月 1 号散到 21 号，覆盖全部窗口只能天天开工；
 省下来的是「今天该不该下载」那一层判断（`not_due()`），够新的那几家一个字节都不下。
 各家的闸门参数与「怎么删掉一家」见 `docs/CRON_WIRING.md`
 （删一家 = 3 个文件 + 5 行注册，见其 §4；删一张横截面页照 `docs/DELIVERY.md` §4.4 的实测清单）。
@@ -205,7 +209,7 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 
 | 总状态 | 含义 |
 |---|---|
-| `NOTHING_TO_DO` | 28 家都没有新数据（正常，等下次） |
+| `NOTHING_TO_DO` | 29 家都没有新数据（正常，等下次） |
 | `PUBLISHED <sha> <n> <月份串>` | n 家更新并已推送，Pages 约 1 分钟后生效 |
 | `PARTIAL <sha> <n> ok / <m> fail` | 有更新也有失败，成功的那部分已发布 |
 | `FAILED <原因>` | 一家都没成功，或工作树不干净 / push 失败 |
@@ -225,8 +229,8 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
    「更新数据」推到公开站。（`--dry-run` 不 commit/push，故只警告不拦。）
 2. **缺列一律失败**，绝不静默写 NaN 上线。解析结果少任何一个已有列，该家的 fetch
    模块直接抛异常。
-3. **未到披露期不下载。** 28 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
-   天天跑；但天天把 28 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
+3. **未到披露期不下载。** 29 家的披露日从次月 1 号散到 21 号，要覆盖全部窗口就得
+   天天跑；但天天把 29 个源全下一遍是浪费（也给对方站点添堵）。所以先用本地
    `data_through` 对照各家的 LAG 节奏表，够新的直接跳过。
 
    **闸门比 LAG 提前 `EARLY = 5` 天开，不要改成和红点一样的 `+ GRACE`。** 两者共用
@@ -271,7 +275,7 @@ python3 tools/check_doc_gates.py       # 文档层：CRON_WIRING §2 的闸门�
 ### 多 session 并发改这个仓
 
 主 checkout 是共用的，而 `guard_dirty_tree()` 的粒度是全仓：`data/`、`series/` 之外
-任何一处未提交改动，整轮 28 家一起拒跑 —— 一个人的私事会变成全局故障。
+任何一处未提交改动，整轮 29 家一起拒跑 —— 一个人的私事会变成全局故障。
 三条规矩，都是实战踩出来的：
 
 - **动手前问一句「这要不要跑 `monthly_run.py`」。** 不要，就去 worktree 做；
@@ -385,6 +389,10 @@ CME 2019 每日 SPAN 存档（同期 Settlements API 已返回 empty、HTTPS 镜
   8-K Ex-99.1 最老一份印到 2013Q3）。落 `series/schw_q.csv`（2016Q1 起），画成
   schw 页 Exhibit 10 / 11（紧跟各自的月频兄弟 Exhibit 8 / 9）。**教训**：一条列的「披露边界」要分「哪一列」和「什么频率」
   两问，只查月报就断言「任何来源都补不出更早的」，2026-08 到 2026-09 在本仓错了两次。
+- **中国神华**：主源是港交所披露易 01088 的中文版公告（上交所 PDF 对脚本回反爬挑战页，不破解；
+  公司官网 HTTPS 握手失败）。229 期里 6 期披露易标题只写「海外監管公告」，按标题筛会静默漏月，
+  所以泛称公告要开 PDF 认月份。公司逢资产注入就追溯调整上年同期，自算同比与官方同比在重述窗口里
+  不一致 —— 页面怎么处理见 `build/specs/shenhua.py` 文件头，逐窗口差异见 `docs/verify/shenhua.md`。
 - **HKEX**：官方有时先把下个月的列开出来再填数，所以「最新月」以**表里最后一个
   ADT 非空的月**为准，不能信文件名。
 
