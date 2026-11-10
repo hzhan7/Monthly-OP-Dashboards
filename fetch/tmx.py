@@ -37,8 +37,13 @@ r"""TMX Group (TSX:X) 月度经营指标 —— 无人值守抓取。
     f_stat_en 直链）一律回 **HTTP 202 + `x-amzn-waf-action: challenge`**（AWS WAF JS 质询，
     CloudFront），换 UA、换 TLS 指纹（curl_cffi chrome/safari）都一样。urllib 把 202 当成功，
     以前会拿空 body 去解析、报一句误导的「找不到直链，源站可能改版」；现在 _http_get 对任何
-    非 200 都抛，并把 WAF 头写进报错。**不要**用真浏览器去过质询（那是绕站方反爬，由所有者定）。
+    非 200 都抛，并把 WAF 头写进报错。**不要**用自动化浏览器去过质询（那是绕站方反爬）。
     这条腿坏了不再连累现货腿：update() 把它记进 DEGRADED['mx']，现货照常入库（见 update()）。
+  · **2026-11-10 起的取数方式：所有者每月用自己的浏览器下载一次** `{YY}{MM}_stats_en.xlsx`
+    （存到 ~/Downloads 即可），落地页被挡时 update() 从 MX_MANUAL_DIRS 收进 cache/tmx/ 再照常
+    解析，并与 TMX 新闻稿 MX 小节对账（_mx_pickup_manual / _mx_check_manual_vs_cts）。
+    没有手动文件时：新闻稿已含该月 ⇒ 记 DEGRADED['mx']，报错里写明要下载哪个链接；
+    新闻稿还没有 ⇒ 当官方未发，不报错。
   · 未发布的月份返回干净的 **404**（body 是 HTML），已发布的返回
     application/vnd...spreadsheetml.sheet，可以放心用状态码当「发了没有」的判据
     （不像 Cboe 那样 403/404 混淆）。**但 404 之外的错误一律不能当成「没发」** ——
@@ -1237,6 +1242,98 @@ def mx_latest_month(cache_dir):
     return '20%s-%s' % (yy, mm)
 
 
+# ── MX 被 WAF 挡住时：收所有者用浏览器手动下载的 xlsx（2026-11-10 起）──────────────
+# m-x.ca 全域 AWS WAF JS 质询（见模块 docstring 源 2），程序取不到，真浏览器能取。
+# 本仓不用自动化浏览器去过质询；改由所有者每月在自己的浏览器里点一次直链，文件落进
+# ~/Downloads（或直接放进 cache/tmx/），下一轮 update() 把它收进 cache/tmx/ 再照常解析 ——
+# 解析与校验（文件里写的月份必须等于文件名的月份、GRAND TOTAL 等）跟自动下载的完全一样。
+# 收进来之后还要与 TMX 新闻稿 MX 小节的成交量 / OI 对一次账（见 _mx_check_manual_vs_cts）。
+MX_MANUAL_DIRS = (os.path.expanduser('~/Downloads'),)
+
+
+def _is_waf_block(exc):
+    return 'x-amzn-waf-action' in str(exc)
+
+
+def _mx_manual_url(month):
+    yy, mm = _yymm(month)
+    return MX_TMPL.format(yy=yy, mm=mm)
+
+
+def _mx_pickup_manual(cache_dir, month):
+    """某月的 xlsx 已在 cache/tmx/ → 返回路径；否则到 MX_MANUAL_DIRS 里找手动下载的那份，
+    校验后原子写进 cache/tmx/ 再返回路径；哪儿都没有返回 None。
+
+    浏览器重名会存成「2610_stats_en (1).xlsx」/「2610_stats_en(1).xlsx」，一并认，取最新那份。
+    不是 xlsx（< 10KB 或不以 PK 开头，多半是存下了质询页）直接抛 —— 别让它静默变成「还没下载」。
+    """
+    path = _mx_path(cache_dir, month)
+    if os.path.exists(path) and os.path.getsize(path) > 10_000:
+        return path
+    yy, mm = _yymm(month)
+    pat = re.compile(r'^%s%s_stats_en(?: ?\(\d+\))?\.xlsx$' % (yy, mm))
+    cands = []
+    for d in MX_MANUAL_DIRS:
+        try:
+            names = os.listdir(d)
+        except OSError as e:
+            print('[tmx] ⚠ 读不了手动下载目录 %s：%r' % (d, e))
+            continue
+        for n in names:
+            if pat.match(n):
+                p = os.path.join(d, n)
+                cands.append((os.path.getmtime(p), p))
+    if not cands:
+        return None
+    src = max(cands)[1]
+    with open(src, 'rb') as f:
+        data = f.read()
+    if len(data) <= 10_000 or not data.startswith(b'PK'):
+        raise TmxFetchError('%s 不像 xlsx（%d B，开头 %r）—— 多半是浏览器存下了质询页，'
+                            '请删掉后重新下载 %s' % (src, len(data), data[:8],
+                                                  _mx_manual_url(month)))
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, path)
+    print('[tmx] 收进手动下载的 MX 文件：%s → %s' % (src, path))
+    return path
+
+
+def _mx_manual_latest(cache_dir, mx_from):
+    """落地页被挡时的「最新月」：从 mx_from 的下一个月起，**连续**有文件的最后一个月；
+    一个都没有返回 None。只认连续段：跳过的月份不能被后面的月份遮住。"""
+    last, m = None, _next_month(mx_from)
+    while _mx_pickup_manual(cache_dir, m):
+        last, m = m, _next_month(m)
+    return last
+
+
+def _mx_check_manual_vs_cts(cache_dir, months, cts):
+    """手动收进来的月份与 TMX 新闻稿 MX 小节（成交合约数 / 月末 OI）逐位对账，结果打一行。
+
+    不抛：分歧时以 xlsx 为准是口径坑 10 定下的（与 crosscheck() 同一取舍）；
+    但每个手动月份都要在日志里留下「对上了 / 对不上 / 新闻稿还没出」三者之一。
+    """
+    for month in months:
+        ref = cts.get(month, (None, None, None, {}))[3] or {}
+        if ref.get('volume') is None and ref.get('oi') is None:
+            print('[tmx] MX %s 来自手动下载；TMX 新闻稿尚未含该月，暂无第二来源对账' % month)
+            continue
+        _m, _rec, raw = parse_mx_workbook(_mx_path(cache_dir, month))
+        bad = []
+        for field, key in (('volume', ('vol', None, 'GRAND TOTAL')),
+                           ('oi', ('oi', None, 'GRAND TOTAL'))):
+            x, c = raw.get(key), ref.get(field)
+            if c is not None and x is not None and abs(x - c) > 0.5:
+                bad.append('%s xlsx %r vs 新闻稿 %r' % (field, x, c))
+        if bad:
+            print('[tmx] ⚠ MX %s 手动文件与 TMX 新闻稿对不上（按口径坑 10 以 xlsx 为准，请人工看一眼）：%s'
+                  % (month, '；'.join(bad)))
+        else:
+            print('[tmx] MX %s 手动文件与 TMX 新闻稿 MX 成交量 / OI 逐位一致' % month)
+
+
 # ═════════════ 源 4：TMX Money 指数月线（一次性回补，不进 update()）═════════════
 def _money_series(symbol, cache_dir, timeout=120):
     """拉一条指数的月线 -> {'YYYY-MM': 月末收盘}。
@@ -1666,11 +1763,25 @@ def update(series_dir, cache_dir):
     # ── MX 腿 ──
     added = []
     mx_latest = None
+    mx_from = None
+    mx_blocked = None       # 落地页被 WAF 挡时的原始报错；是不是故障等现货腿拿到新闻稿再定性
+    mx_manual = []          # 本轮从手动下载文件入库的月份
     try:
         done_mx = [r[0] for r in body if r[idx['mx_volume_contracts']].strip()]
         mx_from = max(done_mx) if done_mx else None
-        mx_latest = mx_latest_month(cache_dir)
-        want_mx = (_month_range(mx_from, mx_latest) if mx_from
+        try:
+            mx_latest = mx_latest_month(cache_dir)
+        except TmxFetchError as e:
+            if not (_is_waf_block(e) and mx_from):
+                raise
+            mx_blocked = str(e)
+            mx_latest = _mx_manual_latest(cache_dir, mx_from)
+            if mx_latest is not None:
+                mx_manual = _month_range(mx_from, mx_latest)
+                print('[tmx] m-x.ca 被 AWS WAF 挡，改用所有者手动下载的 MX 文件：%s'
+                      % ', '.join(mx_manual))
+        want_mx = ([] if mx_latest is None
+                   else _month_range(mx_from, mx_latest) if mx_from
                    else [MX_START] + _month_range(MX_START, mx_latest))
         for month in want_mx:
             got = fetch_mx_month(cache_dir, month)
@@ -1711,6 +1822,31 @@ def update(series_dir, cache_dir):
     except TmxFetchError as e:
         DEGRADED['spot'] = '%s: %s' % (type(e).__name__, e)
         print('[tmx] ⚠ 现货这一路本轮失败（MX 腿照常落盘）：%s' % DEGRADED['spot'])
+
+    if mx_manual and 'mx' not in DEGRADED:
+        _mx_check_manual_vs_cts(cache_dir, mx_manual, cts)
+
+    if mx_blocked is not None and 'mx' not in DEGRADED:
+        # m-x.ca 取不到，手动文件也只补到 base。官方到底发没发更新的月份，看 TMX 新闻稿：
+        # 新闻稿 MX 小节已含 base 之后的月份 ⇒ 官方肯定发了，这才算故障（要人去点一次下载）；
+        # 新闻稿还没有 ⇒ 当「官方未发」处理，不进失败清单 —— 否则每月 1 号起天天报红，
+        # 连续计数在官方发布前就会凑满 3 天，推送失去意义。
+        base = mx_latest or mx_from
+        pub = sorted(m for m, v in cts.items()
+                     if m > base and (v[3] or {}).get('volume') is not None)
+        if pub:
+            m = pub[0]
+            DEGRADED['mx'] = (
+                'MxManualDownloadNeeded: m-x.ca 被 AWS WAF 挡，程序取不到；官方 %s 已发布'
+                '（TMX 新闻稿 MX 成交 %s 张）。请用浏览器打开 %s 下载（存到 ~/Downloads 即可，'
+                '或放进 %s），下一轮自动入库 ｜ 原始报错：%s'
+                % (m, '{:,.0f}'.format(cts[m][3]['volume']), _mx_manual_url(m),
+                   os.path.dirname(_mx_path(cache_dir, m)), mx_blocked))
+            print('[tmx] ⚠ %s' % DEGRADED['mx'])
+        else:
+            print('[tmx] m-x.ca 被 AWS WAF 挡（程序取不到）；TMX 新闻稿也还没出 %s 之后的月份，'
+                  '按官方未发处理。官方一发，请用浏览器下载 %s（存到 ~/Downloads 即可）'
+                  % (base, _mx_manual_url(_next_month(base))))
 
     if 'mx' in DEGRADED and 'spot' in DEGRADED:
         # 两路全挂 = 整家故障。不抛的话 monthly_run 看到 added=[] 会报 NOCHANGE。
