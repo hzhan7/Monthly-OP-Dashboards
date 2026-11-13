@@ -217,6 +217,17 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
     local issuer certificate），`curl` 和 `openssl s_client` 却都说 OK（它们用另一套根库）。
     certifi 的 cacert.pem 里有 R46。→ 见 `_ssl_ctx()`：优先 certifi，**绝不降级成 CERT_NONE**。
     同一条坑 fetch/nanya.py 口径坑 2、fetch/fx.py 口径坑 9 已经各踩过一次。
+21. **IPO 募资表 2026-10 期起整张消失 —— `ipo_funds_sgdmn` 止于 2026-09。**
+    2026-09 期（50 页）p45 债券两张表之间夹着 `Fund Raised Through IPOs and RTOs ($million)`
+    （Mainboard / Catalist 两行）；2026-10 期（52 页，Last-Modified 2026-11-10）同一页
+    （已挪到 p47）只剩 `Total Outstanding Bond Listings` / `Number of New Bond Listings` /
+    `Percentage of Bond Listings ...`，渲染页面目视确认，全文 grep `fund raised` 只剩债券那行。
+    不是「当月没 IPO 就不印」：同一期 Listings 页印着 Oct 2026 Mainboard IPOs = 2。
+    多出来的两页与这张表无关：`Equity Index Futures Volume` 变长、续到 p18（续页无标题，
+    末行 Single Stock Futures ×3 + Total），`... Month-End Open Interest` 一节多出 p29。2026-11-13 cron 因此整月 FAIL（`IPO 募资小节找到 0 个（应为 1）`）。
+    ⇒ LAST_MONTH 登记 2026-09，_read_issuer 找不到这张表时返回 None，
+      该不该有值交给 _missing_columns 判；家数 / 退市 / 债券三类照常。
+      **不拿逐只 IPO 自己加总补这一列** —— 本仓页面只用官方公布值。
 
 ━━ series/sgx.csv 每一列的确切口径 ━━
 月份 `month` = **数据月**（YYYY-MM），不是发布月。所有「本月」值取该期报告里表头等于数据月
@@ -258,7 +269,7 @@ plain curl 全程可用，不需要 curl_cffi、不需要 nscurl。本模块压�
 | `vol_crypto_contracts`              | Bitcoin / Ethereum Perpetual Futures 合计，张，月总量。**2025-11 才上线**，之前官方没有这一节 |
 | `ipos_count`                        | 当月新上市**家数** = Mainboard IPOs + Catalist IPOs（**不含** RTO，RTO 官方单列一行） |
 | `delistings_count`                  | 当月退市**家数** = Mainboard + Catalist |
-| `ipo_funds_sgdmn`                   | 当月 IPO 与 RTO 募资额，S$ 百万 = Mainboard + Catalist。官方脚注：不含超额配售权（若行使） |
+| `ipo_funds_sgdmn`                   | 当月 IPO 与 RTO 募资额，S$ 百万 = Mainboard + Catalist。官方脚注：不含超额配售权（若行使）。**止于 2026-09**：官方 2026-10 期起不再印这张表，之后为空（不是 0），见口径坑 21 |
 | `new_bond_listings`                 | 当月新债券挂牌**只数** |
 | `bond_funds_sgdmn`                  | 当月债券募资额，S$ 百万 |
 
@@ -1132,12 +1143,20 @@ def _read_issuer(blocks, mon):
         # 全书只有这一张表长这样（Number of Listings 那张的这两行下面还挂着子行）。
         ipo_blocks = [b for b in blocks
                       if [_lab(r['lab']) for r in b['rows']] == ['sgx mainboard', 'sgx catalist']]
-    if len(ipo_blocks) != 1:
+    if not ipo_blocks:
+        # 官方 2026-10 期起整张表删了（口径坑 21）。这里只说「这一期没有这张表」，
+        # 该不该有由 _missing_columns 按 LAST_MONTH 判：2026-09 及以前的数据月照旧
+        # 硬失败（「解析后仍为空的列」），之后的留空放行。判据放在那边而不是这里，
+        # 是因为本函数不知道自己读的是哪一期 PDF —— 10 月期也会被拿去读 9 月那一列
+        # （_crosscheck_prev_month），在这里按 mon 抛异常会让那道 31 列的交叉校验每月缺席。
+        out['ipo_funds_sgdmn'] = None
+    elif len(ipo_blocks) != 1:
         raise SgxFetchError('%s：IPO 募资小节找到 %d 个（应为 1）' % (mon, len(ipo_blocks)))
-    vals = [_row_value(ipo_blocks[0], r, mon) for r in ipo_blocks[0]['rows']]
-    if any(v is None for v in vals):
-        raise SgxFetchError('%s：IPO 募资小节读不出 %s 那一列：%r' % (mon, mon, vals))
-    out['ipo_funds_sgdmn'] = sum(vals)
+    else:
+        vals = [_row_value(ipo_blocks[0], r, mon) for r in ipo_blocks[0]['rows']]
+        if any(v is None for v in vals):
+            raise SgxFetchError('%s：IPO 募资小节读不出 %s 那一列：%r' % (mon, mon, vals))
+        out['ipo_funds_sgdmn'] = sum(vals)
 
     out['new_bond_listings'] = _pick_row(
         blocks, T_BONDS, {'new bond listings'}, mon, 'new bond listings')
@@ -1173,6 +1192,10 @@ FIRST_MONTH = {
 # MSCI Taiwan 2020 年底停用，之后官方不再印这一行。
 LAST_MONTH = {
     'vol_msci_taiwan_futures_contracts':    '2020-12',
+    # 官方 2026-10 期起删掉了「Fund Raised Through IPOs and RTOs ($million)」整张表
+    # （口径坑 21）。产品没停，是披露停了 —— 哪天表回来，_read_issuer 照旧会读到，
+    # monthly_run.DEAD_COLS 的「死列诈尸」那一支会点名，到时删掉这一条与那一条。
+    'ipo_funds_sgdmn':                      '2026-09',
 }
 
 DATA_COLUMNS = [

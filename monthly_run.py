@@ -1152,6 +1152,9 @@ DEAD_COLS = {
         'vol_msci_taiwan_futures_contracts':
             ('2021-11', 'MSCI Taiwan Index Futures 合约停用（fetch/sgx.py 明写「已停发的死列」，'
                         'build/specs/sgx.py 亦然）'),
+        'ipo_funds_sgdmn':
+            ('2026-09', '官方 2026-10 期起删掉「Fund Raised Through IPOs and RTOs」整张表'
+                        '（fetch/sgx.py 口径坑 21、LAST_MONTH）；表回来时这里会报诈尸，两处一起删'),
     },
     # 中国神华：四类「按设计不会再有新值」的列，逐条见 fetch/shenhua.py 的 SCOPE_SPLITS 注释、
     # build/specs/shenhua.py 文件头与 docs/verify/shenhua.md 第三、六节。

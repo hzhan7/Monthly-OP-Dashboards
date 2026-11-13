@@ -1797,7 +1797,11 @@ POOLS = [
                  {'col': 'ipo_funds_sgdmn', 'src': 'notional', 'unit_scale': MN,
                   'per_day': None, 'product': 'RAISE_SGD'},
              ],
-             'contracts_col': []},
+             'contracts_col': [],
+             'note': '⚠ ipo_funds_sgdmn **止于 2026-09**：官方 2026-10 期起不再印 IPO / RTO '
+                     '募资表（fetch/sgx.py 口径坑 21）。本池目前没有页面在画；真要接上渲染，'
+                     'sgx 在 head 里会把共同最新月钉死在 2026-09 —— 募资腿得把 sgx 移出 head，'
+                     '家数腿（ipos_count）照常'},
             {'key': 'asx', 'disp': 'ASX', 'color': 'GREEN', 'csv': 'asx.csv',
              'start': '2023-10', 'in_share': False,
              'count_col': 'new_listed_entities',
